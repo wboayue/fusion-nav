@@ -12,26 +12,73 @@ See [README.md](README.md) for the architecture and [GOALS.md](GOALS.md) for pos
 
 ## Notation and conventions
 
+### Frames
+
+Frame labels appear only as subscripts on vectors: $`a_b`$ is a body-frame vector, $`a_n`$ a
+navigation-frame vector.
+
 | symbol | meaning |
 | ------ | ------- |
 | $`n`$ | navigation frame, North-East-Down |
 | $`b`$ | body frame |
-| $`q`$ | unit quaternion rotating body to navigation, Hamilton convention, scalar first |
-| $`R(q)`$ | rotation matrix equivalent of $`q`$, body to navigation |
-| $`p, v`$ | position and velocity, navigation frame |
-| $`b_a, b_g`$ | accelerometer and gyroscope bias, body frame |
-| $`a_m, \omega_m`$ | raw accelerometer and gyroscope measurements, body frame |
-| $`g`$ | gravity vector in the navigation frame, $`g = [0, 0, +9.81]^\mathsf{T}`$ |
-| $`\hat{x}`$ | estimated (nominal) quantity |
-| $`\delta x`$ | error-state quantity |
-| $`[\,u\,]_\times`$ | skew-symmetric matrix of $`u`$ |
-| $`\otimes`$ | quaternion product |
-| $`\mathrm{Exp}(\theta)`$ | rotation vector to quaternion, $`\mathrm{Exp}(\theta) = [\cos\tfrac{\lVert\theta\rVert}{2},\ \tfrac{\theta}{\lVert\theta\rVert}\sin\tfrac{\lVert\theta\rVert}{2}]`$ |
 
-Down is positive, so gravity has a **positive** $`z`$ component in the navigation frame.
+The navigation frame is down-positive, so gravity has a **positive** $`z`$ component.
 
 The attitude error is defined as a **local** (body-frame) perturbation. Every Jacobian below
 follows from that choice; switching to a global perturbation changes signs throughout.
+
+### States and measurements
+
+| symbol | meaning | units |
+| ------ | ------- | ----- |
+| $`p, v`$ | position and velocity, navigation frame | m, m s⁻¹ |
+| $`q`$ | unit quaternion rotating body to navigation, Hamilton convention, scalar first | — |
+| $`R(q)`$ | rotation matrix equivalent of $`q`$, body to navigation | — |
+| $`\beta_a, \beta_g`$ | accelerometer and gyroscope bias, body frame | m s⁻², rad s⁻¹ |
+| $`a_m, \omega_m`$ | raw accelerometer and gyroscope measurements, body frame | m s⁻², rad s⁻¹ |
+| $`g`$ | gravity vector in the navigation frame | m s⁻² |
+| $`m_n`$ | reference magnetic field, navigation frame | normalized |
+| $`D_m`$ | magnetic declination | rad |
+| $`\alpha`$ | barometric altitude above its own reference, positive **up** | m |
+
+Biases are written $`\beta`$ rather than $`b`$ so that they never collide with the body-frame
+subscript.
+
+### Filter quantities
+
+| symbol | meaning | dimension |
+| ------ | ------- | --------- |
+| $`\delta x`$ | error state | 15 |
+| $`P`$ | error covariance | 15 × 15 |
+| $`F`$ | discrete state transition matrix | 15 × 15 |
+| $`Q`$ | discrete process noise | 15 × 15 |
+| $`H`$ | measurement Jacobian, $`H = \left.\partial h / \partial \delta x\right\rvert_{\hat{x}}`$ | dim(z) × 15 |
+| $`R_m`$ | measurement noise covariance | dim(z) × dim(z) |
+| $`y`$ | innovation | dim(z) |
+| $`S`$ | innovation covariance | dim(z) × dim(z) |
+| $`K`$ | Kalman gain | 15 × dim(z) |
+| $`G`$ | reset Jacobian | 15 × 15 |
+| $`w_a, w_g`$ | accelerometer and gyroscope white noise | — |
+| $`w_{\beta a}, w_{\beta g}`$ | bias random-walk driving noise | — |
+
+### Operators
+
+| symbol | meaning |
+| ------ | ------- |
+| $`\hat{x}`$ | estimated (nominal) quantity |
+| $`[\,u\,]_\times`$ | skew-symmetric matrix of $`u`$, so that $`[\,u\,]_\times v = u \times v`$ |
+| $`\otimes`$ | quaternion product |
+| $`\mathrm{Exp}(\phi)`$ | rotation vector to quaternion, $`\mathrm{Exp}(\phi) = [\cos\tfrac{\lVert\phi\rVert}{2},\ \tfrac{\phi}{\lVert\phi\rVert}\sin\tfrac{\lVert\phi\rVert}{2}]`$ |
+| $`R\{\phi\}`$ | rotation **matrix** of the rotation vector $`\phi`$, equal to $`R(\mathrm{Exp}(\phi))`$ |
+| $`\mathrm{wrap}(\cdot)`$ | angle wrapped to $`(-\pi, \pi]`$ |
+| $`e_3`$ | $`[0, 0, 1]^\mathsf{T}`$ |
+
+### Gravity
+
+$`g = [0, 0, \gamma]^\mathsf{T}`$ with $`\gamma`$ the local gravity magnitude. The default is the
+WGS-84 standard value 9.80665 m s⁻², but $`\gamma`$ varies by roughly 0.5 % between the equator
+and the poles and falls by about 3 µm s⁻² per metre of altitude. It is a configuration
+parameter, not a literal.
 
 ## State definitions
 
@@ -40,7 +87,7 @@ The nominal state has 16 components:
 **(1)**
 
 ```math
-x = \begin{bmatrix} p & v & q & b_a & b_g \end{bmatrix}^\mathsf{T}
+x = \begin{bmatrix} p & v & q & \beta_a & \beta_g \end{bmatrix}^\mathsf{T}
 ```
 
 The error state has 15:
@@ -48,7 +95,7 @@ The error state has 15:
 **(2)**
 
 ```math
-\delta x = \begin{bmatrix} \delta p & \delta v & \delta\theta & \delta b_a & \delta b_g \end{bmatrix}^\mathsf{T} \in \mathbb{R}^{15}
+\delta x = \begin{bmatrix} \delta p & \delta v & \delta\theta & \delta\beta_a & \delta\beta_g \end{bmatrix}^\mathsf{T} \in \mathbb{R}^{15}
 ```
 
 True state as nominal composed with error:
@@ -56,7 +103,7 @@ True state as nominal composed with error:
 **(3)**
 
 ```math
-p = \hat{p} + \delta p, \quad v = \hat{v} + \delta v, \quad q = \hat{q} \otimes \delta q, \quad b_a = \hat{b}_a + \delta b_a, \quad b_g = \hat{b}_g + \delta b_g
+p = \hat{p} + \delta p, \quad v = \hat{v} + \delta v, \quad q = \hat{q} \otimes \delta q, \quad \beta_a = \hat{\beta}_a + \delta\beta_a, \quad \beta_g = \hat{\beta}_g + \delta\beta_g
 ```
 
 with the small-angle approximation
@@ -70,25 +117,77 @@ with the small-angle approximation
 Using a three-component $`\delta\theta`$ rather than four quaternion states keeps the covariance
 non-singular and preserves the unit-norm constraint on $`q`$ automatically.
 
-## Nominal state propagation
+## Initialization
 
-Bias-corrected IMU measurements:
+The filter is initialized from a quasi-static interval: the vehicle stationary, with gravity the
+only specific force. Initialization quality dominates early-flight performance, so the static
+assumption must be validated rather than assumed.
+
+Roll and pitch follow from the accelerometer. With $`f = a_m`$ averaged over the interval:
 
 **(5)**
 
 ```math
-\omega = \omega_m - \hat{b}_g
+\phi_0 = \mathrm{atan2}(-f_y,\ -f_z), \qquad \theta_0 = \mathrm{atan2}\left(f_x,\ \sqrt{f_y^2 + f_z^2}\right)
 ```
+
+The signs follow from the down-positive convention: a level, stationary accelerometer reads
+$`f = [0, 0, -\gamma]^\mathsf{T}`$.
+
+Yaw follows from the magnetometer, levelled by the roll and pitch just computed. With
+$`R_0 = R_y(\theta_0) R_x(\phi_0)`$ and $`m_b`$ the averaged magnetometer reading:
 
 **(6)**
 
 ```math
-a_b = a_m - \hat{b}_a
+\tilde{m} = R_0\, m_b, \qquad \psi_0 = D_m - \mathrm{atan2}(\tilde{m}_E,\ \tilde{m}_N)
+```
+
+The nominal state is then initialized as
+
+**(7)**
+
+```math
+\hat{q}_0 = q_{ZYX}(\psi_0, \theta_0, \phi_0), \qquad \hat{p}_0 = 0, \qquad \hat{v}_0 = 0, \qquad \hat{\beta}_{a,0} = 0, \qquad \hat{\beta}_{g,0} = \overline{\omega_m}
+```
+
+with $`q_{ZYX}`$ the quaternion of the yaw-pitch-roll sequence
+$`R = R_z(\psi) R_y(\theta) R_x(\phi)`$, matching $`R_0`$ in (6).
+
+The gyroscope bias is observable at rest and is initialized to the measured average. The
+accelerometer bias is not separable from attitude error at rest and is initialized to zero.
+
+The initial covariance is diagonal:
+
+**(8)**
+
+```math
+P_0 = \mathrm{diag}\left( \sigma_{p,0}^2 I,\quad \sigma_{v,0}^2 I,\quad \mathrm{diag}(\sigma_{\text{tilt},0}^2, \sigma_{\text{tilt},0}^2, \sigma_{\psi,0}^2),\quad \sigma_{\beta a,0}^2 I,\quad \sigma_{\beta g,0}^2 I \right)
+```
+
+Yaw uncertainty $`\sigma_{\psi,0}`$ is set much larger than tilt uncertainty
+$`\sigma_{\text{tilt},0}`$: roll and pitch come from gravity and are well determined, whereas yaw
+comes from the magnetometer and inherits its calibration error.
+
+## Nominal state propagation
+
+Bias-corrected IMU measurements:
+
+**(9)**
+
+```math
+\omega = \omega_m - \hat{\beta}_g
+```
+
+**(10)**
+
+```math
+a_b = a_m - \hat{\beta}_a
 ```
 
 Specific force rotated into the navigation frame and gravity added:
 
-**(7)**
+**(11)**
 
 ```math
 a_n = R(\hat{q})\, a_b + g
@@ -96,74 +195,77 @@ a_n = R(\hat{q})\, a_b + g
 
 Continuous-time kinematics:
 
-**(8)**
+**(12)**
 
 ```math
-\dot{p} = v, \qquad \dot{v} = a_n, \qquad \dot{q} = \tfrac{1}{2}\, q \otimes \begin{bmatrix} 0 \\ \omega \end{bmatrix}, \qquad \dot{b}_a = 0, \qquad \dot{b}_g = 0
+\dot{p} = v, \qquad \dot{v} = a_n, \qquad \dot{q} = \tfrac{1}{2}\, q \otimes \begin{bmatrix} 0 \\ \omega \end{bmatrix}, \qquad \dot{\beta}_a = 0, \qquad \dot{\beta}_g = 0
 ```
 
 Discrete integration over $`\Delta t`$:
 
-**(9)**
+**(13)**
 
 ```math
 \hat{p} \leftarrow \hat{p} + \hat{v}\,\Delta t + \tfrac{1}{2} a_n \Delta t^2
 ```
 
-**(10)**
+**(14)**
 
 ```math
 \hat{v} \leftarrow \hat{v} + a_n \Delta t
 ```
 
-**(11)**
+**(15)**
 
 ```math
 \hat{q} \leftarrow \hat{q} \otimes \mathrm{Exp}(\omega\,\Delta t)
 ```
 
+> **Order matters.** Equation (13) uses the **pre-update** velocity. Applying (14) first and then
+> (13) adds a spurious $`a_n \Delta t^2`$ to position on every propagation step — a bias that
+> integrates without bound. Implementations must evaluate (13) before (14), or compute both from
+> a saved copy of $`\hat{v}`$.
+
 Biases are modelled as random walks and are unchanged by propagation. The quaternion is
-renormalized after (11).
+renormalized after (15).
 
 ## Error-state dynamics
 
 Linearized continuous-time error dynamics, local attitude error:
 
-**(12)**
+**(16)**
 
 ```math
 \delta\dot{p} = \delta v
 ```
 
-**(13)**
+**(17)**
 
 ```math
-\delta\dot{v} = -R(\hat{q})\,[\,a_b\,]_\times\,\delta\theta \;-\; R(\hat{q})\,\delta b_a \;-\; R(\hat{q})\,n_a
+\delta\dot{v} = -R(\hat{q})\,[\,a_b\,]_\times\,\delta\theta \;-\; R(\hat{q})\,\delta\beta_a \;-\; R(\hat{q})\,w_a
 ```
 
-**(14)**
+**(18)**
 
 ```math
-\delta\dot{\theta} = -[\,\omega\,]_\times\,\delta\theta \;-\; \delta b_g \;-\; n_g
+\delta\dot{\theta} = -[\,\omega\,]_\times\,\delta\theta \;-\; \delta\beta_g \;-\; w_g
 ```
 
-**(15)**
+**(19)**
 
 ```math
-\delta\dot{b}_a = n_{ba}, \qquad \delta\dot{b}_g = n_{bg}
+\delta\dot{\beta}_a = w_{\beta a}, \qquad \delta\dot{\beta}_g = w_{\beta g}
 ```
 
-where $`n_a, n_g`$ are accelerometer and gyroscope white noise and $`n_{ba}, n_{bg}`$ drive the bias
-random walks.
-
-Equation (13) is the coupling that motivates the whole filter: an attitude error rotates the
+Equation (17) is the coupling that motivates the whole filter: an attitude error rotates the
 measured specific force incorrectly, which integrates into velocity and then position.
 
 ## Covariance propagation
 
-Discrete state transition matrix, first order in $`\Delta t`$:
+Discrete state transition matrix. Every block is first order in $`\Delta t`$ except the attitude
+block, which is exact:
 
-**(16)**
+**(20)**
 
 ```math
 F = \begin{bmatrix}
@@ -175,22 +277,27 @@ I & I\Delta t & 0 & 0 & 0 \\
 \end{bmatrix}
 ```
 
-The attitude block $`R\{\omega\Delta t\}^\mathsf{T}`$ is the rotation matrix of the incremental
-rotation, transposed. It may be approximated as $`I - [\,\omega\,]_\times \Delta t`$ where the
-cost of the exact form is not justified; the approximation is the usual source of small
-attitude-covariance error at high rotation rates.
+The attitude block $`R\{\omega\Delta t\}^\mathsf{T}`$ may be approximated as
+$`I - [\,\omega\,]_\times \Delta t`$ where the cost of the exact form is not justified; that
+approximation is the usual source of small attitude-covariance error at high rotation rates.
 
 Discrete process noise, impulse form:
 
-**(17)**
+**(21)**
 
 ```math
-Q = \mathrm{diag}\left( 0,\quad \sigma_a^2 \Delta t^2 I,\quad \sigma_g^2 \Delta t^2 I,\quad \sigma_{ba}^2 \Delta t\, I,\quad \sigma_{bg}^2 \Delta t\, I \right)
+Q = \mathrm{diag}\left( 0,\quad \sigma_a^2 \Delta t^2 I,\quad \sigma_g^2 \Delta t^2 I,\quad \sigma_{\beta a}^2 \Delta t\, I,\quad \sigma_{\beta g}^2 \Delta t\, I \right)
 ```
+
+The velocity block of (21) is the rotated accelerometer noise $`R \Sigma_a R^\mathsf{T}`$. Writing
+it as $`\sigma_a^2 I`$ is exact only when the accelerometer noise is **isotropic**, since
+$`R (\sigma_a^2 I) R^\mathsf{T} = \sigma_a^2 I`$ for orthogonal $`R`$. Real IMUs are not
+isotropic — the z axis is typically noisier. Either use a per-axis $`\Sigma_a`$ and carry the
+rotation, or set $`\sigma_a`$ to the worst axis and document the conservatism.
 
 Covariance propagation:
 
-**(18)**
+**(22)**
 
 ```math
 P \leftarrow F P F^\mathsf{T} + Q
@@ -198,36 +305,39 @@ P \leftarrow F P F^\mathsf{T} + Q
 
 ## Measurement update
 
-For an observation $`z`$ with model $`h(x)`$, measurement Jacobian $`H = \left.\frac{\partial h}{\partial \delta x}\right|_{\hat{x}}`$, and noise covariance $`R_m`$:
+For an observation $`z`$ with model $`h(x)`$, Jacobian $`H`$, and noise covariance $`R_m`$:
 
-**(19)**
+**(23)**
 
 ```math
 y = z - h(\hat{x})
 ```
 
-**(20)**
+**(24)**
 
 ```math
 S = H P H^\mathsf{T} + R_m
 ```
 
-**(21)**
+**(25)**
 
 ```math
 K = P H^\mathsf{T} S^{-1}
 ```
 
-**(22)**
+**(26)**
 
 ```math
 \delta\hat{x} = K y
 ```
 
+Because the error state is reset to zero after every update, its prior is always zero and (26)
+has no prior term.
+
 Covariance update in Joseph form, which preserves symmetry and positive definiteness under
 finite precision:
 
-**(23)**
+**(27)**
 
 ```math
 P \leftarrow (I - KH)\,P\,(I - KH)^\mathsf{T} + K R_m K^\mathsf{T}
@@ -240,7 +350,7 @@ arithmetic on an embedded target.
 
 ### GNSS position
 
-**(24)**
+**(28)**
 
 ```math
 z = p_{\text{GNSS}}, \qquad h(x) = p, \qquad H = \begin{bmatrix} I_3 & 0 & 0 & 0 & 0 \end{bmatrix}
@@ -248,7 +358,7 @@ z = p_{\text{GNSS}}, \qquad h(x) = p, \qquad H = \begin{bmatrix} I_3 & 0 & 0 & 0
 
 ### GNSS velocity
 
-**(25)**
+**(29)**
 
 ```math
 z = v_{\text{GNSS}}, \qquad h(x) = v, \qquad H = \begin{bmatrix} 0 & I_3 & 0 & 0 & 0 \end{bmatrix}
@@ -260,31 +370,37 @@ covariance.
 
 ### Barometric altitude
 
-Barometric height $`h_{\text{baro}}`$ is measured up; the navigation frame is down-positive, so
+The barometer reports altitude $`\alpha`$ above its own reference, positive up, while the
+navigation frame is down-positive:
 
-**(26)**
+**(30)**
 
 ```math
-z = -h_{\text{baro}}, \qquad h(x) = p_D, \qquad H = \begin{bmatrix} e_3^\mathsf{T} & 0 & 0 & 0 & 0 \end{bmatrix}
+z = -(\alpha - \alpha_0), \qquad h(x) = p_D, \qquad H = \begin{bmatrix} e_3^\mathsf{T} & 0 & 0 & 0 & 0 \end{bmatrix}
 ```
 
-with $`e_3 = [0, 0, 1]^\mathsf{T}`$. The barometer observes height relative to an arbitrary
-reference; the offset between that reference and the navigation origin must be established at
-initialization or treated as slowly varying.
+$`\alpha_0`$ is the barometric altitude recorded during initialization, which fixes the barometer
+reference to the navigation origin. **It is a constant, not a state.** The 15-state vector (2) has
+no barometer bias, so slow drift in the barometric reference — from weather, from ground effect,
+from sensor warm-up — is not estimated and appears directly as vertical position error. Where
+that matters, the options are to re-establish $`\alpha_0`$ on the ground, to lean on GNSS height
+for the low-frequency component, or to extend the state vector, which is out of scope for this
+filter.
 
-### Magnetometer
+### Magnetometer, three-axis
 
 With $`m_n`$ the reference field in the navigation frame, the predicted body-frame measurement is
 
-**(27)**
+**(31)**
 
 ```math
 \hat{m}_b = R(\hat{q})^\mathsf{T} m_n
 ```
 
-Perturbing with a local attitude error, $`R = R(\hat{q})\,\mathrm{Exp}(\delta\theta)`$, gives
+Perturbing with a local attitude error, $`R = R(\hat{q})\,\mathrm{Exp}(\delta\theta)`$, and using
+$`[\,u\,]_\times v = -[\,v\,]_\times u`$:
 
-**(28)**
+**(32)**
 
 ```math
 m_b \approx \hat{m}_b + [\,\hat{m}_b\,]_\times\, \delta\theta
@@ -292,30 +408,74 @@ m_b \approx \hat{m}_b + [\,\hat{m}_b\,]_\times\, \delta\theta
 
 so
 
-**(29)**
+**(33)**
 
 ```math
 z = m_b^{\text{meas}}, \qquad h(x) = \hat{m}_b, \qquad H = \begin{bmatrix} 0 & 0 & [\,\hat{m}_b\,]_\times & 0 & 0 \end{bmatrix}
 ```
 
-Full three-axis fusion per (29) makes the filter sensitive to hard- and soft-iron error, which
-`fusion-nav` does not estimate; see
+Three-axis fusion constrains all three attitude components from the magnetometer. That is a
+liability rather than a benefit here: hard- and soft-iron errors and local field anomalies
+corrupt roll and pitch, which the accelerometer already determines well, and `fusion-nav` carries
+no magnetic-field states to absorb them. See
 [Magnetometer without magnetic-field states](GOALS.md#magnetometer-without-magnetic-field-states).
-Projecting the measurement to a heading angle and fusing that single scalar is the more robust
-option and should be the default.
+
+### Magnetometer, heading only
+
+This is the **default**. It constrains yaw alone, leaving roll and pitch to gravity.
+
+Rotate the measurement into the navigation frame with the current attitude estimate:
+
+**(34)**
+
+```math
+\tilde{m}_n = R(\hat{q})\, m_b^{\text{meas}}
+```
+
+If the attitude estimate were exact, the horizontal part of $`\tilde{m}_n`$ would make an angle
+$`D_m`$ with North. Any residual is yaw error, so the innovation is formed directly rather than
+as a difference of two angles:
+
+**(35)**
+
+```math
+y = -\,\mathrm{wrap}\big(\mathrm{atan2}(\tilde{m}_{n,E},\ \tilde{m}_{n,N}) - D_m\big)
+```
+
+A local body-frame error $`\delta\theta`$ corresponds to the navigation-frame rotation vector
+$`R(\hat{q})\,\delta\theta`$, and yaw is rotation about the navigation down axis, so
+
+**(36)**
+
+```math
+H = \begin{bmatrix} 0 & 0 & e_3^\mathsf{T} R(\hat{q}) & 0 & 0 \end{bmatrix}
+```
+
+with $`R_m = \sigma_\psi^2`$ scalar. Equation (36) treats yaw as the down-axis component of the
+rotation vector, which is exact at zero tilt and degrades as $`1/\cos\theta`$; at the tilt angles
+flight controllers operate at, the error is not significant, and the approximation avoids a
+singularity at 90° pitch.
+
+Note that (35) wraps the angle **before** it is used, so the innovation is always in
+$`(-\pi, \pi]`$ and a heading near ±180° does not produce a spurious 2π innovation.
 
 ## Innovation gating
 
 The normalized innovation squared
 
-**(30)**
+**(37)**
 
 ```math
 \epsilon = y^\mathsf{T} S^{-1} y
 ```
 
-is compared against a threshold $`\gamma`$ drawn from the chi-square distribution with degrees of
-freedom equal to $`\dim(z)`$. The measurement is rejected when $`\epsilon > \gamma`$.
+is compared against a threshold $`\gamma`$ from the chi-square distribution with
+$`\dim(z)`$ degrees of freedom. The measurement is rejected when $`\epsilon > \gamma`$.
+
+| dim(z) | observation | 95 % | 99 % |
+| ------ | ----------- | ---- | ---- |
+| 1 | barometric altitude, magnetic heading | 3.84 | 6.63 |
+| 3 | GNSS position, GNSS velocity, three-axis magnetometer | 7.81 | 11.34 |
 
 This single mechanism covers GNSS glitches, barometer transients, and magnetic interference.
 Rejection must be counted and exposed: a filter that silently discards every measurement is
@@ -325,21 +485,21 @@ indistinguishable from one that is working.
 
 The estimated error is composed into the nominal state:
 
-**(31)**
+**(38)**
 
 ```math
 \hat{p} \leftarrow \hat{p} + \delta\hat{p}, \qquad \hat{v} \leftarrow \hat{v} + \delta\hat{v}, \qquad \hat{q} \leftarrow \hat{q} \otimes \mathrm{Exp}(\delta\hat{\theta})
 ```
 
-**(32)**
+**(39)**
 
 ```math
-\hat{b}_a \leftarrow \hat{b}_a + \delta\hat{b}_a, \qquad \hat{b}_g \leftarrow \hat{b}_g + \delta\hat{b}_g
+\hat{\beta}_a \leftarrow \hat{\beta}_a + \delta\hat{\beta}_a, \qquad \hat{\beta}_g \leftarrow \hat{\beta}_g + \delta\hat{\beta}_g
 ```
 
 The error state is then reset to zero and the covariance transformed by the reset Jacobian:
 
-**(33)**
+**(40)**
 
 ```math
 \delta x \leftarrow 0, \qquad P \leftarrow G P G^\mathsf{T}, \qquad G = \mathrm{diag}\left(I, I, I - [\tfrac{1}{2}\delta\hat{\theta}]_\times, I, I\right)
@@ -352,7 +512,7 @@ corrections and should be an explicit, documented choice rather than an omission
 
 Symmetry is enforced after every covariance operation:
 
-**(34)**
+**(41)**
 
 ```math
 P \leftarrow \tfrac{1}{2}\left(P + P^\mathsf{T}\right)
@@ -369,21 +529,29 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | equations | concept | module | function |
 | --------- | ------- | ------ | -------- |
 | (1)–(4) | state definitions | `state.rs` | `NominalState`, `ErrorState` |
-| (5)–(7) | bias correction, gravity | `propagate.rs` | `corrected_imu` |
-| (8)–(11) | nominal propagation | `propagate.rs` | `propagate_nominal` |
-| (12)–(15) | error dynamics | `propagate.rs` | `error_dynamics` |
-| (16) | state transition matrix | `propagate.rs` | `transition_matrix` |
-| (17) | discrete process noise | `propagate.rs` | `process_noise` |
-| (18) | covariance propagation | `propagate.rs` | `propagate_covariance` |
-| (19)–(23) | generic update, Joseph form | `update.rs` | `update` |
-| (24) | GNSS position | `observation/gnss.rs` | `position_jacobian` |
-| (25) | GNSS velocity | `observation/gnss.rs` | `velocity_jacobian` |
-| (26) | barometric altitude | `observation/baro.rs` | `altitude_jacobian` |
-| (27)–(29) | magnetometer | `observation/mag.rs` | `field_jacobian`, `heading_jacobian` |
-| (30) | innovation gating | `update.rs` | `gate` |
-| (31)–(33) | injection and reset | `update.rs` | `inject`, `reset` |
-| (34) | symmetry enforcement | `math.rs` | `enforce_symmetry` |
-| — | skew, quaternion exponential | `math.rs` | `skew`, `exp_quat` |
+| (5)–(8) | static initialization | `init.rs` | `level_from_accel`, `heading_from_mag`, `initial_covariance` |
+| (9)–(11) | bias correction, gravity | `propagate.rs` | `corrected_imu` |
+| (12)–(15) | nominal propagation | `propagate.rs` | `propagate_nominal` |
+| (16)–(19) | error dynamics | `propagate.rs` | `error_dynamics` |
+| (20) | state transition matrix | `propagate.rs` | `transition_matrix` |
+| (21) | discrete process noise | `propagate.rs` | `process_noise` |
+| (22) | covariance propagation | `propagate.rs` | `propagate_covariance` |
+| (23)–(27) | generic update, Joseph form | `update.rs` | `update` |
+| (28) | GNSS position | `observation/gnss.rs` | `position_jacobian` |
+| (29) | GNSS velocity | `observation/gnss.rs` | `velocity_jacobian` |
+| (30) | barometric altitude | `observation/baro.rs` | `altitude_jacobian` |
+| (31)–(33) | magnetometer, three-axis | `observation/mag.rs` | `field_jacobian` |
+| (34)–(36) | magnetometer, heading only | `observation/mag.rs` | `heading_innovation`, `heading_jacobian` |
+| (37) | innovation gating | `update.rs` | `gate` |
+| (38)–(40) | injection and reset | `update.rs` | `inject`, `reset` |
+| (41) | symmetry enforcement | `math.rs` | `enforce_symmetry` |
+| — | skew, quaternion exponential, angle wrap | `math.rs` | `skew`, `exp_quat`, `wrap_pi` |
+
+## Deferred
+
+Measurement latency is not modelled. Every observation above is fused as though it were
+simultaneous with the current state, which is not true of GNSS. See
+[Measurement latency](GOALS.md#measurement-latency).
 
 ## References
 
