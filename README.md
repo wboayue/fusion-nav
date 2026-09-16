@@ -27,6 +27,8 @@ flowchart TD
 
 `fusion-nav` is intended to provide a middle ground between simple attitude/altitude filters and large flight-stack navigation estimators.
 
+See [GOALS.md](GOALS.md) for how `fusion-nav` is positioned against existing Rust crates and production autopilot estimators, and for the open design questions.
+
 The primary goals are:
 
 * 3D position and velocity estimation
