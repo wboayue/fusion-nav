@@ -29,6 +29,8 @@ flowchart TD
 
 See [GOALS.md](GOALS.md) for how `fusion-nav` is positioned against existing Rust crates and production autopilot estimators, and for the open design questions.
 
+See [EQUATIONS.md](EQUATIONS.md) for the full mathematical description and its mapping to the implementation.
+
 The primary goals are:
 
 * 3D position and velocity estimation
@@ -72,15 +74,11 @@ The corresponding error state is
 | gyroscope bias     | 3         |
 | **total**          | **15**    |
 
-or
-
-```text
-δx = [δp, δv, δθ, δba, δbg]
-```
-
 The filter therefore maintains a `15 × 15` error covariance matrix while orientation is represented by a quaternion in the nominal state.
 
 Using a three-dimensional attitude error avoids treating the four quaternion components as independent Kalman states and preserves the unit-quaternion constraint naturally.
+
+See [state definitions](EQUATIONS.md#state-definitions).
 
 ## Why an ESKF?
 
@@ -118,19 +116,9 @@ IMU measurements are expressed in the body frame and transformed into the naviga
 
 The IMU drives the high-rate propagation step.
 
-Gyroscope measurements propagate attitude:
+Gyroscope measurements are bias corrected and propagate attitude.
 
-```text
-ω = ωmeasured - bg
-```
-
-Accelerometer measurements are bias corrected and rotated into the navigation frame:
-
-```text
-ab = ameasured - ba
-
-an = R(q) ab + g
-```
+Accelerometer measurements are bias corrected, rotated into the navigation frame, and gravity is added.
 
 The resulting acceleration propagates velocity and position.
 
@@ -147,27 +135,21 @@ flowchart TD
 
 The covariance is propagated alongside the nominal state using the linearized error-state dynamics.
 
+See [nominal state propagation](EQUATIONS.md#nominal-state-propagation) and [covariance propagation](EQUATIONS.md#covariance-propagation).
+
 ## Measurement Updates
 
 External sensors constrain IMU drift through independent measurement updates.
 
+See [observation models](EQUATIONS.md#observation-models) for the measurement Jacobians.
+
 ### GNSS Position
 
-GNSS position observations correct the estimated navigation position.
-
-```text
-z = pGNSS
-h(x) = p
-```
+GNSS position observations correct the estimated navigation position directly.
 
 ### GNSS Velocity
 
-GNSS velocity observations correct the estimated navigation velocity.
-
-```text
-z = vGNSS
-h(x) = v
-```
+GNSS velocity observations correct the estimated navigation velocity directly.
 
 GNSS velocity is particularly useful because velocity errors otherwise accumulate rapidly from accelerometer and attitude errors.
 
@@ -187,21 +169,11 @@ Magnetometer fusion should include measurement validation so that temporary magn
 
 Measurements should not automatically be accepted simply because they are available.
 
-For each observation the filter computes the innovation
-
-```text
-y = z - h(x)
-```
-
-and innovation covariance
-
-```text
-S = HPHᵀ + R
-```
-
-The normalized innovation can then be used to reject measurements inconsistent with the current state estimate.
+For each observation the filter computes the innovation and its covariance, then uses the normalized innovation to reject measurements inconsistent with the current state estimate.
 
 This provides a common mechanism for handling GNSS glitches, barometer transients, and magnetic interference.
+
+See [innovation gating](EQUATIONS.md#innovation-gating).
 
 ## Relationship to Other Fusion Crates
 

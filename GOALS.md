@@ -74,6 +74,9 @@ PX4's fusion equations are SymForce-generated and effectively unauditable by han
 `fusion-nav` should cite the source equation alongside each Jacobian and ship the derivation.
 An estimator that can be checked by reading it is a real and unoccupied niche.
 
+[EQUATIONS.md](EQUATIONS.md) is the mechanism: numbered equations and an explicit
+equation-to-code mapping.
+
 ### 4. Pure Rust, single crate
 
 No C++ toolchain, no bindgen, no allocator, no build script beyond the ordinary. `cargo add`
