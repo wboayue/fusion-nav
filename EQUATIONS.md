@@ -14,21 +14,21 @@ See [README.md](README.md) for the architecture and [GOALS.md](GOALS.md) for pos
 
 | symbol | meaning |
 | ------ | ------- |
-| $n$ | navigation frame, North-East-Down |
-| $b$ | body frame |
-| $q$ | unit quaternion rotating body to navigation, Hamilton convention, scalar first |
-| $R(q)$ | rotation matrix equivalent of $q$, body to navigation |
-| $p, v$ | position and velocity, navigation frame |
-| $b_a, b_g$ | accelerometer and gyroscope bias, body frame |
-| $a_m, \omega_m$ | raw accelerometer and gyroscope measurements, body frame |
-| $g$ | gravity vector in the navigation frame, $g = [0, 0, +9.81]^\mathsf{T}$ |
-| $\hat{x}$ | estimated (nominal) quantity |
-| $\delta x$ | error-state quantity |
-| $[\,u\,]_\times$ | skew-symmetric matrix of $u$ |
-| $\otimes$ | quaternion product |
-| $\mathrm{Exp}(\theta)$ | rotation vector to quaternion, $\mathrm{Exp}(\theta) = [\cos\tfrac{\lVert\theta\rVert}{2},\ \tfrac{\theta}{\lVert\theta\rVert}\sin\tfrac{\lVert\theta\rVert}{2}]$ |
+| $`n`$ | navigation frame, North-East-Down |
+| $`b`$ | body frame |
+| $`q`$ | unit quaternion rotating body to navigation, Hamilton convention, scalar first |
+| $`R(q)`$ | rotation matrix equivalent of $`q`$, body to navigation |
+| $`p, v`$ | position and velocity, navigation frame |
+| $`b_a, b_g`$ | accelerometer and gyroscope bias, body frame |
+| $`a_m, \omega_m`$ | raw accelerometer and gyroscope measurements, body frame |
+| $`g`$ | gravity vector in the navigation frame, $`g = [0, 0, +9.81]^\mathsf{T}`$ |
+| $`\hat{x}`$ | estimated (nominal) quantity |
+| $`\delta x`$ | error-state quantity |
+| $`[\,u\,]_\times`$ | skew-symmetric matrix of $`u`$ |
+| $`\otimes`$ | quaternion product |
+| $`\mathrm{Exp}(\theta)`$ | rotation vector to quaternion, $`\mathrm{Exp}(\theta) = [\cos\tfrac{\lVert\theta\rVert}{2},\ \tfrac{\theta}{\lVert\theta\rVert}\sin\tfrac{\lVert\theta\rVert}{2}]`$ |
 
-Down is positive, so gravity has a **positive** $z$ component in the navigation frame.
+Down is positive, so gravity has a **positive** $`z`$ component in the navigation frame.
 
 The attitude error is defined as a **local** (body-frame) perturbation. Every Jacobian below
 follows from that choice; switching to a global perturbation changes signs throughout.
@@ -37,46 +37,68 @@ follows from that choice; switching to a global perturbation changes signs throu
 
 The nominal state has 16 components:
 
-$$x = \begin{bmatrix} p & v & q & b_a & b_g \end{bmatrix}^\mathsf{T} \tag{1}$$
+```math
+x = \begin{bmatrix} p & v & q & b_a & b_g \end{bmatrix}^\mathsf{T} \tag{1}
+```
 
 The error state has 15:
 
-$$\delta x = \begin{bmatrix} \delta p & \delta v & \delta\theta & \delta b_a & \delta b_g \end{bmatrix}^\mathsf{T} \in \mathbb{R}^{15} \tag{2}$$
+```math
+\delta x = \begin{bmatrix} \delta p & \delta v & \delta\theta & \delta b_a & \delta b_g \end{bmatrix}^\mathsf{T} \in \mathbb{R}^{15} \tag{2}
+```
 
 True state as nominal composed with error:
 
-$$p = \hat{p} + \delta p, \quad v = \hat{v} + \delta v, \quad q = \hat{q} \otimes \delta q, \quad b_a = \hat{b}_a + \delta b_a, \quad b_g = \hat{b}_g + \delta b_g \tag{3}$$
+```math
+p = \hat{p} + \delta p, \quad v = \hat{v} + \delta v, \quad q = \hat{q} \otimes \delta q, \quad b_a = \hat{b}_a + \delta b_a, \quad b_g = \hat{b}_g + \delta b_g \tag{3}
+```
 
 with the small-angle approximation
 
-$$\delta q \approx \begin{bmatrix} 1 & \tfrac{1}{2}\delta\theta \end{bmatrix}^\mathsf{T} \tag{4}$$
+```math
+\delta q \approx \begin{bmatrix} 1 & \tfrac{1}{2}\delta\theta \end{bmatrix}^\mathsf{T} \tag{4}
+```
 
-Using a three-component $\delta\theta$ rather than four quaternion states keeps the covariance
-non-singular and preserves the unit-norm constraint on $q$ automatically.
+Using a three-component $`\delta\theta`$ rather than four quaternion states keeps the covariance
+non-singular and preserves the unit-norm constraint on $`q`$ automatically.
 
 ## Nominal state propagation
 
 Bias-corrected IMU measurements:
 
-$$\omega = \omega_m - \hat{b}_g \tag{5}$$
+```math
+\omega = \omega_m - \hat{b}_g \tag{5}
+```
 
-$$a_b = a_m - \hat{b}_a \tag{6}$$
+```math
+a_b = a_m - \hat{b}_a \tag{6}
+```
 
 Specific force rotated into the navigation frame and gravity added:
 
-$$a_n = R(\hat{q})\, a_b + g \tag{7}$$
+```math
+a_n = R(\hat{q})\, a_b + g \tag{7}
+```
 
 Continuous-time kinematics:
 
-$$\dot{p} = v, \qquad \dot{v} = a_n, \qquad \dot{q} = \tfrac{1}{2}\, q \otimes \begin{bmatrix} 0 \\ \omega \end{bmatrix}, \qquad \dot{b}_a = 0, \qquad \dot{b}_g = 0 \tag{8}$$
+```math
+\dot{p} = v, \qquad \dot{v} = a_n, \qquad \dot{q} = \tfrac{1}{2}\, q \otimes \begin{bmatrix} 0 \\ \omega \end{bmatrix}, \qquad \dot{b}_a = 0, \qquad \dot{b}_g = 0 \tag{8}
+```
 
-Discrete integration over $\Delta t$:
+Discrete integration over $`\Delta t`$:
 
-$$\hat{p} \leftarrow \hat{p} + \hat{v}\,\Delta t + \tfrac{1}{2} a_n \Delta t^2 \tag{9}$$
+```math
+\hat{p} \leftarrow \hat{p} + \hat{v}\,\Delta t + \tfrac{1}{2} a_n \Delta t^2 \tag{9}
+```
 
-$$\hat{v} \leftarrow \hat{v} + a_n \Delta t \tag{10}$$
+```math
+\hat{v} \leftarrow \hat{v} + a_n \Delta t \tag{10}
+```
 
-$$\hat{q} \leftarrow \hat{q} \otimes \mathrm{Exp}(\omega\,\Delta t) \tag{11}$$
+```math
+\hat{q} \leftarrow \hat{q} \otimes \mathrm{Exp}(\omega\,\Delta t) \tag{11}
+```
 
 Biases are modelled as random walks and are unchanged by propagation. The quaternion is
 renormalized after (11).
@@ -85,15 +107,23 @@ renormalized after (11).
 
 Linearized continuous-time error dynamics, local attitude error:
 
-$$\delta\dot{p} = \delta v \tag{12}$$
+```math
+\delta\dot{p} = \delta v \tag{12}
+```
 
-$$\delta\dot{v} = -R(\hat{q})\,[\,a_b\,]_\times\,\delta\theta \;-\; R(\hat{q})\,\delta b_a \;-\; R(\hat{q})\,n_a \tag{13}$$
+```math
+\delta\dot{v} = -R(\hat{q})\,[\,a_b\,]_\times\,\delta\theta \;-\; R(\hat{q})\,\delta b_a \;-\; R(\hat{q})\,n_a \tag{13}
+```
 
-$$\delta\dot{\theta} = -[\,\omega\,]_\times\,\delta\theta \;-\; \delta b_g \;-\; n_g \tag{14}$$
+```math
+\delta\dot{\theta} = -[\,\omega\,]_\times\,\delta\theta \;-\; \delta b_g \;-\; n_g \tag{14}
+```
 
-$$\delta\dot{b}_a = n_{ba}, \qquad \delta\dot{b}_g = n_{bg} \tag{15}$$
+```math
+\delta\dot{b}_a = n_{ba}, \qquad \delta\dot{b}_g = n_{bg} \tag{15}
+```
 
-where $n_a, n_g$ are accelerometer and gyroscope white noise and $n_{ba}, n_{bg}$ drive the bias
+where $`n_a, n_g`$ are accelerometer and gyroscope white noise and $`n_{ba}, n_{bg}`$ drive the bias
 random walks.
 
 Equation (13) is the coupling that motivates the whole filter: an attitude error rotates the
@@ -101,58 +131,78 @@ measured specific force incorrectly, which integrates into velocity and then pos
 
 ## Covariance propagation
 
-Discrete state transition matrix, first order in $\Delta t$:
+Discrete state transition matrix, first order in $`\Delta t`$:
 
-$$F = \begin{bmatrix}
+```math
+F = \begin{bmatrix}
 I & I\Delta t & 0 & 0 & 0 \\
 0 & I & -R(\hat{q})[\,a_b\,]_\times \Delta t & -R(\hat{q})\Delta t & 0 \\
 0 & 0 & R\{\omega \Delta t\}^\mathsf{T} & 0 & -I\Delta t \\
 0 & 0 & 0 & I & 0 \\
 0 & 0 & 0 & 0 & I
-\end{bmatrix} \tag{16}$$
+\end{bmatrix} \tag{16}
+```
 
-The attitude block $R\{\omega\Delta t\}^\mathsf{T}$ is the rotation matrix of the incremental
-rotation, transposed. It may be approximated as $I - [\,\omega\,]_\times \Delta t$ where the
+The attitude block $`R\{\omega\Delta t\}^\mathsf{T}`$ is the rotation matrix of the incremental
+rotation, transposed. It may be approximated as $`I - [\,\omega\,]_\times \Delta t`$ where the
 cost of the exact form is not justified; the approximation is the usual source of small
 attitude-covariance error at high rotation rates.
 
 Discrete process noise, impulse form:
 
-$$Q = \mathrm{diag}\left( 0,\quad \sigma_a^2 \Delta t^2 I,\quad \sigma_g^2 \Delta t^2 I,\quad \sigma_{ba}^2 \Delta t\, I,\quad \sigma_{bg}^2 \Delta t\, I \right) \tag{17}$$
+```math
+Q = \mathrm{diag}\left( 0,\quad \sigma_a^2 \Delta t^2 I,\quad \sigma_g^2 \Delta t^2 I,\quad \sigma_{ba}^2 \Delta t\, I,\quad \sigma_{bg}^2 \Delta t\, I \right) \tag{17}
+```
 
 Covariance propagation:
 
-$$P \leftarrow F P F^\mathsf{T} + Q \tag{18}$$
+```math
+P \leftarrow F P F^\mathsf{T} + Q \tag{18}
+```
 
 ## Measurement update
 
-For an observation $z$ with model $h(x)$, measurement Jacobian $H = \left.\frac{\partial h}{\partial \delta x}\right|_{\hat{x}}$, and noise covariance $R_m$:
+For an observation $`z`$ with model $`h(x)`$, measurement Jacobian $`H = \left.\frac{\partial h}{\partial \delta x}\right|_{\hat{x}}`$, and noise covariance $`R_m`$:
 
-$$y = z - h(\hat{x}) \tag{19}$$
+```math
+y = z - h(\hat{x}) \tag{19}
+```
 
-$$S = H P H^\mathsf{T} + R_m \tag{20}$$
+```math
+S = H P H^\mathsf{T} + R_m \tag{20}
+```
 
-$$K = P H^\mathsf{T} S^{-1} \tag{21}$$
+```math
+K = P H^\mathsf{T} S^{-1} \tag{21}
+```
 
-$$\delta\hat{x} = K y \tag{22}$$
+```math
+\delta\hat{x} = K y \tag{22}
+```
 
 Covariance update in Joseph form, which preserves symmetry and positive definiteness under
 finite precision:
 
-$$P \leftarrow (I - KH)\,P\,(I - KH)^\mathsf{T} + K R_m K^\mathsf{T} \tag{23}$$
+```math
+P \leftarrow (I - KH)\,P\,(I - KH)^\mathsf{T} + K R_m K^\mathsf{T} \tag{23}
+```
 
-Joseph form costs more than $P \leftarrow (I - KH)P$ but is the appropriate default for `f32`
+Joseph form costs more than $`P \leftarrow (I - KH)P`$ but is the appropriate default for `f32`
 arithmetic on an embedded target.
 
 ## Observation models
 
 ### GNSS position
 
-$$z = p_{\text{GNSS}}, \qquad h(x) = p, \qquad H = \begin{bmatrix} I_3 & 0 & 0 & 0 & 0 \end{bmatrix} \tag{24}$$
+```math
+z = p_{\text{GNSS}}, \qquad h(x) = p, \qquad H = \begin{bmatrix} I_3 & 0 & 0 & 0 & 0 \end{bmatrix} \tag{24}
+```
 
 ### GNSS velocity
 
-$$z = v_{\text{GNSS}}, \qquad h(x) = v, \qquad H = \begin{bmatrix} 0 & I_3 & 0 & 0 & 0 \end{bmatrix} \tag{25}$$
+```math
+z = v_{\text{GNSS}}, \qquad h(x) = v, \qquad H = \begin{bmatrix} 0 & I_3 & 0 & 0 & 0 \end{bmatrix} \tag{25}
+```
 
 Velocity observations matter disproportionately: velocity error grows linearly from accelerometer
 and attitude error, so constraining it directly also constrains those states through the
@@ -160,27 +210,35 @@ covariance.
 
 ### Barometric altitude
 
-Barometric height $h_{\text{baro}}$ is measured up; the navigation frame is down-positive, so
+Barometric height $`h_{\text{baro}}`$ is measured up; the navigation frame is down-positive, so
 
-$$z = -h_{\text{baro}}, \qquad h(x) = p_D, \qquad H = \begin{bmatrix} e_3^\mathsf{T} & 0 & 0 & 0 & 0 \end{bmatrix} \tag{26}$$
+```math
+z = -h_{\text{baro}}, \qquad h(x) = p_D, \qquad H = \begin{bmatrix} e_3^\mathsf{T} & 0 & 0 & 0 & 0 \end{bmatrix} \tag{26}
+```
 
-with $e_3 = [0, 0, 1]^\mathsf{T}$. The barometer observes height relative to an arbitrary
+with $`e_3 = [0, 0, 1]^\mathsf{T}`$. The barometer observes height relative to an arbitrary
 reference; the offset between that reference and the navigation origin must be established at
 initialization or treated as slowly varying.
 
 ### Magnetometer
 
-With $m_n$ the reference field in the navigation frame, the predicted body-frame measurement is
+With $`m_n`$ the reference field in the navigation frame, the predicted body-frame measurement is
 
-$$\hat{m}_b = R(\hat{q})^\mathsf{T} m_n \tag{27}$$
+```math
+\hat{m}_b = R(\hat{q})^\mathsf{T} m_n \tag{27}
+```
 
-Perturbing with a local attitude error, $R = R(\hat{q})\,\mathrm{Exp}(\delta\theta)$, gives
+Perturbing with a local attitude error, $`R = R(\hat{q})\,\mathrm{Exp}(\delta\theta)`$, gives
 
-$$m_b \approx \hat{m}_b + [\,\hat{m}_b\,]_\times\, \delta\theta \tag{28}$$
+```math
+m_b \approx \hat{m}_b + [\,\hat{m}_b\,]_\times\, \delta\theta \tag{28}
+```
 
 so
 
-$$z = m_b^{\text{meas}}, \qquad h(x) = \hat{m}_b, \qquad H = \begin{bmatrix} 0 & 0 & [\,\hat{m}_b\,]_\times & 0 & 0 \end{bmatrix} \tag{29}$$
+```math
+z = m_b^{\text{meas}}, \qquad h(x) = \hat{m}_b, \qquad H = \begin{bmatrix} 0 & 0 & [\,\hat{m}_b\,]_\times & 0 & 0 \end{bmatrix} \tag{29}
+```
 
 Full three-axis fusion per (29) makes the filter sensitive to hard- and soft-iron error, which
 `fusion-nav` does not estimate; see
@@ -192,10 +250,12 @@ option and should be the default.
 
 The normalized innovation squared
 
-$$\epsilon = y^\mathsf{T} S^{-1} y \tag{30}$$
+```math
+\epsilon = y^\mathsf{T} S^{-1} y \tag{30}
+```
 
-is compared against a threshold $\gamma$ drawn from the chi-square distribution with degrees of
-freedom equal to $\dim(z)$. The measurement is rejected when $\epsilon > \gamma$.
+is compared against a threshold $`\gamma`$ drawn from the chi-square distribution with degrees of
+freedom equal to $`\dim(z)`$. The measurement is rejected when $`\epsilon > \gamma`$.
 
 This single mechanism covers GNSS glitches, barometer transients, and magnetic interference.
 Rejection must be counted and exposed: a filter that silently discards every measurement is
@@ -205,22 +265,30 @@ indistinguishable from one that is working.
 
 The estimated error is composed into the nominal state:
 
-$$\hat{p} \leftarrow \hat{p} + \delta\hat{p}, \qquad \hat{v} \leftarrow \hat{v} + \delta\hat{v}, \qquad \hat{q} \leftarrow \hat{q} \otimes \mathrm{Exp}(\delta\hat{\theta}) \tag{31}$$
+```math
+\hat{p} \leftarrow \hat{p} + \delta\hat{p}, \qquad \hat{v} \leftarrow \hat{v} + \delta\hat{v}, \qquad \hat{q} \leftarrow \hat{q} \otimes \mathrm{Exp}(\delta\hat{\theta}) \tag{31}
+```
 
-$$\hat{b}_a \leftarrow \hat{b}_a + \delta\hat{b}_a, \qquad \hat{b}_g \leftarrow \hat{b}_g + \delta\hat{b}_g \tag{32}$$
+```math
+\hat{b}_a \leftarrow \hat{b}_a + \delta\hat{b}_a, \qquad \hat{b}_g \leftarrow \hat{b}_g + \delta\hat{b}_g \tag{32}
+```
 
 The error state is then reset to zero and the covariance transformed by the reset Jacobian:
 
-$$\delta x \leftarrow 0, \qquad P \leftarrow G P G^\mathsf{T}, \qquad G = \mathrm{diag}\left(I, I, I - [\tfrac{1}{2}\delta\hat{\theta}]_\times, I, I\right) \tag{33}$$
+```math
+\delta x \leftarrow 0, \qquad P \leftarrow G P G^\mathsf{T}, \qquad G = \mathrm{diag}\left(I, I, I - [\tfrac{1}{2}\delta\hat{\theta}]_\times, I, I\right) \tag{33}
+```
 
-The attitude block of $G$ is frequently approximated as $I$. That is acceptable for small
+The attitude block of $`G`$ is frequently approximated as $`I`$. That is acceptable for small
 corrections and should be an explicit, documented choice rather than an omission.
 
 ## Numerical conditioning
 
 Symmetry is enforced after every covariance operation:
 
-$$P \leftarrow \tfrac{1}{2}\left(P + P^\mathsf{T}\right) \tag{34}$$
+```math
+P \leftarrow \tfrac{1}{2}\left(P + P^\mathsf{T}\right) \tag{34}
+```
 
 Diagonal variances are floored at a small positive value to prevent a state from becoming
 unobservably certain and then unrecoverable. With `f32` these are not optional refinements;
