@@ -4,7 +4,8 @@
 > relative to existing Rust crates and production autopilot estimators. It is a rationale
 > document, not a specification.
 
-See [README.md](README.md) for the architecture.
+See [README.md](README.md) for the architecture and [EQUATIONS.md](EQUATIONS.md) for the
+mathematics.
 
 ## Positioning
 
@@ -16,9 +17,12 @@ fixed time budget on a microcontroller, with mathematics an engineer can audit b
 
 ```mermaid
 flowchart LR
-    simple["attitude / altitude filters<br/>fusion-ahrs, fusion-altitude"] --> gap["fusion-nav<br/>15-state ESKF"]
-    gap --> full["full autopilot estimators<br/>PX4 EKF2, ArduPilot EKF3"]
+    simple["attitude / altitude filters<br/>fusion-ahrs, fusion-altitude"] --- gap["fusion-nav<br/>15-state ESKF"]
+    gap --- full["full autopilot estimators<br/>PX4 EKF2, ArduPilot EKF3"]
 ```
+
+Capability and cost increase left to right. These are alternatives to choose between, not stages
+to progress through.
 
 ## Landscape
 
@@ -26,7 +30,7 @@ flowchart LR
 
 | crate | what it is | state | status |
 | ----- | ---------- | ----- | ------ |
-| [`eskf`](https://crates.io/crates/eskf) | closest direct competitor | 18 (includes a gravity state) | v0.2.0 published March 2021, ~36 recent downloads, nalgebra 0.25. Repository has commits through December 2024 (gravity state removed) that were never released. `no_std` supported but, per its own docs, with few optimizations attempted. No magnetometer fusion, no innovation gating. |
+| [`eskf`](https://crates.io/crates/eskf) | closest direct competitor | 18 (includes a gravity state) | v0.2.0 published March 2021, ~36 downloads in the last 90 days, nalgebra 0.25. Repository has commits through December 2024 (gravity state removed) that were never released. `no_std` supported but, per its own docs, with few optimizations attempted. No magnetometer fusion, no innovation gating. |
 | [`strapdown-rs`](https://github.com/jbrodovsky/strapdown-rs) / `strapdown-core` | research and teaching toolbox, GNSS-degradation simulator, datasets | 15-state ESKF, UKF and EKF selectable | Active (0.5.0, April 2026). `std`-oriented, desktop target. States it is "not intended to be a full-featured INS solution". |
 | [`ekf2`](https://docs.rs/ekf2) | FFI wrapper over PX4's C++ EKF2 | 24 | v0.1.0 published 30 August 2026. `no_std` but heap-allocated via `allocator-api2`, requires a C++ toolchain, roughly half documented. |
 | `adskalman`, `kfilter`, `minikalman`, `yakf` | generic Kalman filter math | n/a | No navigation model, no frame or sensor semantics. |
@@ -43,12 +47,35 @@ flowchart LR
 No Rust crate today is an allocation-free, `f32`, fixed-size, `no_std`-native navigation ESKF
 fusing GNSS, barometer, and magnetometer with innovation gating.
 
-`eskf` is five years stale and lacks both magnetometer fusion and gating. `ekf2` requires a C++
+The published `eskf` crate is five years stale — its repository moved on, its release did not —
+and it lacks both magnetometer fusion and gating. `ekf2` requires a C++
 toolchain and a heap. `strapdown` targets researchers on a desktop.
+
+### Why not revive `eskf`?
+
+The obvious objection. `eskf` already exists, already supports `no_std`, and its repository
+already contains the 15-state formulation that was never released.
+
+Four reasons this is a new crate rather than a pull request.
+
+* **Different target.** `eskf` is a general navigation filter observing position, velocity, and
+  orientation from any source — GPS, LIDAR, visual odometry. `fusion-nav` targets a flight
+  controller's specific sensor set and fuses magnetometer and barometer, which `eskf` does not.
+* **Different guarantees.** Innovation gating, bounded execution time, and published timing on
+  real hardware are not features that bolt onto an existing filter; they constrain its structure.
+* **Maintenance reality.** No release since March 2021, ~36 downloads in the last 90 days, and a
+  `nalgebra` dependency nine minor versions behind. Work landed in the repository in late 2024
+  and still has not shipped. Contributing means depending on a release cadence that has not
+  existed for five years.
+* **API break.** Adding gating, typed frames, and fixed-size `f32` matrices changes essentially
+  every signature. That is a new major version wearing an old name.
+
+None of this is a criticism of `eskf`, which does what it set out to do. It is a different thing.
 
 ## Differentiators
 
-Ranked by how defensible they are.
+Ranked by how defensible they are, which is not the same as how valuable. Differentiator 4 is
+true today by construction; differentiator 1 matters most and is entirely unbuilt.
 
 ### 1. Verified embedded determinism
 
@@ -56,16 +83,21 @@ Publish measured worst-case execution time (cycle counts) and stack high-water m
 `predict` and per measurement update, on a real STM32H7-class target.
 
 No Rust navigation crate does this. It is currently impossible to tell from the outside whether
-`eskf` fits in a 400 Hz control loop. PX4 and ArduPilot cannot claim it either.
+`eskf` fits in a 400 Hz control loop. PX4 and ArduPilot instrument their timing — `perf_counter`
+and scheduler task budgets respectively — but neither publishes per-function worst-case figures
+you can design against before adopting.
 
 ### 2. Compile-time frames and units
 
 Encode the navigation frame, body frame, and units in the type system so that mixing them is a
 compile error rather than a flight anomaly.
 
-Frame and unit confusion is the dominant bug class in navigation code. This is a genuine
-Rust-only advantage: C++ autopilot estimators are structurally unable to offer it. It is the
-most defensible answer to "why Rust".
+Frame and unit confusion is the dominant bug class in navigation code. C++ can express this too,
+with strong typedefs, templates, or a units library, so the claim is not that PX4 and ArduPilot
+could not — it is that they do not. Both are large, mature codebases where `float` is the lingua
+franca and retrofitting types across the estimator is not worth the churn. A new crate pays that
+cost once, at the start, and Rust makes it idiomatic rather than merely possible. That is the
+honest answer to "why Rust".
 
 ### 3. Readable mathematics
 
@@ -82,10 +114,18 @@ equation-to-code mapping.
 No C++ toolchain, no bindgen, no allocator, no build script beyond the ordinary. `cargo add`
 and it builds for a Cortex-M target. Direct contrast with `ekf2`.
 
+MIT licensed, with a declared MSRV that is raised only in a minor version bump. Embedded
+projects pin toolchains; a crate that floats its MSRV is a crate they cannot take.
+
 ### 5. Ecosystem coherence
 
 `fusion-ahrs`, `fusion-altitude`, and `fusion-nav` as one family sharing units, frames, and
 sensor conventions, forming a graduated ladder from attitude to full navigation.
+
+This is a commitment, not a present fact. `fusion-ahrs` exposes a `Convention` enum over NWU,
+ENU, and NED, and inherits NWU as its upstream default; `fusion-nav` fixes NED, Hamilton,
+scalar-first (see [notation](EQUATIONS.md#frames)). Making NED the documented default across all
+three, with one shared statement of conventions, is work still to be done.
 
 ```mermaid
 flowchart TD
@@ -104,7 +144,7 @@ Trust in an estimator comes from reproducible numbers, not from documentation.
 
 ## Open design questions
 
-Two gaps in the current design that need a decision before implementation.
+One gap in the current design still needs a decision before implementation.
 
 ### Measurement latency
 
@@ -115,14 +155,44 @@ against the current state degrades the solution noticeably in flight.
 Either implement a bounded state buffer or document the assumption explicitly. Handling this
 cleanly at 15 states would itself be a differentiator.
 
+## Decisions
+
+Questions that were open and are now settled. Recorded here so the reasoning survives.
+
 ### Magnetometer without magnetic-field states
 
-PX4 carries six magnetic states (earth field and body bias) because hard- and soft-iron biases
-corrupt heading directly. With neither, `fusion-nav` inherits whatever calibration the
-application supplies.
+PX4 carries six magnetic states — earth field and body bias — because hard- and soft-iron errors
+corrupt heading directly. `fusion-nav` carries none, and adding them would contradict the
+non-goals below.
 
-Either add magnetometer bias states behind a feature flag, or state the calibration requirement
-plainly.
+**Decided:** state the calibration requirement plainly and fuse magnetic **heading only**, as a
+single scalar, rather than the three-axis field. Roll and pitch stay with gravity, where they are
+well determined and where a field anomaly cannot reach them. A magnetometer disturbance can then
+corrupt one state instead of three, and innovation gating has a one-dimensional quantity to gate.
+
+Three-axis fusion remains documented for completeness, labelled as the liability it is. See
+[magnetometer, heading only](EQUATIONS.md#magnetometer-heading-only).
+
+The cost is that hard- and soft-iron calibration is the application's responsibility, and a badly
+calibrated magnetometer produces a heading bias the filter cannot detect. That is a documented
+precondition, not a silent failure.
+
+## What would falsify this positioning
+
+Several differentiators are contingent on a landscape that can change. Worth re-surveying when
+any of these happen, rather than discovering it in a forum thread.
+
+| if this happens | what it costs |
+| --------------- | ------------- |
+| `ekf2` sheds its C++ dependency or ships a pure-Rust port | differentiator 4 largely goes; 24 states in Rust with no toolchain burden is a strong alternative |
+| `strapdown-core` goes `no_std` and allocation-free | differentiators 1 and 4 narrow to timing evidence alone |
+| someone publishes a typed-frames navigation crate | differentiator 2 goes, and it is the most distinctive one |
+| `eskf` ships its 15-state version with gating | the gap argument weakens considerably |
+| PX4 or ArduPilot publish per-function WCET | differentiator 1 stops being unique, though it stays true |
+
+Differentiators 3 and 6 — readable mathematics and inspectable validation — are the ones nobody
+can take away by shipping code, because they are commitments about how the crate is documented
+and tested rather than claims about what it does.
 
 ## Validation
 
