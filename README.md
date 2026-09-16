@@ -2,6 +2,9 @@
 
 Embedded-first inertial navigation using a 15-state Error-State Kalman Filter (ESKF).
 
+> **Status: design only.** This document describes the intended architecture and scope.
+> No implementation exists yet, and the design is subject to change.
+
 `fusion-nav` provides 3D attitude, velocity, and position estimation by fusing IMU measurements with external observations such as GNSS, barometric altitude, and magnetometer measurements.
 
 The crate is designed for flight controllers, UAVs, robotics, and other embedded navigation applications.
