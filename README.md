@@ -40,7 +40,8 @@ The primary goals are:
 * barometric altitude fusion
 * magnetometer fusion
 * innovation gating and measurement rejection
-* deterministic execution
+* deterministic execution, with measured worst-case timing and stack usage published per operation
+* navigation and body frames and units enforced at compile time
 * allocation-free operation
 * `no_std` support
 * minimal dependencies
@@ -100,17 +101,40 @@ External observations such as GNSS can therefore correct not only position and v
 
 ## Coordinate System
 
-The navigation frame is North-East-Down (NED).
+The navigation frame is North-East-Down (NED) and the body frame is Forward-Right-Down (FRD).
 
 ```text
-+x  North
-+y  East
-+z  Down
+navigation (NED)        body (FRD)
++x  North               +x  Forward
++y  East                +y  Right
++z  Down                +z  Down
 ```
 
-Positions and velocities are expressed in the navigation frame.
+Both frames are right-handed. Because down is positive, gravity has a **positive** z component in
+the navigation frame, and a level, stationary accelerometer reads negative z.
 
-IMU measurements are expressed in the body frame and transformed into the navigation frame using the estimated attitude quaternion.
+Attitude is a unit quaternion rotating body to navigation, Hamilton convention, scalar first.
+
+Positions and velocities are expressed in the navigation frame. IMU measurements are expressed in
+the body frame and transformed into the navigation frame using the estimated attitude quaternion.
+
+These conventions are fixed, not configurable. Applications working in ENU or NWU convert at the
+boundary; the conversions are exact signed permutations. See [notation](EQUATIONS.md#frames).
+
+## Initialization
+
+The filter is initialized from a quasi-static interval: the vehicle stationary, with gravity the
+only specific force.
+
+Roll and pitch come from the averaged accelerometer, heading from the magnetometer levelled by
+that roll and pitch, and gyroscope bias from the averaged gyroscope, which is observable at rest.
+Accelerometer bias is not separable from attitude error at rest and starts at zero.
+
+This is an operational requirement, not an implementation detail: the application must hold the
+vehicle still and must validate that it was still, because initialization quality dominates
+early-flight performance.
+
+See [initialization](EQUATIONS.md#initialization).
 
 ## State Propagation
 
@@ -159,11 +183,25 @@ Barometric altitude provides an independent vertical-position observation.
 
 This constrains vertical drift between GNSS updates and can provide higher-rate vertical corrections than GNSS alone.
 
+The barometer reference is captured once at initialization and held as a constant. There is no
+barometer bias state, so slow drift in that reference — weather, ground effect, sensor warm-up —
+is not estimated and appears directly as vertical position error.
+
 ### Magnetometer
 
-Magnetometer measurements provide heading information and constrain yaw drift caused by gyroscope bias.
+Magnetometer measurements constrain yaw drift caused by gyroscope bias.
 
-Magnetometer fusion should include measurement validation so that temporary magnetic disturbances do not corrupt the navigation solution.
+Fusion is **heading only** by default: the field is reduced to a single scalar heading and fused
+as one measurement, leaving roll and pitch to gravity where they are well determined. A magnetic
+disturbance can then corrupt one state rather than three, and the innovation gate has a
+one-dimensional quantity to act on.
+
+Three-axis field fusion is documented for completeness but is not the default. `fusion-nav`
+carries no magnetic-field or magnetometer-bias states, so hard- and soft-iron calibration is the
+application's responsibility; an uncalibrated magnetometer produces a heading bias the filter
+cannot detect.
+
+See [magnetometer, heading only](EQUATIONS.md#magnetometer-heading-only).
 
 ## Innovation Gating
 
@@ -173,11 +211,15 @@ For each observation the filter computes the innovation and its covariance, then
 
 This provides a common mechanism for handling GNSS glitches, barometer transients, and magnetic interference.
 
+Rejections are counted and exposed. A filter that silently discards every measurement looks
+identical to one that is working.
+
 See [innovation gating](EQUATIONS.md#innovation-gating).
 
 ## Relationship to Other Fusion Crates
 
-`fusion-nav` complements the lightweight filters in the Fusion ecosystem.
+`fusion-nav` complements the lightweight filters in the Fusion ecosystem. See
+[GOALS.md](GOALS.md) for the comparison against non-Fusion crates and production estimators.
 
 ```mermaid
 flowchart LR
@@ -221,6 +263,36 @@ Sensor drivers and hardware interfaces are outside the scope of the crate.
 
 Applications provide measurements together with their associated uncertainty.
 
+### Intended API
+
+Provisional, to make the design concrete. Nothing here is implemented.
+
+```rust
+use fusion_nav::{Config, Eskf, ImuSample};
+use fusion_nav::frame::Ned;
+
+let mut filter = Eskf::new(Config::default());
+
+// Quasi-static initialization from a window of stationary samples.
+filter.initialize(&static_window)?;
+
+// High-rate propagation. `dt` is explicit; the filter never reads a clock.
+filter.predict(ImuSample { gyro, accel }, dt);
+
+// Measurement updates. Each returns whether the innovation gate accepted the
+// measurement, so rejection is a value the caller handles, not a silent no-op.
+let accepted = filter.fuse_gnss_position(position, variance);  // position: Position<Ned>
+let accepted = filter.fuse_gnss_velocity(velocity, variance);  // velocity: Velocity<Ned>
+let accepted = filter.fuse_baro_altitude(altitude, variance);
+let accepted = filter.fuse_mag_heading(field, variance);       // field: MagField<Body>
+
+let state = filter.state();       // attitude, position, velocity, biases
+let cov = filter.covariance();    // 15 x 15, in the error-state ordering
+```
+
+Frames appear in the types, so a `Position<Enu>` cannot be passed where NED is expected.
+Units are likewise encoded rather than documented.
+
 ## Embedded Design
 
 `fusion-nav` is intended to be suitable for microcontrollers used in flight-control applications.
@@ -236,11 +308,17 @@ The implementation should therefore favor:
 * explicit numerical types
 * minimal dependencies
 
-A 15-state filter requires a `15 × 15` covariance matrix containing 225 scalar values.
+A 15-state filter requires a `15 × 15` covariance matrix containing 225 scalar values, which in
+`f32` is 900 bytes.
 
-With `f32`, the covariance alone requires approximately 900 bytes.
+The covariance is not the whole cost. A measurement update in Joseph form also needs the
+transition matrix, the `(I − KH)` product, and at least one `15 × 15` temporary, each another
+900 bytes, so the realistic working set is a few kilobytes rather than one. Peak stack usage
+depends on how aggressively temporaries are reused, which is exactly why the intent is to
+**measure and publish** the figure per operation rather than estimate it here.
 
-This is small enough for modern STM32H7-class flight controllers while still providing a useful full inertial-navigation state.
+A few kilobytes is still comfortable on an STM32H7-class flight controller while providing a full
+inertial-navigation state.
 
 ## Initial Scope
 
@@ -268,13 +346,30 @@ Features deliberately deferred include:
 
 These can be added as concrete use cases require them.
 
+## Limitations
+
+Known and deliberate, stated here rather than discovered in flight.
+
+* **Measurement latency is not modelled.** GNSS solutions arrive 100–200 ms stale and are fused as
+  though they were simultaneous with the current state. PX4 solves this with a delayed fusion
+  horizon and an output complementary filter; `fusion-nav` does not, and the resulting error grows
+  with vehicle speed. This is the one open design question — see
+  [measurement latency](GOALS.md#measurement-latency).
+* **No barometer bias state.** Drift in the barometric reference becomes vertical position error.
+* **No magnetic-field states.** Hard- and soft-iron calibration is the application's job.
+* **Initialization requires a genuine static interval**, and the application must verify it.
+* **Local tangent plane.** Position is Cartesian NED about a fixed origin, so accuracy degrades
+  over ranges where Earth curvature matters. PX4 carries latitude and longitude for this reason.
+
 ## Design Philosophy
 
 `fusion-nav` favors a small, understandable navigation estimator over a feature-complete autopilot navigation subsystem.
 
 The filter should make the underlying mathematics visible rather than hiding it behind a large abstraction layer.
 
-Where practical, equations in the implementation should correspond directly to the equations documented in the crate.
+Where practical, equations in the implementation should correspond directly to the equations documented in the crate. The
+[equation-to-code mapping](EQUATIONS.md#equation-to-code-mapping) is the concrete form of that promise: every numbered
+equation names the function that implements it.
 
 The intended result is an estimator that is:
 
@@ -298,7 +393,10 @@ PX4 is used as a reference for practical topics such as:
 
 `fusion-nav` is an independent Rust implementation rather than a source-code port of PX4 EKF2.
 
-The mathematical formulation should be based primarily on published inertial-navigation and error-state Kalman filter literature.
+The mathematical formulation follows J. Solà, *Quaternion kinematics for the error-state Kalman
+filter* ([arXiv:1711.02508](https://arxiv.org/abs/1711.02508)), which is the primary source for
+the error-state formulation and its Jacobians. Full reference list in
+[EQUATIONS.md](EQUATIONS.md#references).
 
 ## License
 
