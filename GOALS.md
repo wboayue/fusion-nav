@@ -140,6 +140,10 @@ No other Rust project offers this progression.
 Replayable log-driven regression tests against public datasets, a deterministic seeded
 simulation, and no hardware required in CI.
 
+Reporting gate decisions as a normalized test ratio rather than a raw normalized innovation
+squared is part of this: it is the same quantity PX4 logs, so replaying a flight log and
+comparing rejection behaviour against EKF2 is a like-for-like check.
+
 Trust in an estimator comes from reproducible numbers, not from documentation.
 
 ## Open design questions
@@ -176,6 +180,31 @@ Three-axis fusion remains documented for completeness, labelled as the liability
 The cost is that hard- and soft-iron calibration is the application's responsibility, and a badly
 calibrated magnetometer produces a heading bias the filter cannot detect. That is a documented
 precondition, not a silent failure.
+
+### Rejection handling: report, do not self-recover
+
+Innovation gating protects against bad measurements but is self-sealing. When the filter itself
+is wrong, correct measurements are rejected, and the filter locks itself out of the data that
+would correct it while continuing to report a confident solution.
+
+**Decided:** track per-source health inside the filter — time since last accepted measurement,
+consecutive rejections, and the dimensionless test ratio — and report an aggregate `Healthy` /
+`Degraded` / `DeadReckoning` status **on the state estimate itself**, not behind a separate
+accessor that an integration can neglect to call. Expose `reset_position_to` and
+`reset_velocity_to` so the condition is actionable.
+
+The filter does not reset itself. PX4 does, after 7 s horizontal and 5 s height fusion timeouts,
+and that is the right choice for a complete autopilot that owns the vehicle's failsafe policy.
+`fusion-nav` is a library: it does not know whether the correct response is a state reset, a mode
+degrade, or an operator alert, and silently snapping position is a step input to a controller
+that did not ask for one.
+
+The obligation this accepts is that the degraded condition must be impossible to **miss**, which
+a status field on the returned state achieves, as distinct from impossible to **ignore**, which
+would cost ergonomics that integrators route around anyway.
+
+See [gate lockout](EQUATIONS.md#gate-lockout) and
+[measurement rejection](README.md#measurement-rejection).
 
 ## What would falsify this positioning
 

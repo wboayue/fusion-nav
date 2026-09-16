@@ -216,6 +216,34 @@ identical to one that is working.
 
 See [innovation gating](EQUATIONS.md#innovation-gating).
 
+### Measurement rejection
+
+A single rejection needs no action — discarding an inconsistent measurement is what the gate is
+for.
+
+Sustained rejection is a different condition. Gating is self-sealing: if the filter itself is
+wrong rather than the measurement, correct measurements become inconsistent with the state, all
+of them are rejected, and the filter locks itself out of the data that would fix it. It then
+dead-reckons on the IMU while still reporting a confident solution.
+
+`fusion-nav` tracks, per source, the time since a measurement was last accepted and the number of
+consecutive rejections. The aggregate is reported on the state estimate itself rather than behind
+a separate call, so a solution cannot be consumed without its status:
+
+* `Healthy` — every configured source is being fused
+* `Degraded` — a source has timed out, others still aid the solution
+* `DeadReckoning` — nothing is aiding; position and velocity drift without bound
+
+Per-source detail — test ratios and time since last acceptance — is available from
+`diagnostics()` for logging and tuning.
+
+The filter does **not** recover on its own. Recovery policy belongs to the application, which is
+the only layer that knows whether to reset states, degrade the flight mode, or alert the
+operator. `reset_position_to()` and `reset_velocity_to()` exist so that `DeadReckoning` is
+actionable rather than merely observable.
+
+See [gate lockout](EQUATIONS.md#gate-lockout).
+
 ## Relationship to Other Fusion Crates
 
 `fusion-nav` complements the lightweight filters in the Fusion ecosystem. See
@@ -268,8 +296,7 @@ Applications provide measurements together with their associated uncertainty.
 Provisional, to make the design concrete. Nothing here is implemented.
 
 ```rust
-use fusion_nav::{Config, Eskf, ImuSample};
-use fusion_nav::frame::Ned;
+use fusion_nav::{Config, Eskf, ImuSample, Status};
 
 let mut filter = Eskf::new(Config::default());
 
@@ -279,19 +306,32 @@ filter.initialize(&static_window)?;
 // High-rate propagation. `dt` is explicit; the filter never reads a clock.
 filter.predict(ImuSample { gyro, accel }, dt);
 
-// Measurement updates. Each returns whether the innovation gate accepted the
-// measurement, so rejection is a value the caller handles, not a silent no-op.
-let accepted = filter.fuse_gnss_position(position, variance);  // position: Position<Ned>
-let accepted = filter.fuse_gnss_velocity(velocity, variance);  // velocity: Velocity<Ned>
-let accepted = filter.fuse_baro_altitude(altitude, variance);
-let accepted = filter.fuse_mag_heading(field, variance);       // field: MagField<Body>
+// Measurement updates. Each returns the gate outcome, carrying the test ratio
+// so a rejection is diagnosable rather than a bare failure. `#[must_use]`, so
+// discarding it is a warning.
+let outcome = filter.fuse_gnss_position(position, variance);  // position: Position<Ned>
+filter.fuse_gnss_velocity(velocity, variance);
+filter.fuse_baro_altitude(altitude, variance);
+filter.fuse_mag_heading(field, variance);                     // field: MagField<Body>
 
-let state = filter.state();       // attitude, position, velocity, biases
+// The estimate carries its own status, so it cannot be consumed without it.
+let s = filter.state();
+match s.status {
+    Status::Healthy => { /* every configured source is being fused */ }
+    Status::Degraded => { /* a source has timed out; still aided */ }
+    Status::DeadReckoning => { /* nothing is aiding — drift is unbounded */ }
+}
+// s.attitude, s.position, s.velocity, s.accel_bias, s.gyro_bias
+
+let d = filter.diagnostics();     // per-source test ratios, time since last accepted
 let cov = filter.covariance();    // 15 x 15, in the error-state ordering
 ```
 
 Frames appear in the types, so a `Position<Enu>` cannot be passed where NED is expected.
 Units are likewise encoded rather than documented.
+
+`Status` is a payload-free enum and `state()` stays small and `Copy`, so reading it in a
+control loop costs nothing. Timing detail lives in `diagnostics()`, which is not on the hot path.
 
 ## Embedded Design
 
@@ -360,6 +400,10 @@ Known and deliberate, stated here rather than discovered in flight.
 * **Initialization requires a genuine static interval**, and the application must verify it.
 * **Local tangent plane.** Position is Cartesian NED about a fixed origin, so accuracy degrades
   over ranges where Earth curvature matters. PX4 carries latitude and longitude for this reason.
+* **The filter gates but does not self-recover.** On sustained rejection it reports
+  `DeadReckoning` and stops there; the application must reset the affected states or degrade the
+  flight mode. PX4 by contrast resets its states to the measurement after a 7 s horizontal or 5 s
+  height fusion timeout, which are reasonable starting points for an integrator's own policy.
 
 ## Design Philosophy
 

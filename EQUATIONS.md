@@ -477,21 +477,53 @@ $`\dim(z)`$ degrees of freedom. The measurement is rejected when $`\epsilon > \g
 | 1 | barometric altitude, magnetic heading | 3.84 | 6.63 |
 | 3 | GNSS position, GNSS velocity, three-axis magnetometer | 7.81 | 11.34 |
 
+Rather than reporting $`\epsilon`$ directly, the filter exposes the dimensionless **test ratio**
+
+**(38)**
+
+```math
+r = \frac{\epsilon}{\gamma}
+```
+
+so that $`r > 1`$ means rejected regardless of the degrees of freedom of the observation. One
+number is then comparable across GNSS position, barometric altitude, and magnetic heading, and
+directly comparable with the innovation test ratios PX4 publishes in its logs — which is what
+makes replay comparison against EKF2 a like-for-like check rather than an approximate one.
+
 This single mechanism covers GNSS glitches, barometer transients, and magnetic interference.
-Rejection must be counted and exposed: a filter that silently discards every measurement is
-indistinguishable from one that is working.
+
+### Gate lockout
+
+Gating is self-sealing. If the **filter** is wrong rather than the measurement — a poor
+initialization, an unmodelled bias, a divergence — then correct measurements are inconsistent
+with the state, every one of them is rejected, and the filter locks itself out of the very data
+that would correct it. It then dead-reckons on the IMU alone while continuing to report a
+solution whose covariance says it is confident.
+
+A filter that gates without a route out of this state is more dangerous than one that does not
+gate at all.
+
+`fusion-nav` therefore tracks, per observation source, the time since a measurement was last
+accepted and the number of consecutive rejections, and reports an aggregate status alongside the
+state estimate. It does **not** reset itself: recovery policy belongs to the application, which
+is the only layer that knows whether to reset the affected states, degrade the flight mode, or
+alert the operator. PX4, for comparison, resets its states to the measurement after 7 s of
+horizontal fusion timeout and 5 s for height.
+
+The design obligation is that the degraded condition cannot be missed, not that the filter hides
+it by recovering silently.
 
 ## Error injection and reset
 
 The estimated error is composed into the nominal state:
 
-**(38)**
+**(39)**
 
 ```math
 \hat{p} \leftarrow \hat{p} + \delta\hat{p}, \qquad \hat{v} \leftarrow \hat{v} + \delta\hat{v}, \qquad \hat{q} \leftarrow \hat{q} \otimes \mathrm{Exp}(\delta\hat{\theta})
 ```
 
-**(39)**
+**(40)**
 
 ```math
 \hat{\beta}_a \leftarrow \hat{\beta}_a + \delta\hat{\beta}_a, \qquad \hat{\beta}_g \leftarrow \hat{\beta}_g + \delta\hat{\beta}_g
@@ -499,7 +531,7 @@ The estimated error is composed into the nominal state:
 
 The error state is then reset to zero and the covariance transformed by the reset Jacobian:
 
-**(40)**
+**(41)**
 
 ```math
 \delta x \leftarrow 0, \qquad P \leftarrow G P G^\mathsf{T}, \qquad G = \mathrm{diag}\left(I, I, I - [\tfrac{1}{2}\delta\hat{\theta}]_\times, I, I\right)
@@ -512,7 +544,7 @@ corrections and should be an explicit, documented choice rather than an omission
 
 Symmetry is enforced after every covariance operation:
 
-**(41)**
+**(42)**
 
 ```math
 P \leftarrow \tfrac{1}{2}\left(P + P^\mathsf{T}\right)
@@ -542,9 +574,10 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | (30) | barometric altitude | `observation/baro.rs` | `altitude_jacobian` |
 | (31)–(33) | magnetometer, three-axis | `observation/mag.rs` | `field_jacobian` |
 | (34)–(36) | magnetometer, heading only | `observation/mag.rs` | `heading_innovation`, `heading_jacobian` |
-| (37) | innovation gating | `update.rs` | `gate` |
-| (38)–(40) | injection and reset | `update.rs` | `inject`, `reset` |
-| (41) | symmetry enforcement | `math.rs` | `enforce_symmetry` |
+| (37)–(38) | innovation gating, test ratio | `update.rs` | `gate`, `test_ratio` |
+| — | per-source health tracking | `health.rs` | `SourceHealth`, `Status` |
+| (39)–(41) | injection and reset | `update.rs` | `inject`, `reset` |
+| (42) | symmetry enforcement | `math.rs` | `enforce_symmetry` |
 | — | skew, quaternion exponential, angle wrap | `math.rs` | `skew`, `exp_quat`, `wrap_pi` |
 
 ## Deferred
