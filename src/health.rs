@@ -1,4 +1,4 @@
-//! Gate outcomes, per-source health, and the aggregate status.
+//! Propagation and gate outcomes, per-source health, and the aggregate status.
 //!
 //! See [gate lockout](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#gate-lockout)
 //! for why the filter reports rather than recovers.
@@ -55,6 +55,38 @@ impl Fusion {
             Self::Accepted { test_ratio } | Self::Rejected { test_ratio } => Some(test_ratio),
             Self::NotInitialized => None,
         }
+    }
+}
+
+/// The outcome of one propagation step.
+///
+/// Returned by [`Eskf::predict`](crate::Eskf::predict), which refuses a step longer than
+/// [`Config::max_predict_dt`](crate::Config::max_predict_dt) rather than attempting it.
+#[must_use = "a refused propagation leaves the state stale unless the outcome is inspected"]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Propagation {
+    /// The state and covariance advanced over the full `dt`.
+    Propagated,
+    /// `dt` exceeded [`Config::max_predict_dt`](crate::Config::max_predict_dt). The state
+    /// and covariance are unchanged.
+    ///
+    /// The per-source timers still advanced: the time really did pass, so the aiding
+    /// really is that much staler, and [`Status`] must not claim otherwise.
+    StepTooLong {
+        /// The `dt` offered.
+        dt: Seconds,
+        /// The configured limit.
+        limit: Seconds,
+    },
+    /// [`Eskf::initialize`](crate::Eskf::initialize) has not been called. Nothing was
+    /// propagated and no timer advanced.
+    NotInitialized,
+}
+
+impl Propagation {
+    /// Whether the state advanced.
+    pub const fn is_propagated(self) -> bool {
+        matches!(self, Self::Propagated)
     }
 }
 

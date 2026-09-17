@@ -21,7 +21,7 @@
 //! // 800 samples at 400 Hz is the 2 s of stillness `Initialization::min_duration` wants.
 //! filter.initialize(&[StaticSample::default(); 800], dt)?;
 //!
-//! filter.predict(ImuSample::default(), dt);
+//! assert!(filter.predict(ImuSample::default(), dt).is_propagated());
 //!
 //! let outcome = filter.fuse_gnss_position(
 //!     Position::<Ned>::from_meters(12.0, -3.0, -40.0),
@@ -50,7 +50,7 @@ mod units;
 pub use config::{Config, GRAVITY, Gates, ImuNoise, Initialization, Timeouts};
 pub use eskf::{Eskf, ImuSample, InitError, StaticSample};
 pub use frames::{Body, Enu, Frame, Ned};
-pub use health::{Diagnostics, Fusion, SourceHealth, Status};
+pub use health::{Diagnostics, Fusion, Propagation, SourceHealth, Status};
 pub use state::{Covariance, CovarianceMatrix, ErrorState, STATES, State};
 pub use units::{
     Acceleration, Altitude, AltitudeVariance, AngularRate, Attitude, HeadingVariance, MagField,
@@ -65,7 +65,7 @@ pub use units::{
 /// let mut filter = Eskf::new(Config::default());
 /// let dt = Seconds::from_secs(0.0025);
 /// filter.initialize(&[StaticSample::default(); 800], dt)?;
-/// filter.predict(ImuSample::default(), dt);
+/// let _ = filter.predict(ImuSample::default(), dt);
 ///
 /// let outcome = filter.fuse_baro_altitude(
 ///     Altitude::from_meters(60.0),
@@ -81,7 +81,7 @@ pub mod prelude {
     pub use crate::config::{Config, GRAVITY, Gates, ImuNoise, Initialization, Timeouts};
     pub use crate::eskf::{Eskf, ImuSample, InitError, StaticSample};
     pub use crate::frames::{Body, Enu, Ned};
-    pub use crate::health::{Diagnostics, Fusion, SourceHealth, Status};
+    pub use crate::health::{Diagnostics, Fusion, Propagation, SourceHealth, Status};
     pub use crate::state::{Covariance, ErrorState, State};
     pub use crate::units::{
         Acceleration, Altitude, AltitudeVariance, AngularRate, Attitude, HeadingVariance, MagField,

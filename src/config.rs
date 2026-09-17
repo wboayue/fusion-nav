@@ -156,7 +156,7 @@ impl Default for Initialization {
 ///     ..Config::default()
 /// };
 /// ```
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Config {
     /// IMU noise densities.
     pub imu: ImuNoise,
@@ -166,7 +166,35 @@ pub struct Config {
     pub timeouts: Timeouts,
     /// Static initialization.
     pub init: Initialization,
+    /// Largest `dt` [`Eskf::predict`](crate::Eskf::predict) will propagate over.
+    ///
+    /// Beyond this the step is refused and the state left alone, because the
+    /// discretization of equations (9)-(22) is a first-order approximation over a short
+    /// interval and one IMU sample cannot describe a long one. The filter reports and
+    /// stops there, as it does for a locked-out gate: whether to reset, coast, or abort
+    /// is the application's call.
+    ///
+    /// Gaps come from logging dropouts, a scheduler overrun, or a sensor that genuinely
+    /// stopped, and the filter cannot tell which. The default passes normal operation on
+    /// every log in `data/manifest.txt` — whose worst ordinary interval is 65 ms across
+    /// rates from 50 Hz to 400 Hz — while catching real SD-card dropouts of 0.34 s and up.
+    pub max_predict_dt: Seconds,
     /// Magnetic declination at the operating site, added to magnetic heading to give
     /// true heading. Equation (6).
     pub magnetic_declination: Radians,
+}
+
+impl Default for Config {
+    // Written out rather than derived: `Seconds::default()` is zero, which would make
+    // `max_predict_dt` refuse every step.
+    fn default() -> Self {
+        Self {
+            imu: ImuNoise::default(),
+            gates: Gates::default(),
+            timeouts: Timeouts::default(),
+            init: Initialization::default(),
+            max_predict_dt: Seconds::from_secs(0.1),
+            magnetic_declination: Radians::ZERO,
+        }
+    }
 }

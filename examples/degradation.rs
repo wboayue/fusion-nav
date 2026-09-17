@@ -127,7 +127,7 @@ fn run(filter: &mut Eskf, ticks: u32, sources: Sources) {
     let dt = Seconds::from_secs(1.0 / IMU_HZ as f32);
 
     for tick in 0..ticks {
-        filter.predict(imu_sample(), dt);
+        assert!(filter.predict(imu_sample(), dt).is_propagated());
 
         if sources.gnss && tick % (IMU_HZ / GNSS_HZ) == 0 {
             let fix = Position::<Ned>::from_meters(120.0, -43.0, -60.0);

@@ -2,7 +2,7 @@
 
 use crate::config::Config;
 use crate::frames::{Body, Ned};
-use crate::health::{Diagnostics, Fusion, Status};
+use crate::health::{Diagnostics, Fusion, Propagation, Status};
 use crate::state::{Covariance, State};
 use crate::units::{
     Acceleration, Altitude, AltitudeVariance, AngularRate, HeadingVariance, MagField, Position,
@@ -152,13 +152,26 @@ impl Eskf {
     ///
     /// The hot path, called at IMU rate. `dt` is explicit; the filter never reads a clock.
     ///
+    /// A `dt` longer than [`Config::max_predict_dt`](crate::Config::max_predict_dt) is
+    /// refused: one IMU sample cannot describe a long interval, and propagating it anyway
+    /// would put a number in the state that looks like an estimate and is not. The timers
+    /// still advance, so [`Status`] degrades on schedule.
+    ///
     /// **Stub.** Advances the fusion timers and propagates nothing.
-    pub fn predict(&mut self, imu: ImuSample, dt: Seconds) {
+    pub fn predict(&mut self, imu: ImuSample, dt: Seconds) -> Propagation {
         let _ = imu;
         if !self.initialized {
-            return;
+            return Propagation::NotInitialized;
         }
+        // Time passed either way, so the health bookkeeping is real even when the
+        // propagation is refused.
         self.diagnostics.advance(dt);
+
+        let limit = self.config.max_predict_dt;
+        if dt.as_secs() > limit.as_secs() {
+            return Propagation::StepTooLong { dt, limit };
+        }
+        Propagation::Propagated
     }
 
     /// Fuse a GNSS position fix. Equation (28).

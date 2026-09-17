@@ -325,7 +325,13 @@ let mut filter = Eskf::new(Config::default());
 filter.initialize(&static_window, dt)?;  // dt sizes the window in seconds
 
 // High-rate propagation. `dt` is explicit; the filter never reads a clock.
-filter.predict(ImuSample { gyro, accel }, Seconds::from_secs(0.0025));
+// A dt longer than Config::max_predict_dt is refused rather than attempted;
+// the outcome is #[must_use], so a stale state cannot go unnoticed.
+match filter.predict(ImuSample { gyro, accel }, dt) {
+    Propagation::Propagated => { /* state advanced over the full dt */ }
+    Propagation::StepTooLong { dt, limit } => { /* gap; state unchanged, timers advanced */ }
+    Propagation::NotInitialized => { /* no state to propagate */ }
+}
 
 // Measurement updates. Each returns the gate outcome, carrying the test ratio
 // so a rejection is diagnosable rather than a bare failure. `#[must_use]`, so
