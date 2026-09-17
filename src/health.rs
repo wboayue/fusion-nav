@@ -41,6 +41,13 @@ pub enum Fusion {
     /// [`Eskf::initialize`](crate::Eskf::initialize) has not been called, so there is no
     /// state to fuse against. The measurement was discarded.
     NotInitialized,
+    /// Barometer only: no reference altitude was established, because the static window
+    /// carried no barometer sample. The measurement was discarded.
+    ///
+    /// `α₀` of equation (30) is a constant fixed at initialization, not a state, so a
+    /// barometric altitude without one has no origin to be relative to. Fusing it anyway
+    /// would silently invent the origin from whichever sample happened to arrive first.
+    NoReference,
 }
 
 impl Fusion {
@@ -53,7 +60,7 @@ impl Fusion {
     pub const fn test_ratio(self) -> Option<f32> {
         match self {
             Self::Accepted { test_ratio } | Self::Rejected { test_ratio } => Some(test_ratio),
-            Self::NotInitialized => None,
+            Self::NotInitialized | Self::NoReference => None,
         }
     }
 }

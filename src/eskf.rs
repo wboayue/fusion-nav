@@ -23,12 +23,26 @@ pub struct ImuSample {
 /// The magnetometer is optional: without it, heading is unobserved and is initialized to
 /// zero with [`Initialization::sigma_yaw`](crate::Initialization::sigma_yaw) inflated,
 /// leaving the first accepted magnetic heading to correct it.
+///
+/// The barometer is optional in the same way, but less forgivingly: its reference is a
+/// constant rather than a state, so a window carrying none leaves nothing for a later
+/// altitude to be relative to and barometric fusion is refused for the whole flight.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct StaticSample {
     /// IMU measurement.
     pub imu: ImuSample,
     /// Magnetometer measurement, if the vehicle has one.
     pub mag: Option<MagField<Body>>,
+    /// Barometric altitude, if the vehicle has a barometer.
+    ///
+    /// Averaged over the window to fix `α₀`, the barometer's reference at the navigation
+    /// origin (equation (30)). Averaged rather than taken from one sample for the same
+    /// reason the gyroscope bias is: a single reading carries the sensor's full noise.
+    ///
+    /// Without it there is no reference and [`Eskf::fuse_baro_altitude`] refuses with
+    /// [`Fusion::NoReference`](crate::Fusion::NoReference). `α₀` is a constant rather
+    /// than a state, so it is established here or not at all.
+    pub baro: Option<Altitude>,
 }
 
 /// Why [`Eskf::initialize`] refused.
@@ -79,6 +93,7 @@ pub struct Eskf {
     state: State,
     covariance: Covariance,
     diagnostics: Diagnostics,
+    baro_reference: Option<Altitude>,
     initialized: bool,
 }
 
@@ -91,6 +106,7 @@ impl Eskf {
             state: State::default(),
             covariance: Covariance::zero(),
             diagnostics: Diagnostics::default(),
+            baro_reference: None,
             initialized: false,
         }
     }
@@ -105,8 +121,8 @@ impl Eskf {
         self.initialized
     }
 
-    /// Initialize attitude, gyroscope bias, and covariance from a window of stationary
-    /// samples. Equations (5)–(8).
+    /// Initialize attitude, gyroscope bias, covariance, and the barometric reference
+    /// from a window of stationary samples. Equations (5)–(8), and `α₀` of (30).
     ///
     /// Position and velocity are zero, and the navigation origin is wherever the vehicle
     /// was during the window.
@@ -115,8 +131,8 @@ impl Eskf {
     /// configured [`min_duration`](crate::Initialization::min_duration) can be checked
     /// against a real span of time. As everywhere else, the filter never reads a clock.
     ///
-    /// **Stub.** Validates the window length and sets the filter initialized; computes no
-    /// attitude.
+    /// **Stub.** Validates the window length, derives the barometric reference, and sets
+    /// the filter initialized; computes no attitude.
     pub fn initialize(&mut self, window: &[StaticSample], dt: Seconds) -> Result<(), InitError> {
         let required = self.config.init.min_duration;
         let provided = Seconds::from_secs(window.len() as f32 * dt.as_secs());
@@ -144,6 +160,7 @@ impl Eskf {
         ]);
         self.state = State::default();
         self.diagnostics = Diagnostics::default();
+        self.baro_reference = baro_reference(window);
         self.initialized = true;
         Ok(())
     }
@@ -210,9 +227,19 @@ impl Eskf {
 
     /// Fuse a barometric altitude. Equation (30).
     ///
+    /// The measurement is `z = -(α - α₀)`, so it needs the reference
+    /// [`initialize`](Self::initialize) derived from the static window. Without one the
+    /// measurement is refused rather than referred to an invented origin.
+    ///
     /// **Stub.** Records an acceptance with a zero test ratio; corrects nothing.
     pub fn fuse_baro_altitude(&mut self, altitude: Altitude, variance: AltitudeVariance) -> Fusion {
         let _ = (altitude, variance);
+        if !self.initialized {
+            return Fusion::NotInitialized;
+        }
+        if self.baro_reference.is_none() {
+            return Fusion::NoReference;
+        }
         self.stub_fuse(|d| &mut d.baro_altitude)
     }
 
@@ -251,6 +278,16 @@ impl Eskf {
     /// The 15 x 15 error covariance, in the error-state ordering.
     pub const fn covariance(&self) -> &Covariance {
         &self.covariance
+    }
+
+    /// The barometric reference `α₀` fixed at initialization, or `None` if the static
+    /// window carried no barometer sample. Equation (30).
+    ///
+    /// Exposed because it is the one initialization output an application may need to
+    /// keep: it is what the filter's zero altitude means, and re-establishing it on the
+    /// ground is the documented remedy for reference drift.
+    pub const fn baro_reference(&self) -> Option<Altitude> {
+        self.baro_reference
     }
 
     /// Force position to an external fix and reset its covariance block.
@@ -321,6 +358,23 @@ impl Eskf {
     }
 }
 
+/// Mean barometric altitude over the samples that carry one. `None` if none do.
+///
+/// Accumulated in `f64`: a window is up to a few thousand samples and an altitude is
+/// metres above mean sea level, so an `f32` running sum of 800 readings near 1000 m has
+/// already lost more precision than the reference is worth.
+fn baro_reference(window: &[StaticSample]) -> Option<Altitude> {
+    let mut sum = 0.0f64;
+    let mut count = 0u32;
+    for sample in window {
+        if let Some(altitude) = sample.baro {
+            sum += f64::from(altitude.as_meters());
+            count += 1;
+        }
+    }
+    (count > 0).then(|| Altitude::from_meters((sum / f64::from(count)) as f32))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,6 +382,7 @@ mod tests {
     const DT: Seconds = Seconds::from_secs(0.01);
 
     /// A window of exactly `Initialization::min_duration`: 8 samples at 4 Hz is 2 s.
+    /// No barometer, so no reference is established.
     fn initialized() -> Eskf {
         let mut filter = Eskf::new(Config::default());
         filter
@@ -336,12 +391,24 @@ mod tests {
         filter
     }
 
-    /// Timers only run for a source that has been accepted, so fuse one first.
+    /// The same window with a barometer reading on every sample.
+    fn window_with_baro(altitudes: [f32; 8]) -> [StaticSample; 8] {
+        altitudes.map(|altitude| StaticSample {
+            baro: Some(Altitude::from_meters(altitude)),
+            ..StaticSample::default()
+        })
+    }
+
+    /// Timers only run for a source that has been accepted, so fuse one first. Baro
+    /// fusion needs a reference, so the window carries one.
     fn aided() -> Eskf {
-        let mut filter = initialized();
+        let mut filter = Eskf::new(Config::default());
+        filter
+            .initialize(&window_with_baro([100.0; 8]), Seconds::from_secs(0.25))
+            .expect("a 2 s window satisfies the default min_duration");
         assert!(
             filter
-                .fuse_baro_altitude(Altitude::from_meters(0.0), AltitudeVariance::from_m2(4.0))
+                .fuse_baro_altitude(Altitude::from_meters(100.0), AltitudeVariance::from_m2(4.0))
                 .is_accepted()
         );
         filter
@@ -405,6 +472,62 @@ mod tests {
             1.304,
             "a refused step still happened in real time"
         );
+    }
+
+    #[test]
+    fn the_baro_reference_is_the_mean_over_the_window() {
+        let mut filter = Eskf::new(Config::default());
+        let window = window_with_baro([99.0, 101.0, 100.0, 100.0, 99.5, 100.5, 100.0, 100.0]);
+        filter
+            .initialize(&window, Seconds::from_secs(0.25))
+            .expect("a 2 s window");
+        let reference = filter
+            .baro_reference()
+            .expect("the window carried barometer samples");
+        assert!(
+            (reference.as_meters() - 100.0).abs() < 1e-4,
+            "mean of the window is 100 m, got {}",
+            reference.as_meters()
+        );
+    }
+
+    #[test]
+    fn samples_without_a_barometer_stay_out_of_the_mean() {
+        let mut filter = Eskf::new(Config::default());
+        // A barometer runs slower than the IMU, so most samples in a real window carry
+        // nothing. Counting those as zero would drag the reference to the ground.
+        let mut window = [StaticSample::default(); 8];
+        window[0].baro = Some(Altitude::from_meters(10.0));
+        window[7].baro = Some(Altitude::from_meters(20.0));
+        filter
+            .initialize(&window, Seconds::from_secs(0.25))
+            .expect("a 2 s window");
+        assert_eq!(filter.baro_reference(), Some(Altitude::from_meters(15.0)));
+    }
+
+    #[test]
+    fn without_a_barometer_in_the_window_fusion_is_refused_not_referred_to_nothing() {
+        let mut filter = initialized();
+        assert_eq!(filter.baro_reference(), None);
+        assert_eq!(
+            filter.fuse_baro_altitude(Altitude::from_meters(60.0), AltitudeVariance::from_m2(4.0)),
+            Fusion::NoReference
+        );
+        assert_eq!(
+            filter.diagnostics().baro_altitude.time_since_accepted,
+            None,
+            "a refused measurement is not aiding"
+        );
+    }
+
+    #[test]
+    fn reinitializing_replaces_the_reference() {
+        let mut filter = aided();
+        assert_eq!(filter.baro_reference(), Some(Altitude::from_meters(100.0)));
+        filter
+            .initialize(&window_with_baro([250.0; 8]), Seconds::from_secs(0.25))
+            .expect("a 2 s window");
+        assert_eq!(filter.baro_reference(), Some(Altitude::from_meters(250.0)));
     }
 
     #[test]

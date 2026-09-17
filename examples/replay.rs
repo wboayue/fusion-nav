@@ -144,6 +144,10 @@ struct Replay {
     /// carry mag during the window gets an observed initial heading. The bundled log does
     /// not, which is the point: yaw starts unobserved and `sigma_yaw` stays inflated.
     last_mag: Option<MagField<Body>>,
+    /// Most recent barometer reading, attached to static samples the same way. This is
+    /// what fixes the reference the filter's altitudes are relative to, and a log whose
+    /// barometer starts after initialization leaves it unset for the whole replay.
+    last_baro: Option<Altitude>,
     /// Timestamp of the previous IMU row, so `dt` comes from the log rather than from an
     /// assumed rate.
     previous_imu: Option<f64>,
@@ -175,6 +179,7 @@ impl Replay {
             probed: 0,
             window_samples: 0,
             last_mag: None,
+            last_baro: None,
             previous_imu: None,
             ratios: [None; 4],
             initialized_at: None,
@@ -229,10 +234,11 @@ impl Replay {
                 self.observe(1, outcome);
             }
             "baro" => {
-                let outcome = self.filter.fuse_baro_altitude(
-                    Altitude::from_meters(r.value(0)?),
-                    AltitudeVariance::from_m2(r.variance(0)?),
-                );
+                let altitude = Altitude::from_meters(r.value(0)?);
+                self.last_baro = Some(altitude);
+                let outcome = self
+                    .filter
+                    .fuse_baro_altitude(altitude, AltitudeVariance::from_m2(r.variance(0)?));
                 self.observe(2, outcome);
             }
             "mag" => {
@@ -271,6 +277,7 @@ impl Replay {
         let sample = StaticSample {
             imu,
             mag: self.last_mag,
+            baro: self.last_baro,
         };
         if self.filled == WINDOW {
             self.window.copy_within(1.., 0);
@@ -401,10 +408,17 @@ impl Replay {
                 } else {
                     "no magnetometer in the window, heading unobserved"
                 };
+                let reference = match self.filter.baro_reference() {
+                    Some(reference) => format!(
+                        "barometric reference {:.2} m, altitudes are relative to it",
+                        reference.as_meters()
+                    ),
+                    None => "no barometer in the window, altitude fusion refused".to_string(),
+                };
                 let interval = self.interval.unwrap_or(f64::NAN);
                 println!(
                     "\ninitialized at {t:.2} s from {:.2} s of stillness \
-                     ({} samples at {:.0} Hz)\n  {heading}",
+                     ({} samples at {:.0} Hz)\n  {heading}\n  {reference}",
                     self.window_samples as f64 * interval,
                     self.window_samples,
                     1.0 / interval,

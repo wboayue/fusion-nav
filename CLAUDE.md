@@ -87,6 +87,31 @@ Single crate, `no_std`, `forbid(unsafe_code)`, `deny(missing_docs)`, allocation-
 - Frames and units are fixed at the boundary: NED navigation frame, FRD body, Hamilton
   quaternion scalar-first, down-positive gravity. Not configurable.
 
+### Three kinds of noise number, easily confused
+
+- **`R`, measurement noise** — a per-call argument to every `fuse_*`, never stored in `Config`,
+  because the accuracy of a fix is a property of that fix. GNSS supplies its own (`eph`/`epv`,
+  `s_variance_m_s`, squared into variances by `tools/ulog2replay.py`). PX4 logs no barometer or
+  magnetic-heading variance, so the converter substitutes constants and says so; the honest
+  source for those is bench characterization of the residual after calibration, which is a
+  different activity from calibration itself (this crate does no calibration — that is the
+  application's job).
+- **`Q`, process noise** — `Config::imu` (`ImuNoise`), continuous-time densities.
+- **`P0`, initial state uncertainty** — `Initialization::sigma_*`. A prior on the *state*, not on
+  any measurement; `sigma_yaw` >> `sigma_tilt` because gravity pins tilt and yaw inherits the
+  magnetometer's error.
+
+The static window also fixes `α₀`, the barometric reference (`StaticSample::baro` →
+`Eskf::baro_reference`, equation (30)). It is neither of the three above: a constant, not noise
+and not a state, and the only initialization output an application may need to keep. A window
+with no barometer sample leaves it unset and `fuse_baro_altitude` returns `Fusion::NoReference`
+rather than referring altitudes to an invented origin — the LPE log in the corpus
+(`7592c9b2…`) yields no barometer rows at all and covers that path.
+
+Still open, not decided: the same window could *measure* the barometer and IMU noise and hand
+back a starting `R`/`Q` instead of making the caller guess. That would be another output of
+`initialize`. If it becomes a real proposal it belongs in GOALS.md under "Open design questions".
+
 ### Documentation is the specification
 
 `EQUATIONS.md` holds numbered equations (1)–(42) and an equation-to-code mapping table naming

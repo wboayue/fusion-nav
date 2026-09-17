@@ -131,6 +131,11 @@ Roll and pitch come from the averaged accelerometer, heading from the magnetomet
 that roll and pitch, and gyroscope bias from the averaged gyroscope, which is observable at rest.
 Accelerometer bias is not separable from attitude error at rest and starts at zero.
 
+The window also fixes the barometric reference `α₀` — the altitude the barometer read at the
+navigation origin — averaged over whatever barometer samples it carries. That reference is a
+constant rather than a state, so a window carrying none leaves later altitudes with no origin to
+be relative to and `fuse_baro_altitude` refuses them for the whole flight.
+
 This is an operational requirement, not an implementation detail: the application must hold the
 vehicle still and must validate that it was still, because initialization quality dominates
 early-flight performance.

@@ -562,6 +562,7 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | --------- | ------- | ------ | -------- |
 | (1)–(4) | state definitions | `state.rs` | `NominalState`, `ErrorState` |
 | (5)–(8) | static initialization | `init.rs` | `level_from_accel`, `heading_from_mag`, `initial_covariance` |
+| (30) `α₀` | barometric reference | `init.rs` | `baro_reference` |
 | (9)–(11) | bias correction, gravity | `propagate.rs` | `corrected_imu` |
 | (12)–(15) | nominal propagation | `propagate.rs` | `propagate_nominal` |
 | (16)–(19) | error dynamics | `propagate.rs` | `error_dynamics` |

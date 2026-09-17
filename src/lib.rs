@@ -21,6 +21,9 @@
 //! // 800 samples at 400 Hz is the 2 s of stillness `Initialization::min_duration` wants.
 //! filter.initialize(&[StaticSample::default(); 800], dt)?;
 //!
+//! // Nothing in that window carried a barometer, so there is no reference altitude and
+//! // `fuse_baro_altitude` would refuse. See `StaticSample::baro`.
+//!
 //! assert!(filter.predict(ImuSample::default(), dt).is_propagated());
 //!
 //! let outcome = filter.fuse_gnss_position(
@@ -64,7 +67,14 @@ pub use units::{
 ///
 /// let mut filter = Eskf::new(Config::default());
 /// let dt = Seconds::from_secs(0.0025);
-/// filter.initialize(&[StaticSample::default(); 800], dt)?;
+///
+/// // The barometer in the window is what fixes the reference the fusion below is
+/// // relative to. Without it that call refuses with `Fusion::NoReference`.
+/// let still = StaticSample {
+///     baro: Some(Altitude::from_meters(112.0)),
+///     ..StaticSample::default()
+/// };
+/// filter.initialize(&[still; 800], dt)?;
 /// let _ = filter.predict(ImuSample::default(), dt);
 ///
 /// let outcome = filter.fuse_baro_altitude(

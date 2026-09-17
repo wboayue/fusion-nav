@@ -203,5 +203,9 @@ fn stationary_sample() -> StaticSample {
             accel: Acceleration::from_m_per_s2(0.0, 0.0, -GRAVITY),
         },
         mag: Some(MagField::from_components(0.22, 0.0, 0.44)),
+        // Ground level at the launch point. This is what fixes the barometer's
+        // reference, so the 60 m fused later reads as 8 m above the origin rather than
+        // as an absolute altitude. Without it `fuse_baro_altitude` refuses.
+        baro: Some(Altitude::from_meters(52.0)),
     }
 }
