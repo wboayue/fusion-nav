@@ -454,7 +454,10 @@ Known and deliberate, stated here rather than discovered in flight.
   horizon and an output complementary filter; `fusion-nav` does not, and the resulting error grows
   with vehicle speed. This is the one open design question — see
   [measurement latency](GOALS.md#measurement-latency).
-* **No barometer bias state.** Drift in the barometric reference becomes vertical position error.
+* **No barometer bias state.** The reference is fixed at initialization and drift in it becomes
+  vertical position error. PX4 and ArduPilot both track that drift instead; see
+  [barometric reference as a constant](GOALS.md#barometric-reference-as-a-constant) for why this
+  filter does not.
 * **No magnetic-field states.** Hard- and soft-iron calibration is the application's job.
 * **Initialization requires a genuine static interval**, and the application must verify it.
 * **Local tangent plane.** Position is Cartesian NED about a fixed origin, so accuracy degrades

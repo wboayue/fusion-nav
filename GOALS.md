@@ -146,6 +146,51 @@ comparing rejection behaviour against EKF2 is a like-for-like check.
 
 Trust in an estimator comes from reproducible numbers, not from documentation.
 
+### 7. Configuration derived, not demanded
+
+Do not ask the user for a value the system could measure. Ask only for what cannot be learned:
+physical facts about their vehicle, and policy.
+
+PX4 and ArduPilot each expose dozens of estimator parameters, and a large share of them describe
+the hardware rather than the mission — sensor noise, bias stability, measurement noise per
+source. Those are measurable quantities, and asking an integrator to hand-tune them transfers
+work the machine can do onto the one person least equipped to do it. The result in practice is
+that almost nobody tunes them: the defaults fly, which is a tacit admission that the numbers
+could have been derived.
+
+**The boundary matters more than the principle.** Derived is not adaptive. A value is measured at
+a defined moment, reported to the caller, and overridable — never silently retuned in flight.
+Runtime self-tuning would contradict differentiator 1, because a filter that changes its own
+covariance growth has no worst-case timing or behaviour to publish, and it would contradict
+[rejection handling](#rejection-handling-report-do-not-self-recover), where the filter reports and
+the application decides. Two channels, then: what the static window can honestly measure, handed
+back by `initialize`; and everything else derived offline from a replay log by a tool that prints
+a `Config` the user reads and commits.
+
+| value | derived from | where |
+| ----- | ------------ | ----- |
+| `α₀`, barometric reference | mean of the window's barometer samples | `initialize` — **done** |
+| accelerometer and gyroscope white noise | sample variance over the static window | `initialize` — candidate |
+| barometer measurement noise | sample variance over the static window | `initialize` — candidate |
+| `max_predict_dt` | observed IMU interval | offline |
+| gate thresholds | chi-square quantile for a chosen percentile and dimension | a constructor, not a number |
+| `Timeouts` | observed per-source update intervals | offline recommendation only |
+| GNSS `R` | the receiver, floored | per measurement — **done** |
+| magnetic declination | a magnetic model, given the GNSS origin and date | optional, for its flash cost |
+
+And what stays with the user, because no amount of data yields it:
+
+* **Accelerometer bias**, which is not separable from tilt at rest and becomes observable only
+  under motion with aiding.
+* **Bias random walk**, which needs an Allan variance soak measured in hours — an offline tool,
+  never a two-second window.
+* **Magnetometer calibration**, a precondition this filter states rather than solves.
+* **Policy**: what a `DeadReckoning` status should do to the vehicle.
+* **The static window itself.** The filter can validate stillness; it cannot arrange it.
+
+Status: one value derived today, `α₀`. This is a commitment, not a present fact, and it is the
+differentiator most likely to be judged on whether the offline tool actually gets written.
+
 ## Open design questions
 
 One gap in the current design still needs a decision before implementation.
@@ -180,6 +225,33 @@ Three-axis fusion remains documented for completeness, labelled as the liability
 The cost is that hard- and soft-iron calibration is the application's responsibility, and a badly
 calibrated magnetometer produces a heading bias the filter cannot detect. That is a documented
 precondition, not a silent failure.
+
+### Barometric reference as a constant
+
+The barometer measures altitude above its own reference, and that reference drifts — with
+weather, with ground effect, with sensor warm-up. Both production estimators treat it as
+something to track rather than something to fix. PX4 runs a dedicated bias estimator per height
+source, a one-state filter fusing `measurement - altitude` with variance
+`measurement_var + P(z,z)`, seeded from a low-passed barometer reading and reset whenever height
+resets. ArduPilot slews a `baroHgtOffset` toward `baro + z` with a 0.1 gain clamped to ±5 m, and
+separately corrects its origin height with a filter that models baro drift rate explicitly.
+
+**Decided:** `fusion-nav` carries a constant. `α₀` is averaged over the quasi-static
+initialization window and fixed there — `StaticSample::baro` in, `Eskf::baro_reference` out,
+equation (30). Estimating the drift needs either a 16th state, which contradicts the bounded
+15-state positioning, or a tracker living outside the covariance, which is a second estimator to
+tune and explain for a quantity most short flights never see move.
+
+The cost is that reference drift becomes vertical position error directly, and the filter cannot
+tell a drifting reference from a genuine climb. The remedies available to an application are to
+re-establish `α₀` on the ground, to lean on GNSS height for the low-frequency component, or to
+accept the error over a flight short enough that it stays small.
+
+This is the decision most likely to be revisited. Two independent production implementations
+concluded a constant was not enough, which is evidence, and if validation shows vertical drift
+dominating the error budget on long flights, ArduPilot's offset tracker is the cheaper of the two
+answers: it leaves the 15 states alone. See
+[barometric altitude](EQUATIONS.md#barometric-altitude).
 
 ### Rejection handling: report, do not self-recover
 

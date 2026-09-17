@@ -108,9 +108,13 @@ with no barometer sample leaves it unset and `fuse_baro_altitude` returns `Fusio
 rather than referring altitudes to an invented origin — the LPE log in the corpus
 (`7592c9b2…`) yields no barometer rows at all and covers that path.
 
-Still open, not decided: the same window could *measure* the barometer and IMU noise and hand
-back a starting `R`/`Q` instead of making the caller guess. That would be another output of
-`initialize`. If it becomes a real proposal it belongs in GOALS.md under "Open design questions".
+Still open: the same window could *measure* the barometer and IMU noise and hand back a starting
+`R`/`Q` instead of making the caller guess, as another output of `initialize`. That sits under
+GOALS.md differentiator 7, "Configuration derived, not demanded" — do not ask for a value the
+system could measure. Note its boundary before acting on it: derived at a defined moment and
+reported, never silently retuned in flight, which would cost the determinism claim and
+contradict report-do-not-self-recover. Anything the static window cannot honestly measure goes
+to an offline tool that prints a `Config`, not into the filter.
 
 ### Documentation is the specification
 
