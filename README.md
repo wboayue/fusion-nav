@@ -295,7 +295,9 @@ Applications provide measurements together with their associated uncertainty.
 ### API
 
 The signatures below compile today; the mathematics behind them does not exist yet.
-`examples/shape.rs` is this walk-through as a runnable program — `cargo run --example shape`.
+Two runnable programs exercise them: `cargo run --example basic` is the integration loop
+on its own, and `cargo run --example degradation` covers dropouts, per-source diagnostics,
+and an application-driven reset.
 
 ```rust
 use fusion_nav::prelude::*;

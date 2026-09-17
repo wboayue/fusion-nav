@@ -1,11 +1,12 @@
-//! Walks the intended API end to end, at the call sites of README.md.
+//! What happens when sources stop arriving: status transitions, per-source diagnostics,
+//! and an application-driven recovery.
 //!
-//! Nothing here estimates anything: `predict` propagates nothing and every `fuse_*`
-//! accepts unconditionally. What it does exercise is the shape — which types a caller has
-//! to build, how verbose the units are at the boundary, and how the status behaves when a
-//! source stops arriving.
+//! Nothing here estimates anything — `predict` propagates nothing and every `fuse_*`
+//! accepts unconditionally, so no measurement is ever actually gated out. What is real is
+//! the health bookkeeping: the timers, the aggregate [`Status`], and the fact that
+//! recovery is the application's decision rather than the filter's.
 //!
-//! Run with `cargo run --example shape`.
+//! Run with `cargo run --example degradation`. For the loop itself, see `basic.rs`.
 
 use fusion_nav::prelude::*;
 
@@ -15,7 +16,7 @@ const BARO_HZ: u32 = 20;
 const MAG_HZ: u32 = 50;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("fusion-nav API sketch — no filtering is performed\n");
+    println!("fusion-nav degradation example — no filtering is performed\n");
 
     let config = Config {
         magnetic_declination: Radians::from_radians(-0.06),
