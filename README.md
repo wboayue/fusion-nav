@@ -347,6 +347,10 @@ match filter.predict(ImuSample { gyro, accel }, dt) {
 // Measurement updates. Each returns the gate outcome, carrying the test ratio
 // so a rejection is diagnosable rather than a bare failure. `#[must_use]`, so
 // discarding it is a warning.
+//
+// The variance is the measurement's, not the filter's, so it is an argument rather
+// than configuration. Where it comes from the GNSS receiver, floor it: PX4 and
+// ArduPilot both clamp eph/epv/sacc from 0.5 m rather than fusing them raw.
 let outcome = filter.fuse_gnss_position(position, PositionVariance::isotropic(1.5));
 filter.fuse_gnss_velocity(velocity, VelocityVariance::isotropic(0.09));
 filter.fuse_baro_altitude(Altitude::from_meters(60.0), AltitudeVariance::from_m2(4.0));

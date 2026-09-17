@@ -1,8 +1,9 @@
 //! Filter tuning.
 //!
 //! Every default here is a **placeholder** chosen to make the shape of the API concrete,
-//! and none has been validated against flight data — with one exception:
-//! [`Timeouts::degraded_after`] was corrected after replaying a PX4 log.
+//! and none has been validated against flight data — with two exceptions:
+//! [`Timeouts::degraded_after`], corrected after replaying a PX4 log, and [`ImuNoise`],
+//! re-baselined against the defaults PX4 and ArduPilot ship.
 
 use crate::units::{Radians, Seconds};
 
@@ -23,12 +24,26 @@ pub struct ImuNoise {
 }
 
 impl Default for ImuNoise {
+    /// PX4 EKF2's defaults, which ArduPilot's EK3 independently agrees with to within a
+    /// factor of two on every term.
+    ///
+    /// These are deliberately far above what an IMU datasheet or an Allan variance plot
+    /// gives for the sensor alone, because the process noise of a real airframe absorbs
+    /// what the model leaves out: vibration, scale-factor and cross-axis error, timing
+    /// jitter, and the coning and sculling a first-order propagation does not capture.
+    ///
+    /// The previous defaults here were datasheet-grade — 10 to 15 times tighter on every
+    /// term — which would make the covariance claim a precision the estimate does not
+    /// have, and an overconfident covariance gates out measurements that were fine.
+    /// Two independent production estimators agreeing is not the same evidence as a
+    /// replay of our own, so these remain subject to the validation in `GOALS.md`, but
+    /// they are the right order of magnitude to start from.
     fn default() -> Self {
         Self {
-            gyro_white: 1.0e-3,
-            accel_white: 3.0e-2,
-            gyro_bias_walk: 1.0e-4,
-            accel_bias_walk: 1.0e-3,
+            gyro_white: 1.5e-2,
+            accel_white: 3.5e-1,
+            gyro_bias_walk: 1.0e-3,
+            accel_bias_walk: 1.0e-2,
         }
     }
 }

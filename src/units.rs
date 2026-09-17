@@ -248,6 +248,9 @@ framed!(
 
 framed!(
     /// Per-axis variance of a position measurement, on the axes of `F`.
+    ///
+    /// A GNSS receiver's reported accuracy needs a floor before it becomes this; see
+    /// [`Eskf::fuse_gnss_position`](crate::Eskf::fuse_gnss_position).
     PositionVariance,
     unit = "meters squared",
     new = from_m2,
@@ -256,6 +259,9 @@ framed!(
 
 framed!(
     /// Per-axis variance of a velocity measurement, on the axes of `F`.
+    ///
+    /// Floored the same way as [`PositionVariance`]; see
+    /// [`Eskf::fuse_gnss_velocity`](crate::Eskf::fuse_gnss_velocity).
     VelocityVariance,
     unit = "meters squared per second squared",
     new = from_m2_per_s2,

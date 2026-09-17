@@ -203,6 +203,19 @@ impl Eskf {
 
     /// Fuse a GNSS position fix. Equation (28).
     ///
+    /// `variance` is the receiver's own accuracy where it reports one — `eph²`
+    /// horizontally, `epv²` vertically — but **floor it first**. An accuracy estimate is
+    /// the receiver's view of its own geometry and residuals, and under multipath it
+    /// stays small while the fix is metres wrong. Neither production autopilot trusts it
+    /// raw: PX4 fuses `max(eph, EKF2_GPS_P_NOISE)` and ArduPilot
+    /// `constrain(eph, EK3_POSNE_M_NSE, 100 m)`, both from a 0.5 m floor, and PX4
+    /// additionally caps it at `EKF2_NOAID_NOISE` (10 m) while GNSS is the only
+    /// horizontal aiding source.
+    ///
+    /// The filter applies no floor of its own, because `R` describes the measurement and
+    /// belongs with it rather than in [`Config`]. A caller handing over a raw `eph²` is
+    /// therefore trusting the receiver further than either autopilot does.
+    ///
     /// **Stub.** Records an acceptance with a zero test ratio; corrects nothing.
     pub fn fuse_gnss_position(
         &mut self,
@@ -214,6 +227,11 @@ impl Eskf {
     }
 
     /// Fuse a GNSS velocity solution. Equation (29).
+    ///
+    /// `variance` is the receiver's speed accuracy squared, `sacc²`, and wants the same
+    /// floor as [`fuse_gnss_position`](Self::fuse_gnss_position): PX4 fuses
+    /// `max(sacc, EKF2_GPS_V_NOISE)` and ArduPilot
+    /// `constrain(sacc, EK3_VELNE_M_NSE, 50 m/s)`, both from a 0.5 m/s floor.
     ///
     /// **Stub.** Records an acceptance with a zero test ratio; corrects nothing.
     pub fn fuse_gnss_velocity(

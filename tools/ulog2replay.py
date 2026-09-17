@@ -184,7 +184,10 @@ def convert_gnss(ulog, rows, used):
                 file=sys.stderr,
             )
         north, east, down = geodetic_to_ned(phi, lam, height, *origin)
-        # eph/epv are standard deviations; the filter wants variances.
+        # eph/epv are standard deviations; the filter wants variances. Passed through
+        # unfloored, deliberately: this file reproduces what the receiver reported, and
+        # PX4's own max(eph, EKF2_GPS_P_NOISE) is a fusion-time decision the consumer
+        # makes. See Eskf::fuse_gnss_position.
         horizontal = float(eph[k]) ** 2
         vertical = float(epv[k]) ** 2
         rows.append((t[k], "gnss_pos", [north, east, down], [horizontal, horizontal, vertical]))
