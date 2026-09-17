@@ -231,7 +231,7 @@ vehicle, which is exactly the `fusion-nav` sensor set.
 
 ### Primary sources
 
-**[INSANE](https://sst.aau.at/cns/datasets/insane-dataset/)** (University of Klagenfurt) is the
+**[INSANE](https://www.aau.at/en/smart-systems-technologies/control-of-networked-systems/datasets/insane-dataset/)** (University of Klagenfurt) is the
 accuracy benchmark. It is the only public dataset found that covers the full sensor set on a
 UAV: three IMUs (900 Hz LSM9DS1, 200 Hz ICM20689 and BMI055), dual RTK GNSS, two magnetometers,
 a barometer, a laser range finder, UWB, and motor telemetry — eighteen sensors in total. Ground
@@ -304,7 +304,7 @@ bounded-cost 15-state core instead.
 * [ArduPilot EKF3 affinity and lane switching](https://ardupilot.org/plane/docs/common-ek3-affinity-lane-switching.html)
 * [ArduPilot EKF source selection](https://ardupilot.org/plane/docs/common-ekf-sources.html)
 * [fusion-ahrs](https://crates.io/crates/fusion-ahrs)
-* [INSANE dataset](https://sst.aau.at/cns/datasets/insane-dataset/) ([paper](https://arxiv.org/html/2210.09114))
+* [INSANE dataset](https://www.aau.at/en/smart-systems-technologies/control-of-networked-systems/datasets/insane-dataset/) ([paper](https://arxiv.org/html/2210.09114))
 * [PX4 Flight Review](https://review.px4.io/) and [flight log analysis](https://docs.px4.io/main/en/log/flight_log_analysis)
 * [UrbanNav dataset](https://github.com/IPNL-POLYU/UrbanNavDataset)
 

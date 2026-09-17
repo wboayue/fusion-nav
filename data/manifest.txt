@@ -1,0 +1,17 @@
+# sha256  name  url
+#
+# Deliberately empty. Checksums cannot be invented, and no log has been fetched
+# and verified yet, so there is nothing honest to put here.
+#
+# To populate it, fetch a log once and commit the line the script appends:
+#
+#   data/fetch.sh --add 'https://review.px4.io/download?log=<log-id>'
+#
+# Browse https://review.px4.io/ for a flight with GNSS, barometer and
+# magnetometer active. Then:
+#
+#   tools/ulog2replay.py data/logs/<log-id>.ulg -o data/logs/<log-id>.csv --reference
+#   cargo run --example replay -- data/logs/<log-id>.csv
+#
+# Everyone else afterwards just runs `data/fetch.sh`, which verifies against the
+# checksum recorded here.

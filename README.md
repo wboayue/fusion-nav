@@ -301,6 +301,19 @@ and an application-driven reset, and `cargo run --example replay` reads a record
 from CSV and writes the estimate back out as CSV — the normalized log format the
 [validation harness](GOALS.md#harness-constraint) is built on.
 
+`replay` ships with a small synthetic log so it runs with no network. For a real flight,
+convert a [PX4 Flight Review](https://review.px4.io/) log and replay that instead:
+
+```console
+$ data/fetch.sh --add 'https://review.px4.io/download?log=<log-id>'
+$ tools/ulog2replay.py data/logs/<log-id>.ulg -o data/logs/<log-id>.csv --reference
+$ cargo run --example replay -- data/logs/<log-id>.csv
+```
+
+`--reference` writes EKF2's own solution and innovation test ratios to a second file, for
+a side-by-side diff. Fetched logs are checksummed in `data/manifest.txt` and never
+committed; their redistribution terms are usually unstated.
+
 ```rust
 use fusion_nav::prelude::*;
 
