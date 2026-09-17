@@ -2,8 +2,9 @@
 
 Embedded-first inertial navigation using a 15-state Error-State Kalman Filter (ESKF).
 
-> **Status: design only.** This document describes the intended architecture and scope.
-> No implementation exists yet, and the design is subject to change.
+> **Status: API sketch.** The types and signatures in [API](#api) exist and compile; the
+> estimation mathematics does not. `predict` propagates nothing and every `fuse_*` accepts
+> unconditionally. The design is subject to change.
 
 `fusion-nav` provides 3D attitude, velocity, and position estimation by fusing IMU measurements with external observations such as GNSS, barometric altitude, and magnetometer measurements.
 
@@ -291,44 +292,58 @@ Sensor drivers and hardware interfaces are outside the scope of the crate.
 
 Applications provide measurements together with their associated uncertainty.
 
-### Intended API
+### API
 
-Provisional, to make the design concrete. Nothing here is implemented.
+The signatures below compile today; the mathematics behind them does not exist yet.
+`examples/shape.rs` is this walk-through as a runnable program — `cargo run --example shape`.
 
 ```rust
-use fusion_nav::{Config, Eskf, ImuSample, Status};
+use fusion_nav::{Altitude, AltitudeVariance, Config, ErrorState, Eskf, Fusion, HeadingVariance};
+use fusion_nav::{ImuSample, PositionVariance, Seconds, Status, VelocityVariance};
 
 let mut filter = Eskf::new(Config::default());
 
-// Quasi-static initialization from a window of stationary samples.
+// Quasi-static initialization from a window of stationary samples. Each `StaticSample`
+// is an `ImuSample` plus an optional `MagField<Body>`; without the magnetometer, heading
+// is unobserved and starts with an inflated yaw variance.
 filter.initialize(&static_window)?;
 
 // High-rate propagation. `dt` is explicit; the filter never reads a clock.
-filter.predict(ImuSample { gyro, accel }, dt);
+filter.predict(ImuSample { gyro, accel }, Seconds::from_secs(0.0025));
 
 // Measurement updates. Each returns the gate outcome, carrying the test ratio
 // so a rejection is diagnosable rather than a bare failure. `#[must_use]`, so
 // discarding it is a warning.
-let outcome = filter.fuse_gnss_position(position, variance);  // position: Position<Ned>
-filter.fuse_gnss_velocity(velocity, variance);
-filter.fuse_baro_altitude(altitude, variance);
-filter.fuse_mag_heading(field, variance);                     // field: MagField<Body>
+let outcome = filter.fuse_gnss_position(position, PositionVariance::isotropic(1.5));
+filter.fuse_gnss_velocity(velocity, VelocityVariance::isotropic(0.09));
+filter.fuse_baro_altitude(Altitude::from_meters(60.0), AltitudeVariance::from_m2(4.0));
+filter.fuse_mag_heading(field, HeadingVariance::from_rad2(0.05));
+
+match outcome {
+    Fusion::Accepted { test_ratio } => { /* fused; r <= 1 */ }
+    Fusion::Rejected { test_ratio } => { /* gated out; r > 1, the state is unchanged */ }
+    Fusion::NotInitialized => { /* no state to fuse against */ }
+}
 
 // The estimate carries its own status, so it cannot be consumed without it.
 let s = filter.state();
 match s.status {
-    Status::Healthy => { /* every configured source is being fused */ }
+    Status::Healthy => { /* every source that has been fused is still accepted */ }
     Status::Degraded => { /* a source has timed out; still aided */ }
     Status::DeadReckoning => { /* nothing is aiding — drift is unbounded */ }
 }
 // s.attitude, s.position, s.velocity, s.accel_bias, s.gyro_bias
 
-let d = filter.diagnostics();     // per-source test ratios, time since last accepted
-let cov = filter.covariance();    // 15 x 15, in the error-state ordering
+let d = filter.diagnostics();  // per-source test ratio, time since last accepted, counts
+let p = filter.covariance();   // 15 x 15, indexed by name: p.variance(ErrorState::AttitudeZ)
+
+// Recovery is the application's policy, not the filter's.
+filter.reset_position_to(fix, PositionVariance::isotropic(2.5));
 ```
 
 Frames appear in the types, so a `Position<Enu>` cannot be passed where NED is expected.
-Units are likewise encoded rather than documented.
+Units are named by every constructor rather than documented: `Position::from_meters`,
+`AngularRate::from_rad_per_s`, `HeadingVariance::from_rad2`.
 
 `Status` is a payload-free enum and `state()` stays small and `Copy`, so reading it in a
 control loop costs nothing. Timing detail lives in `diagnostics()`, which is not on the hot path.
@@ -347,6 +362,10 @@ The implementation should therefore favor:
 * `no_std`
 * explicit numerical types
 * minimal dependencies
+
+The only dependency is [`nalgebra`](https://crates.io/crates/nalgebra), built
+`no_std` with its `libm` feature, which supplies the fixed-size matrix algebra and the
+quaternion type. It fixes the MSRV at 1.89.
 
 A 15-state filter requires a `15 × 15` covariance matrix containing 225 scalar values, which in
 `f32` is 900 bytes.

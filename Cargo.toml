@@ -2,7 +2,7 @@
 name = "fusion-nav"
 version = "0.0.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.89"
 authors = ["Wil Boayue <wil@wsbsolutions.com>"]
 description = "A no_std, allocation-free 15-state error-state Kalman filter for inertial navigation. Fuses IMU with GNSS, barometric altitude, and magnetometer heading. Companion to fusion-ahrs and fusion-altitude."
 readme = "README.md"
@@ -15,5 +15,6 @@ categories = ["embedded", "no-std", "algorithms", "science"]
 exclude = ["CLAUDE.md"]
 
 [dependencies]
+nalgebra = { version = "0.35", default-features = false, features = ["libm"] }
 
 [dev-dependencies]
