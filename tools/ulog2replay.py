@@ -283,6 +283,24 @@ def convert_mag(ulog, rows, used, variance, sensor_combined):
     print("warning: no magnetometer topic; heading aiding omitted", file=sys.stderr)
 
 
+def dropouts(ulog):
+    """Report logging dropouts, which are not sensor dropouts.
+
+    A gap in the output means the SD card missed those messages, not that the
+    sensor stopped. Replaying one as a single long `dt` would propagate as though
+    the vehicle really had dead-reckoned through it.
+    """
+    if not ulog.dropouts:
+        return None
+    total = sum(d.duration for d in ulog.dropouts)
+    note = (
+        f"{len(ulog.dropouts)} logging dropouts totalling {total} ms; "
+        "gaps in this file are missing log data, not stopped sensors"
+    )
+    print(f"warning: {note}", file=sys.stderr)
+    return note
+
+
 def convert(path, baro_variance, mag_variance):
     try:
         from pyulog import ULog
@@ -295,11 +313,12 @@ def convert(path, baro_variance, mag_variance):
     ulog = ULog(str(path))
     rows = []
     used = {}
+    note = dropouts(ulog)
     sensor_combined = convert_imu(ulog, rows, used)
     convert_gnss(ulog, rows, used)
     convert_baro(ulog, rows, used, baro_variance, sensor_combined)
     convert_mag(ulog, rows, used, mag_variance, sensor_combined)
-    return rows, used
+    return rows, used, note
 
 
 def write_rows(rows, out, note):
@@ -398,7 +417,9 @@ def main():
 
     output = args.output or args.ulog.with_suffix(".csv")
     try:
-        rows, used = convert(args.ulog, args.baro_variance, args.mag_variance)
+        rows, used, dropout_note = convert(
+            args.ulog, args.baro_variance, args.mag_variance
+        )
         note = [
             f"Converted from {args.ulog.name} by tools/ulog2replay.py",
             "Topics used: " + ", ".join(f"{k}={v}" for k, v in sorted(used.items())),
@@ -406,6 +427,8 @@ def main():
             f"{args.mag_variance} rad^2 are assumed; PX4 logs neither.",
             "Timestamps rebased to the first sample.",
         ]
+        if dropout_note:
+            note.append(dropout_note)
         count, t0 = write_rows(rows, output, note)
 
         if args.reference:

@@ -77,6 +77,12 @@ const SIGMAS: [(ErrorState, &str); 15] = [
     (ErrorState::GyroBiasZ, "sigma_bg_z"),
 ];
 
+/// A `dt` above this is not an IMU interval. Real logs contain them: an SD card that
+/// misses messages leaves a hole the replay sees as one long step, and propagating a
+/// discretization built for milliseconds across a second of it is meaningless. The
+/// example reports them rather than hiding them.
+const LONG_STEP: f32 = 0.1;
+
 /// Last test ratio per source, in `Diagnostics` order.
 const RATIOS: [&str; 4] = ["r_gnss_pos", "r_gnss_vel", "r_baro", "r_mag"];
 
@@ -142,6 +148,8 @@ struct Replay {
     mag_at_init: bool,
     epochs: u32,
     rejections: u32,
+    long_steps: u32,
+    longest_step: (f32, f32),
     status: Status,
     transitions: Vec<(f32, Status)>,
 }
@@ -159,6 +167,8 @@ impl Replay {
             mag_at_init: false,
             epochs: 0,
             rejections: 0,
+            long_steps: 0,
+            longest_step: (0.0, 0.0),
             status: Status::default(),
             transitions: Vec::new(),
         }
@@ -264,7 +274,14 @@ impl Replay {
 
     fn propagate(&mut self, t: f32, imu: ImuSample, out: &mut impl Write) -> io::Result<()> {
         if let Some(previous) = self.previous_imu.replace(t) {
-            self.filter.predict(imu, Seconds::from_secs(t - previous));
+            let dt = t - previous;
+            if dt > LONG_STEP {
+                self.long_steps += 1;
+                if dt > self.longest_step.1 {
+                    self.longest_step = (t, dt);
+                }
+            }
+            self.filter.predict(imu, Seconds::from_secs(dt));
         }
         let state = self.filter.state();
         if state.status != self.status {
@@ -343,6 +360,14 @@ impl Replay {
             "\n{} epochs written, {} measurements rejected",
             self.epochs, self.rejections
         );
+        if self.long_steps > 0 {
+            let (at, dt) = self.longest_step;
+            println!(
+                "{} steps longer than {LONG_STEP} s, worst {dt:.3} s at {at:.2} s\n  \
+                 a gap is usually the logger missing messages, not the IMU stopping",
+                self.long_steps
+            );
+        }
 
         // A real log can flap hundreds of times; print enough to see the pattern.
         const SHOWN: usize = 12;
