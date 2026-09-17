@@ -250,6 +250,11 @@ glitchy sensor data, and gives free coverage of GNSS dropouts, magnetic interfer
 barometer transients that a clean RTK dataset will not. ArduPilot `.bin` logs serve the same
 purpose.
 
+Public Flight Review logs are CC BY 4.0, so a pinned corpus can be redistributed with
+attribution — unusually, the licence is not the obstacle here. `https://review.px4.io/dbinfo`
+is the whole database as JSON, with a CDN `download_url` per entry; `tools/ulog2replay.py`
+converts one into the replay format and `data/fetch.sh` pins it by checksum.
+
 The two are complementary: INSANE answers how accurate, PX4 logs answer whether it survives
 reality.
 

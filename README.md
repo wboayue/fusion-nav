@@ -305,14 +305,14 @@ from CSV and writes the estimate back out as CSV — the normalized log format t
 convert a [PX4 Flight Review](https://review.px4.io/) log and replay that instead:
 
 ```console
-$ data/fetch.sh --add 'https://review.px4.io/download?log=<log-id>'
+$ data/fetch.sh                 # pinned by sha256 in data/manifest.txt
 $ tools/ulog2replay.py data/logs/<log-id>.ulg -o data/logs/<log-id>.csv --reference
 $ cargo run --example replay -- data/logs/<log-id>.csv
 ```
 
 `--reference` writes EKF2's own solution and innovation test ratios to a second file, for
-a side-by-side diff. Fetched logs are checksummed in `data/manifest.txt` and never
-committed; their redistribution terms are usually unstated.
+a side-by-side diff. `data/fetch.sh --add <url>` pins a new log; the files stay out of the
+repo, the checksums do not. Flight Review logs are [CC BY 4.0](https://review.px4.io/).
 
 ```rust
 use fusion_nav::prelude::*;

@@ -1,17 +1,24 @@
 # sha256  name  url
 #
-# Deliberately empty. Checksums cannot be invented, and no log has been fetched
-# and verified yet, so there is nothing honest to put here.
+# PX4 Flight Review public logs are CC BY 4.0, so a corpus can be pinned here and
+# redistributed with attribution. The files themselves stay out of the repo
+# (data/logs/ is gitignored); this manifest is what makes the corpus reproducible.
 #
-# To populate it, fetch a log once and commit the line the script appends:
+# To add one, fetch it once and commit the line the script appends:
 #
-#   data/fetch.sh --add 'https://review.px4.io/download?log=<log-id>'
+#   data/fetch.sh --add 'https://cdn.logs.px4.io/<log-id>.ulg'
 #
-# Browse https://review.px4.io/ for a flight with GNSS, barometer and
-# magnetometer active. Then:
+# Browse https://review.px4.io/ for a flight with GNSS, barometer and magnetometer
+# active; https://review.px4.io/dbinfo is the same database as JSON, with a
+# download_url per entry. Then:
 #
 #   tools/ulog2replay.py data/logs/<log-id>.ulg -o data/logs/<log-id>.csv --reference
 #   cargo run --example replay -- data/logs/<log-id>.csv
 #
-# Everyone else afterwards just runs `data/fetch.sh`, which verifies against the
-# checksum recorded here.
+# Everyone else afterwards runs `data/fetch.sh`, which verifies against the
+# checksums below.
+
+# 124 s quadrotor mission flight, PX4 v1.16.0, EKF2, rated "great".
+# All four sources present: sensor_gps, vehicle_air_data, vehicle_magnetometer,
+# sensor_combined. Source: PX4 Flight Review (CC BY 4.0).
+b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-4425-b118-7b7187331a98.ulg  https://cdn.logs.px4.io/3949f175-26b4-4425-b118-7b7187331a98.ulg

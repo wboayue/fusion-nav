@@ -344,9 +344,16 @@ impl Replay {
             self.epochs, self.rejections
         );
 
-        println!("\nstatus");
-        for (t, status) in &self.transitions {
+        // A real log can flap hundreds of times; print enough to see the pattern.
+        const SHOWN: usize = 12;
+        println!("\nstatus ({} transitions)", self.transitions.len());
+        for (t, status) in self.transitions.iter().take(SHOWN) {
             println!("  {t:>6.2} s  {status:?}");
+        }
+        if let Some(rest) = self.transitions.len().checked_sub(SHOWN)
+            && rest > 0
+        {
+            println!("  … {rest} more");
         }
 
         println!("\nper-source health at end of log");
