@@ -5,6 +5,7 @@
 #   data/fetch.sh                    fetch everything in the manifest, verify checksums
 #   data/fetch.sh --verify           verify what is already on disk, download nothing
 #   data/fetch.sh --add URL [NAME]   download once, record its checksum, append to manifest
+#   data/fetch.sh --check            convert and replay each log, assert its expectations
 #   data/fetch.sh --list             show the manifest
 #
 # Logs are large and their redistribution terms are usually unstated, so they are
@@ -14,12 +15,18 @@
 #
 # data/flight.csv is not managed here. It is synthetic, small, and checked in so that
 # `cargo run --example replay` works with no network.
+#
+# --check is a local tool, not a CI job. It needs pyulog, and putting the converter in
+# the test path is exactly what GOALS.md's harness constraint rules out: CI replays the
+# synthetic CSV only, so it needs no network, no PX4 tooling and no hardware. Run
+# --check before a release, or after touching the converter or anything it asserts.
 
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 manifest="$root/data/manifest.txt"
 dest="$root/data/logs"
+python=${PYTHON:-python3}
 
 sha256() {
     if command -v sha256sum >/dev/null 2>&1; then
@@ -31,15 +38,55 @@ sha256() {
 
 die() { echo "fetch: $*" >&2; exit 1; }
 
-# Manifest lines are: <sha256>  <name>  <url>. Blank lines and # comments skipped.
+# Manifest lines are: <sha256>  <name>  <url>  [key=value ...]. Blank lines and #
+# comments skipped. Callbacks that do not care about the expectations ignore $4.
 each_entry() {
     [ -f "$manifest" ] || return 0
-    local sum name url rc=0
-    while read -r sum name url _; do
+    local sum name url expect rc=0
+    while read -r sum name url expect; do
         case "$sum" in ''|\#*) continue ;; esac
         [ -n "$name" ] && [ -n "$url" ] || die "malformed manifest line: $sum $name $url"
-        "$1" "$sum" "$name" "$url" || rc=1
+        "$1" "$sum" "$name" "$url" "$expect" || rc=1
     done < "$manifest"
+    return $rc
+}
+
+# Convert one log and replay it, asserting the manifest's expectations against the
+# `summary` line the example prints.
+check_one() {
+    local name=$2 expect=$4
+    local ulg="$dest/$name" csv="$dest/${name%.ulg}.csv"
+    if [ ! -f "$ulg" ]; then
+        echo "  missing  $name — run data/fetch.sh first" >&2
+        return 1
+    fi
+    if ! "$python" "$root/tools/ulog2replay.py" "$ulg" -o "$csv" >/dev/null 2>&1; then
+        echo "  CONVERT FAILED  $name" >&2
+        return 1
+    fi
+    local summary
+    summary=$(cd "$root" && cargo run --quiet --example replay -- "$csv" "$csv.replay.csv" \
+        2>/dev/null | grep '^summary ') || true
+    if [ -z "$summary" ]; then
+        echo "  REPLAY FAILED   $name" >&2
+        return 1
+    fi
+    if [ -z "$expect" ]; then
+        echo "  no expectations  $name — ${summary#summary }"
+        return 0
+    fi
+    local rc=0 pair
+    for pair in $expect; do
+        case " $summary " in
+            *" $pair "*) ;;
+            *) echo "  MISMATCH $name: wanted $pair" >&2; rc=1 ;;
+        esac
+    done
+    if [ "$rc" != 0 ]; then
+        echo "    got ${summary#summary }" >&2
+    else
+        echo "  ok       $name"
+    fi
     return $rc
 }
 
@@ -95,6 +142,17 @@ case "$cmd" in
     failed=0
     each_entry fetch_one || failed=1
     [ "$failed" = 0 ] || die "one or more entries failed"
+    ;;
+
+--check)
+    [ -f "$manifest" ] || die "no manifest at $manifest"
+    command -v "$python" >/dev/null || die "$python not found; set PYTHON="
+    "$python" -c 'import pyulog' 2>/dev/null ||
+        die "pyulog not installed. \`$python -m pip install pyulog\`, or set PYTHON= to an interpreter that has it"
+    echo "checking the corpus end to end"
+    failed=0
+    each_entry check_one || failed=1
+    [ "$failed" = 0 ] || die "one or more entries did not match their expectations"
     ;;
 
 --verify)

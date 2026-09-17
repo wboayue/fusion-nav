@@ -135,8 +135,8 @@ struct Replay {
     /// the minimum or the mean: one real log logs in bursts, with a shortest interval of
     /// 2.5 ms against a true period of 20 ms, so a minimum reads it as 400 Hz. Dropouts
     /// stretch intervals and bursts shorten them; only the middle is stable.
-    interval: Option<f32>,
-    probe: [f32; PROBE],
+    interval: Option<f64>,
+    probe: [f64; PROBE],
     probed: usize,
     /// Samples the window needed to cover `min_duration`, for the report.
     window_samples: usize,
@@ -146,9 +146,9 @@ struct Replay {
     last_mag: Option<MagField<Body>>,
     /// Timestamp of the previous IMU row, so `dt` comes from the log rather than from an
     /// assumed rate.
-    previous_imu: Option<f32>,
+    previous_imu: Option<f64>,
     ratios: [Option<f32>; 4],
-    initialized_at: Option<f32>,
+    initialized_at: Option<f64>,
     mag_at_init: bool,
     epochs: u32,
     rejections: u32,
@@ -156,12 +156,12 @@ struct Replay {
     /// Real logs contain them: an SD card that misses messages leaves a hole the replay
     /// sees as one long step.
     refused_steps: u32,
-    longest_step: (f32, f32),
+    longest_step: (f64, f32),
     /// Steps refused as zero, negative or NaN. Sorting by timestamp rules out negatives,
     /// so in practice this counts duplicate IMU timestamps.
     invalid_steps: u32,
     status: Status,
-    transitions: Vec<(f32, Status)>,
+    transitions: Vec<(f64, Status)>,
 }
 
 impl Replay {
@@ -171,7 +171,7 @@ impl Replay {
             window: [StaticSample::default(); WINDOW],
             filled: 0,
             interval: None,
-            probe: [0.0; PROBE],
+            probe: [0.0f64; PROBE],
             probed: 0,
             window_samples: 0,
             last_mag: None,
@@ -254,7 +254,7 @@ impl Replay {
     /// Before initialization the filter refuses measurements with
     /// [`Fusion::NotInitialized`], so aiding rows in this stretch of the log are simply
     /// recorded and dropped.
-    fn accumulate(&mut self, t: f32, imu: ImuSample) -> Result<(), Box<dyn Error>> {
+    fn accumulate(&mut self, t: f64, imu: ImuSample) -> Result<(), Box<dyn Error>> {
         let step = self.previous_imu.replace(t).map(|previous| t - previous);
         if let Some(step) = step.filter(|step| *step > 0.0)
             && self.probed < PROBE
@@ -263,7 +263,7 @@ impl Replay {
             self.probed += 1;
             if self.probed == PROBE {
                 let mut sorted = self.probe;
-                sorted.sort_by(f32::total_cmp);
+                sorted.sort_by(f64::total_cmp);
                 self.interval = Some(sorted[PROBE / 2]);
             }
         }
@@ -284,7 +284,7 @@ impl Replay {
         let Some(interval) = self.interval else {
             return Ok(());
         };
-        let required = self.filter.config().init.min_duration.as_secs();
+        let required = f64::from(self.filter.config().init.min_duration.as_secs());
         let needed = (required / interval).ceil() as usize;
         if needed > WINDOW {
             return Err(format!(
@@ -299,7 +299,10 @@ impl Replay {
         self.window_samples = needed;
         let window = &self.window[self.filled - needed..self.filled];
 
-        match self.filter.initialize(window, Seconds::from_secs(interval)) {
+        match self
+            .filter
+            .initialize(window, Seconds::from_secs(interval as f32))
+        {
             Ok(()) => {
                 self.initialized_at = Some(t);
                 self.mag_at_init = window.iter().all(|s| s.mag.is_some());
@@ -313,10 +316,12 @@ impl Replay {
         Ok(())
     }
 
-    fn propagate(&mut self, t: f32, imu: ImuSample, out: &mut impl Write) -> io::Result<()> {
+    fn propagate(&mut self, t: f64, imu: ImuSample, out: &mut impl Write) -> io::Result<()> {
         if let Some(previous) = self.previous_imu.replace(t) {
             // The filter decides what is too long, not the example.
-            let outcome = self.filter.predict(imu, Seconds::from_secs(t - previous));
+            let outcome = self
+                .filter
+                .predict(imu, Seconds::from_secs((t - previous) as f32));
             match outcome {
                 Propagation::StepTooLong { dt, .. } => {
                     self.refused_steps += 1;
@@ -344,7 +349,7 @@ impl Replay {
         }
     }
 
-    fn write_row(&self, t: f32, state: State, out: &mut impl Write) -> io::Result<()> {
+    fn write_row(&self, t: f64, state: State, out: &mut impl Write) -> io::Result<()> {
         let (roll, pitch, yaw) = state.attitude.euler_angles();
         let position = state.position.as_meters();
         let velocity = state.velocity.as_m_per_s();
@@ -396,11 +401,11 @@ impl Replay {
                 } else {
                     "no magnetometer in the window, heading unobserved"
                 };
-                let interval = self.interval.unwrap_or(f32::NAN);
+                let interval = self.interval.unwrap_or(f64::NAN);
                 println!(
                     "\ninitialized at {t:.2} s from {:.2} s of stillness \
                      ({} samples at {:.0} Hz)\n  {heading}",
-                    self.window_samples as f32 * interval,
+                    self.window_samples as f64 * interval,
                     self.window_samples,
                     1.0 / interval,
                 );
@@ -441,6 +446,19 @@ impl Replay {
             println!("  … {rest} more");
         }
 
+        // One machine-readable line, so `data/fetch.sh --check` can assert against the
+        // expectations recorded in the manifest.
+        let state = self.filter.state();
+        println!(
+            "\nsummary rate={:.0} window={} refused={} invalid={} epochs={} status={:?}",
+            self.interval.map_or(0.0, |interval| 1.0 / interval),
+            self.window_samples,
+            self.refused_steps,
+            self.invalid_steps,
+            self.epochs,
+            state.status,
+        );
+
         println!("\nper-source health at end of log");
         for (name, health) in self.filter.diagnostics().sources() {
             match health.time_since_accepted {
@@ -459,7 +477,7 @@ impl Replay {
 /// One parsed row. Values and variances are positional; which ones a source uses is
 /// documented in the log header.
 struct Record<'a> {
-    t: f32,
+    t: f64,
     source: &'a str,
     values: [Option<f32>; 6],
     variances: [Option<f32>; 3],
@@ -468,6 +486,11 @@ struct Record<'a> {
 impl<'a> Record<'a> {
     fn parse(line: &'a str) -> Option<Self> {
         let mut fields = line.split(',');
+        // `f64`, not `f32`. A timestamp is large and a `dt` is small, and in `f32` the
+        // magnitude eats the mantissa: at 1200 s into a flight the ULP is 0.12 ms, so a
+        // 2.5 ms step comes back 2.3% wrong, and past ~5 hours consecutive samples
+        // collapse onto the same value and the step reads as zero. That noise would look
+        // like filter error during validation. Values stay `f32`; only time is widened.
         let t = fields.next()?.trim().parse().ok()?;
         let source = fields.next()?.trim();
         let mut values = [None; 6];

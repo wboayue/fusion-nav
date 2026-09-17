@@ -310,6 +310,11 @@ $ tools/ulog2replay.py data/logs/<log-id>.ulg -o data/logs/<log-id>.csv --refere
 $ cargo run --example replay -- data/logs/<log-id>.csv
 ```
 
+`data/fetch.sh --check` replays the whole pinned corpus and asserts the per-log
+expectations recorded beside each checksum — the IMU rate, the window it implies, and how
+many propagation steps get refused. It needs `pyulog`, so it is a local tool rather than a
+CI job; CI replays the synthetic log only.
+
 `--reference` writes EKF2's own solution and innovation test ratios to a second file, for
 a side-by-side diff. `data/fetch.sh --add <url>` pins a new log; the files stay out of the
 repo, the checksums do not. Flight Review logs are [CC BY 4.0](https://review.px4.io/).
