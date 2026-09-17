@@ -295,9 +295,11 @@ Applications provide measurements together with their associated uncertainty.
 ### API
 
 The signatures below compile today; the mathematics behind them does not exist yet.
-Two runnable programs exercise them: `cargo run --example basic` is the integration loop
-on its own, and `cargo run --example degradation` covers dropouts, per-source diagnostics,
-and an application-driven reset.
+Three runnable programs exercise them: `cargo run --example basic` is the integration loop
+on its own, `cargo run --example degradation` covers dropouts, per-source diagnostics,
+and an application-driven reset, and `cargo run --example replay` reads a recorded flight
+from CSV and writes the estimate back out as CSV — the normalized log format the
+[validation harness](GOALS.md#harness-constraint) is built on.
 
 ```rust
 use fusion_nav::prelude::*;
