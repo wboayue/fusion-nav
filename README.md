@@ -298,8 +298,7 @@ The signatures below compile today; the mathematics behind them does not exist y
 `examples/shape.rs` is this walk-through as a runnable program — `cargo run --example shape`.
 
 ```rust
-use fusion_nav::{Altitude, AltitudeVariance, Config, ErrorState, Eskf, Fusion, HeadingVariance};
-use fusion_nav::{ImuSample, PositionVariance, Seconds, Status, VelocityVariance};
+use fusion_nav::prelude::*;
 
 let mut filter = Eskf::new(Config::default());
 
@@ -340,6 +339,9 @@ let p = filter.covariance();   // 15 x 15, indexed by name: p.variance(ErrorStat
 // Recovery is the application's policy, not the filter's.
 filter.reset_position_to(fix, PositionVariance::isotropic(2.5));
 ```
+
+`fusion_nav::prelude` carries the whole integration surface, since typed frames and units
+mean a loop touches a dozen names. Everything in it is also exported at the crate root.
 
 Frames appear in the types, so a `Position<Enu>` cannot be passed where NED is expected.
 Units are named by every constructor rather than documented: `Position::from_meters`,

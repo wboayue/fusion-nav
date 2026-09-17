@@ -7,11 +7,7 @@
 //!
 //! Run with `cargo run --example shape`.
 
-use fusion_nav::{
-    Acceleration, Altitude, AltitudeVariance, AngularRate, Config, ErrorState, Eskf, Fusion,
-    GRAVITY, HeadingVariance, ImuSample, MagField, Ned, Position, PositionVariance, Radians,
-    Seconds, StaticSample, Status, Timeouts, Velocity, VelocityVariance,
-};
+use fusion_nav::prelude::*;
 
 const IMU_HZ: u32 = 400;
 const GNSS_HZ: u32 = 5;

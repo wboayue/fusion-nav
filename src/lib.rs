@@ -13,8 +13,7 @@
 //! # Shape
 //!
 //! ```
-//! use fusion_nav::{Config, Eskf, ImuSample, Ned, Position, PositionVariance};
-//! use fusion_nav::{Seconds, StaticSample, Status};
+//! use fusion_nav::prelude::*;
 //!
 //! let mut filter = Eskf::new(Config::default());
 //! filter.initialize(&[StaticSample::default(); 100])?;
@@ -54,3 +53,34 @@ pub use units::{
     Acceleration, Altitude, AltitudeVariance, AngularRate, Attitude, HeadingVariance, MagField,
     Position, PositionVariance, Radians, Seconds, Velocity, VelocityVariance,
 };
+
+/// Everything needed to write an integration loop, in one import.
+///
+/// ```
+/// use fusion_nav::prelude::*;
+///
+/// let mut filter = Eskf::new(Config::default());
+/// filter.initialize(&[StaticSample::default(); 100])?;
+/// filter.predict(ImuSample::default(), Seconds::from_secs(0.0025));
+///
+/// let outcome = filter.fuse_baro_altitude(
+///     Altitude::from_meters(60.0),
+///     AltitudeVariance::from_m2(4.0),
+/// );
+/// assert!(outcome.is_accepted());
+/// # Ok::<(), InitError>(())
+/// ```
+///
+/// Deliberately excluded, because their names are too generic to glob-import safely:
+/// [`Frame`], [`STATES`], and [`CovarianceMatrix`]. Import those by path.
+pub mod prelude {
+    pub use crate::config::{Config, GRAVITY, Gates, ImuNoise, Initialization, Timeouts};
+    pub use crate::eskf::{Eskf, ImuSample, InitError, StaticSample};
+    pub use crate::frames::{Body, Enu, Ned};
+    pub use crate::health::{Diagnostics, Fusion, SourceHealth, Status};
+    pub use crate::state::{Covariance, ErrorState, State};
+    pub use crate::units::{
+        Acceleration, Altitude, AltitudeVariance, AngularRate, Attitude, HeadingVariance, MagField,
+        Position, PositionVariance, Radians, Seconds, Velocity, VelocityVariance,
+    };
+}
