@@ -1,7 +1,8 @@
 //! Filter tuning.
 //!
-//! Every default here is a **placeholder** chosen to make the shape of the API concrete.
-//! None has been validated against flight data.
+//! Every default here is a **placeholder** chosen to make the shape of the API concrete,
+//! and none has been validated against flight data — with one exception:
+//! [`Timeouts::degraded_after`] was corrected after replaying a PX4 log.
 
 use crate::units::{Radians, Seconds};
 
@@ -67,6 +68,10 @@ impl Default for Gates {
 pub struct Timeouts {
     /// Beyond this, a source counts as timed out and the status becomes
     /// [`Degraded`](crate::Status::Degraded).
+    ///
+    /// Must clear the slowest source's update period with margin, or ordinary jitter
+    /// reads as a fault. Roughly two and a half missed updates from the slowest source
+    /// is a reasonable rule.
     pub degraded_after: Seconds,
     /// Beyond this with no source accepted at all, the status becomes
     /// [`DeadReckoning`](crate::Status::DeadReckoning).
@@ -74,9 +79,16 @@ pub struct Timeouts {
 }
 
 impl Default for Timeouts {
+    /// Sized for a 1 Hz GNSS, the slowest source in common use.
+    ///
+    /// The previous default of 1.0 s was exactly that period: replaying a PX4 log whose
+    /// fix intervals ran 0.988-1.024 s put 37 of 122 of them over the threshold, and the
+    /// status flapped between `Healthy` and `Degraded` 76 times in 124 seconds. 2.5 s
+    /// clears two missed fixes and still leaves half the window to
+    /// [`dead_reckoning_after`](Timeouts::dead_reckoning_after).
     fn default() -> Self {
         Self {
-            degraded_after: Seconds::from_secs(1.0),
+            degraded_after: Seconds::from_secs(2.5),
             dead_reckoning_after: Seconds::from_secs(5.0),
         }
     }
@@ -132,7 +144,7 @@ impl Default for Initialization {
 ///
 /// let config = Config {
 ///     timeouts: Timeouts {
-///         degraded_after: Seconds::from_secs(0.5),
+///         degraded_after: Seconds::from_secs(1.5),  // a 5 Hz GNSS can be stricter
 ///         ..Timeouts::default()
 ///     },
 ///     ..Config::default()
