@@ -147,14 +147,13 @@ impl Eskf {
     ///
     /// The hot path, called at IMU rate. `dt` is explicit; the filter never reads a clock.
     ///
-    /// **Stub.** Advances the fusion timers and the status, and propagates nothing.
+    /// **Stub.** Advances the fusion timers and propagates nothing.
     pub fn predict(&mut self, imu: ImuSample, dt: Seconds) {
         let _ = imu;
         if !self.initialized {
             return;
         }
         self.diagnostics.advance(dt);
-        self.state.status = self.derive_status();
     }
 
     /// Fuse a GNSS position fix. Equation (28).
@@ -203,8 +202,17 @@ impl Eskf {
     }
 
     /// The current estimate, including its [`Status`].
+    ///
+    /// The status is derived here rather than cached: it is a pure function of
+    /// [`diagnostics`](Self::diagnostics) and [`Timeouts`](crate::Timeouts), so computing
+    /// it on read means there is no invariant for the mutating methods to maintain. The
+    /// loop costs four comparisons.
     pub const fn state(&self) -> State {
-        self.state
+        // `self.state.status` is inert; the stored estimate never carries a meaningful
+        // one, and every read overwrites it.
+        let mut state = self.state;
+        state.status = self.derive_status();
+        state
     }
 
     /// Per-source health. Off the hot path.
@@ -244,7 +252,6 @@ impl Eskf {
             return Fusion::NotInitialized;
         }
         source(&mut self.diagnostics).record_accepted(0.0);
-        self.state.status = self.derive_status();
         Fusion::Accepted { test_ratio: 0.0 }
     }
 
@@ -252,14 +259,18 @@ impl Eskf {
     ///
     /// Only sources that have ever been accepted count: a vehicle with no magnetometer is
     /// not permanently `Degraded` for lacking one.
-    fn derive_status(&self) -> Status {
+    const fn derive_status(&self) -> Status {
         let degraded_after = self.config.timeouts.degraded_after.as_secs();
         let dead_after = self.config.timeouts.dead_reckoning_after.as_secs();
 
+        let sources = self.diagnostics.as_array();
         let mut used = 0;
         let mut fresh = 0;
         let mut aiding = 0;
-        for source in self.diagnostics.as_array() {
+        let mut i = 0;
+        while i < sources.len() {
+            let source = sources[i];
+            i += 1;
             let Some(elapsed) = source.time_since_accepted else {
                 continue;
             };

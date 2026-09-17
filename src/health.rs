@@ -140,7 +140,7 @@ impl Diagnostics {
         self.mag_heading.advance(dt);
     }
 
-    pub(crate) fn as_array(&self) -> [SourceHealth; 4] {
+    pub(crate) const fn as_array(&self) -> [SourceHealth; 4] {
         [
             self.gnss_position,
             self.gnss_velocity,

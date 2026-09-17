@@ -326,7 +326,7 @@ match outcome {
     Fusion::NotInitialized => { /* no state to fuse against */ }
 }
 
-// The estimate carries its own status, so it cannot be consumed without it.
+// The status travels with the estimate rather than behind a second call.
 let s = filter.state();
 match s.status {
     Status::Healthy => { /* every source that has been fused is still accepted */ }

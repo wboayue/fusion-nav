@@ -59,8 +59,8 @@ fn main() -> Result<(), InitError> {
         }
     }
 
-    // The estimate carries its own status: it cannot be read without seeing that the
-    // filter is dead reckoning.
+    // The estimate carries its own status, so the trust level is in hand alongside the
+    // numbers it qualifies.
     let state = filter.state();
     let (roll, pitch, yaw) = state.attitude.euler_angles();
 

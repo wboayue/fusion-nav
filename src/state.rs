@@ -13,8 +13,9 @@ pub const STATES: usize = 15;
 /// The navigation estimate, returned by [`Eskf::state`](crate::Eskf::state).
 ///
 /// Small and `Copy`, so reading it every control cycle costs nothing. The [`status`] is a
-/// field rather than a separate accessor so that a caller cannot consume the estimate
-/// without seeing that it is dead reckoning.
+/// field rather than a separate accessor so that the trust level travels with the numbers
+/// it qualifies. Nothing forces a caller to read it — `state().position` compiles — but it
+/// is in hand rather than behind a second call that is easy not to make.
 ///
 /// [`status`]: State::status
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
