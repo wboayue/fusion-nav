@@ -330,6 +330,7 @@ filter.initialize(&static_window, dt)?;  // dt sizes the window in seconds
 match filter.predict(ImuSample { gyro, accel }, dt) {
     Propagation::Propagated => { /* state advanced over the full dt */ }
     Propagation::StepTooLong { dt, limit } => { /* gap; state unchanged, timers advanced */ }
+    Propagation::InvalidStep { dt } => { /* zero, negative or NaN; no timer moved */ }
     Propagation::NotInitialized => { /* no state to propagate */ }
 }
 

@@ -78,6 +78,18 @@ pub enum Propagation {
         /// The configured limit.
         limit: Seconds,
     },
+    /// `dt` was zero, negative, or not a number. Nothing was propagated and no timer
+    /// advanced.
+    ///
+    /// Rejected before the bookkeeping rather than after: a negative `dt` would run the
+    /// per-source timers backwards and make stale aiding look fresh, and a NaN would
+    /// poison them for the rest of the flight. Zero is included because two IMU samples
+    /// sharing a timestamp means duplicated data, which is worth knowing about even
+    /// though propagating over it would be harmless.
+    InvalidStep {
+        /// The `dt` offered.
+        dt: Seconds,
+    },
     /// [`Eskf::initialize`](crate::Eskf::initialize) has not been called. Nothing was
     /// propagated and no timer advanced.
     NotInitialized,

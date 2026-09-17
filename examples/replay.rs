@@ -157,6 +157,9 @@ struct Replay {
     /// sees as one long step.
     refused_steps: u32,
     longest_step: (f32, f32),
+    /// Steps refused as zero, negative or NaN. Sorting by timestamp rules out negatives,
+    /// so in practice this counts duplicate IMU timestamps.
+    invalid_steps: u32,
     status: Status,
     transitions: Vec<(f32, Status)>,
 }
@@ -180,6 +183,7 @@ impl Replay {
             rejections: 0,
             refused_steps: 0,
             longest_step: (0.0, 0.0),
+            invalid_steps: 0,
             status: Status::default(),
             transitions: Vec::new(),
         }
@@ -313,11 +317,15 @@ impl Replay {
         if let Some(previous) = self.previous_imu.replace(t) {
             // The filter decides what is too long, not the example.
             let outcome = self.filter.predict(imu, Seconds::from_secs(t - previous));
-            if let Propagation::StepTooLong { dt, .. } = outcome {
-                self.refused_steps += 1;
-                if dt.as_secs() > self.longest_step.1 {
-                    self.longest_step = (t, dt.as_secs());
+            match outcome {
+                Propagation::StepTooLong { dt, .. } => {
+                    self.refused_steps += 1;
+                    if dt.as_secs() > self.longest_step.1 {
+                        self.longest_step = (t, dt.as_secs());
+                    }
                 }
+                Propagation::InvalidStep { .. } => self.invalid_steps += 1,
+                Propagation::Propagated | Propagation::NotInitialized => {}
             }
         }
         let state = self.filter.state();
@@ -404,6 +412,12 @@ impl Replay {
             "\n{} epochs written, {} measurements rejected",
             self.epochs, self.rejections
         );
+        if self.invalid_steps > 0 {
+            println!(
+                "{} steps refused as zero or negative — duplicate IMU timestamps",
+                self.invalid_steps
+            );
+        }
         if self.refused_steps > 0 {
             let (at, dt) = self.longest_step;
             println!(

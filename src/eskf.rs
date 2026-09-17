@@ -157,18 +157,28 @@ impl Eskf {
     /// would put a number in the state that looks like an estimate and is not. The timers
     /// still advance, so [`Status`] degrades on schedule.
     ///
+    /// A `dt` that is zero, negative, or NaN is refused before the timers move at all.
+    ///
     /// **Stub.** Advances the fusion timers and propagates nothing.
     pub fn predict(&mut self, imu: ImuSample, dt: Seconds) -> Propagation {
         let _ = imu;
         if !self.initialized {
             return Propagation::NotInitialized;
         }
-        // Time passed either way, so the health bookkeeping is real even when the
-        // propagation is refused.
+        // Rejected ahead of the bookkeeping: a negative `dt` would wind the timers back
+        // and a NaN would poison them. `is_nan` is spelled out because `<= 0.0` alone is
+        // false for NaN.
+        let seconds = dt.as_secs();
+        if seconds <= 0.0 || seconds.is_nan() {
+            return Propagation::InvalidStep { dt };
+        }
+
+        // Past here the time genuinely passed, so the health bookkeeping is real even
+        // when the propagation itself is refused.
         self.diagnostics.advance(dt);
 
         let limit = self.config.max_predict_dt;
-        if dt.as_secs() > limit.as_secs() {
+        if seconds > limit.as_secs() {
             return Propagation::StepTooLong { dt, limit };
         }
         Propagation::Propagated
@@ -308,5 +318,103 @@ impl Eskf {
         } else {
             Status::Degraded
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DT: Seconds = Seconds::from_secs(0.01);
+
+    /// A window of exactly `Initialization::min_duration`: 8 samples at 4 Hz is 2 s.
+    fn initialized() -> Eskf {
+        let mut filter = Eskf::new(Config::default());
+        filter
+            .initialize(&[StaticSample::default(); 8], Seconds::from_secs(0.25))
+            .expect("a 2 s window satisfies the default min_duration");
+        filter
+    }
+
+    /// Timers only run for a source that has been accepted, so fuse one first.
+    fn aided() -> Eskf {
+        let mut filter = initialized();
+        assert!(
+            filter
+                .fuse_baro_altitude(Altitude::from_meters(0.0), AltitudeVariance::from_m2(4.0))
+                .is_accepted()
+        );
+        filter
+    }
+
+    fn elapsed(filter: &Eskf) -> f32 {
+        filter
+            .diagnostics()
+            .baro_altitude
+            .time_since_accepted
+            .expect("baro has been accepted")
+            .as_secs()
+    }
+
+    #[test]
+    fn predict_before_initialize_is_refused() {
+        let mut filter = Eskf::new(Config::default());
+        assert_eq!(
+            filter.predict(ImuSample::default(), DT),
+            Propagation::NotInitialized
+        );
+    }
+
+    #[test]
+    fn a_normal_step_propagates_and_advances_the_timers() {
+        let mut filter = aided();
+        assert_eq!(
+            filter.predict(ImuSample::default(), DT),
+            Propagation::Propagated
+        );
+        assert_eq!(elapsed(&filter), DT.as_secs());
+    }
+
+    #[test]
+    fn zero_negative_and_nan_steps_are_refused_without_moving_the_timers() {
+        let mut filter = aided();
+        for bad in [0.0, -0.01, f32::NAN] {
+            let dt = Seconds::from_secs(bad);
+            assert!(
+                matches!(
+                    filter.predict(ImuSample::default(), dt),
+                    Propagation::InvalidStep { .. }
+                ),
+                "dt of {bad} should be refused"
+            );
+            assert_eq!(elapsed(&filter), 0.0, "dt of {bad} moved the timers");
+        }
+    }
+
+    #[test]
+    fn a_step_over_the_limit_is_refused_but_the_time_still_passes() {
+        let mut filter = aided();
+        // The worst SD-card dropout in the bundled corpus.
+        let dt = Seconds::from_secs(1.304);
+        assert!(matches!(
+            filter.predict(ImuSample::default(), dt),
+            Propagation::StepTooLong { .. }
+        ));
+        assert_eq!(
+            elapsed(&filter),
+            1.304,
+            "a refused step still happened in real time"
+        );
+    }
+
+    #[test]
+    fn the_static_window_is_measured_in_seconds_not_samples() {
+        let mut filter = Eskf::new(Config::default());
+        // The same 8 samples, now spanning 0.8 s instead of 2 s.
+        let error = filter
+            .initialize(&[StaticSample::default(); 8], Seconds::from_secs(0.1))
+            .expect_err("0.8 s is under the default min_duration");
+        assert!(matches!(error, InitError::WindowTooShort { .. }));
+        assert!(!filter.is_initialized());
     }
 }
