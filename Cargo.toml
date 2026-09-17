@@ -1,0 +1,19 @@
+[package]
+name = "fusion-nav"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["Wil Boayue <wil@wsbsolutions.com>"]
+description = "A no_std, allocation-free 15-state error-state Kalman filter for inertial navigation. Fuses IMU with GNSS, barometric altitude, and magnetometer heading. Companion to fusion-ahrs and fusion-altitude."
+readme = "README.md"
+homepage = "https://github.com/wboayue/fusion-nav/"
+repository = "https://github.com/wboayue/fusion-nav/"
+documentation = "https://docs.rs/fusion-nav"
+license = "MIT"
+keywords = ["eskf", "navigation", "sensor-fusion", "gnss", "embedded"]
+categories = ["embedded", "no-std", "algorithms", "science"]
+exclude = ["CLAUDE.md"]
+
+[dependencies]
+
+[dev-dependencies]
