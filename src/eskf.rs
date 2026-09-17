@@ -34,14 +34,15 @@ pub struct StaticSample {
 /// Why [`Eskf::initialize`] refused.
 ///
 /// The static interval must be genuine; the filter validates rather than assumes it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum InitError {
-    /// Fewer samples than [`Initialization::min_samples`](crate::Initialization::min_samples).
-    TooFewSamples {
-        /// Samples the configuration requires.
-        required: usize,
-        /// Samples provided.
-        provided: usize,
+    /// The window spans less than
+    /// [`Initialization::min_duration`](crate::Initialization::min_duration).
+    WindowTooShort {
+        /// Duration the configuration requires.
+        required: Seconds,
+        /// Duration the window covers, `window.len() * dt`.
+        provided: Seconds,
     },
     /// The window was not stationary: angular rate or specific force moved further than
     /// the configured tolerance allows.
@@ -51,10 +52,12 @@ pub enum InitError {
 impl core::fmt::Display for InitError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::TooFewSamples { required, provided } => {
+            Self::WindowTooShort { required, provided } => {
                 write!(
                     f,
-                    "static window too short: {provided} of {required} samples"
+                    "static window too short: {:.2} s of {:.2} s required",
+                    provided.as_secs(),
+                    required.as_secs()
                 )
             }
             Self::NotStationary => write!(f, "static window was not stationary"),
@@ -108,15 +111,17 @@ impl Eskf {
     /// Position and velocity are zero, and the navigation origin is wherever the vehicle
     /// was during the window.
     ///
+    /// `dt` is the interval between consecutive samples in `window`, so that the
+    /// configured [`min_duration`](crate::Initialization::min_duration) can be checked
+    /// against a real span of time. As everywhere else, the filter never reads a clock.
+    ///
     /// **Stub.** Validates the window length and sets the filter initialized; computes no
     /// attitude.
-    pub fn initialize(&mut self, window: &[StaticSample]) -> Result<(), InitError> {
-        let required = self.config.init.min_samples;
-        if window.len() < required {
-            return Err(InitError::TooFewSamples {
-                required,
-                provided: window.len(),
-            });
+    pub fn initialize(&mut self, window: &[StaticSample], dt: Seconds) -> Result<(), InitError> {
+        let required = self.config.init.min_duration;
+        let provided = Seconds::from_secs(window.len() as f32 * dt.as_secs());
+        if provided.as_secs() < required.as_secs() {
+            return Err(InitError::WindowTooShort { required, provided });
         }
 
         let init = &self.config.init;

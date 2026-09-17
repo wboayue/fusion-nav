@@ -97,8 +97,14 @@ impl Default for Timeouts {
 /// Quasi-static initialization, equations (5)–(8).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Initialization {
-    /// Samples required in the static window.
-    pub min_samples: usize,
+    /// How long the vehicle must have been still.
+    ///
+    /// A duration rather than a sample count, because the same count means very
+    /// different things across IMU rates: 100 samples is 2 s at 50 Hz and 0.25 s at
+    /// 400 Hz, and a quarter second is too short to average sensor noise down or to
+    /// tell stillness from a slow drift. Sample rates from 50 Hz to 400 Hz appear in
+    /// real logs.
+    pub min_duration: Seconds,
     /// Largest angular rate, rad s⁻¹, still considered stationary.
     pub max_gyro_rate: f32,
     /// Largest deviation of the accelerometer magnitude from gravity, m s⁻², still
@@ -122,7 +128,7 @@ pub struct Initialization {
 impl Default for Initialization {
     fn default() -> Self {
         Self {
-            min_samples: 100,
+            min_duration: Seconds::from_secs(2.0),
             max_gyro_rate: 0.05,
             max_accel_deviation: 0.5,
             sigma_position: 1.0,

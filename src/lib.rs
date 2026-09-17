@@ -16,9 +16,12 @@
 //! use fusion_nav::prelude::*;
 //!
 //! let mut filter = Eskf::new(Config::default());
-//! filter.initialize(&[StaticSample::default(); 100])?;
+//! let dt = Seconds::from_secs(0.0025); // 400 Hz IMU
 //!
-//! filter.predict(ImuSample::default(), Seconds::from_secs(0.0025));
+//! // 800 samples at 400 Hz is the 2 s of stillness `Initialization::min_duration` wants.
+//! filter.initialize(&[StaticSample::default(); 800], dt)?;
+//!
+//! filter.predict(ImuSample::default(), dt);
 //!
 //! let outcome = filter.fuse_gnss_position(
 //!     Position::<Ned>::from_meters(12.0, -3.0, -40.0),
@@ -60,8 +63,9 @@ pub use units::{
 /// use fusion_nav::prelude::*;
 ///
 /// let mut filter = Eskf::new(Config::default());
-/// filter.initialize(&[StaticSample::default(); 100])?;
-/// filter.predict(ImuSample::default(), Seconds::from_secs(0.0025));
+/// let dt = Seconds::from_secs(0.0025);
+/// filter.initialize(&[StaticSample::default(); 800], dt)?;
+/// filter.predict(ImuSample::default(), dt);
 ///
 /// let outcome = filter.fuse_baro_altitude(
 ///     Altitude::from_meters(60.0),

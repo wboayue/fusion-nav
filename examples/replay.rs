@@ -46,10 +46,17 @@ use std::path::{Path, PathBuf};
 
 use fusion_nav::prelude::*;
 
-/// Capacity of the initialization window. Must be at least `Config::init.min_samples`.
-/// A fixed array rather than a `Vec`, to keep the example honest about what the filter
-/// itself is allowed to assume.
-const WINDOW: usize = 100;
+/// Capacity of the initialization window, in samples.
+///
+/// `Initialization::min_duration` is a span of time, so the samples it takes depend on the
+/// log: 2 s is 100 samples at 50 Hz and 800 at 400 Hz, both of which appear in real logs.
+/// This is sized for the fast end. A fixed array rather than a `Vec`, to stay honest about
+/// what the filter itself is allowed to assume — though an embedded caller at 400 Hz would
+/// decimate rather than carry 40 KB of window.
+const WINDOW: usize = 1024;
+
+/// Intervals sampled before fixing the IMU rate.
+const PROBE: usize = 64;
 
 /// Estimate columns, in the order `write_row` emits them.
 const ESTIMATE: [&str; 15] = [
@@ -102,14 +109,6 @@ fn run() -> Result<(), Box<dyn Error>> {
         magnetic_declination: Radians::from_radians(-0.06),
         ..Config::default()
     };
-    if config.init.min_samples > WINDOW {
-        return Err(format!(
-            "window holds {WINDOW} samples, config requires {}",
-            config.init.min_samples
-        )
-        .into());
-    }
-
     let text = fs::read_to_string(&input).map_err(|e| format!("{}: {e}", input.display()))?;
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
@@ -136,6 +135,17 @@ struct Replay {
     /// accepts it. A log that begins in motion simply initializes later.
     window: [StaticSample; WINDOW],
     filled: usize,
+    /// IMU sample period, taken as the median of the first `PROBE` intervals.
+    ///
+    /// The log supplies the rate rather than the example assuming one. The median, not
+    /// the minimum or the mean: one real log logs in bursts, with a shortest interval of
+    /// 2.5 ms against a true period of 20 ms, so a minimum reads it as 400 Hz. Dropouts
+    /// stretch intervals and bursts shorten them; only the middle is stable.
+    interval: Option<f32>,
+    probe: [f32; PROBE],
+    probed: usize,
+    /// Samples the window needed to cover `min_duration`, for the report.
+    window_samples: usize,
     /// Most recent magnetometer reading, attached to static samples so a log that does
     /// carry mag during the window gets an observed initial heading. The bundled log does
     /// not, which is the point: yaw starts unobserved and `sigma_yaw` stays inflated.
@@ -160,6 +170,10 @@ impl Replay {
             filter: Eskf::new(config),
             window: [StaticSample::default(); WINDOW],
             filled: 0,
+            interval: None,
+            probe: [0.0; PROBE],
+            probed: 0,
+            window_samples: 0,
             last_mag: None,
             previous_imu: None,
             ratios: [None; 4],
@@ -240,6 +254,19 @@ impl Replay {
     /// [`Fusion::NotInitialized`], so aiding rows in this stretch of the log are simply
     /// recorded and dropped.
     fn accumulate(&mut self, t: f32, imu: ImuSample) -> Result<(), Box<dyn Error>> {
+        let step = self.previous_imu.replace(t).map(|previous| t - previous);
+        if let Some(step) = step.filter(|step| *step > 0.0)
+            && self.probed < PROBE
+        {
+            self.probe[self.probed] = step;
+            self.probed += 1;
+            if self.probed == PROBE {
+                let mut sorted = self.probe;
+                sorted.sort_by(f32::total_cmp);
+                self.interval = Some(sorted[PROBE / 2]);
+            }
+        }
+
         let sample = StaticSample {
             imu,
             mag: self.last_mag,
@@ -251,17 +278,30 @@ impl Replay {
             self.window[self.filled] = sample;
             self.filled += 1;
         }
-        if self.filled < WINDOW {
+
+        // One interval is needed before the window can be sized at all.
+        let Some(interval) = self.interval else {
+            return Ok(());
+        };
+        let required = self.filter.config().init.min_duration.as_secs();
+        let needed = (required / interval).ceil() as usize;
+        if needed > WINDOW {
+            return Err(format!(
+                "{required} s at {:.0} Hz needs {needed} samples; the window holds {WINDOW}",
+                1.0 / interval
+            )
+            .into());
+        }
+        if self.filled < needed {
             return Ok(());
         }
+        self.window_samples = needed;
+        let window = &self.window[self.filled - needed..self.filled];
 
-        match self.filter.initialize(&self.window) {
+        match self.filter.initialize(window, Seconds::from_secs(interval)) {
             Ok(()) => {
                 self.initialized_at = Some(t);
-                self.mag_at_init = self.window.iter().all(|s| s.mag.is_some());
-                // The window's last sample is this one, so the next row's `dt` is
-                // measured from here.
-                self.previous_imu = Some(t);
+                self.mag_at_init = window.iter().all(|s| s.mag.is_some());
                 self.status = self.filter.state().status;
                 self.transitions.push((t, self.status));
             }
@@ -351,9 +391,16 @@ impl Replay {
                 } else {
                     "no magnetometer in the window, heading unobserved"
                 };
-                println!("\ninitialized at {t:.2} s from {WINDOW} static samples\n  {heading}");
+                let interval = self.interval.unwrap_or(f32::NAN);
+                println!(
+                    "\ninitialized at {t:.2} s from {:.2} s of stillness \
+                     ({} samples at {:.0} Hz)\n  {heading}",
+                    self.window_samples as f32 * interval,
+                    self.window_samples,
+                    1.0 / interval,
+                );
             }
-            None => println!("\nnever initialized: no stationary window of {WINDOW} samples"),
+            None => println!("\nnever initialized: no window covering min_duration"),
         }
 
         println!(

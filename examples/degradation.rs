@@ -36,8 +36,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Quasi-static initialization. A real window is captured from the IMU while the
     // vehicle sits still; the filter validates the stationarity assumption.
-    let window = [stationary_sample(); 200];
-    filter.initialize(&window)?;
+    let window = [stationary_sample(); (2 * IMU_HZ) as usize];
+    filter.initialize(&window, Seconds::from_secs(1.0 / IMU_HZ as f32))?;
     println!("initialized:       {:?}\n", filter.state().status);
 
     // --- steady state: every source arriving -------------------------------------------

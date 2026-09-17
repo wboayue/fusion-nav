@@ -20,11 +20,12 @@ fn main() -> Result<(), InitError> {
         ..Config::default()
     });
 
-    // Quasi-static initialization: the vehicle sits still, the filter validates it.
-    let window = [stationary_sample(); 200];
-    filter.initialize(&window)?;
-
     let dt = Seconds::from_secs(1.0 / IMU_HZ as f32);
+
+    // Quasi-static initialization: the vehicle sits still, the filter validates it.
+    // The window is sized in time, not samples, so it holds `min_duration` at IMU rate.
+    let window = [stationary_sample(); (2 * IMU_HZ) as usize];
+    filter.initialize(&window, dt)?;
 
     for tick in 0..(5 * IMU_HZ) {
         // Hot path: one propagation per IMU sample, `dt` supplied by the caller.
