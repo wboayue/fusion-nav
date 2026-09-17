@@ -450,12 +450,14 @@ impl Replay {
         // expectations recorded in the manifest.
         let state = self.filter.state();
         println!(
-            "\nsummary rate={:.0} window={} refused={} invalid={} epochs={} status={:?}",
+            "\nsummary rate={:.0} window={} refused={} invalid={} epochs={} \
+             transitions={} status={:?}",
             self.interval.map_or(0.0, |interval| 1.0 / interval),
             self.window_samples,
             self.refused_steps,
             self.invalid_steps,
             self.epochs,
+            self.transitions.len(),
             state.status,
         );
 

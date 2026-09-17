@@ -65,8 +65,9 @@ check_one() {
         return 1
     fi
     local summary
-    summary=$(cd "$root" && cargo run --quiet --example replay -- "$csv" "$csv.replay.csv" \
-        2>/dev/null | grep '^summary ') || true
+    # --release: the corpus includes a two-hour log, 1.4M epochs.
+    summary=$(cd "$root" && cargo run --quiet --release --example replay -- "$csv" \
+        "$csv.replay.csv" 2>/dev/null | grep '^summary ') || true
     if [ -z "$summary" ]; then
         echo "  REPLAY FAILED   $name" >&2
         return 1
