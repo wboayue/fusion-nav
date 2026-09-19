@@ -77,11 +77,13 @@ pub enum Fusion {
     NotInitialized,
     /// The measurement has nothing to be relative to. The measurement was discarded.
     ///
-    /// Barometer: no reference altitude was established, because the static window
-    /// carried no barometer sample. `α₀` of equation (30) is a constant fixed at
-    /// initialization, not a state, so a barometric altitude without one has no origin to
-    /// be relative to. Fusing it anyway would silently invent the origin from whichever
-    /// sample happened to arrive first.
+    /// Barometer: no reference altitude was established, because the window carried no
+    /// barometer sample or was taken in motion — a start that cannot claim the altitude it
+    /// reads is the ground leaves the reference alone, so a filter that never had one has
+    /// none. `α₀` of equation (30) is a constant fixed at initialization, not a state, so
+    /// a barometric altitude without one has no origin to be relative to. Fusing it anyway
+    /// would silently invent the origin from whichever sample happened to arrive first.
+    /// [`Eskf::set_baro_reference`](crate::Eskf::set_baro_reference) names one.
     ///
     /// Geodetic GNSS: no navigation origin is held and this fix cannot place one, because
     /// its latitude is beyond ±90°. The next usable fix will. See
@@ -108,6 +110,12 @@ pub enum Fusion {
     /// while it has no fix, or a variance arrived at by subtracting one σ² from another.
     /// Refused alongside [`NotFinite`](Self::NotFinite), before the adoption a coarse
     /// start allows.
+    ///
+    /// One bad component refuses the whole measurement, so a receiver in 2D-fix mode
+    /// reporting a good `eph` with `epv = 0` loses its horizontal aiding too. The filter
+    /// reports rather than repairs: PX4 and ArduPilot clamp such a value into range, and a
+    /// caller that wants that behavior floors `noise` before the call, where the policy is
+    /// visible. See [`Eskf::fuse_gnss_position`](crate::Eskf::fuse_gnss_position).
     InvalidNoise,
 }
 

@@ -463,11 +463,9 @@ impl Replay {
                         "barometric reference {:.2} m, altitudes are relative to it",
                         reference.as_meters()
                     ),
-                    None if matches!(self.alignment, Some(Alignment::Coarse(..))) => {
-                        "coarse start, so no reference was taken; altitude fusion refused"
-                            .to_string()
-                    }
-                    None => "no barometer in the window, altitude fusion refused".to_string(),
+                    None => "no barometric reference (no barometer in the window, or it was \
+                             taken in motion), altitude fusion refused"
+                        .to_string(),
                 };
                 let alignment = match self.alignment {
                     Some(Alignment::Static) => "static alignment".to_string(),

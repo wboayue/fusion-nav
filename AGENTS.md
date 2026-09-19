@@ -191,9 +191,12 @@ Single crate, `no_std`, `forbid(unsafe_code)`, `deny(missing_docs)`, allocation-
   any measurement; `sigma_yaw` >> `sigma_tilt` because gravity pins tilt and yaw inherits the
   magnetometer's error.
 
-A *static* window also fixes `α₀`, the barometric reference (`StaticSample::baro` →
-`Eskf::baro_reference`, equation (30)); a coarse one keeps whatever reference the flight already
-had, since it cannot claim the current altitude is zero — the same boundary the origin has. It is neither of the three above: a constant, not noise
+A window taken **at rest** also fixes `α₀`, the barometric reference (`StaticSample::baro` →
+`Eskf::baro_reference`, equation (30)); one taken in motion keeps whatever reference the flight
+already had, since it cannot claim the altitude it reads is the ground. Measured by
+`init::at_rest`, not read off the `Alignment`: `classify` reports a short window as
+`Coarse::WindowTooShort` *before* it ever measures motion, so a still 0.8 s window on the ground
+has an honest reference while a moving window of any length does not. It is neither of the three above: a constant, not noise
 and not a state, and the only initialization output an application may need to keep. A window
 with no barometer sample leaves it unset and `fuse_baro_altitude` returns `Fusion::NoReference`
 rather than referring altitudes to an invented origin — the LPE log in the corpus

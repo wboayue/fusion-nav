@@ -160,11 +160,12 @@ the window the filter takes:
   constant, so a window with no barometer samples leaves altitudes with nothing to be relative
   to, and `fuse_baro_altitude` returns `Fusion::NoReference` for the whole flight.
 
-Only a static start establishes `α₀`, because only it declares the vehicle to be at zero here and
-now. A coarse start — a restart at altitude, most obviously — keeps the reference the flight began
-with rather than calling the current altitude zero. `set_baro_reference(α₀)` names one instead,
-which is also how an `initialize_from` seed gets one; it returns `false` for a value that is not a
-number.
+A window taken **at rest** establishes `α₀`, including one too short to align an attitude from: a
+vehicle sitting on the ground has an honest reference whatever the window length, and that altitude
+is what zero will mean. A window taken in motion — a restart at altitude, most obviously — keeps the
+reference the flight began with rather than calling its own altitude the ground.
+`set_baro_reference(α₀)` names one instead, which is also how an `initialize_from` seed gets one; it
+returns `false` for a value that is not a number.
 
 A window that is short or moving is **not refused**. It gives a coarse start: attitude
 uncertainty inflated to match the motion actually measured, and `Status::Aligning` until tilt
