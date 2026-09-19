@@ -459,7 +459,12 @@ Known and deliberate, stated here rather than discovered in flight.
   [barometric reference as a constant](GOALS.md#barometric-reference-as-a-constant) for why this
   filter does not.
 * **No magnetic-field states.** Hard- and soft-iron calibration is the application's job.
-* **Initialization requires a genuine static interval**, and the application must verify it.
+* **Initialization normally requires a genuine static interval**, and the application must
+  verify it. Where no stillness is available — a moving deck, a hand launch, a restart at
+  altitude — `initialize_from` seeds the filter with an estimate the application already holds,
+  such as one from a companion AHRS or the last flight's saved state. Aligning a bare vehicle
+  while it moves is not yet supported; see
+  [alignment beyond the static window](GOALS.md#alignment-beyond-the-static-window).
 * **Local tangent plane.** Position is Cartesian NED about a fixed origin, so accuracy degrades
   over ranges where Earth curvature matters. PX4 carries latitude and longitude for this reason.
 * **The filter gates but does not self-recover.** On sustained rejection it reports

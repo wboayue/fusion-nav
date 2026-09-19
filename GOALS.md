@@ -193,7 +193,7 @@ differentiator most likely to be judged on whether the offline tool actually get
 
 ## Open design questions
 
-One gap in the current design still needs a decision before implementation.
+Two gaps in the current design still need a decision before implementation.
 
 ### Measurement latency
 
@@ -203,6 +203,64 @@ against the current state degrades the solution noticeably in flight.
 
 Either implement a bounded state buffer or document the assumption explicitly. Handling this
 cleanly at 15 states would itself be a differentiator.
+
+### Alignment beyond the static window
+
+Requiring a validated static interval before the filter will run restricts the launch envelope,
+and that is not a limitation this crate wants. It excludes takeoff from a moving deck, roof or
+boat, hand launches where the operator's tremor exceeds the gate, air drops — and, most sharply,
+any re-initialization at altitude, since there is no second static window before landing.
+
+The physics is not symmetric, and it drives the options. **At rest**, gravity fixes tilt precisely
+and yaw is unobservable without a magnetometer: MEMS gyroscopes cannot gyrocompass, Earth rate at
+15°/h being far below their noise floor. **In motion**, that inverts — the accelerometer reads
+specific force rather than gravity, so tilt is harder, while GNSS velocity says where the vehicle
+is actually going, so yaw is easier. A moving launch is not less informed. It is differently
+informed, and the current API cannot express that.
+
+The deeper asymmetry is against the production estimators. PX4 and ArduPilot can afford sloppy
+starts — ArduPilot aligns from a single un-averaged accelerometer sample — because they realign
+continuously from aiding and from their bias states. A bad start is a transient they grow out of.
+`fusion-nav` has no realignment path, so `initialize` is the only moment attitude is ever
+established, and refusing is permanent rather than deferred. **That is what turns a stillness
+precondition into a launch restriction**, and either half alone would be survivable.
+
+The options, in the order they are worth doing:
+
+1. **Seeded initialization.** Take the estimate from whatever the application already has: a
+   companion AHRS, a survey, the previous flight's saved state. No new mathematics, no new
+   states, no hot-path cost, and it fits differentiator 5 directly. **Done** —
+   `Eskf::initialize_from`, with `set_baro_reference` to complete the seed. It covers the
+   restart-at-altitude case and any vehicle already carrying an attitude source; it does nothing
+   for a bare vehicle with no second source.
+2. **Coarse alignment and an `Aligning` status.** Initialize from an instantaneous
+   accelerometer sample with a deliberately large `P₀`, let the filter run, and report that the
+   attitude is not yet trustworthy. This is the structural piece: the missing concept is less any
+   one algorithm than a way to say *running, but do not fly on my attitude yet*.
+3. **Gate policy while aligning.** Not optional alongside 2. A coarse start produces large
+   innovations, and today's gates would reject exactly the measurements that would fix it — the
+   [gate lockout](EQUATIONS.md#gate-lockout) failure, arriving at the worst possible moment.
+   Alignment needs inflated gates, or no gating until aligned.
+4. **In-motion leveling.** Differentiate GNSS velocity for navigation-frame acceleration,
+   subtract it from measured specific force, and recover gravity's direction while moving.
+   Removes the stillness requirement for tilt outright. No new states; noisy under aggressive
+   manoeuvring.
+5. **Yaw from course over ground.** While moving, velocity direction is heading, nearly free.
+   Works for fixed-wing and ground vehicles, not for a multirotor that crabs and hovers.
+6. **An EKF-GSF yaw estimator.** A bank of small filters over yaw hypotheses weighted by GNSS
+   velocity innovations — ArduPilot's invention, since ported into PX4, and the general answer to
+   aligning yaw while moving without a magnetometer. Effective, and genuinely a second estimator
+   inside a crate whose pitch is being small enough to read. Only if 4 and 5 prove insufficient.
+
+Two API decisions shape the rest, and are worth settling early:
+
+* **`initialize` should report which alignment it achieved, not take a mode argument.** Hand it
+  whatever data exists; let it answer *static and fully aligned*, *coarse, yaw unobserved*, or
+  *seeded*. That is differentiator 7 applied to alignment: the data already says what the launch
+  was, so do not make the integrator classify it.
+* **`Aligning` is not `Degraded`.** Degraded means aided and drifting; aligning means the
+  attitude itself has not converged. Conflating them would mislead a controller in precisely the
+  phase where the distinction matters most.
 
 ## Decisions
 

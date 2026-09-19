@@ -3,7 +3,7 @@
 use crate::config::Config;
 use crate::frames::{Body, Ned};
 use crate::health::{Diagnostics, Fusion, Propagation, Status};
-use crate::state::{Covariance, State};
+use crate::state::{Covariance, STATES, State};
 use crate::units::{
     Acceleration, Altitude, AltitudeVariance, AngularRate, HeadingVariance, MagField, Position,
     PositionVariance, Seconds, Velocity, VelocityVariance,
@@ -61,6 +61,13 @@ pub enum InitError {
     /// The window was not stationary: angular rate or specific force moved further than
     /// the configured tolerance allows.
     NotStationary,
+    /// The seed handed to [`Eskf::initialize_from`] was not usable: a non-finite value in
+    /// the state, or a covariance with a non-finite entry or a negative variance.
+    ///
+    /// A seed crosses a boundary the filter does not control — another estimator, or a
+    /// deserialized warm start off storage that may be stale or corrupt — so it is
+    /// checked rather than trusted.
+    InvalidSeed,
 }
 
 impl core::fmt::Display for InitError {
@@ -75,6 +82,7 @@ impl core::fmt::Display for InitError {
                 )
             }
             Self::NotStationary => write!(f, "static window was not stationary"),
+            Self::InvalidSeed => write!(f, "seed state or covariance was not usable"),
         }
     }
 }
@@ -163,6 +171,58 @@ impl Eskf {
         self.baro_reference = baro_reference(window);
         self.initialized = true;
         Ok(())
+    }
+
+    /// Initialize from an estimate the application already holds, rather than from a
+    /// static window.
+    ///
+    /// [`initialize`](Self::initialize) is the better path wherever stillness is
+    /// available: it averages sensor noise away, and gyroscope bias is observable at
+    /// rest. This one exists for the launches that never offer stillness — a moving deck,
+    /// a hand launch, a restart at altitude — and for a warm start from the last flight,
+    /// where a saved gyroscope bias is worth far more to a moving vehicle than zero is.
+    ///
+    /// The caller owns the seed's quality and `covariance` is how it says so: an attitude
+    /// from a companion AHRS deserves the uncertainty that AHRS reports, not the
+    /// static-window figures in [`Initialization`](crate::Initialization). Seeding a
+    /// coarse attitude with a confident covariance is the one way to misuse this, and it
+    /// produces a filter that gates out the measurements that would have corrected it.
+    ///
+    /// `state.status` is ignored: status is derived from aiding, never asserted.
+    /// [`baro_reference`](Self::baro_reference) is left alone, so re-initializing in
+    /// flight keeps the reference the flight began with; a filter that never had one
+    /// needs [`set_baro_reference`](Self::set_baro_reference) before barometric fusion
+    /// will be accepted.
+    ///
+    /// # Errors
+    ///
+    /// [`InitError::InvalidSeed`] if `state` carries a non-finite value, or `covariance`
+    /// a non-finite entry or a negative variance. A rejected seed leaves the filter
+    /// uninitialized rather than poisoned.
+    pub fn initialize_from(
+        &mut self,
+        state: State,
+        covariance: Covariance,
+    ) -> Result<(), InitError> {
+        if !state_is_finite(&state) || !covariance_is_usable(&covariance) {
+            return Err(InitError::InvalidSeed);
+        }
+        self.state = state;
+        self.covariance = covariance;
+        self.diagnostics = Diagnostics::default();
+        self.initialized = true;
+        Ok(())
+    }
+
+    /// Set the barometric reference `α₀` directly. Equation (30).
+    ///
+    /// Two uses: completing an [`initialize_from`](Self::initialize_from) seed, which
+    /// carries no reference of its own, and re-establishing the reference on the ground
+    /// when drift in it has become the dominant vertical error. That remedy is the
+    /// application's to apply, because the filter cannot tell a drifting reference from a
+    /// genuine climb.
+    pub const fn set_baro_reference(&mut self, reference: Altitude) {
+        self.baro_reference = Some(reference);
     }
 
     /// Propagate the nominal state and covariance over `dt`. Equations (9)–(22).
@@ -376,6 +436,30 @@ impl Eskf {
     }
 }
 
+/// Whether every number in a seed state is finite. A quaternion is unit by construction,
+/// so only its finiteness is in question here.
+fn state_is_finite(state: &State) -> bool {
+    let q = state.attitude.quaternion();
+    let vectors = [
+        state.position.as_meters(),
+        state.velocity.as_m_per_s(),
+        state.accel_bias.as_m_per_s2(),
+        state.gyro_bias.as_rad_per_s(),
+    ];
+    [q.w, q.i, q.j, q.k].iter().all(|v| v.is_finite())
+        && vectors
+            .iter()
+            .all(|v| v.iter().all(|component| component.is_finite()))
+}
+
+/// Whether a seed covariance could be a prior: finite throughout, with no negative
+/// variance. Symmetry and positive-definiteness are not checked — that is a matrix
+/// factorization on the caller's data, not a guard.
+fn covariance_is_usable(covariance: &Covariance) -> bool {
+    let p = covariance.as_matrix();
+    p.iter().all(|entry| entry.is_finite()) && (0..STATES).all(|i| p[(i, i)] >= 0.0)
+}
+
 /// Mean barometric altitude over the samples that carry one. `None` if none do.
 ///
 /// Accumulated in `f64`: a window is up to a few thousand samples and an altitude is
@@ -396,6 +480,7 @@ fn baro_reference(window: &[StaticSample]) -> Option<Altitude> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::ErrorState;
 
     const DT: Seconds = Seconds::from_secs(0.01);
 
@@ -546,6 +631,103 @@ mod tests {
             .initialize(&window_with_baro([250.0; 8]), Seconds::from_secs(0.25))
             .expect("a 2 s window");
         assert_eq!(filter.baro_reference(), Some(Altitude::from_meters(250.0)));
+    }
+
+    /// An attitude and biases such as a companion AHRS would hand over, with the
+    /// uncertainty that source reports rather than the static-window figures.
+    fn seed() -> (State, Covariance) {
+        let state = State {
+            velocity: Velocity::from_m_per_s(18.0, 0.0, 0.0),
+            gyro_bias: AngularRate::from_rad_per_s(0.001, -0.002, 0.0005),
+            ..State::default()
+        };
+        let mut sigmas = [0.5f32; STATES];
+        sigmas[ErrorState::AttitudeZ.index()] = 1.0; // a moving start knows yaw poorly
+        (state, Covariance::from_sigmas(sigmas))
+    }
+
+    #[test]
+    fn a_seed_becomes_the_state_and_the_covariance() {
+        let mut filter = Eskf::new(Config::default());
+        let (state, covariance) = seed();
+        filter
+            .initialize_from(state, covariance)
+            .expect("a sane seed");
+        assert!(filter.is_initialized());
+        assert_eq!(filter.state().velocity, state.velocity);
+        assert_eq!(filter.state().gyro_bias, state.gyro_bias);
+        assert_eq!(filter.covariance(), &covariance);
+    }
+
+    #[test]
+    fn a_seed_carries_no_baro_reference_of_its_own() {
+        let mut filter = Eskf::new(Config::default());
+        let (state, covariance) = seed();
+        filter
+            .initialize_from(state, covariance)
+            .expect("a sane seed");
+        assert_eq!(filter.baro_reference(), None);
+        assert_eq!(
+            filter.fuse_baro_altitude(Altitude::from_meters(60.0), AltitudeVariance::from_m2(4.0)),
+            Fusion::NoReference
+        );
+
+        filter.set_baro_reference(Altitude::from_meters(52.0));
+        assert!(
+            filter
+                .fuse_baro_altitude(Altitude::from_meters(60.0), AltitudeVariance::from_m2(4.0))
+                .is_accepted()
+        );
+    }
+
+    #[test]
+    fn reinitializing_in_flight_keeps_the_reference_the_flight_began_with() {
+        let mut filter = aided();
+        let (state, covariance) = seed();
+        filter
+            .initialize_from(state, covariance)
+            .expect("a sane seed");
+        assert_eq!(
+            filter.baro_reference(),
+            Some(Altitude::from_meters(100.0)),
+            "the barometer did not change when the filter restarted"
+        );
+    }
+
+    #[test]
+    fn a_seed_that_is_not_finite_is_refused_and_nothing_is_initialized() {
+        let (state, covariance) = seed();
+        let poisoned = State {
+            position: Position::from_meters(f32::NAN, 0.0, 0.0),
+            ..state
+        };
+        let mut filter = Eskf::new(Config::default());
+        assert_eq!(
+            filter.initialize_from(poisoned, covariance),
+            Err(InitError::InvalidSeed)
+        );
+        assert!(!filter.is_initialized(), "a refused seed leaves no state");
+
+        // The same check on the covariance, which is where a stale warm start off
+        // storage tends to arrive broken.
+        let mut matrix = *covariance.as_matrix();
+        matrix[(
+            ErrorState::VelocityNorth.index(),
+            ErrorState::VelocityNorth.index(),
+        )] = -1.0;
+        assert_eq!(
+            filter.initialize_from(state, Covariance::from_matrix(matrix)),
+            Err(InitError::InvalidSeed)
+        );
+        matrix[(
+            ErrorState::VelocityNorth.index(),
+            ErrorState::VelocityNorth.index(),
+        )] = f32::NAN;
+        assert_eq!(
+            filter.initialize_from(state, Covariance::from_matrix(matrix)),
+            Err(InitError::InvalidSeed)
+        );
+        assert!(!filter.is_initialized());
     }
 
     #[test]

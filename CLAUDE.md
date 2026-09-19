@@ -59,8 +59,11 @@ affected expectations.
 Single crate, `no_std`, `forbid(unsafe_code)`, `deny(missing_docs)`, allocation-free, edition
 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
 
-- `src/eskf.rs` — `Eskf`, the whole public filter: `initialize`, `predict`, `fuse_*`, `state`,
-  `reset_*_to`. The only place with tests today.
+- `src/eskf.rs` — `Eskf`, the whole public filter: `initialize`, `initialize_from`, `predict`,
+  `fuse_*`, `state`, `reset_*_to`. The only place with tests today. `initialize_from` is stage 1
+  of GOALS.md's "Alignment beyond the static window": the static window stays the preferred path,
+  and coarse in-motion alignment plus a `Status::Aligning` phase is designed there but unbuilt —
+  read that section before touching initialization.
 - `src/state.rs` — `State` (nominal, 16 values), `Covariance`/`CovarianceMatrix` (15×15), and
   `ErrorState`, whose discriminants define the covariance ordering `[δp δv δθ δβa δβg]`.
 - `src/units.rs` — typed scalars/vectors; every constructor names its unit (`from_meters`,
