@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to coding agents working with code in this repository.
 
 ## Status
 
@@ -54,6 +54,11 @@ f64 timestamp parse, old field spellings). Adding or dropping a log means saying
 it uniquely covers. Changing a `Config` default or the `summary` line requires updating the
 affected expectations.
 
+Expectations are matched pair by pair as substrings, so **adding** a key to the `summary` line is
+safe and pinning new behavior there is cheap — `align=` and `resets=` were added that way, and
+each now guards a decision that would otherwise rot into a comment. Renaming or removing a key
+breaks every entry at once.
+
 ## How defaults get decided
 
 Three defaults are no longer placeholders, and each records its evidence in its doc comment:
@@ -67,12 +72,21 @@ logs actually do, then pick the number — and write down what the data said. An
 replay output should be measured this way before it is committed, because the manifest
 expectations are the regression guard and a change that moves them needs a reason in words.
 
-For comparison numbers, read PX4 and ArduPilot source rather than their docs or memory: PX4's
-defaults live in `src/modules/ekf2/EKF/common.h`, its alignment gates in `EKF/ekf.cpp`, its baro
-bias estimator under `EKF/aid_sources/barometer/`, and its GNSS `R` floors under
-`EKF/aid_sources/gnss/`; ArduPilot's parameters are in `libraries/AP_NavEKF3/AP_NavEKF3.cpp` and
-its bootstrap in `AP_NavEKF3_core.cpp`. Published figures drift — PX4's barometer noise default
-is 2.0 m in current source, not the 3.5 m widely quoted.
+Read PX4 and ArduPilot source rather than their docs or memory, for behavior as much as for
+numbers. Defaults: PX4 `src/modules/ekf2/EKF/common.h`, ArduPilot
+`libraries/AP_NavEKF3/AP_NavEKF3.cpp`. Alignment: PX4 `EKF/ekf.cpp` (`initialiseTilt`),
+ArduPilot `AP_NavEKF3_core.cpp` (`InitialiseFilterBootstrap`). Baro reference: PX4
+`EKF/aid_sources/barometer/`, ArduPilot `AP_NavEKF3_Measurements.cpp`. GNSS `R` floors: PX4
+`EKF/aid_sources/gnss/gps_control.cpp`, ArduPilot `AP_NavEKF3_PosVelFusion.cpp`. Status models:
+PX4 `filter_control_status_u` in `common.h` plus `msg/versioned/VehicleLocalPosition.msg`,
+ArduPilot `libraries/AP_NavEKF/AP_Nav_Common.h`. Published figures drift — PX4's barometer noise
+default is 2.0 m in current source, not the 3.5 m widely quoted.
+
+Comparing against them is a design tool, not just a fact check. `Validity` and
+`predicted_validity` exist because a comparison showed both estimators answer *which output can I
+use* per quantity while this crate answered only *how bad is the worst thing*; the gap was real
+and had already cost the corpus a regression guard. When a reporting or API question comes up,
+look at what those two publish before inventing something.
 
 ## Architecture
 

@@ -12,7 +12,7 @@ documentation = "https://docs.rs/fusion-nav"
 license = "MIT"
 keywords = ["eskf", "navigation", "sensor-fusion", "gnss", "embedded"]
 categories = ["embedded", "no-std", "algorithms", "science"]
-exclude = ["CLAUDE.md"]
+exclude = ["AGENTS.md"]
 
 [dependencies]
 nalgebra = { version = "0.35", default-features = false, features = ["libm"] }
