@@ -11,6 +11,21 @@ harness. Anything stubbed says so in its doc comment with a `**Stub.**` paragrap
 marker accurate when landing real math, and keep the same caveat in `README.md`, `src/lib.rs`,
 and the example module docs, which all repeat it.
 
+## Goal: a reference to learn from
+
+Clarity and readability are goals, not side effects. This crate should work as a reference
+implementation someone can learn an ESKF from by reading it — GOALS.md differentiator 3,
+"Readable mathematics", is the contrast with PX4's generated code. In practice:
+
+- Prefer the obvious form of an equation over a clever or fused one; name variables after the
+  symbols in `EQUATIONS.md` and cite the equation number.
+- A reader should follow a function top to bottom without jumping files. Split for meaning,
+  not line count.
+- Explain *why* in doc comments (the derivation, the source, the evidence), not *what* the next
+  line does.
+- When performance and readability conflict, keep the readable version unless a measured cost
+  says otherwise, and record the measurement where the trade was made.
+
 ## Commands
 
 ```bash
