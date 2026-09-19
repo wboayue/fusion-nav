@@ -10,7 +10,7 @@ use crate::init::{
 use crate::state::{Covariance, ErrorState, STATES, State};
 use crate::units::{
     Acceleration, Altitude, AltitudeVariance, AngularRate, HeadingVariance, MagField, Position,
-    PositionVariance, Seconds, Velocity, VelocityVariance,
+    PositionVariance, Radians, Seconds, Velocity, VelocityVariance,
 };
 
 /// One IMU measurement, uncorrected. The filter subtracts its own bias estimates.
@@ -35,8 +35,7 @@ pub struct Eskf {
     covariance: Covariance,
     diagnostics: Diagnostics,
     baro_reference: Option<Altitude>,
-    /// Quantities a coarse start left unknown, to be adopted from the first fix rather
-    /// than fused against a prior the filter does not have.
+    /// Quantities a coarse start left unknown. See [`Fusion::Reset`].
     unknown: Unknown,
     initialized: bool,
 }
@@ -256,10 +255,8 @@ impl Eskf {
             return Propagation::NotInitialized;
         }
         // Rejected ahead of the bookkeeping: a negative `dt` would wind the timers back
-        // and a NaN would poison them. `is_nan` is spelled out because `<= 0.0` alone is
-        // false for NaN.
-        let seconds = dt.as_secs();
-        if seconds <= 0.0 || seconds.is_nan() {
+        // and a NaN would poison them.
+        if !is_usable_step(dt) {
             return Propagation::InvalidStep { dt };
         }
 
@@ -268,7 +265,7 @@ impl Eskf {
         self.diagnostics.advance(dt);
 
         let limit = self.config.max_predict_dt;
-        if seconds > limit.as_secs() {
+        if dt.as_secs() > limit.as_secs() {
             return Propagation::StepTooLong { dt, limit };
         }
         Propagation::Propagated
@@ -276,11 +273,8 @@ impl Eskf {
 
     /// Fuse a GNSS position fix. Equation (28).
     ///
-    /// After a coarse start the first fix is **adopted, not fused** — [`Fusion::Reset`] —
-    /// because a vehicle that initialized while moving has no position for a gate to
-    /// judge a measurement against. The state becomes the fix and its covariance block
-    /// becomes the fix's, which is the exact limit of fusing against an infinitely
-    /// uncertain prior. It happens once; the next fix is fused normally.
+    /// After a coarse start the first fix is adopted rather than fused; see
+    /// [`Fusion::Reset`].
     ///
     /// `variance` is the receiver's own accuracy where it reports one — `eph²`
     /// horizontally, `epv²` vertically — but **floor it first**. An accuracy estimate is
@@ -310,16 +304,13 @@ impl Eskf {
             return Fusion::Reset;
         }
         let _ = (position, variance);
-        self.stub_fuse(|d| &mut d.gnss_position)
+        stub_accept(&mut self.diagnostics.gnss_position)
     }
 
     /// Fuse a GNSS velocity solution. Equation (29).
     ///
-    /// As with [`fuse_gnss_position`](Self::fuse_gnss_position), the first solution after
-    /// a coarse start is adopted rather than fused. Velocity is the sharper case: a
-    /// static start knows the vehicle is at rest, a coarse start knows nothing, and
-    /// claiming the configured 0.1 m s⁻¹ prior for a vehicle doing 18 m s⁻¹ would gate
-    /// out the fix that would have corrected it.
+    /// After a coarse start the first solution is adopted rather than fused; see
+    /// [`Fusion::Reset`].
     ///
     /// `variance` is the receiver's speed accuracy squared, `sacc²`, and wants the same
     /// floor as [`fuse_gnss_position`](Self::fuse_gnss_position): PX4 fuses
@@ -341,7 +332,7 @@ impl Eskf {
             return Fusion::Reset;
         }
         let _ = (velocity, variance);
-        self.stub_fuse(|d| &mut d.gnss_velocity)
+        stub_accept(&mut self.diagnostics.gnss_velocity)
     }
 
     /// Fuse a barometric altitude. Equation (30).
@@ -352,14 +343,14 @@ impl Eskf {
     ///
     /// **Stub.** Records an acceptance with a zero test ratio; corrects nothing.
     pub fn fuse_baro_altitude(&mut self, altitude: Altitude, variance: AltitudeVariance) -> Fusion {
-        let _ = (altitude, variance);
         if !self.initialized {
             return Fusion::NotInitialized;
         }
         if self.baro_reference.is_none() {
             return Fusion::NoReference;
         }
-        self.stub_fuse(|d| &mut d.baro_altitude)
+        let _ = (altitude, variance);
+        stub_accept(&mut self.diagnostics.baro_altitude)
     }
 
     /// Fuse magnetic heading from a calibrated three-axis magnetometer.
@@ -371,8 +362,11 @@ impl Eskf {
     ///
     /// **Stub.** Records an acceptance with a zero test ratio; corrects nothing.
     pub fn fuse_mag_heading(&mut self, field: MagField<Body>, variance: HeadingVariance) -> Fusion {
+        if !self.initialized {
+            return Fusion::NotInitialized;
+        }
         let _ = (field, variance);
-        self.stub_fuse(|d| &mut d.mag_heading)
+        stub_accept(&mut self.diagnostics.mag_heading)
     }
 
     /// The current estimate, including its [`Status`].
@@ -421,8 +415,8 @@ impl Eskf {
         let accuracy = &self.config.accuracy;
         let within = |state, sigma: f32| self.covariance.variance(state) <= sigma * sigma;
         let tilt = accuracy.sigma_tilt.as_radians();
-        let position = accuracy.sigma_position;
-        let velocity = accuracy.sigma_velocity;
+        let position = accuracy.sigma_position.as_meters();
+        let velocity = accuracy.sigma_velocity.as_m_per_s();
 
         Validity {
             tilt: within(ErrorState::AttitudeX, tilt) && within(ErrorState::AttitudeY, tilt),
@@ -506,9 +500,8 @@ impl Eskf {
     /// The filter does not do this on its own to **recover**: on sustained rejection it
     /// reports [`Status::DeadReckoning`] and leaves the policy to the application, which
     /// is the only layer that knows whether a step input to the controller is acceptable.
-    /// The one exception is a quantity that was never established at all — see
-    /// [`fuse_gnss_position`](Self::fuse_gnss_position) — where there is no estimate to
-    /// step away from.
+    /// The one exception is a quantity that was never established at all; see
+    /// [`Fusion::Reset`].
     pub fn reset_position_to(&mut self, position: Position<Ned>, variance: PositionVariance<Ned>) {
         self.state.position = position;
         self.covariance.reset_block(
@@ -541,20 +534,12 @@ impl Eskf {
     /// Reset state, covariance and health for a fresh start with these attitude sigmas.
     /// The barometric reference is the caller's to set, because only it knows whether
     /// this start establishes a new one.
-    fn apply_alignment(&mut self, unknown: Unknown, sigma_tilt: f32, sigma_yaw: f32) {
+    fn apply_alignment(&mut self, unknown: Unknown, sigma_tilt: Radians, sigma_yaw: Radians) {
         self.covariance = init::initial_covariance(&self.config.init, sigma_tilt, sigma_yaw);
         self.state = State::default();
         self.diagnostics = Diagnostics::default();
         self.unknown = unknown;
         self.initialized = true;
-    }
-
-    fn stub_fuse(&mut self, source: fn(&mut Diagnostics) -> &mut crate::SourceHealth) -> Fusion {
-        if !self.initialized {
-            return Fusion::NotInitialized;
-        }
-        source(&mut self.diagnostics).record_accepted(0.0);
-        Fusion::Accepted { test_ratio: 0.0 }
     }
 
     /// Aggregate alignment and the per-source timers into one status, most severe first.
@@ -565,14 +550,10 @@ impl Eskf {
         let degraded_after = self.config.timeouts.degraded_after.as_secs();
         let dead_after = self.config.timeouts.dead_reckoning_after.as_secs();
 
-        let sources = self.diagnostics.as_array();
         let mut used = 0;
         let mut fresh = 0;
         let mut aiding = 0;
-        let mut i = 0;
-        while i < sources.len() {
-            let source = sources[i];
-            i += 1;
+        for (_, source) in self.diagnostics.sources() {
             let Some(elapsed) = source.time_since_accepted else {
                 continue;
             };
@@ -613,6 +594,20 @@ impl Unknown {
             velocity: coarse,
         }
     }
+}
+
+/// Whether `dt` is a real, forward step in time: positive and not NaN. `is_nan` is
+/// spelled out because `<= 0.0` alone is false for NaN.
+pub(crate) fn is_usable_step(dt: Seconds) -> bool {
+    let seconds = dt.as_secs();
+    seconds > 0.0 && !seconds.is_nan()
+}
+
+/// What every `fuse_*` stub does in place of an update: record an acceptance with a zero
+/// test ratio.
+fn stub_accept(source: &mut SourceHealth) -> Fusion {
+    source.record_accepted(0.0);
+    Fusion::Accepted { test_ratio: 0.0 }
 }
 
 #[cfg(test)]
@@ -913,6 +908,7 @@ mod tests {
         let Alignment::Coarse(Coarse::NotStationary { peak_gyro, .. }) = alignment else {
             panic!("0.4 rad/s is over the 0.262 default: {alignment:?}");
         };
+        let peak_gyro = peak_gyro.as_rad_per_s();
         assert!((peak_gyro - 0.4).abs() < 1e-6, "got {peak_gyro}");
         assert!(!filter.is_aligned());
     }

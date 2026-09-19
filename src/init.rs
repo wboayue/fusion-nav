@@ -6,10 +6,10 @@
 //! functions here and then commit the result to the filter.
 
 use crate::config::{GRAVITY, Initialization};
-use crate::eskf::ImuSample;
+use crate::eskf::{ImuSample, is_usable_step};
 use crate::frames::Body;
 use crate::state::{Covariance, State};
-use crate::units::{Altitude, MagField, Seconds};
+use crate::units::{Altitude, MagField, MetersPerSecond2, Radians, RadiansPerSecond, Seconds};
 
 /// One sample from the quasi-static initialization window.
 ///
@@ -87,10 +87,10 @@ pub enum Coarse {
     /// The vehicle was moving: angular rate or specific force left the tolerance
     /// [`Initialization`](crate::Initialization) allows.
     NotStationary {
-        /// Largest angular rate magnitude in the window, rad s⁻¹.
-        peak_gyro: f32,
-        /// Largest departure of the specific-force magnitude from gravity, m s⁻².
-        peak_accel_deviation: f32,
+        /// Largest angular rate magnitude in the window.
+        peak_gyro: RadiansPerSecond,
+        /// Largest departure of the specific-force magnitude from gravity.
+        peak_accel_deviation: MetersPerSecond2,
         /// How long the window spanned. With `peak_gyro`, this bounds how far the
         /// vehicle turned while its gravity vector was being averaged, which is the
         /// other way a moving window spoils tilt.
@@ -151,8 +151,7 @@ pub(crate) fn classify(
     if window.is_empty() {
         return Err(InitError::NoSamples);
     }
-    let seconds = dt.as_secs();
-    if seconds <= 0.0 || seconds.is_nan() {
+    if !is_usable_step(dt) {
         return Err(InitError::InvalidStep { dt });
     }
     if !window.iter().all(sample_is_finite) {
@@ -160,7 +159,7 @@ pub(crate) fn classify(
     }
 
     let required = init.min_duration;
-    let provided = Seconds::from_secs(window.len() as f32 * seconds);
+    let provided = Seconds::from_secs(window.len() as f32 * dt.as_secs());
     if provided.as_secs() < required.as_secs() {
         return Ok(Alignment::Coarse(Coarse::WindowTooShort {
             required,
@@ -185,13 +184,11 @@ pub(crate) fn classify(
 /// from how far the specific force was from gravity — small-angle, so
 /// `σ ≈ deviation / g` — and never tighter than the configured value, together with
 /// the standard deviation of a heading known only to be somewhere on the circle.
-pub(crate) fn attitude_sigmas(init: &Initialization, alignment: Alignment) -> (f32, f32) {
+pub(crate) fn attitude_sigmas(init: &Initialization, alignment: Alignment) -> (Radians, Radians) {
     match alignment {
-        Alignment::Static | Alignment::Seeded => {
-            (init.sigma_tilt.as_radians(), init.sigma_yaw.as_radians())
-        }
+        Alignment::Static | Alignment::Seeded => (init.sigma_tilt, init.sigma_yaw),
         Alignment::Coarse(Coarse::WindowTooShort { .. }) => {
-            (init.sigma_tilt.as_radians(), UNKNOWN_HEADING_SIGMA)
+            (init.sigma_tilt, UNKNOWN_HEADING_SIGMA)
         }
         Alignment::Coarse(Coarse::NotStationary {
             peak_gyro,
@@ -204,16 +201,14 @@ pub(crate) fn attitude_sigmas(init: &Initialization, alignment: Alignment) -> (f
             // the vehicle while its gravity vector is being averaged, by at most
             // `ω · span`. A window can suffer either without the other: a vehicle
             // rotating about its own gravity vector reads a clean `g`.
-            let from_force = peak_accel_deviation / GRAVITY;
-            let from_rotation = peak_gyro * span.as_secs();
-            let mut tilt = init.sigma_tilt.as_radians();
-            if from_force > tilt {
-                tilt = from_force;
-            }
-            if from_rotation > tilt {
-                tilt = from_rotation;
-            }
-            (tilt, UNKNOWN_HEADING_SIGMA)
+            let from_force = peak_accel_deviation.as_m_per_s2() / GRAVITY;
+            let from_rotation = peak_gyro.as_rad_per_s() * span.as_secs();
+            let tilt = init
+                .sigma_tilt
+                .as_radians()
+                .max(from_force)
+                .max(from_rotation);
+            (Radians::from_radians(tilt), UNKNOWN_HEADING_SIGMA)
         }
     }
 }
@@ -224,26 +219,24 @@ pub(crate) fn attitude_sigmas(init: &Initialization, alignment: Alignment) -> (f
 /// [`attitude_sigmas`], because they depend on how good the alignment was.
 pub(crate) fn initial_covariance(
     init: &Initialization,
-    sigma_tilt: f32,
-    sigma_yaw: f32,
+    sigma_tilt: Radians,
+    sigma_yaw: Radians,
 ) -> Covariance {
-    Covariance::from_sigmas([
-        init.sigma_position,
-        init.sigma_position,
-        init.sigma_position,
-        init.sigma_velocity,
-        init.sigma_velocity,
-        init.sigma_velocity,
-        sigma_tilt,
-        sigma_tilt,
-        sigma_yaw,
-        init.sigma_accel_bias,
-        init.sigma_accel_bias,
-        init.sigma_accel_bias,
-        init.sigma_gyro_bias,
-        init.sigma_gyro_bias,
-        init.sigma_gyro_bias,
-    ])
+    let position = init.sigma_position.as_meters();
+    let velocity = init.sigma_velocity.as_m_per_s();
+    let (tilt, yaw) = (sigma_tilt.as_radians(), sigma_yaw.as_radians());
+    let accel_bias = init.sigma_accel_bias.as_m_per_s2();
+    let gyro_bias = init.sigma_gyro_bias.as_rad_per_s();
+    // In the `ErrorState` ordering: `[δp δv δθ δβa δβg]`.
+    #[rustfmt::skip]
+    let sigmas = [
+        position,   position,   position,
+        velocity,   velocity,   velocity,
+        tilt,       tilt,       yaw,
+        accel_bias, accel_bias, accel_bias,
+        gyro_bias,  gyro_bias,  gyro_bias,
+    ];
+    Covariance::from_sigmas(sigmas)
 }
 
 /// Standard deviation of a heading known only to lie somewhere on the circle: `π / √3`,
@@ -255,29 +248,23 @@ pub(crate) fn initial_covariance(
 /// right response to that source is a yaw **reset** rather than a gradual correction.
 /// This is why PX4 and ArduPilot align yaw with a bank of hypotheses rather than one wide
 /// prior; see `GOALS.md`.
-const UNKNOWN_HEADING_SIGMA: f32 = 1.813_799_4;
+const UNKNOWN_HEADING_SIGMA: Radians = Radians::from_radians(1.813_799_4);
 
 /// Largest angular rate magnitude, and largest departure of the specific-force magnitude
 /// from gravity, over a window.
-pub(crate) fn peak_motion(window: &[StaticSample]) -> (f32, f32) {
+pub(crate) fn peak_motion(window: &[StaticSample]) -> (RadiansPerSecond, MetersPerSecond2) {
     let mut peak_gyro = 0.0f32;
     let mut peak_deviation = 0.0f32;
     for sample in window {
         let gyro = sample.imu.gyro.as_rad_per_s().norm();
-        if gyro > peak_gyro {
-            peak_gyro = gyro;
-        }
-        let deviation = sample.imu.accel.as_m_per_s2().norm() - GRAVITY;
-        let deviation = if deviation < 0.0 {
-            -deviation
-        } else {
-            deviation
-        };
-        if deviation > peak_deviation {
-            peak_deviation = deviation;
-        }
+        let deviation = (sample.imu.accel.as_m_per_s2().norm() - GRAVITY).abs();
+        peak_gyro = peak_gyro.max(gyro);
+        peak_deviation = peak_deviation.max(deviation);
     }
-    (peak_gyro, peak_deviation)
+    (
+        RadiansPerSecond::from_rad_per_s(peak_gyro),
+        MetersPerSecond2::from_m_per_s2(peak_deviation),
+    )
 }
 
 /// Whether every number in a window sample is finite.

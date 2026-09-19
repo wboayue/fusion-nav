@@ -54,9 +54,11 @@ pub enum Fusion {
     /// The measurement was adopted outright rather than fused, because the filter had no
     /// estimate of that quantity to fuse it against.
     ///
-    /// This happens once per quantity, on the first GNSS fix after a coarse start: a
-    /// vehicle that initialized while moving does not know its velocity, and no gate can
-    /// judge a measurement against nothing. The state becomes the measurement and its
+    /// This happens once per quantity, on the first GNSS position fix and the first GNSS
+    /// velocity after a coarse start: a vehicle that initialized while moving knows
+    /// neither where it is nor how fast it is going, and no gate can judge a measurement
+    /// against nothing. A static start and a seed both have an estimate, so their first
+    /// fix is fused normally. The state becomes the measurement and its
     /// covariance block becomes the measurement's, which is what fusing against an
     /// infinitely uncertain prior converges to — the limit, taken exactly rather than
     /// approached with an invented variance.
@@ -239,6 +241,27 @@ impl SourceHealth {
     pub const fn has_been_used(&self) -> bool {
         self.accepted > 0
     }
+
+    /// Advance the fusion clock. Called from `predict`, since the filter has no clock.
+    pub(crate) fn advance(&mut self, dt: Seconds) {
+        if let Some(elapsed) = self.time_since_accepted {
+            self.time_since_accepted = Some(Seconds::from_secs(elapsed.as_secs() + dt.as_secs()));
+        }
+    }
+
+    pub(crate) fn record_accepted(&mut self, test_ratio: f32) {
+        self.test_ratio = Some(test_ratio);
+        self.time_since_accepted = Some(Seconds::ZERO);
+        self.consecutive_rejections = 0;
+        self.accepted = self.accepted.saturating_add(1);
+    }
+
+    #[allow(dead_code, reason = "used once gating is implemented")]
+    pub(crate) fn record_rejected(&mut self, test_ratio: f32) {
+        self.test_ratio = Some(test_ratio);
+        self.consecutive_rejections = self.consecutive_rejections.saturating_add(1);
+        self.rejected = self.rejected.saturating_add(1);
+    }
 }
 
 /// Per-source health, off the hot path.
@@ -266,45 +289,12 @@ impl Diagnostics {
             ("mag_heading", self.mag_heading),
         ]
     }
-}
 
-impl SourceHealth {
-    /// Advance the fusion clock. Called from `predict`, since the filter has no clock.
-    pub(crate) fn advance(&mut self, dt: Seconds) {
-        if let Some(elapsed) = self.time_since_accepted {
-            self.time_since_accepted = Some(Seconds::from_secs(elapsed.as_secs() + dt.as_secs()));
-        }
-    }
-
-    pub(crate) fn record_accepted(&mut self, test_ratio: f32) {
-        self.test_ratio = Some(test_ratio);
-        self.time_since_accepted = Some(Seconds::ZERO);
-        self.consecutive_rejections = 0;
-        self.accepted = self.accepted.saturating_add(1);
-    }
-
-    #[allow(dead_code, reason = "used once gating is implemented")]
-    pub(crate) fn record_rejected(&mut self, test_ratio: f32) {
-        self.test_ratio = Some(test_ratio);
-        self.consecutive_rejections = self.consecutive_rejections.saturating_add(1);
-        self.rejected = self.rejected.saturating_add(1);
-    }
-}
-
-impl Diagnostics {
+    /// Advance every source's fusion clock.
     pub(crate) fn advance(&mut self, dt: Seconds) {
         self.gnss_position.advance(dt);
         self.gnss_velocity.advance(dt);
         self.baro_altitude.advance(dt);
         self.mag_heading.advance(dt);
-    }
-
-    pub(crate) const fn as_array(&self) -> [SourceHealth; 4] {
-        [
-            self.gnss_position,
-            self.gnss_velocity,
-            self.baro_altitude,
-            self.mag_heading,
-        ]
     }
 }

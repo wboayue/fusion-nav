@@ -65,10 +65,27 @@ const PROBE: usize = 64;
 /// whose vehicle is already moving still has to replay.
 const PATIENCE: f64 = 10.0;
 
-/// Estimate columns, in the order `write_row` emits them.
-const ESTIMATE: [&str; 15] = [
-    "pos_n", "pos_e", "pos_d", "vel_n", "vel_e", "vel_d", "roll", "pitch", "yaw", "ba_x", "ba_y",
-    "ba_z", "bg_x", "bg_y", "bg_z",
+/// Reads one estimate column out of a `State`.
+type Column = fn(&State) -> f32;
+
+/// The estimate columns: each name next to the value it reads. Drives both the header and
+/// the row, so the two cannot drift apart.
+const ESTIMATE: [(&str, Column); 15] = [
+    ("pos_n", |s| s.position.as_meters().x),
+    ("pos_e", |s| s.position.as_meters().y),
+    ("pos_d", |s| s.position.as_meters().z),
+    ("vel_n", |s| s.velocity.as_m_per_s().x),
+    ("vel_e", |s| s.velocity.as_m_per_s().y),
+    ("vel_d", |s| s.velocity.as_m_per_s().z),
+    ("roll", |s| s.attitude.euler_angles().0),
+    ("pitch", |s| s.attitude.euler_angles().1),
+    ("yaw", |s| s.attitude.euler_angles().2),
+    ("ba_x", |s| s.accel_bias.as_m_per_s2().x),
+    ("ba_y", |s| s.accel_bias.as_m_per_s2().y),
+    ("ba_z", |s| s.accel_bias.as_m_per_s2().z),
+    ("bg_x", |s| s.gyro_bias.as_rad_per_s().x),
+    ("bg_y", |s| s.gyro_bias.as_rad_per_s().y),
+    ("bg_z", |s| s.gyro_bias.as_rad_per_s().z),
 ];
 
 /// The covariance diagonal, in the error-state ordering. Drives both the header and the
@@ -91,8 +108,12 @@ const SIGMAS: [(ErrorState, &str); 15] = [
     (ErrorState::GyroBiasZ, "sigma_bg_z"),
 ];
 
-/// Last test ratio per source, in `Diagnostics` order.
+/// Last test ratio per source, in `Diagnostics` order. The constants below index it.
 const RATIOS: [&str; 4] = ["r_gnss_pos", "r_gnss_vel", "r_baro", "r_mag"];
+const GNSS_POS: usize = 0;
+const GNSS_VEL: usize = 1;
+const BARO: usize = 2;
+const MAG: usize = 3;
 
 fn main() {
     if let Err(e) = run() {
@@ -236,7 +257,7 @@ impl Replay {
                     Position::<Ned>::from_meters(r.value(0)?, r.value(1)?, r.value(2)?),
                     PositionVariance::from_m2(r.variance(0)?, r.variance(1)?, r.variance(2)?),
                 );
-                self.observe(0, outcome);
+                self.observe(GNSS_POS, outcome);
             }
             "gnss_vel" => {
                 let outcome = self.filter.fuse_gnss_velocity(
@@ -247,7 +268,7 @@ impl Replay {
                         r.variance(2)?,
                     ),
                 );
-                self.observe(1, outcome);
+                self.observe(GNSS_VEL, outcome);
             }
             "baro" => {
                 let altitude = Altitude::from_meters(r.value(0)?);
@@ -255,7 +276,7 @@ impl Replay {
                 let outcome = self
                     .filter
                     .fuse_baro_altitude(altitude, AltitudeVariance::from_m2(r.variance(0)?));
-                self.observe(2, outcome);
+                self.observe(BARO, outcome);
             }
             "mag" => {
                 let field =
@@ -264,7 +285,7 @@ impl Replay {
                 let outcome = self
                     .filter
                     .fuse_mag_heading(field, HeadingVariance::from_rad2(r.variance(0)?));
-                self.observe(3, outcome);
+                self.observe(MAG, outcome);
             }
             other => return Err(format!("unknown source `{other}`").into()),
         }
@@ -384,31 +405,9 @@ impl Replay {
     }
 
     fn write_row(&self, t: f64, state: State, out: &mut impl Write) -> io::Result<()> {
-        let (roll, pitch, yaw) = state.attitude.euler_angles();
-        let position = state.position.as_meters();
-        let velocity = state.velocity.as_m_per_s();
-        let accel_bias = state.accel_bias.as_m_per_s2();
-        let gyro_bias = state.gyro_bias.as_rad_per_s();
-
         write!(out, "{t:.4},{:?}", state.status)?;
-        for value in [
-            position.x,
-            position.y,
-            position.z,
-            velocity.x,
-            velocity.y,
-            velocity.z,
-            roll,
-            pitch,
-            yaw,
-            accel_bias.x,
-            accel_bias.y,
-            accel_bias.z,
-            gyro_bias.x,
-            gyro_bias.y,
-            gyro_bias.z,
-        ] {
-            write!(out, ",{value:.6}")?;
+        for (_, value) in ESTIMATE {
+            write!(out, ",{:.6}", value(&state))?;
         }
         let covariance = self.filter.covariance();
         for (component, _) in SIGMAS {
@@ -449,9 +448,10 @@ impl Replay {
                         peak_accel_deviation,
                         span,
                     })) => format!(
-                        "COARSE: peak gyro {peak_gyro:.3} rad/s over {:.2} s, peak |a|-g \
-                         {peak_accel_deviation:.3} m/s^2",
-                        span.as_secs()
+                        "COARSE: peak gyro {:.3} rad/s over {:.2} s, peak |a|-g {:.3} m/s^2",
+                        peak_gyro.as_rad_per_s(),
+                        span.as_secs(),
+                        peak_accel_deviation.as_m_per_s2(),
                     ),
                     Some(Alignment::Coarse(Coarse::WindowTooShort { .. })) => {
                         "COARSE: window too short".to_string()
@@ -625,7 +625,7 @@ impl<'a> Record<'a> {
 
 fn write_header(out: &mut impl Write) -> io::Result<()> {
     write!(out, "t_s,status")?;
-    for name in ESTIMATE {
+    for (name, _) in ESTIMATE {
         write!(out, ",{name}")?;
     }
     for (_, name) in SIGMAS {

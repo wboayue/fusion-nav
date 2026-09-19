@@ -6,7 +6,7 @@
 //! corrected after replaying the PX4 corpus, and [`ImuNoise`], re-baselined against the
 //! defaults PX4 and ArduPilot ship.
 
-use crate::units::{Radians, Seconds};
+use crate::units::{Meters, MetersPerSecond, MetersPerSecond2, Radians, RadiansPerSecond, Seconds};
 
 /// Standard gravity, m s⁻².
 pub const GRAVITY: f32 = 9.806_65;
@@ -121,28 +121,28 @@ pub struct Initialization {
     /// tell stillness from a slow drift. Sample rates from 50 Hz to 400 Hz appear in
     /// real logs.
     pub min_duration: Seconds,
-    /// Largest angular rate magnitude, rad s⁻¹, still considered stationary.
+    /// Largest angular rate magnitude still considered stationary.
     ///
     /// Compared against the **peak** over the window, not a filtered value, so at the
     /// same number this is the stricter test: one vibration spike is enough to fail it.
-    pub max_gyro_rate: f32,
-    /// Largest departure of the specific-force magnitude from gravity, m s⁻², still
-    /// considered stationary. Peak over the window, as with
+    pub max_gyro_rate: RadiansPerSecond,
+    /// Largest departure of the specific-force magnitude from gravity still considered
+    /// stationary. Peak over the window, as with
     /// [`max_gyro_rate`](Self::max_gyro_rate).
-    pub max_accel_deviation: f32,
-    /// Initial position standard deviation, m.
-    pub sigma_position: f32,
-    /// Initial velocity standard deviation, m s⁻¹.
-    pub sigma_velocity: f32,
-    /// Initial roll and pitch standard deviation, rad. Gravity determines these well.
+    pub max_accel_deviation: MetersPerSecond2,
+    /// Initial position standard deviation.
+    pub sigma_position: Meters,
+    /// Initial velocity standard deviation.
+    pub sigma_velocity: MetersPerSecond,
+    /// Initial roll and pitch standard deviation. Gravity determines these well.
     pub sigma_tilt: Radians,
-    /// Initial yaw standard deviation, rad. Much larger than
+    /// Initial yaw standard deviation. Much larger than
     /// [`sigma_tilt`](Self::sigma_tilt): yaw inherits the magnetometer's calibration error.
     pub sigma_yaw: Radians,
-    /// Initial accelerometer bias standard deviation, m s⁻².
-    pub sigma_accel_bias: f32,
-    /// Initial gyroscope bias standard deviation, rad s⁻¹.
-    pub sigma_gyro_bias: f32,
+    /// Initial accelerometer bias standard deviation.
+    pub sigma_accel_bias: MetersPerSecond2,
+    /// Initial gyroscope bias standard deviation.
+    pub sigma_gyro_bias: RadiansPerSecond,
 }
 
 impl Default for Initialization {
@@ -159,14 +159,14 @@ impl Default for Initialization {
     fn default() -> Self {
         Self {
             min_duration: Seconds::from_secs(2.0),
-            max_gyro_rate: 0.262,
-            max_accel_deviation: 1.961,
-            sigma_position: 1.0,
-            sigma_velocity: 0.1,
+            max_gyro_rate: RadiansPerSecond::from_rad_per_s(0.262),
+            max_accel_deviation: MetersPerSecond2::from_m_per_s2(1.961),
+            sigma_position: Meters::from_meters(1.0),
+            sigma_velocity: MetersPerSecond::from_m_per_s(0.1),
             sigma_tilt: Radians::from_radians(0.02),
             sigma_yaw: Radians::from_radians(0.35),
-            sigma_accel_bias: 0.1,
-            sigma_gyro_bias: 0.01,
+            sigma_accel_bias: MetersPerSecond2::from_m_per_s2(0.1),
+            sigma_gyro_bias: RadiansPerSecond::from_rad_per_s(0.01),
         }
     }
 }
@@ -183,16 +183,16 @@ impl Default for Initialization {
 /// directly — these are the coarse per-quantity bar.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Accuracy {
-    /// Roll and pitch, rad. Also the bar for alignment:
+    /// Roll and pitch. Also the bar for alignment:
     /// [`Status::Aligning`](crate::Status::Aligning) lasts until tilt and heading are
     /// both within these.
     pub sigma_tilt: Radians,
-    /// Heading, rad.
+    /// Heading.
     pub sigma_heading: Radians,
-    /// Position, m, horizontally and vertically.
-    pub sigma_position: f32,
-    /// Velocity, m s⁻¹, horizontally and vertically.
-    pub sigma_velocity: f32,
+    /// Position, horizontally and vertically.
+    pub sigma_position: Meters,
+    /// Velocity, horizontally and vertically.
+    pub sigma_velocity: MetersPerSecond,
 }
 
 impl Default for Accuracy {
@@ -204,8 +204,8 @@ impl Default for Accuracy {
         Self {
             sigma_tilt: Radians::from_radians(0.02),
             sigma_heading: Radians::from_radians(0.35),
-            sigma_position: 5.0,
-            sigma_velocity: 1.0,
+            sigma_position: Meters::from_meters(5.0),
+            sigma_velocity: MetersPerSecond::from_m_per_s(1.0),
         }
     }
 }

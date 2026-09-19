@@ -101,6 +101,40 @@ scalar!(
 );
 
 scalar!(
+    /// A length, such as a position standard deviation.
+    Meters,
+    unit = "meters",
+    new = from_meters,
+    get = as_meters
+);
+
+scalar!(
+    /// A speed, such as a velocity standard deviation.
+    MetersPerSecond,
+    unit = "meters per second",
+    new = from_m_per_s,
+    get = as_m_per_s
+);
+
+scalar!(
+    /// A scalar acceleration, such as a specific-force tolerance or an accelerometer bias
+    /// standard deviation.
+    MetersPerSecond2,
+    unit = "meters per second squared",
+    new = from_m_per_s2,
+    get = as_m_per_s2
+);
+
+scalar!(
+    /// A scalar angular rate, such as a gyroscope tolerance or a gyroscope bias standard
+    /// deviation.
+    RadiansPerSecond,
+    unit = "radians per second",
+    new = from_rad_per_s,
+    get = as_rad_per_s
+);
+
+scalar!(
     /// Barometric altitude above the barometer's own reference, positive **up**.
     ///
     /// Not NED down-position: the filter absorbs the sign and the unknown reference

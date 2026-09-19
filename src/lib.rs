@@ -71,7 +71,8 @@ pub use init::{Alignment, Coarse, InitError, StaticSample};
 pub use state::{Covariance, CovarianceMatrix, ErrorState, STATES, State};
 pub use units::{
     Acceleration, Altitude, AltitudeVariance, AngularRate, Attitude, HeadingVariance, MagField,
-    Position, PositionVariance, Radians, Seconds, Velocity, VelocityVariance,
+    Meters, MetersPerSecond, MetersPerSecond2, Position, PositionVariance, Radians,
+    RadiansPerSecond, Seconds, Velocity, VelocityVariance,
 };
 
 /// Everything needed to write an integration loop, in one import.
@@ -114,6 +115,7 @@ pub mod prelude {
     pub use crate::state::{Covariance, ErrorState, State};
     pub use crate::units::{
         Acceleration, Altitude, AltitudeVariance, AngularRate, Attitude, HeadingVariance, MagField,
-        Position, PositionVariance, Radians, Seconds, Velocity, VelocityVariance,
+        Meters, MetersPerSecond, MetersPerSecond2, Position, PositionVariance, Radians,
+        RadiansPerSecond, Seconds, Velocity, VelocityVariance,
     };
 }
