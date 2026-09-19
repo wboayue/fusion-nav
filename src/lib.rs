@@ -7,8 +7,8 @@
 //! accepts unconditionally with a zero test ratio. This crate currently exists to let the
 //! shape of the API be written against and argued with.
 //!
-//! See `README.md` for the architecture, `EQUATIONS.md` for the mathematics each method
-//! cites, and `GOALS.md` for positioning.
+//! See `README.md` for usage, `DESIGN.md` for the architecture, `EQUATIONS.md` for the
+//! mathematics each method cites, and `GOALS.md` for positioning.
 //!
 //! # Shape
 //!

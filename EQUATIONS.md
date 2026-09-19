@@ -8,7 +8,7 @@ This document is the normative mathematical description of `fusion-nav`. Equatio
 so that the implementation can cite them directly; see
 [Readable mathematics](GOALS.md#3-readable-mathematics) for why that matters.
 
-See [README.md](README.md) for the architecture and [GOALS.md](GOALS.md) for positioning.
+See [DESIGN.md](DESIGN.md) for the architecture and [GOALS.md](GOALS.md) for positioning.
 
 ## Notation and conventions
 

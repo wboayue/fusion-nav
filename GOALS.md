@@ -4,7 +4,7 @@
 > relative to existing Rust crates and production autopilot estimators. It is a rationale
 > document, not a specification.
 
-See [README.md](README.md) for the architecture and [EQUATIONS.md](EQUATIONS.md) for the
+See [DESIGN.md](DESIGN.md) for the architecture and [EQUATIONS.md](EQUATIONS.md) for the
 mathematics.
 
 ## Positioning
@@ -398,7 +398,7 @@ a status field on the returned state achieves, as distinct from impossible to **
 would cost ergonomics that integrators route around anyway.
 
 See [gate lockout](EQUATIONS.md#gate-lockout) and
-[measurement rejection](README.md#measurement-rejection).
+[measurement rejection](DESIGN.md#measurement-rejection).
 
 ## What would falsify this positioning
 
