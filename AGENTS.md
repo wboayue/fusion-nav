@@ -8,8 +8,8 @@ This file provides guidance to coding agents working with code in this repositor
 `predict` propagates nothing, every `fuse_*` accepts with a zero test ratio. What is real is
 the health bookkeeping (timers, `Status`, `Diagnostics`), the typed API surface, and the replay
 harness. Anything stubbed says so in its doc comment with a `**Stub.**` paragraph — keep that
-marker accurate when landing real math, and keep the same caveat in `README.md`, `src/lib.rs`,
-and the example module docs, which all repeat it.
+marker accurate when landing real math, and keep the same caveat in `README.md`, `DESIGN.md`,
+`src/lib.rs`, and the example module docs, which all repeat it.
 
 ## Goal: a reference to learn from
 

@@ -76,16 +76,22 @@ use fusion_nav::prelude::*;
 let mut filter = Eskf::new(Config::default());
 let dt = Seconds::from_secs(0.0025); // 400 Hz IMU
 
-// Initialize from a window of samples taken while the vehicle sits still.
-let alignment = filter.initialize(&static_window, dt)?;
+// Initialize from a window of samples taken while the vehicle sits still. A short or
+// moving window still starts the filter, as `Alignment::Coarse`.
+if let Alignment::Coarse(_) = filter.initialize(&static_window, dt)? {
+    /* running, but reports `Status::Aligning` until attitude converges */
+}
 
 loop {
-    // High-rate propagation on every IMU sample.
-    let _ = filter.predict(imu, dt);
+    // High-rate propagation on every IMU sample. The outcome is #[must_use]: a refused
+    // step leaves the state where it was.
+    if !filter.predict(imu, dt).is_propagated() { /* log the gap */ }
 
     // Measurement updates whenever a sensor delivers, each with its own variance.
-    let _ = filter.fuse_gnss_position(position, PositionVariance::isotropic(1.5));
-    let _ = filter.fuse_baro_altitude(altitude, AltitudeVariance::from_m2(4.0));
+    // A rejection carries its test ratio.
+    if !filter.fuse_gnss_position(position, PositionVariance::isotropic(1.5)).is_accepted() {
+        /* diagnostics() has the detail */
+    }
 
     // The estimate carries its own health.
     let s = filter.state();
@@ -134,7 +140,9 @@ Each `StaticSample` is an `ImuSample` plus an optional magnetometer and baromete
 the window the filter takes:
 
 * **roll and pitch** from the averaged accelerometer
-* **heading** from the magnetometer, levelled by that roll and pitch
+* **heading** from the magnetometer if the window carries one, levelled by that roll and
+  pitch. Without one, heading is unobserved and is meant to start with an inflated variance for
+  the first magnetic heading to correct (not yet built)
 * **gyroscope bias** from the averaged gyroscope, observable at rest (accelerometer bias is not,
   and starts at zero)
 * **the barometric reference** `α₀` — the altitude the barometer read at the origin. It is a
@@ -240,6 +248,10 @@ On the ground, heading may be unobservable and GNSS may not have a fix yet, so `
 no about a filter that would be navigating a second after takeoff. `predicted_validity()` answers
 instead whether each quantity is valid now **or** a source that constrains it is currently being
 accepted. Use it for arming checks. (ArduPilot's `pred_horiz_pos_rel` is the same idea.)
+
+Tilt is the exception: no source aids it, only a static window establishes it today, so its
+prediction is exactly its current value. After a coarse start `predicted_validity().tilt` stays
+false however much GNSS is accepted.
 
 ### Detail
 

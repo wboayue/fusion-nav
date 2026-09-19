@@ -161,31 +161,13 @@ See [innovation gating](EQUATIONS.md#innovation-gating).
 
 ### Measurement rejection
 
-A single rejection needs no action — discarding an inconsistent measurement is what the gate is
-for.
-
-Sustained rejection is a different condition. Gating is self-sealing: if the filter itself is
-wrong rather than the measurement, correct measurements become inconsistent with the state, all
-of them are rejected, and the filter locks itself out of the data that would fix it. It then
-dead-reckons on the IMU while still reporting a confident solution.
-
-That is why `fusion-nav` tracks, per source, the time since a measurement was last accepted and
-the number of consecutive rejections, and why the aggregate `Status` is carried on the state
-estimate itself rather than behind a separate call: a solution cannot be consumed without its
-status.
-
-The filter does not recover on its own. Recovery policy belongs to the application, which is the
-only layer that knows whether to reset states, degrade the flight mode, or alert the operator. See
-[rejection handling](GOALS.md#rejection-handling-report-do-not-self-recover) and
+Gating is self-sealing: if the filter itself is wrong, correct measurements look inconsistent,
+all are rejected, and the filter dead-reckons while looking confident. So health is tracked per
+source and carried on the estimate, and recovery is left to the application. The user-facing
+side is in [README.md](README.md#health-reporting); the reasoning in
+[rejection handling](GOALS.md#rejection-handling-report-do-not-self-recover),
+[per-quantity validity](GOALS.md#per-quantity-validity-not-one-ladder), and
 [gate lockout](EQUATIONS.md#gate-lockout).
-
-### Why validity is per quantity
-
-`Status` answers *how bad is the worst thing*. A controller usually needs the other question —
-*which outputs can I use* — and collapsing the two loses real information: a filter that started
-coarse and has adopted a GNSS fix has position as good as the receiver while its attitude is
-still converging, and `Aligning` alone cannot say so. Horizontal and vertical are separate
-because sources are. See [per-quantity validity](GOALS.md#per-quantity-validity-not-one-ladder).
 
 ## Embedded Design
 
