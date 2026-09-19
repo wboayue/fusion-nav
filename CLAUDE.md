@@ -54,6 +54,26 @@ f64 timestamp parse, old field spellings). Adding or dropping a log means saying
 it uniquely covers. Changing a `Config` default or the `summary` line requires updating the
 affected expectations.
 
+## How defaults get decided
+
+Three defaults are no longer placeholders, and each records its evidence in its doc comment:
+`Timeouts::degraded_after` (replay showed 76 status flaps in 124 s), `ImuNoise` (PX4 and
+ArduPilot agree within 2x and both sit 10-15x above datasheet), and `Initialization`'s
+stationarity tolerances (the old ones failed four of five corpus logs on vehicles sitting on the
+ground). Follow that pattern rather than adjusting a number quietly.
+
+The loop that produced all three: implement the check, run it over the corpus, read what real
+logs actually do, then pick the number — and write down what the data said. Anything touching
+replay output should be measured this way before it is committed, because the manifest
+expectations are the regression guard and a change that moves them needs a reason in words.
+
+For comparison numbers, read PX4 and ArduPilot source rather than their docs or memory: PX4's
+defaults live in `src/modules/ekf2/EKF/common.h`, its alignment gates in `EKF/ekf.cpp`, its baro
+bias estimator under `EKF/aid_sources/barometer/`, and its GNSS `R` floors under
+`EKF/aid_sources/gnss/`; ArduPilot's parameters are in `libraries/AP_NavEKF3/AP_NavEKF3.cpp` and
+its bootstrap in `AP_NavEKF3_core.cpp`. Published figures drift — PX4's barometer noise default
+is 2.0 m in current source, not the 3.5 m widely quoted.
+
 ## Architecture
 
 Single crate, `no_std`, `forbid(unsafe_code)`, `deny(missing_docs)`, allocation-free, edition
