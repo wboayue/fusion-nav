@@ -463,7 +463,9 @@ impl Replay {
                         "barometric reference {:.2} m, altitudes are relative to it",
                         reference.as_meters()
                     ),
-                    None => "no barometer in the window, altitude fusion refused".to_string(),
+                    None => "no barometric reference (no barometer in the window, or it was \
+                             taken in motion), altitude fusion refused"
+                        .to_string(),
                 };
                 let alignment = match self.alignment {
                     Some(Alignment::Static) => "static alignment".to_string(),
@@ -546,7 +548,7 @@ impl Replay {
     fn report_summary(&self) {
         let state = self.filter.state();
         println!(
-            "\nsummary rate={:.0} window={} align={} resets={} refused={} invalid={} \
+            "\nsummary rate={:.0} window={} align={} alpha0={} resets={} refused={} invalid={} \
              epochs={} transitions={} status={:?}",
             self.interval.map_or(0.0, |interval| 1.0 / interval),
             self.window_samples,
@@ -555,6 +557,14 @@ impl Replay {
                 Some(Alignment::Coarse(..)) => "coarse",
                 Some(Alignment::Seeded) => "seeded",
                 None => "none",
+            },
+            // Only a static start establishes the barometric reference, so a coarse log
+            // fuses no altitude at all unless the application names one. Pinned here
+            // because nothing else in this line would notice barometric aiding vanishing.
+            if self.filter.baro_reference().is_some() {
+                "set"
+            } else {
+                "none"
             },
             self.resets,
             self.refused_steps,

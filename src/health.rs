@@ -77,11 +77,13 @@ pub enum Fusion {
     NotInitialized,
     /// The measurement has nothing to be relative to. The measurement was discarded.
     ///
-    /// Barometer: no reference altitude was established, because the static window
-    /// carried no barometer sample. `α₀` of equation (30) is a constant fixed at
-    /// initialization, not a state, so a barometric altitude without one has no origin to
-    /// be relative to. Fusing it anyway would silently invent the origin from whichever
-    /// sample happened to arrive first.
+    /// Barometer: no reference altitude was established, because the window carried no
+    /// barometer sample or was taken in motion — a start that cannot claim the altitude it
+    /// reads is the ground leaves the reference alone, so a filter that never had one has
+    /// none. `α₀` of equation (30) is a constant fixed at initialization, not a state, so
+    /// a barometric altitude without one has no origin to be relative to. Fusing it anyway
+    /// would silently invent the origin from whichever sample happened to arrive first.
+    /// [`Eskf::set_baro_reference`](crate::Eskf::set_baro_reference) names one.
     ///
     /// Geodetic GNSS: no navigation origin is held and this fix cannot place one, because
     /// its latitude is beyond ±90°. The next usable fix will. See
@@ -94,6 +96,27 @@ pub enum Fusion {
     /// NaN in the state or covariance spreads to every quantity at the next update and
     /// never leaves.
     NotFinite,
+    /// A variance in the measurement noise is zero or negative. The measurement was
+    /// discarded and no health timer moved.
+    ///
+    /// `R` has to be a variance some sensor could have. Zero makes the innovation
+    /// covariance `S = H P Hᵀ + R` of equation (25) singular as soon as the state it
+    /// observes is itself certain, and a negative one is worse: it claims a measurement
+    /// better than perfect, and where a coarse start adopts the measurement outright it
+    /// writes that negative variance straight into `P`, which
+    /// [`Validity`] then reads as an excellent estimate.
+    ///
+    /// Usually a floor or a unit mistake at the boundary — a receiver reporting `eph = 0`
+    /// while it has no fix, or a variance arrived at by subtracting one σ² from another.
+    /// Refused alongside [`NotFinite`](Self::NotFinite), before the adoption a coarse
+    /// start allows.
+    ///
+    /// One bad component refuses the whole measurement, so a receiver in 2D-fix mode
+    /// reporting a good `eph` with `epv = 0` loses its horizontal aiding too. The filter
+    /// reports rather than repairs: PX4 and ArduPilot clamp such a value into range, and a
+    /// caller that wants that behavior floors `noise` before the call, where the policy is
+    /// visible. See [`Eskf::fuse_gnss_position`](crate::Eskf::fuse_gnss_position).
+    InvalidNoise,
 }
 
 impl Fusion {
@@ -114,7 +137,11 @@ impl Fusion {
         match self {
             Self::Accepted { test_ratio } | Self::Rejected { test_ratio } => Some(test_ratio),
             // A reset ran no gate: there was nothing to be inconsistent with.
-            Self::Reset | Self::NotInitialized | Self::NoReference | Self::NotFinite => None,
+            Self::Reset
+            | Self::NotInitialized
+            | Self::NoReference
+            | Self::NotFinite
+            | Self::InvalidNoise => None,
         }
     }
 }

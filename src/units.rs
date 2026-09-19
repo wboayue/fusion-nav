@@ -204,6 +204,12 @@ macro_rules! noise {
             pub(crate) fn is_finite(self) -> bool {
                 self.variance.is_finite()
             }
+
+            /// Whether the variance is one a real sensor could have: strictly positive.
+            /// See [`Fusion::InvalidNoise`](crate::Fusion::InvalidNoise).
+            pub(crate) fn is_positive(self) -> bool {
+                self.variance > 0.0
+            }
         }
     };
 }
@@ -470,6 +476,12 @@ macro_rules! noise3 {
             /// Whether every variance is a number, neither NaN nor infinite.
             pub(crate) fn is_finite(self) -> bool {
                 self.variance.iter().all(|v| v.is_finite())
+            }
+
+            /// Whether every variance is one a real sensor could have: strictly positive.
+            /// See [`Fusion::InvalidNoise`](crate::Fusion::InvalidNoise).
+            pub(crate) fn is_positive(self) -> bool {
+                self.variance.iter().all(|v| *v > 0.0)
             }
         }
 
