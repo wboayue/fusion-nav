@@ -5,16 +5,34 @@
 
 use crate::units::Seconds;
 
-/// How well aided the estimate is.
+/// How far the estimate can be trusted: whether attitude has converged, and how well
+/// aided it is.
 ///
 /// Payload-free, so [`State`](crate::State) stays `Copy` and cheap to read on the hot
 /// path. The detail is in [`Diagnostics`].
+///
+/// Declared in order of increasing severity. When more than one applies the most severe
+/// is reported, so [`Aligning`](Self::Aligning) hides [`Degraded`](Self::Degraded) — an
+/// attitude that has not converged is the larger problem — and
+/// [`DeadReckoning`](Self::DeadReckoning) hides everything, since nothing is arriving
+/// that could align the filter anyway.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Status {
-    /// Every source that has ever been fused is still being accepted.
+    /// Every source that has ever been fused is still being accepted, and attitude has
+    /// converged.
     Healthy,
     /// At least one source has timed out, but the estimate is still aided.
     Degraded,
+    /// The filter is running and aided, but its attitude has not converged: it was
+    /// initialized without a static window, or seeded coarsely, and is still learning.
+    ///
+    /// Position and velocity are being estimated and are usable to the extent the
+    /// covariance says. Attitude is not yet what a static alignment would have given, so
+    /// a controller should not fly on it. The filter leaves this state on its own, as
+    /// soon as the covariance says the attitude uncertainty has come down to what
+    /// [`Initialization`](crate::Initialization) asks of a static start — there is no
+    /// timer and nothing to acknowledge.
+    Aligning,
     /// Nothing is aiding the filter. Position and velocity error grows without bound.
     #[default]
     DeadReckoning,

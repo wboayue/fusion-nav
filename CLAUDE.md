@@ -84,6 +84,16 @@ Single crate, `no_std`, `forbid(unsafe_code)`, `deny(missing_docs)`, allocation-
   because the time really passed and `Status` must not claim otherwise.
 - **`Status` is derived on read**, not cached, so mutating methods have no invariant to keep.
   Only sources that have ever been accepted count toward it.
+- **Initialization does not refuse a usable window.** A short or moving one gives
+  `Alignment::Coarse` with what it measured, the filter runs, and `Status::Aligning` says the
+  attitude has not converged. Only genuinely unusable input errors (`NoSamples`, `InvalidStep`,
+  `NotFinite`, `NegativeVariance`). Three entry points — `initialize`, `initialize_coarse`,
+  `initialize_from` — and each reports an `Alignment`; `alignment_of` classifies without
+  mutating. `is_aligned` reads the covariance against `Initialization`'s sigmas, so promotion is
+  measured rather than timed.
+- **`Status` precedence is most-severe-first**: `DeadReckoning` > `Aligning` > `Degraded` >
+  `Healthy`. Aligning outranking Degraded is deliberate and is why the 2 h corpus log now shows
+  2 transitions rather than 888.
 - **The filter gates but never self-recovers.** On sustained rejection it reports
   `DeadReckoning`; `reset_position_to` / `reset_velocity_to` exist for the application to
   decide. Do not add automatic resets — that is a documented decision in GOALS.md.

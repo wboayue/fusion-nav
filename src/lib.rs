@@ -18,8 +18,20 @@
 //! let mut filter = Eskf::new(Config::default());
 //! let dt = Seconds::from_secs(0.0025); // 400 Hz IMU
 //!
-//! // 800 samples at 400 Hz is the 2 s of stillness `Initialization::min_duration` wants.
-//! filter.initialize(&[StaticSample::default(); 800], dt)?;
+//! // A vehicle sitting still: no rotation, gravity the only specific force. 800 samples
+//! // at 400 Hz is the 2 s `Initialization::min_duration` wants.
+//! let still = StaticSample {
+//!     imu: ImuSample {
+//!         gyro: AngularRate::from_rad_per_s(0.0, 0.0, 0.0),
+//!         accel: Acceleration::from_m_per_s2(0.0, 0.0, -GRAVITY),
+//!     },
+//!     ..StaticSample::default()
+//! };
+//!
+//! // Initialization reports what it achieved rather than refusing what it dislikes. A
+//! // window that is short or moving gives `Alignment::Coarse`, and the filter runs and
+//! // says `Status::Aligning` until attitude converges.
+//! assert_eq!(filter.initialize(&[still; 800], dt)?, Alignment::Static);
 //!
 //! // Nothing in that window carried a barometer, so there is no reference altitude and
 //! // `fuse_baro_altitude` would refuse. See `StaticSample::baro`.
@@ -51,7 +63,7 @@ mod state;
 mod units;
 
 pub use config::{Config, GRAVITY, Gates, ImuNoise, Initialization, Timeouts};
-pub use eskf::{Eskf, ImuSample, InitError, StaticSample};
+pub use eskf::{Alignment, Coarse, Eskf, ImuSample, InitError, StaticSample};
 pub use frames::{Body, Enu, Frame, Ned};
 pub use health::{Diagnostics, Fusion, Propagation, SourceHealth, Status};
 pub use state::{Covariance, CovarianceMatrix, ErrorState, STATES, State};
@@ -71,8 +83,12 @@ pub use units::{
 /// // The barometer in the window is what fixes the reference the fusion below is
 /// // relative to. Without it that call refuses with `Fusion::NoReference`.
 /// let still = StaticSample {
+///     imu: ImuSample {
+///         gyro: AngularRate::from_rad_per_s(0.0, 0.0, 0.0),
+///         accel: Acceleration::from_m_per_s2(0.0, 0.0, -GRAVITY),
+///     },
 ///     baro: Some(Altitude::from_meters(112.0)),
-///     ..StaticSample::default()
+///     mag: None,
 /// };
 /// filter.initialize(&[still; 800], dt)?;
 /// let _ = filter.predict(ImuSample::default(), dt);
@@ -89,7 +105,7 @@ pub use units::{
 /// [`Frame`], [`STATES`], and [`CovarianceMatrix`]. Import those by path.
 pub mod prelude {
     pub use crate::config::{Config, GRAVITY, Gates, ImuNoise, Initialization, Timeouts};
-    pub use crate::eskf::{Eskf, ImuSample, InitError, StaticSample};
+    pub use crate::eskf::{Alignment, Coarse, Eskf, ImuSample, InitError, StaticSample};
     pub use crate::frames::{Body, Enu, Ned};
     pub use crate::health::{Diagnostics, Fusion, Propagation, SourceHealth, Status};
     pub use crate::state::{Covariance, ErrorState, State};

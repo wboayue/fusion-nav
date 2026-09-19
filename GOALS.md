@@ -233,14 +233,27 @@ The options, in the order they are worth doing:
    `Eskf::initialize_from`, with `set_baro_reference` to complete the seed. It covers the
    restart-at-altitude case and any vehicle already carrying an attitude source; it does nothing
    for a bare vehicle with no second source.
-2. **Coarse alignment and an `Aligning` status.** Initialize from an instantaneous
-   accelerometer sample with a deliberately large `P₀`, let the filter run, and report that the
-   attitude is not yet trustworthy. This is the structural piece: the missing concept is less any
-   one algorithm than a way to say *running, but do not fly on my attitude yet*.
-3. **Gate policy while aligning.** Not optional alongside 2. A coarse start produces large
-   innovations, and today's gates would reject exactly the measurements that would fix it — the
-   [gate lockout](EQUATIONS.md#gate-lockout) failure, arriving at the worst possible moment.
-   Alignment needs inflated gates, or no gating until aligned.
+
+   Whether a seed counts as aligned is the covariance's answer, not a flag: a confident seed
+   reports `Healthy` immediately, a vague one `Aligning`. One rule covers all three entry points.
+2. **Coarse alignment and an `Aligning` status.** Initialize from whatever is available with a
+   `P₀` inflated to match, let the filter run, and report that the attitude is not yet
+   trustworthy. The missing concept was less any one algorithm than a way to say *running, but do
+   not fly on my attitude yet*. **Done** — `initialize` no longer refuses a short or moving
+   window, `initialize_coarse` needs no window at all, and `Status::Aligning` is reported until
+   `Eskf::is_aligned` says attitude uncertainty has come down to what a static start would have
+   given. Promotion is read from the covariance rather than run off a timer, and the bar reuses
+   `Initialization`'s own sigmas, so there is no new knob.
+3. **Gate policy while aligning.** Less of a special case than it first appears. The innovation
+   covariance `S = H P Hᵀ + R` already grows with `P`, so an honestly inflated coarse `P₀` makes
+   the normalized test ratio self-scaling: [gate lockout](EQUATIONS.md#gate-lockout) is what an
+   *overconfident* covariance causes, not a wide one. What genuinely needs handling is yaw, where
+   a wide prior is not an honest wide prior: the three-component attitude error of equation (2)
+   is a small-angle quantity, and a yaw error of a radian is not small, so the linearization is
+   wrong in a way no variance expresses. The answer is a yaw **reset** when a heading source
+   arrives rather than gradual correction — which is precisely why ArduPilot invented the GSF
+   estimator in 6 rather than widening a prior. Open: whether tilt alone can be left to the
+   ordinary gate, which the corpus should be able to answer once propagation lands.
 4. **In-motion leveling.** Differentiate GNSS velocity for navigation-frame acceleration,
    subtract it from measured specific force, and recover gravity's direction while moving.
    Removes the stillness requirement for tilt outright. No new states; noisy under aggressive
@@ -254,13 +267,25 @@ The options, in the order they are worth doing:
 
 Two API decisions shape the rest, and are worth settling early:
 
-* **`initialize` should report which alignment it achieved, not take a mode argument.** Hand it
-  whatever data exists; let it answer *static and fully aligned*, *coarse, yaw unobserved*, or
-  *seeded*. That is differentiator 7 applied to alignment: the data already says what the launch
-  was, so do not make the integrator classify it.
+* **Each entry point reports which alignment it achieved; none takes a mode argument.** The
+  window is what is optional, not the classification — `initialize` with a window, or
+  `initialize_coarse` without one, and both answer with an `Alignment`. That is differentiator 7
+  applied to alignment: the data already says what the launch was, so do not make the integrator
+  classify it. **Settled.**
 * **`Aligning` is not `Degraded`.** Degraded means aided and drifting; aligning means the
   attitude itself has not converged. Conflating them would mislead a controller in precisely the
-  phase where the distinction matters most.
+  phase where the distinction matters most. **Settled**, with `Aligning` the more severe of the
+  two. The cost is visible in the corpus: the one log that starts in motion now reports
+  `Aligning` throughout and its 888 aiding transitions are masked behind it, because a stub
+  covariance never shrinks and the filter therefore never finishes aligning.
+
+What remains for a bare vehicle with no second attitude source is options 4 and 5 — the launch
+that is moving and has nothing to seed from still starts coarse and stays that way until aiding
+brings the uncertainty down. Position and velocity are a related gap: both still start at the
+configured priors, which assume the origin is here and the vehicle at rest, so a moving launch
+should expect its first GNSS fix to arrive as a large innovation. Resetting position and velocity
+to the first fix, as PX4 does, rather than fusing it, is the obvious answer and is not
+implemented.
 
 ## Decisions
 

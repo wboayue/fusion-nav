@@ -2,8 +2,9 @@
 //!
 //! Every default here is a **placeholder** chosen to make the shape of the API concrete,
 //! and none has been validated against flight data — with two exceptions:
-//! [`Timeouts::degraded_after`], corrected after replaying a PX4 log, and [`ImuNoise`],
-//! re-baselined against the defaults PX4 and ArduPilot ship.
+//! [`Timeouts::degraded_after`] and [`Initialization`]'s stationarity tolerances, both
+//! corrected after replaying the PX4 corpus, and [`ImuNoise`], re-baselined against the
+//! defaults PX4 and ArduPilot ship.
 
 use crate::units::{Radians, Seconds};
 
@@ -120,10 +121,14 @@ pub struct Initialization {
     /// tell stillness from a slow drift. Sample rates from 50 Hz to 400 Hz appear in
     /// real logs.
     pub min_duration: Seconds,
-    /// Largest angular rate, rad s⁻¹, still considered stationary.
+    /// Largest angular rate magnitude, rad s⁻¹, still considered stationary.
+    ///
+    /// Compared against the **peak** over the window, not a filtered value, so at the
+    /// same number this is the stricter test: one vibration spike is enough to fail it.
     pub max_gyro_rate: f32,
-    /// Largest deviation of the accelerometer magnitude from gravity, m s⁻², still
-    /// considered stationary.
+    /// Largest departure of the specific-force magnitude from gravity, m s⁻², still
+    /// considered stationary. Peak over the window, as with
+    /// [`max_gyro_rate`](Self::max_gyro_rate).
     pub max_accel_deviation: f32,
     /// Initial position standard deviation, m.
     pub sigma_position: f32,
@@ -141,11 +146,21 @@ pub struct Initialization {
 }
 
 impl Default for Initialization {
+    /// The stationarity tolerances are PX4 EKF2's — 15°/s and 20% of gravity — corrected
+    /// from the replay corpus.
+    ///
+    /// The previous 0.05 rad s⁻¹ and 0.5 m s⁻² failed four of the five logs in
+    /// `data/manifest.txt`, on vehicles that were sitting on the ground: peaks of
+    /// 0.026–0.172 rad s⁻¹ and 0.15–1.04 m s⁻², which is idle vibration and prop wash,
+    /// not motion. A tolerance that calls a parked quadrotor moving does not protect the
+    /// alignment, it just denies it. At these values four of the five align statically,
+    /// and the fifth — peak deviation 6.2 m s⁻² — stays coarse, correctly: 6 m s⁻² is a
+    /// vehicle being handled, not a vehicle vibrating.
     fn default() -> Self {
         Self {
             min_duration: Seconds::from_secs(2.0),
-            max_gyro_rate: 0.05,
-            max_accel_deviation: 0.5,
+            max_gyro_rate: 0.262,
+            max_accel_deviation: 1.961,
             sigma_position: 1.0,
             sigma_velocity: 0.1,
             sigma_tilt: Radians::from_radians(0.02),

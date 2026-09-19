@@ -58,6 +58,13 @@ const WINDOW: usize = 1024;
 /// Intervals sampled before fixing the IMU rate.
 const PROBE: usize = 64;
 
+/// How long to keep sliding the window looking for stillness before accepting a coarse
+/// start, in seconds of log time.
+///
+/// A policy, not a filter constant: the harness would rather align properly, but a log
+/// whose vehicle is already moving still has to replay.
+const PATIENCE: f64 = 10.0;
+
 /// Estimate columns, in the order `write_row` emits them.
 const ESTIMATE: [&str; 15] = [
     "pos_n", "pos_e", "pos_d", "vel_n", "vel_e", "vel_d", "roll", "pitch", "yaw", "ba_x", "ba_y",
@@ -151,8 +158,11 @@ struct Replay {
     /// Timestamp of the previous IMU row, so `dt` comes from the log rather than from an
     /// assumed rate.
     previous_imu: Option<f64>,
+    /// Timestamp of the first IMU row, so the wait for stillness can be bounded.
+    first_imu: Option<f64>,
     ratios: [Option<f32>; 4],
     initialized_at: Option<f64>,
+    alignment: Option<Alignment>,
     mag_at_init: bool,
     epochs: u32,
     rejections: u32,
@@ -181,8 +191,10 @@ impl Replay {
             last_mag: None,
             last_baro: None,
             previous_imu: None,
+            first_imu: None,
             ratios: [None; 4],
             initialized_at: None,
+            alignment: None,
             mag_at_init: false,
             epochs: 0,
             rejections: 0,
@@ -261,6 +273,7 @@ impl Replay {
     /// [`Fusion::NotInitialized`], so aiding rows in this stretch of the log are simply
     /// recorded and dropped.
     fn accumulate(&mut self, t: f64, imu: ImuSample) -> Result<(), Box<dyn Error>> {
+        self.first_imu.get_or_insert(t);
         let step = self.previous_imu.replace(t).map(|previous| t - previous);
         if let Some(step) = step.filter(|step| *step > 0.0)
             && self.probed < PROBE
@@ -306,20 +319,27 @@ impl Replay {
         self.window_samples = needed;
         let window = &self.window[self.filled - needed..self.filled];
 
-        match self
-            .filter
-            .initialize(window, Seconds::from_secs(interval as f32))
-        {
-            Ok(()) => {
-                self.initialized_at = Some(t);
-                self.mag_at_init = window.iter().all(|s| s.mag.is_some());
-                self.status = self.filter.state().status;
-                self.transitions.push((t, self.status));
+        let dt = Seconds::from_secs(interval as f32);
+        let alignment = self.filter.alignment_of(window, dt)?;
+
+        // Prefer a static window, but do not wait forever for one: a log that begins in
+        // motion, or a vehicle that never gets a quiet moment, should still fly. This is
+        // the policy an application has to choose, which is why the filter reports the
+        // alignment rather than deciding this itself.
+        if !alignment.is_static() {
+            let waited = t - self.first_imu.unwrap_or(t);
+            if waited < PATIENCE {
+                return Ok(());
             }
-            // Still moving. Slide by one and try again on the next IMU row.
-            Err(InitError::NotStationary) => {}
-            Err(e) => return Err(e.into()),
         }
+
+        self.alignment = Some(alignment);
+        // Already classified above; committing it cannot disagree.
+        let _ = self.filter.initialize(window, dt)?;
+        self.initialized_at = Some(t);
+        self.mag_at_init = window.iter().all(|s| s.mag.is_some());
+        self.status = self.filter.state().status;
+        self.transitions.push((t, self.status));
         Ok(())
     }
 
@@ -415,10 +435,23 @@ impl Replay {
                     ),
                     None => "no barometer in the window, altitude fusion refused".to_string(),
                 };
+                let alignment = match self.alignment {
+                    Some(Alignment::Static) => "static alignment".to_string(),
+                    Some(Alignment::Coarse(Coarse::NotStationary {
+                        peak_gyro,
+                        peak_accel_deviation,
+                    })) => format!(
+                        "COARSE: peak gyro {peak_gyro:.3} rad/s, peak |a|-g {peak_accel_deviation:.3} m/s^2"
+                    ),
+                    Some(Alignment::Coarse(Coarse::WindowTooShort { .. })) => {
+                        "COARSE: window too short".to_string()
+                    }
+                    Some(Alignment::Seeded) | None => "seeded".to_string(),
+                };
                 let interval = self.interval.unwrap_or(f64::NAN);
                 println!(
                     "\ninitialized at {t:.2} s from {:.2} s of stillness \
-                     ({} samples at {:.0} Hz)\n  {heading}\n  {reference}",
+                     ({} samples at {:.0} Hz)\n  {alignment}\n  {heading}\n  {reference}",
                     self.window_samples as f64 * interval,
                     self.window_samples,
                     1.0 / interval,
@@ -464,10 +497,16 @@ impl Replay {
         // expectations recorded in the manifest.
         let state = self.filter.state();
         println!(
-            "\nsummary rate={:.0} window={} refused={} invalid={} epochs={} \
+            "\nsummary rate={:.0} window={} align={} refused={} invalid={} epochs={} \
              transitions={} status={:?}",
             self.interval.map_or(0.0, |interval| 1.0 / interval),
             self.window_samples,
+            match self.alignment {
+                Some(Alignment::Static) => "static",
+                Some(Alignment::Coarse(..)) => "coarse",
+                Some(Alignment::Seeded) => "seeded",
+                None => "none",
+            },
             self.refused_steps,
             self.invalid_steps,
             self.epochs,

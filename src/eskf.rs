@@ -1,9 +1,9 @@
 //! The filter itself.
 
-use crate::config::Config;
+use crate::config::{Config, GRAVITY};
 use crate::frames::{Body, Ned};
 use crate::health::{Diagnostics, Fusion, Propagation, Status};
-use crate::state::{Covariance, STATES, State};
+use crate::state::{Covariance, ErrorState, STATES, State};
 use crate::units::{
     Acceleration, Altitude, AltitudeVariance, AngularRate, HeadingVariance, MagField, Position,
     PositionVariance, Seconds, Velocity, VelocityVariance,
@@ -45,11 +45,43 @@ pub struct StaticSample {
     pub baro: Option<Altitude>,
 }
 
-/// Why [`Eskf::initialize`] refused.
+/// What [`Eskf::initialize`] achieved.
 ///
-/// The static interval must be genuine; the filter validates rather than assumes it.
+/// A window that is short or moving is not a failure — it is a coarser start, and the
+/// filter says which it got rather than refusing to run. See
+/// [`Status::Aligning`](crate::Status::Aligning).
+#[must_use = "whether the filter aligned or only started coarsely changes what the estimate is worth"]
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum InitError {
+pub enum Alignment {
+    /// The window was long enough and genuinely still: tilt from averaged gravity, gyro
+    /// bias from the averaged rate, and the covariance
+    /// [`Initialization`](crate::Initialization) describes. Equations (5)–(8).
+    Static,
+    /// The window was usable but not a static interval, so attitude starts coarse and
+    /// the covariance is inflated to say so. The filter runs and reports
+    /// [`Status::Aligning`](crate::Status::Aligning) until attitude uncertainty comes
+    /// down to what a static start would have given.
+    Coarse(Coarse),
+    /// The state came from [`Eskf::initialize_from`] rather than from a window. Whether
+    /// it counts as aligned is a question for the covariance the caller supplied, not for
+    /// this value.
+    Seeded,
+}
+
+impl Alignment {
+    /// Whether this was a full static alignment.
+    pub const fn is_static(self) -> bool {
+        matches!(self, Self::Static)
+    }
+}
+
+/// Why alignment was coarse rather than static.
+///
+/// Carries what was measured, so "not stationary" is diagnosable rather than a bare
+/// verdict: an integrator tuning
+/// [`Initialization`](crate::Initialization) needs to know by how much.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Coarse {
     /// The window spans less than
     /// [`Initialization::min_duration`](crate::Initialization::min_duration).
     WindowTooShort {
@@ -58,31 +90,51 @@ pub enum InitError {
         /// Duration the window covers, `window.len() * dt`.
         provided: Seconds,
     },
-    /// The window was not stationary: angular rate or specific force moved further than
-    /// the configured tolerance allows.
-    NotStationary,
-    /// The seed handed to [`Eskf::initialize_from`] was not usable: a non-finite value in
-    /// the state, or a covariance with a non-finite entry or a negative variance.
+    /// The vehicle was moving: angular rate or specific force left the tolerance
+    /// [`Initialization`](crate::Initialization) allows.
+    NotStationary {
+        /// Largest angular rate magnitude in the window, rad s⁻¹.
+        peak_gyro: f32,
+        /// Largest departure of the specific-force magnitude from gravity, m s⁻².
+        peak_accel_deviation: f32,
+    },
+}
+
+/// Why initialization could not run at all.
+///
+/// Distinct from [`Coarse`]: these are inputs the filter can make nothing of, not starts
+/// of lower quality. Every one of them is the caller handing over something broken, which
+/// is why they are checked rather than trusted — a seed in particular crosses a boundary
+/// the filter does not control, arriving from another estimator or from storage that may
+/// be stale or corrupt.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum InitError {
+    /// The window held no samples, so there is nothing to align from.
+    NoSamples,
+    /// `dt` was zero, negative, or not a number, so the window covers no measurable span
+    /// of time.
+    InvalidStep {
+        /// The `dt` offered.
+        dt: Seconds,
+    },
+    /// A measurement, state, or covariance carried a value that is not finite.
+    NotFinite,
+    /// A seed covariance had a negative variance on its diagonal, which no prior has.
     ///
-    /// A seed crosses a boundary the filter does not control — another estimator, or a
-    /// deserialized warm start off storage that may be stale or corrupt — so it is
-    /// checked rather than trusted.
-    InvalidSeed,
+    /// Symmetry and positive-definiteness are not checked: that is a factorization on the
+    /// caller's data, not a guard.
+    NegativeVariance,
 }
 
 impl core::fmt::Display for InitError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::WindowTooShort { required, provided } => {
-                write!(
-                    f,
-                    "static window too short: {:.2} s of {:.2} s required",
-                    provided.as_secs(),
-                    required.as_secs()
-                )
+            Self::NoSamples => write!(f, "initialization window held no samples"),
+            Self::InvalidStep { dt } => {
+                write!(f, "initialization dt of {} s is not usable", dt.as_secs())
             }
-            Self::NotStationary => write!(f, "static window was not stationary"),
-            Self::InvalidSeed => write!(f, "seed state or covariance was not usable"),
+            Self::NotFinite => write!(f, "initialization input was not finite"),
+            Self::NegativeVariance => write!(f, "seed covariance had a negative variance"),
         }
     }
 }
@@ -129,48 +181,132 @@ impl Eskf {
         self.initialized
     }
 
-    /// Initialize attitude, gyroscope bias, covariance, and the barometric reference
-    /// from a window of stationary samples. Equations (5)–(8), and `α₀` of (30).
+    /// Align from a window of samples taken while the vehicle was, ideally, still.
+    /// Equations (5)–(8), and `α₀` of (30).
     ///
-    /// Position and velocity are zero, and the navigation origin is wherever the vehicle
-    /// was during the window.
+    /// The window does not have to be a genuine static interval. If it is — long enough
+    /// and within the tolerances [`Initialization`](crate::Initialization) sets — the
+    /// result is [`Alignment::Static`] and the filter starts with the covariance that
+    /// configuration describes. If it is not, the result is [`Alignment::Coarse`],
+    /// carrying what was measured: the filter still runs, with attitude uncertainty
+    /// inflated to match, and reports [`Status::Aligning`] until that uncertainty comes
+    /// down. Refusing instead would be a launch restriction, and a filter that will not
+    /// start is worth less than one that starts and says how much to trust it.
     ///
-    /// `dt` is the interval between consecutive samples in `window`, so that the
-    /// configured [`min_duration`](crate::Initialization::min_duration) can be checked
-    /// against a real span of time. As everywhere else, the filter never reads a clock.
+    /// Where no window exists at all, use [`initialize_coarse`](Self::initialize_coarse)
+    /// or [`initialize_from`](Self::initialize_from).
     ///
-    /// **Stub.** Validates the window length, derives the barometric reference, and sets
-    /// the filter initialized; computes no attitude.
-    pub fn initialize(&mut self, window: &[StaticSample], dt: Seconds) -> Result<(), InitError> {
-        let required = self.config.init.min_duration;
-        let provided = Seconds::from_secs(window.len() as f32 * dt.as_secs());
-        if provided.as_secs() < required.as_secs() {
-            return Err(InitError::WindowTooShort { required, provided });
+    /// Position and velocity start at the configured priors either way, which assume the
+    /// origin is here and the vehicle is at rest. A launch that knows better — off a
+    /// moving deck, say — should say so through [`initialize_from`](Self::initialize_from)
+    /// rather than let the first GNSS fix arrive as a large innovation.
+    ///
+    /// `dt` is the interval between consecutive samples, so that
+    /// [`min_duration`](crate::Initialization::min_duration) can be checked against a real
+    /// span of time. As everywhere else, the filter never reads a clock.
+    ///
+    /// **Stub.** Classifies the window, derives the barometric reference and the initial
+    /// covariance, and sets the filter initialized; computes no attitude.
+    ///
+    /// # Errors
+    ///
+    /// [`InitError::NoSamples`] for an empty window, [`InitError::InvalidStep`] for a
+    /// `dt` that is zero, negative or NaN, and [`InitError::NotFinite`] if a sample
+    /// carries a value that is not a number.
+    pub fn initialize(
+        &mut self,
+        window: &[StaticSample],
+        dt: Seconds,
+    ) -> Result<Alignment, InitError> {
+        let alignment = self.alignment_of(window, dt)?;
+        let (sigma_tilt, sigma_yaw) = self.attitude_sigmas(alignment);
+        self.apply_alignment(sigma_tilt, sigma_yaw);
+        self.baro_reference = baro_reference(window);
+        Ok(alignment)
+    }
+
+    /// What [`initialize`](Self::initialize) would make of this window, without touching
+    /// the filter.
+    ///
+    /// For the application that would rather wait for stillness than start coarsely:
+    /// slide the window forward until this reports [`Alignment::Static`], then commit.
+    /// The filter cannot do that waiting itself — it does not know whether the vehicle is
+    /// about to launch or has been sitting on the bench for an hour.
+    ///
+    /// # Errors
+    ///
+    /// As [`initialize`](Self::initialize).
+    pub fn alignment_of(
+        &self,
+        window: &[StaticSample],
+        dt: Seconds,
+    ) -> Result<Alignment, InitError> {
+        if window.is_empty() {
+            return Err(InitError::NoSamples);
+        }
+        let seconds = dt.as_secs();
+        if seconds <= 0.0 || seconds.is_nan() {
+            return Err(InitError::InvalidStep { dt });
+        }
+        if !window.iter().all(sample_is_finite) {
+            return Err(InitError::NotFinite);
         }
 
         let init = &self.config.init;
-        self.covariance = Covariance::from_sigmas([
-            init.sigma_position,
-            init.sigma_position,
-            init.sigma_position,
-            init.sigma_velocity,
-            init.sigma_velocity,
-            init.sigma_velocity,
-            init.sigma_tilt.as_radians(),
-            init.sigma_tilt.as_radians(),
-            init.sigma_yaw.as_radians(),
-            init.sigma_accel_bias,
-            init.sigma_accel_bias,
-            init.sigma_accel_bias,
-            init.sigma_gyro_bias,
-            init.sigma_gyro_bias,
-            init.sigma_gyro_bias,
-        ]);
-        self.state = State::default();
-        self.diagnostics = Diagnostics::default();
-        self.baro_reference = baro_reference(window);
-        self.initialized = true;
-        Ok(())
+        let required = init.min_duration;
+        let provided = Seconds::from_secs(window.len() as f32 * seconds);
+        if provided.as_secs() < required.as_secs() {
+            return Ok(Alignment::Coarse(Coarse::WindowTooShort {
+                required,
+                provided,
+            }));
+        }
+
+        let (peak_gyro, peak_accel_deviation) = peak_motion(window);
+        if peak_gyro > init.max_gyro_rate || peak_accel_deviation > init.max_accel_deviation {
+            return Ok(Alignment::Coarse(Coarse::NotStationary {
+                peak_gyro,
+                peak_accel_deviation,
+            }));
+        }
+        Ok(Alignment::Static)
+    }
+
+    /// Start from a single IMU sample, with no window at all.
+    ///
+    /// For the launch that never offers one: a hand launch, a deck that is always moving,
+    /// a restart at altitude. Tilt comes from one accelerometer reading, which carries the
+    /// sensor's full noise and whatever the vehicle's own acceleration was at that
+    /// instant, so the covariance is inflated accordingly and the filter reports
+    /// [`Status::Aligning`].
+    ///
+    /// Prefer [`initialize_from`](Self::initialize_from) where the application has an
+    /// attitude from somewhere — a companion AHRS, the last flight — since a real estimate
+    /// beats one sample of gravity.
+    ///
+    /// **Stub.** Sets the covariance and initializes; computes no attitude.
+    ///
+    /// # Errors
+    ///
+    /// [`InitError::NotFinite`] if the sample carries a value that is not a number.
+    pub fn initialize_coarse(&mut self, imu: ImuSample) -> Result<Alignment, InitError> {
+        let sample = StaticSample {
+            imu,
+            ..StaticSample::default()
+        };
+        if !sample_is_finite(&sample) {
+            return Err(InitError::NotFinite);
+        }
+        let (peak_gyro, peak_accel_deviation) = peak_motion(&[sample]);
+        let alignment = Alignment::Coarse(Coarse::NotStationary {
+            peak_gyro,
+            peak_accel_deviation,
+        });
+        let (sigma_tilt, sigma_yaw) = self.attitude_sigmas(alignment);
+        self.apply_alignment(sigma_tilt, sigma_yaw);
+        // The barometric reference is left alone: one sample does not establish one, and
+        // a restart at altitude should keep the reference the flight began with.
+        Ok(alignment)
     }
 
     /// Initialize from an estimate the application already holds, rather than from a
@@ -196,22 +332,29 @@ impl Eskf {
     ///
     /// # Errors
     ///
-    /// [`InitError::InvalidSeed`] if `state` carries a non-finite value, or `covariance`
-    /// a non-finite entry or a negative variance. A rejected seed leaves the filter
-    /// uninitialized rather than poisoned.
+    /// [`InitError::NotFinite`] if `state` or `covariance` carries a value that is not a
+    /// number, and [`InitError::NegativeVariance`] for a covariance diagonal no prior
+    /// could have. A rejected seed leaves the filter uninitialized rather than poisoned.
+    ///
+    /// Whether the seed counts as aligned is the covariance's answer, not this one's: a
+    /// confident seed reports [`Status::Healthy`] straight away, a coarse one
+    /// [`Status::Aligning`] until it converges.
     pub fn initialize_from(
         &mut self,
         state: State,
         covariance: Covariance,
-    ) -> Result<(), InitError> {
-        if !state_is_finite(&state) || !covariance_is_usable(&covariance) {
-            return Err(InitError::InvalidSeed);
+    ) -> Result<Alignment, InitError> {
+        if !state_is_finite(&state) || !covariance.as_matrix().iter().all(|e| e.is_finite()) {
+            return Err(InitError::NotFinite);
+        }
+        if (0..STATES).any(|i| covariance.as_matrix()[(i, i)] < 0.0) {
+            return Err(InitError::NegativeVariance);
         }
         self.state = state;
         self.covariance = covariance;
         self.diagnostics = Diagnostics::default();
         self.initialized = true;
-        Ok(())
+        Ok(Alignment::Seeded)
     }
 
     /// Set the barometric reference `α₀` directly. Equation (30).
@@ -340,7 +483,7 @@ impl Eskf {
     /// [`diagnostics`](Self::diagnostics) and [`Timeouts`](crate::Timeouts), so computing
     /// it on read means there is no invariant for the mutating methods to maintain. The
     /// loop costs four comparisons.
-    pub const fn state(&self) -> State {
+    pub fn state(&self) -> State {
         // `self.state.status` is inert; the stored estimate never carries a meaningful
         // one, and every read overwrites it.
         let mut state = self.state;
@@ -356,6 +499,26 @@ impl Eskf {
     /// The 15 x 15 error covariance, in the error-state ordering.
     pub const fn covariance(&self) -> &Covariance {
         &self.covariance
+    }
+
+    /// Whether attitude uncertainty has come down to what a static start would have
+    /// given — the test behind [`Status::Aligning`].
+    ///
+    /// The bar is [`Initialization::sigma_tilt`](crate::Initialization::sigma_tilt) and
+    /// [`sigma_yaw`](crate::Initialization::sigma_yaw), reused rather than configured
+    /// separately: a filter is aligned once it is at least as sure of its attitude as a
+    /// good static start would have made it. Read from the covariance, so it is the
+    /// filter's own estimate of its convergence and not a timer.
+    pub fn is_aligned(&self) -> bool {
+        if !self.initialized {
+            return false;
+        }
+        let init = &self.config.init;
+        let tilt = init.sigma_tilt.as_radians();
+        let yaw = init.sigma_yaw.as_radians();
+        self.covariance.variance(ErrorState::AttitudeX) <= tilt * tilt
+            && self.covariance.variance(ErrorState::AttitudeY) <= tilt * tilt
+            && self.covariance.variance(ErrorState::AttitudeZ) <= yaw * yaw
     }
 
     /// The barometric reference `α₀` fixed at initialization, or `None` if the static
@@ -390,6 +553,65 @@ impl Eskf {
         self.state.velocity = velocity;
     }
 
+    /// Initial tilt and yaw standard deviations for an alignment.
+    ///
+    /// A static start gets the configured figures. A coarse one gets a tilt bound derived
+    /// from how far the specific force was from gravity — small-angle, so
+    /// `σ ≈ deviation / g` — and never tighter than the configured value, together with
+    /// the standard deviation of a heading known only to be somewhere on the circle.
+    fn attitude_sigmas(&self, alignment: Alignment) -> (f32, f32) {
+        let init = &self.config.init;
+        match alignment {
+            Alignment::Static | Alignment::Seeded => {
+                (init.sigma_tilt.as_radians(), init.sigma_yaw.as_radians())
+            }
+            Alignment::Coarse(Coarse::WindowTooShort { .. }) => {
+                (init.sigma_tilt.as_radians(), UNKNOWN_HEADING_SIGMA)
+            }
+            Alignment::Coarse(Coarse::NotStationary {
+                peak_accel_deviation,
+                ..
+            }) => {
+                let tilt = peak_accel_deviation / GRAVITY;
+                (
+                    if tilt > init.sigma_tilt.as_radians() {
+                        tilt
+                    } else {
+                        init.sigma_tilt.as_radians()
+                    },
+                    UNKNOWN_HEADING_SIGMA,
+                )
+            }
+        }
+    }
+
+    /// Reset state, covariance and health for a fresh start with these attitude sigmas.
+    /// The barometric reference is the caller's to set, because only it knows whether
+    /// this start establishes a new one.
+    fn apply_alignment(&mut self, sigma_tilt: f32, sigma_yaw: f32) {
+        let init = &self.config.init;
+        self.covariance = Covariance::from_sigmas([
+            init.sigma_position,
+            init.sigma_position,
+            init.sigma_position,
+            init.sigma_velocity,
+            init.sigma_velocity,
+            init.sigma_velocity,
+            sigma_tilt,
+            sigma_tilt,
+            sigma_yaw,
+            init.sigma_accel_bias,
+            init.sigma_accel_bias,
+            init.sigma_accel_bias,
+            init.sigma_gyro_bias,
+            init.sigma_gyro_bias,
+            init.sigma_gyro_bias,
+        ]);
+        self.state = State::default();
+        self.diagnostics = Diagnostics::default();
+        self.initialized = true;
+    }
+
     fn stub_fuse(&mut self, source: fn(&mut Diagnostics) -> &mut crate::SourceHealth) -> Fusion {
         if !self.initialized {
             return Fusion::NotInitialized;
@@ -398,11 +620,11 @@ impl Eskf {
         Fusion::Accepted { test_ratio: 0.0 }
     }
 
-    /// Aggregate the per-source timers into one status.
+    /// Aggregate alignment and the per-source timers into one status, most severe first.
     ///
-    /// Only sources that have ever been accepted count: a vehicle with no magnetometer is
-    /// not permanently `Degraded` for lacking one.
-    const fn derive_status(&self) -> Status {
+    /// Only sources that have ever been accepted count toward aiding: a vehicle with no
+    /// magnetometer is not permanently `Degraded` for lacking one.
+    fn derive_status(&self) -> Status {
         let degraded_after = self.config.timeouts.degraded_after.as_secs();
         let dead_after = self.config.timeouts.dead_reckoning_after.as_secs();
 
@@ -427,13 +649,62 @@ impl Eskf {
         }
 
         if used == 0 || aiding == 0 {
+            // Nothing is arriving that could align the filter either, so this outranks
+            // `Aligning`.
             Status::DeadReckoning
+        } else if !self.is_aligned() {
+            Status::Aligning
         } else if fresh == used {
             Status::Healthy
         } else {
             Status::Degraded
         }
     }
+}
+
+/// Standard deviation of a heading known only to lie somewhere on the circle: `π / √3`,
+/// the standard deviation of a uniform distribution over `[-π, π]`.
+///
+/// Honest, and at the same time a number the error state cannot really carry — the
+/// three-component attitude error of equation (2) is a small-angle quantity, and a yaw
+/// error of a radian is not small. It stands in until a heading source arrives, and the
+/// right response to that source is a yaw **reset** rather than a gradual correction.
+/// This is why PX4 and ArduPilot align yaw with a bank of hypotheses rather than one wide
+/// prior; see `GOALS.md`.
+const UNKNOWN_HEADING_SIGMA: f32 = 1.813_799_4;
+
+/// Largest angular rate magnitude, and largest departure of the specific-force magnitude
+/// from gravity, over a window.
+fn peak_motion(window: &[StaticSample]) -> (f32, f32) {
+    let mut peak_gyro = 0.0f32;
+    let mut peak_deviation = 0.0f32;
+    for sample in window {
+        let gyro = sample.imu.gyro.as_rad_per_s().norm();
+        if gyro > peak_gyro {
+            peak_gyro = gyro;
+        }
+        let deviation = sample.imu.accel.as_m_per_s2().norm() - GRAVITY;
+        let deviation = if deviation < 0.0 {
+            -deviation
+        } else {
+            deviation
+        };
+        if deviation > peak_deviation {
+            peak_deviation = deviation;
+        }
+    }
+    (peak_gyro, peak_deviation)
+}
+
+/// Whether every number in a window sample is finite.
+fn sample_is_finite(sample: &StaticSample) -> bool {
+    let gyro = sample.imu.gyro.as_rad_per_s();
+    let accel = sample.imu.accel.as_m_per_s2();
+    gyro.iter().chain(accel.iter()).all(|v| v.is_finite())
+        && sample
+            .mag
+            .is_none_or(|field| field.as_components().iter().all(|v| v.is_finite()))
+        && sample.baro.is_none_or(|b| b.as_meters().is_finite())
 }
 
 /// Whether every number in a seed state is finite. A quaternion is unit by construction,
@@ -450,14 +721,6 @@ fn state_is_finite(state: &State) -> bool {
         && vectors
             .iter()
             .all(|v| v.iter().all(|component| component.is_finite()))
-}
-
-/// Whether a seed covariance could be a prior: finite throughout, with no negative
-/// variance. Symmetry and positive-definiteness are not checked — that is a matrix
-/// factorization on the caller's data, not a guard.
-fn covariance_is_usable(covariance: &Covariance) -> bool {
-    let p = covariance.as_matrix();
-    p.iter().all(|entry| entry.is_finite()) && (0..STATES).all(|i| p[(i, i)] >= 0.0)
 }
 
 /// Mean barometric altitude over the samples that carry one. `None` if none do.
@@ -484,13 +747,28 @@ mod tests {
 
     const DT: Seconds = Seconds::from_secs(0.01);
 
+    /// A sample from a vehicle genuinely sitting still: no rotation, gravity the only
+    /// specific force. `StaticSample::default()` is not this — its zero acceleration is
+    /// a full `g` away from anything the world does — so the stationarity check reads it
+    /// as motion, correctly.
+    fn still() -> StaticSample {
+        StaticSample {
+            imu: ImuSample {
+                gyro: AngularRate::from_rad_per_s(0.0, 0.0, 0.0),
+                accel: Acceleration::from_m_per_s2(0.0, 0.0, -GRAVITY),
+            },
+            ..StaticSample::default()
+        }
+    }
+
     /// A window of exactly `Initialization::min_duration`: 8 samples at 4 Hz is 2 s.
     /// No barometer, so no reference is established.
     fn initialized() -> Eskf {
         let mut filter = Eskf::new(Config::default());
-        filter
-            .initialize(&[StaticSample::default(); 8], Seconds::from_secs(0.25))
-            .expect("a 2 s window satisfies the default min_duration");
+        let alignment = filter
+            .initialize(&[still(); 8], Seconds::from_secs(0.25))
+            .expect("a 2 s window of stillness");
+        assert_eq!(alignment, Alignment::Static);
         filter
     }
 
@@ -498,7 +776,7 @@ mod tests {
     fn window_with_baro(altitudes: [f32; 8]) -> [StaticSample; 8] {
         altitudes.map(|altitude| StaticSample {
             baro: Some(Altitude::from_meters(altitude)),
-            ..StaticSample::default()
+            ..still()
         })
     }
 
@@ -506,9 +784,9 @@ mod tests {
     /// fusion needs a reference, so the window carries one.
     fn aided() -> Eskf {
         let mut filter = Eskf::new(Config::default());
-        filter
+        let _ = filter
             .initialize(&window_with_baro([100.0; 8]), Seconds::from_secs(0.25))
-            .expect("a 2 s window satisfies the default min_duration");
+            .expect("a 2 s window of stillness");
         assert!(
             filter
                 .fuse_baro_altitude(Altitude::from_meters(100.0), AltitudeVariance::from_m2(4.0))
@@ -581,7 +859,7 @@ mod tests {
     fn the_baro_reference_is_the_mean_over_the_window() {
         let mut filter = Eskf::new(Config::default());
         let window = window_with_baro([99.0, 101.0, 100.0, 100.0, 99.5, 100.5, 100.0, 100.0]);
-        filter
+        let _ = filter
             .initialize(&window, Seconds::from_secs(0.25))
             .expect("a 2 s window");
         let reference = filter
@@ -599,10 +877,10 @@ mod tests {
         let mut filter = Eskf::new(Config::default());
         // A barometer runs slower than the IMU, so most samples in a real window carry
         // nothing. Counting those as zero would drag the reference to the ground.
-        let mut window = [StaticSample::default(); 8];
+        let mut window = [still(); 8];
         window[0].baro = Some(Altitude::from_meters(10.0));
         window[7].baro = Some(Altitude::from_meters(20.0));
-        filter
+        let _ = filter
             .initialize(&window, Seconds::from_secs(0.25))
             .expect("a 2 s window");
         assert_eq!(filter.baro_reference(), Some(Altitude::from_meters(15.0)));
@@ -627,7 +905,7 @@ mod tests {
     fn reinitializing_replaces_the_reference() {
         let mut filter = aided();
         assert_eq!(filter.baro_reference(), Some(Altitude::from_meters(100.0)));
-        filter
+        let _ = filter
             .initialize(&window_with_baro([250.0; 8]), Seconds::from_secs(0.25))
             .expect("a 2 s window");
         assert_eq!(filter.baro_reference(), Some(Altitude::from_meters(250.0)));
@@ -650,7 +928,7 @@ mod tests {
     fn a_seed_becomes_the_state_and_the_covariance() {
         let mut filter = Eskf::new(Config::default());
         let (state, covariance) = seed();
-        filter
+        let _ = filter
             .initialize_from(state, covariance)
             .expect("a sane seed");
         assert!(filter.is_initialized());
@@ -663,7 +941,7 @@ mod tests {
     fn a_seed_carries_no_baro_reference_of_its_own() {
         let mut filter = Eskf::new(Config::default());
         let (state, covariance) = seed();
-        filter
+        let _ = filter
             .initialize_from(state, covariance)
             .expect("a sane seed");
         assert_eq!(filter.baro_reference(), None);
@@ -684,7 +962,7 @@ mod tests {
     fn reinitializing_in_flight_keeps_the_reference_the_flight_began_with() {
         let mut filter = aided();
         let (state, covariance) = seed();
-        filter
+        let _ = filter
             .initialize_from(state, covariance)
             .expect("a sane seed");
         assert_eq!(
@@ -704,7 +982,7 @@ mod tests {
         let mut filter = Eskf::new(Config::default());
         assert_eq!(
             filter.initialize_from(poisoned, covariance),
-            Err(InitError::InvalidSeed)
+            Err(InitError::NotFinite)
         );
         assert!(!filter.is_initialized(), "a refused seed leaves no state");
 
@@ -717,7 +995,7 @@ mod tests {
         )] = -1.0;
         assert_eq!(
             filter.initialize_from(state, Covariance::from_matrix(matrix)),
-            Err(InitError::InvalidSeed)
+            Err(InitError::NegativeVariance)
         );
         matrix[(
             ErrorState::VelocityNorth.index(),
@@ -725,7 +1003,7 @@ mod tests {
         )] = f32::NAN;
         assert_eq!(
             filter.initialize_from(state, Covariance::from_matrix(matrix)),
-            Err(InitError::InvalidSeed)
+            Err(InitError::NotFinite)
         );
         assert!(!filter.is_initialized());
     }
@@ -734,10 +1012,118 @@ mod tests {
     fn the_static_window_is_measured_in_seconds_not_samples() {
         let mut filter = Eskf::new(Config::default());
         // The same 8 samples, now spanning 0.8 s instead of 2 s.
-        let error = filter
-            .initialize(&[StaticSample::default(); 8], Seconds::from_secs(0.1))
-            .expect_err("0.8 s is under the default min_duration");
-        assert!(matches!(error, InitError::WindowTooShort { .. }));
+        let alignment = filter
+            .initialize(&[still(); 8], Seconds::from_secs(0.1))
+            .expect("a short window is a coarse start, not a refusal");
+        assert!(matches!(
+            alignment,
+            Alignment::Coarse(Coarse::WindowTooShort { .. })
+        ));
+        assert!(
+            filter.is_initialized(),
+            "refusing to run is the old behavior"
+        );
+        assert!(!filter.is_aligned());
+    }
+
+    #[test]
+    fn a_moving_window_is_coarse_and_reports_what_it_measured() {
+        let mut filter = Eskf::new(Config::default());
+        let mut window = [still(); 8];
+        window[3].imu.gyro = AngularRate::from_rad_per_s(0.0, 0.4, 0.0);
+        let alignment = filter
+            .initialize(&window, Seconds::from_secs(0.25))
+            .expect("moving, not unusable");
+        let Alignment::Coarse(Coarse::NotStationary { peak_gyro, .. }) = alignment else {
+            panic!("0.4 rad/s is over the 0.05 default: {alignment:?}");
+        };
+        assert!((peak_gyro - 0.4).abs() < 1e-6, "got {peak_gyro}");
+        assert!(!filter.is_aligned());
+    }
+
+    #[test]
+    fn a_coarse_start_widens_tilt_in_proportion_to_the_motion_it_saw() {
+        let mut filter = Eskf::new(Config::default());
+        let mut window = [still(); 8];
+        // 2.94 m/s^2 of unexplained specific force — over the stationarity tolerance,
+        // and three tenths of a radian of tilt the filter cannot account for.
+        window[0].imu.accel = Acceleration::from_m_per_s2(0.0, 0.0, -GRAVITY - 2.941_995);
+        let _ = filter
+            .initialize(&window, Seconds::from_secs(0.25))
+            .expect("moving, not unusable");
+        let tilt = filter.covariance().variance(ErrorState::AttitudeX);
+        assert!(
+            (tilt - 0.09).abs() < 1e-4,
+            "tilt variance should be about (0.3 rad)^2, got {tilt}"
+        );
+    }
+
+    #[test]
+    fn with_no_window_at_all_one_sample_still_starts_the_filter() {
+        let mut filter = Eskf::new(Config::default());
+        let alignment = filter
+            .initialize_coarse(still().imu)
+            .expect("a finite sample");
+        assert!(matches!(alignment, Alignment::Coarse(..)));
+        assert!(filter.is_initialized());
+        assert!(!filter.is_aligned(), "one sample cannot settle heading");
+    }
+
+    #[test]
+    fn a_coarse_start_reports_aligning_once_something_is_aiding_it() {
+        let mut filter = Eskf::new(Config::default());
+        let _ = filter
+            .initialize(&window_with_baro([100.0; 8]), Seconds::from_secs(0.1))
+            .expect("short, not unusable");
+        assert_eq!(
+            filter.state().status,
+            Status::DeadReckoning,
+            "nothing is arriving that could align it, which outranks Aligning"
+        );
+
+        assert!(
+            filter
+                .fuse_baro_altitude(Altitude::from_meters(100.0), AltitudeVariance::from_m2(4.0))
+                .is_accepted()
+        );
+        assert_eq!(filter.state().status, Status::Aligning);
+    }
+
+    #[test]
+    fn a_confident_seed_is_aligned_and_a_vague_one_is_not() {
+        let (state, _) = seed();
+        let mut filter = Eskf::new(Config::default());
+
+        let _ = filter
+            .initialize_from(state, Covariance::from_sigmas([0.001; STATES]))
+            .expect("a sane seed");
+        assert!(filter.is_aligned());
+
+        let _ = filter
+            .initialize_from(state, Covariance::from_sigmas([2.0; STATES]))
+            .expect("a sane seed");
+        assert!(!filter.is_aligned());
+    }
+
+    #[test]
+    fn an_empty_window_or_an_unusable_step_is_still_an_error() {
+        let mut filter = Eskf::new(Config::default());
+        assert_eq!(
+            filter.initialize(&[], Seconds::from_secs(0.25)),
+            Err(InitError::NoSamples)
+        );
+        assert_eq!(
+            filter.initialize(&[still(); 8], Seconds::from_secs(0.0)),
+            Err(InitError::InvalidStep {
+                dt: Seconds::from_secs(0.0)
+            })
+        );
+        let mut poisoned = [still(); 8];
+        poisoned[2].imu.accel = Acceleration::from_m_per_s2(f32::NAN, 0.0, 0.0);
+        assert_eq!(
+            filter.initialize(&poisoned, Seconds::from_secs(0.25)),
+            Err(InitError::NotFinite)
+        );
         assert!(!filter.is_initialized());
     }
 }

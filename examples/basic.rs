@@ -24,8 +24,13 @@ fn main() -> Result<(), InitError> {
 
     // Quasi-static initialization: the vehicle sits still, the filter validates it.
     // The window is sized in time, not samples, so it holds `min_duration` at IMU rate.
+    //
+    // A window that is short or moving is not refused — it gives `Alignment::Coarse` and
+    // the filter runs, reporting `Status::Aligning` until attitude converges. Checking
+    // which you got is the point of the return value.
     let window = [stationary_sample(); (2 * IMU_HZ) as usize];
-    filter.initialize(&window, dt)?;
+    let alignment = filter.initialize(&window, dt)?;
+    println!("alignment {alignment:?}\n");
 
     for tick in 0..(5 * IMU_HZ) {
         // Hot path: one propagation per IMU sample, `dt` supplied by the caller. The
@@ -76,6 +81,7 @@ fn main() -> Result<(), InitError> {
 
     match state.status {
         Status::Healthy => println!("\nevery source that has been fused is still accepted"),
+        Status::Aligning => println!("\nattitude has not converged yet; do not fly on it"),
         Status::Degraded => println!("\na source has timed out; the estimate is still aided"),
         Status::DeadReckoning => println!("\nnothing is aiding the filter; drift is unbounded"),
     }

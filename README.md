@@ -136,9 +136,25 @@ navigation origin — averaged over whatever barometer samples it carries. That 
 constant rather than a state, so a window carrying none leaves later altitudes with no origin to
 be relative to and `fuse_baro_altitude` refuses them for the whole flight.
 
-This is an operational requirement, not an implementation detail: the application must hold the
-vehicle still and must validate that it was still, because initialization quality dominates
-early-flight performance.
+A window that is short or moving is **not refused**. It gives a coarse start instead: attitude
+uncertainty inflated to match the motion actually measured, and `Status::Aligning` reported until
+that uncertainty comes down to what a static start would have given. Refusing would restrict the
+launch envelope — no moving deck, no hand launch, no restart at altitude — and a filter that will
+not start is worth less than one that starts and says how much to trust it.
+
+There are three ways in, and each reports which alignment it achieved:
+
+| entry point | for |
+| ----------- | --- |
+| `initialize(window, dt)` | the usual case; `Alignment::Static` if the window was genuinely still, `Alignment::Coarse` with what it measured otherwise |
+| `initialize_coarse(imu)` | no window at all — one sample of gravity, and the filter runs |
+| `initialize_from(state, covariance)` | an estimate the application already holds: a companion AHRS, the last flight's saved state |
+
+`alignment_of(window, dt)` answers what `initialize` would make of a window without touching the
+filter, for an application that would rather wait for stillness than start coarsely.
+
+Stillness remains worth arranging where it is available, because initialization quality dominates
+early-flight performance, and the filter validates the claim rather than assuming it.
 
 See [initialization](EQUATIONS.md#initialization).
 
@@ -236,9 +252,15 @@ dead-reckons on the IMU while still reporting a confident solution.
 consecutive rejections. The aggregate is reported on the state estimate itself rather than behind
 a separate call, so a solution cannot be consumed without its status:
 
-* `Healthy` — every configured source is being fused
+* `Healthy` — every configured source is being fused, and attitude has converged
+* `Aligning` — running and aided, but attitude has not converged yet: a coarse start still
+  learning. Position and velocity are usable to the extent the covariance says; attitude is not
 * `Degraded` — a source has timed out, others still aid the solution
 * `DeadReckoning` — nothing is aiding; position and velocity drift without bound
+
+When more than one applies the most severe is reported, so `Aligning` hides `Degraded` — an
+attitude that has not converged is the larger problem — and `DeadReckoning` hides everything,
+since nothing is arriving that could align the filter anyway.
 
 Per-source detail — test ratios and time since last acceptance — is available from
 `diagnostics()` for logging and tuning.
