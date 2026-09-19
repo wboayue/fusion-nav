@@ -251,7 +251,7 @@ impl Eskf {
     /// position zero to be wherever the vehicle is.
     ///
     /// Returns `false`, changing nothing, for an origin with a coordinate that is not a
-    /// number or that sits on a pole, where east is undefined.
+    /// number or a latitude beyond ±90°.
     pub fn set_origin(&mut self, origin: Geodetic) -> bool {
         let Some(new) = LocalOrigin::new(origin) else {
             return false;
@@ -391,9 +391,9 @@ impl Eskf {
     /// `noise` is as for [`fuse_gnss_position`](Self::fuse_gnss_position), floor
     /// included.
     ///
-    /// A fix or noise that is not a number is refused with [`Fusion::NotFinite`]. A fix on
-    /// a pole cannot place an origin: with none held it is refused with
-    /// [`Fusion::NoReference`], and the next usable fix places it instead.
+    /// A fix or noise that is not a number is refused with [`Fusion::NotFinite`]. A fix
+    /// with a latitude beyond ±90° cannot place an origin: with none held it is refused
+    /// with [`Fusion::NoReference`], and the next usable fix places it instead.
     pub fn fuse_gnss_geodetic(&mut self, fix: Geodetic, noise: PositionNoise<Ned>) -> Fusion {
         if !self.initialized {
             return Fusion::NotInitialized;
@@ -1412,9 +1412,9 @@ mod tests {
     #[test]
     fn a_fix_that_cannot_place_an_origin_is_refused_and_the_next_one_places_it() {
         let mut filter = initialized();
-        let pole = Geodetic::from_degrees(90.0, 0.0, 0.0);
+        let off_the_earth = Geodetic::from_degrees(91.0, 0.0, 0.0);
         assert_eq!(
-            filter.fuse_gnss_geodetic(pole, PositionNoise::horizontal_vertical(1.5, 1.5)),
+            filter.fuse_gnss_geodetic(off_the_earth, PositionNoise::horizontal_vertical(1.5, 1.5)),
             Fusion::NoReference
         );
         assert_eq!(filter.origin(), None);
@@ -1467,9 +1467,9 @@ mod tests {
     }
 
     #[test]
-    fn a_polar_origin_is_refused() {
+    fn an_origin_off_the_earth_is_refused() {
         let mut filter = initialized();
-        assert!(!filter.set_origin(Geodetic::from_degrees(90.0, 0.0, 0.0)));
+        assert!(!filter.set_origin(Geodetic::from_degrees(91.0, 0.0, 0.0)));
         assert_eq!(filter.origin(), None);
     }
 

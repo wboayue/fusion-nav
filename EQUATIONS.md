@@ -402,6 +402,15 @@ that matters, the options are to re-establish $`\alpha_0`$ on the ground, to lea
 for the low-frequency component, or to extend the state vector, which is out of scope for this
 filter.
 
+The barometer measures height, and the navigation frame is a plane. Written as above, (30)
+treats $`-p_D`$ as height, which is off by the plane's rise above the surface, $`d^2 / 2R`$ at a
+horizontal distance $`d`$ from the origin (see [geodetic origin](#geodetic-origin)): 8 cm at 1 km,
+7.8 m at 10 km. GNSS positions converted by (43) carry that rise and the barometer does not, so
+beyond a few kilometres the two disagree about height by exactly that amount. When (30) is
+implemented, $`h(x)`$ should be minus the height of $`\hat{p}`$ above $`h_0`$, by the inverse of
+(43) — $`p_D - (p_N^2 + p_E^2) / 2R`$ to second order — so both sides are heights; $`H`$ is
+unchanged to first order.
+
 ### Magnetometer, three-axis
 
 With $`m_n`$ the reference field in the navigation frame, the predicted body-frame measurement is
@@ -571,44 +580,57 @@ they are what keeps a 15-state filter stable over a long flight.
 
 ## Geodetic origin
 
-The navigation frame is a local tangent plane about an origin $`(\varphi_0, \lambda_0, h_0)`$,
-which the filter holds so that a geodetic fix and the estimate are relative to the same point.
-With the WGS84 radii of curvature at the origin,
+The navigation frame is the plane tangent to the WGS84 ellipsoid at an origin
+$`(\varphi_0, \lambda_0, h_0)`$, which the filter holds so that a geodetic fix and the estimate
+are relative to the same point. A geodetic position goes to Earth-centered, Earth-fixed
+coordinates (Groves (2.112)), with $`N`$ the radius of curvature in the prime vertical,
 
 ```math
-M = \frac{a(1 - e^2)}{(1 - e^2 \sin^2\varphi_0)^{3/2}}, \qquad
-N = \frac{a}{\sqrt{1 - e^2 \sin^2\varphi_0}}
+r^e = \begin{bmatrix} (N + h)\cos\varphi\cos\lambda \\ (N + h)\cos\varphi\sin\lambda \\ \left(N(1 - e^2) + h\right)\sin\varphi \end{bmatrix},
+\qquad N = \frac{a}{\sqrt{1 - e^2\sin^2\varphi}}
 ```
 
-a fix $`(\varphi, \lambda, h)`$ is, in NED meters,
+and a fix is its ECEF offset from the origin, rotated onto the origin's north, east and down:
 
 **(43)**
 
 ```math
-p_N = (\varphi - \varphi_0)(M + h_0), \qquad
-p_E = \operatorname{wrap}(\lambda - \lambda_0)(N + h_0)\cos\varphi_0, \qquad
-p_D = -(h - h_0)
+p = C_e^n \left(r^e - r^e_0\right), \qquad
+C_e^n = \begin{bmatrix}
+-\sin\varphi_0\cos\lambda_0 & -\sin\varphi_0\sin\lambda_0 & \cos\varphi_0 \\
+-\sin\lambda_0 & \cos\lambda_0 & 0 \\
+-\cos\varphi_0\cos\lambda_0 & -\cos\varphi_0\sin\lambda_0 & -\sin\varphi_0
+\end{bmatrix}
 ```
 
-A first-order expansion about the origin: exact there, with an error that grows as
-$`p_N p_E / R`$ — 0.2 m at 1 km by 1 km at mid latitudes. Its inverse is exact, so converting the
-estimate back to latitude and longitude returns what (43) was given. Undefined at the poles, where
-$`\cos\varphi_0 = 0`$.
+Exact at every range, including the poles; the only rounding is the final narrowing to `f32`,
+1 mm at 10 km. The inverse is $`r^e = r^e_0 + (C_e^n)^\mathsf{T} p`$ followed by ECEF to geodetic,
+whose latitude is the fixed point of $`\varphi = \operatorname{atan2}(z + e^2 N(\varphi)\sin\varphi,\ p_{xy})`$:
+each pass shrinks the error by about $`e^2`$, so five passes from the geocentric latitude reach
+below a micrometre. Height is $`h = p_{xy}\cos\varphi + z\sin\varphi - a\sqrt{1 - e^2\sin^2\varphi}`$,
+which stays finite at the poles.
+
+Exact conversion does not make the plane follow the Earth. At a horizontal distance $`d`$ from the
+origin, the plane sits $`d^2 / 2R`$ above the surface — 8 cm at 1 km, 7.8 m at 10 km — so
+$`-p_D`$ there is not height above the origin. A GNSS fix converted by (43) carries that
+curvature; a barometer does not, which is what the [barometric model](#barometric-altitude) has
+to account for.
 
 The first geodetic fix $`z_g`$ places the origin. A filter that already has a position estimate
-$`\hat{p}`$ — it has been navigating relative to its own start — places it so the fix lands on
-the estimate:
+$`\hat{p}`$ — it has been navigating relative to its own start — places it so the fix lands on the
+estimate:
 
 **(44)**
 
 ```math
-(\varphi_0, \lambda_0, h_0) = \text{(43)}^{-1}_{z_g}\!\left(-\hat{p}\right)
+r^e_0 = r^e(z_g) - (C_e^n)^\mathsf{T}\,\hat{p}
 ```
 
-that is, the point $`-\hat{p}`$ from the fix, with (43) taken about the fix. The first fix then
-carries no information about position, which is correct: before it, the filter's absolute
-position was unknown, not wrong. It is spent placing the origin and is not fused as well, which
-would count it twice.
+where $`C_e^n`$ is itself the origin's, so the equation is solved by iteration: start at the fix,
+and take each pass's axes from the previous guess. The error shrinks by $`|\hat{p}| / R`$ a pass;
+three passes from 10 km leave 40 µm. The first fix then carries no information about position,
+which is correct: before it, the filter's absolute position was unknown, not wrong. It is spent
+placing the origin and is not fused as well, which would count it twice.
 
 It does fix the position uncertainty. With $`e_g`$ the fix's error, the origin sits $`e_g`$
 from where it should, so the position error about it is $`\delta p = -e_g`$ — whatever $`P`$

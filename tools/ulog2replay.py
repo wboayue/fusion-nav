@@ -48,7 +48,11 @@ GNSS_TOPICS = ["sensor_gps", "vehicle_gps_position"]
 
 # Geodetic field spellings, newest first: (fields, lat/lon scale, alt scale).
 # v1.14ish moved from scaled integers to plain floats and renamed everything.
+# Ellipsoid height before MSL: the tangent plane is exact on the ellipsoid, and
+# MSL misplaces it by the geoid undulation (see Geodetic in src/geodetic.rs).
 GNSS_GEODETIC = [
+    (("latitude_deg", "longitude_deg", "altitude_ellipsoid_m"), 1.0, 1.0),
+    (("lat", "lon", "alt_ellipsoid"), 1e-7, 1e-3),
     (("latitude_deg", "longitude_deg", "altitude_msl_m"), 1.0, 1.0),
     (("lat", "lon", "alt"), 1e-7, 1e-3),
 ]
@@ -69,19 +73,32 @@ class ConversionError(Exception):
 def geodetic_to_ned(lat, lon, alt, lat0, lon0, alt0):
     """Local tangent plane about (lat0, lon0, alt0). Degrees in, meters out.
 
-    Small-angle on the WGS84 ellipsoid: exact enough over a flight, and it keeps
-    the converter free of a geodesy dependency.
+    Exact, the same conversion as `LocalOrigin::to_ned` in src/geodetic.rs, so the
+    replay corpus and the filter agree about where a fix is: both points to
+    Earth-centered coordinates, then the difference rotated onto the origin's
+    north, east and down.
     """
-    phi0 = math.radians(lat0)
-    s = math.sin(phi0)
-    denominator = 1.0 - WGS84_E2 * s * s
-    meridian = WGS84_A * (1.0 - WGS84_E2) / denominator**1.5
-    prime_vertical = WGS84_A / math.sqrt(denominator)
-
-    north = math.radians(lat - lat0) * (meridian + alt0)
-    east = math.radians(lon - lon0) * (prime_vertical + alt0) * math.cos(phi0)
-    down = -(alt - alt0)
+    x, y, z = ecef(lat, lon, alt)
+    x0, y0, z0 = ecef(lat0, lon0, alt0)
+    dx, dy, dz = x - x0, y - y0, z - z0
+    phi, lam = math.radians(lat0), math.radians(lon0)
+    sp, cp, sl, cl = math.sin(phi), math.cos(phi), math.sin(lam), math.cos(lam)
+    north = -sp * cl * dx - sp * sl * dy + cp * dz
+    east = -sl * dx + cl * dy
+    down = -cp * cl * dx - cp * sl * dy - sp * dz
     return north, east, down
+
+
+def ecef(lat, lon, alt):
+    """Earth-centered, Earth-fixed meters of a WGS84 position in degrees."""
+    phi, lam = math.radians(lat), math.radians(lon)
+    s = math.sin(phi)
+    n = WGS84_A / math.sqrt(1.0 - WGS84_E2 * s * s)
+    return (
+        (n + alt) * math.cos(phi) * math.cos(lam),
+        (n + alt) * math.cos(phi) * math.sin(lam),
+        (n * (1.0 - WGS84_E2) + alt) * s,
+    )
 
 
 def pick(ulog, names):
