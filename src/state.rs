@@ -3,7 +3,7 @@
 use nalgebra::{SMatrix, SVector};
 
 use crate::frames::{Body, Ned};
-use crate::health::Status;
+use crate::health::{Status, Validity};
 use crate::units::{Acceleration, AngularRate, Attitude, Position, Velocity};
 
 /// Dimension of the error state: three each of position, velocity, attitude,
@@ -32,6 +32,12 @@ pub struct State {
     pub gyro_bias: AngularRate<Body>,
     /// Whether the estimate is currently aided, and by how much.
     pub status: Status,
+    /// Which parts of this estimate are good enough to use.
+    ///
+    /// Alongside [`status`](Self::status) rather than behind an accessor, for the same
+    /// reason: the trust travels with the numbers it qualifies. `status` is the summary a
+    /// human reads; this is what a controller branches on.
+    pub validity: Validity,
 }
 
 /// Index of an error-state component within the covariance.

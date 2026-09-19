@@ -148,6 +148,75 @@ impl Propagation {
     }
 }
 
+/// Which parts of the estimate are good enough to use.
+///
+/// The single [`Status`] answers *how bad is the worst thing*; this answers *which
+/// outputs can I use*, which is the question a controller actually has. They are
+/// independent axes, and collapsing them loses real information: a filter that started
+/// coarse and has adopted a GNSS fix has position as good as the receiver while its
+/// attitude is still converging, and `Status::Aligning` alone cannot say so.
+///
+/// Every flag is derived from the covariance against
+/// [`Config::accuracy`](crate::Config::accuracy), plus the requirement that the quantity
+/// was ever established at all — a coarse start has no position until a fix arrives, and
+/// a tight prior on a number nobody set is not validity.
+///
+/// Horizontal and vertical are separate because sources are: a vehicle with a barometer
+/// and no GNSS has a usable height and no horizontal position at all, which describes two
+/// of the five logs in the replay corpus.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Validity {
+    /// Roll and pitch.
+    pub tilt: bool,
+    /// Heading.
+    pub heading: bool,
+    /// North and east position.
+    pub horizontal_position: bool,
+    /// Down position.
+    pub vertical_position: bool,
+    /// North and east velocity.
+    pub horizontal_velocity: bool,
+    /// Down velocity.
+    pub vertical_velocity: bool,
+}
+
+impl Validity {
+    /// Nothing is valid. What an uninitialized filter reports.
+    pub const NONE: Self = Self {
+        tilt: false,
+        heading: false,
+        horizontal_position: false,
+        vertical_position: false,
+        horizontal_velocity: false,
+        vertical_velocity: false,
+    };
+
+    /// Whether every part of the estimate is usable.
+    pub const fn all(self) -> bool {
+        self.tilt
+            && self.heading
+            && self.horizontal_position
+            && self.vertical_position
+            && self.horizontal_velocity
+            && self.vertical_velocity
+    }
+
+    /// Whether attitude is usable: the part a stabilizing controller needs before
+    /// anything else.
+    pub const fn attitude(self) -> bool {
+        self.tilt && self.heading
+    }
+
+    /// Whether the full navigation solution — position and velocity, both axes — is
+    /// usable.
+    pub const fn navigation(self) -> bool {
+        self.horizontal_position
+            && self.vertical_position
+            && self.horizontal_velocity
+            && self.vertical_velocity
+    }
+}
+
 /// Health of one observation source.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct SourceHealth {

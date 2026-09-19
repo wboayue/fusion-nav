@@ -62,10 +62,10 @@ mod health;
 mod state;
 mod units;
 
-pub use config::{Config, GRAVITY, Gates, ImuNoise, Initialization, Timeouts};
+pub use config::{Accuracy, Config, GRAVITY, Gates, ImuNoise, Initialization, Timeouts};
 pub use eskf::{Alignment, Coarse, Eskf, ImuSample, InitError, StaticSample};
 pub use frames::{Body, Enu, Frame, Ned};
-pub use health::{Diagnostics, Fusion, Propagation, SourceHealth, Status};
+pub use health::{Diagnostics, Fusion, Propagation, SourceHealth, Status, Validity};
 pub use state::{Covariance, CovarianceMatrix, ErrorState, STATES, State};
 pub use units::{
     Acceleration, Altitude, AltitudeVariance, AngularRate, Attitude, HeadingVariance, MagField,
@@ -104,10 +104,10 @@ pub use units::{
 /// Deliberately excluded, because their names are too generic to glob-import safely:
 /// [`Frame`], [`STATES`], and [`CovarianceMatrix`]. Import those by path.
 pub mod prelude {
-    pub use crate::config::{Config, GRAVITY, Gates, ImuNoise, Initialization, Timeouts};
+    pub use crate::config::{Accuracy, Config, GRAVITY, Gates, ImuNoise, Initialization, Timeouts};
     pub use crate::eskf::{Alignment, Coarse, Eskf, ImuSample, InitError, StaticSample};
     pub use crate::frames::{Body, Enu, Ned};
-    pub use crate::health::{Diagnostics, Fusion, Propagation, SourceHealth, Status};
+    pub use crate::health::{Diagnostics, Fusion, Propagation, SourceHealth, Status, Validity};
     pub use crate::state::{Covariance, ErrorState, State};
     pub use crate::units::{
         Acceleration, Altitude, AltitudeVariance, AngularRate, Attitude, HeadingVariance, MagField,

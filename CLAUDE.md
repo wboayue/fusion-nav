@@ -111,6 +111,12 @@ Single crate, `no_std`, `forbid(unsafe_code)`, `deny(missing_docs)`, allocation-
   `initialize_from` — and each reports an `Alignment`; `alignment_of` classifies without
   mutating. `is_aligned` reads the covariance against `Initialization`'s sigmas, so promotion is
   measured rather than timed.
+- **`Status` is the summary; `State::validity` is the detail.** Six per-quantity flags derived
+  from the covariance against `Config::accuracy` (the one knob meant to be supplied, since
+  mission accuracy is not derivable), plus "was this ever established" — the `unknown` flags a
+  coarse start sets. `Eskf::predicted_validity` answers the arming question instead: valid now,
+  or a constraining source is being accepted. Both exist because PX4 and ArduPilot answer
+  per-quantity validity and a single ladder cannot.
 - **`Status` precedence is most-severe-first**: `DeadReckoning` > `Aligning` > `Degraded` >
   `Healthy`. Aligning outranking Degraded is deliberate and is why the 2 h corpus log now shows
   2 transitions rather than 888.

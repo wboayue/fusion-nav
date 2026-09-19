@@ -447,8 +447,11 @@ impl Replay {
                     Some(Alignment::Coarse(Coarse::NotStationary {
                         peak_gyro,
                         peak_accel_deviation,
+                        span,
                     })) => format!(
-                        "COARSE: peak gyro {peak_gyro:.3} rad/s, peak |a|-g {peak_accel_deviation:.3} m/s^2"
+                        "COARSE: peak gyro {peak_gyro:.3} rad/s over {:.2} s, peak |a|-g \
+                         {peak_accel_deviation:.3} m/s^2",
+                        span.as_secs()
                     ),
                     Some(Alignment::Coarse(Coarse::WindowTooShort { .. })) => {
                         "COARSE: window too short".to_string()
@@ -528,6 +531,37 @@ impl Replay {
             self.transitions.len(),
             state.status,
         );
+
+        let validity = self.filter.state().validity;
+        let predicted = self.filter.predicted_validity();
+        println!("\nvalidity at end of log        now  at takeoff");
+        for (name, now, then) in [
+            ("tilt", validity.tilt, predicted.tilt),
+            ("heading", validity.heading, predicted.heading),
+            (
+                "position (h)",
+                validity.horizontal_position,
+                predicted.horizontal_position,
+            ),
+            (
+                "position (v)",
+                validity.vertical_position,
+                predicted.vertical_position,
+            ),
+            (
+                "velocity (h)",
+                validity.horizontal_velocity,
+                predicted.horizontal_velocity,
+            ),
+            (
+                "velocity (v)",
+                validity.vertical_velocity,
+                predicted.vertical_velocity,
+            ),
+        ] {
+            let mark = |flag| if flag { "yes" } else { " no" };
+            println!("  {name:<13} {}        {}", mark(now), mark(then));
+        }
 
         println!("\nper-source health at end of log");
         for (name, health) in self.filter.diagnostics().sources() {

@@ -268,6 +268,36 @@ When more than one applies the most severe is reported, so `Aligning` hides `Deg
 attitude that has not converged is the larger problem — and `DeadReckoning` hides everything,
 since nothing is arriving that could align the filter anyway.
 
+### Which parts are usable
+
+`Status` answers *how bad is the worst thing*. A controller usually needs the other question —
+*which outputs can I use* — and collapsing the two loses real information: a filter that started
+coarse and has adopted a GNSS fix has position as good as the receiver while its attitude is
+still converging, and `Aligning` alone cannot say so.
+
+`State::validity` answers it per quantity: `tilt`, `heading`, `horizontal_position`,
+`vertical_position`, `horizontal_velocity`, `vertical_velocity`. Horizontal and vertical are
+separate because sources are — a vehicle with a barometer and no GNSS has a usable height and no
+horizontal position at all. Each flag is the covariance measured against `Config::accuracy`, plus
+the requirement that the quantity was ever established: a tight prior on a number nobody set is
+not validity.
+
+`Config::accuracy` is the one group of numbers meant to be supplied rather than derived. A survey
+platform and a racing quadrotor disagree about what "good enough" means, and no amount of flight
+data settles it.
+
+### Will it be good if I take off now?
+
+The arming question is not the current one. Sitting on the ground, heading is unobservable
+without a magnetometer and horizontal position has no fix yet, so asking `validity` at that
+moment says no — about a filter that would be navigating a second after takeoff. A vehicle
+refusing to arm on that answer would never arm.
+
+`Eskf::predicted_validity` answers instead whether each quantity is already valid **or** a source
+that constrains it is currently being accepted. Tilt is the exception: nothing but a static
+window brings it in today, so it predicts what it is. ArduPilot's `pred_horiz_pos_rel` is the
+same idea; PX4 has no equivalent.
+
 Per-source detail — test ratios and time since last acceptance — is available from
 `diagnostics()` for logging and tuning.
 

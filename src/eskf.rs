@@ -2,7 +2,7 @@
 
 use crate::config::{Config, GRAVITY};
 use crate::frames::{Body, Ned};
-use crate::health::{Diagnostics, Fusion, Propagation, Status};
+use crate::health::{Diagnostics, Fusion, Propagation, SourceHealth, Status, Validity};
 use crate::state::{Covariance, ErrorState, STATES, State};
 use crate::units::{
     Acceleration, Altitude, AltitudeVariance, AngularRate, HeadingVariance, MagField, Position,
@@ -97,6 +97,10 @@ pub enum Coarse {
         peak_gyro: f32,
         /// Largest departure of the specific-force magnitude from gravity, m s⁻².
         peak_accel_deviation: f32,
+        /// How long the window spanned. With `peak_gyro`, this bounds how far the
+        /// vehicle turned while its gravity vector was being averaged, which is the
+        /// other way a moving window spoils tilt.
+        span: Seconds,
     },
 }
 
@@ -278,6 +282,7 @@ impl Eskf {
             return Ok(Alignment::Coarse(Coarse::NotStationary {
                 peak_gyro,
                 peak_accel_deviation,
+                span: provided,
             }));
         }
         Ok(Alignment::Static)
@@ -312,6 +317,8 @@ impl Eskf {
         let alignment = Alignment::Coarse(Coarse::NotStationary {
             peak_gyro,
             peak_accel_deviation,
+            // One sample is not an average, so no rotation smears it.
+            span: Seconds::ZERO,
         });
         let (sigma_tilt, sigma_yaw) = self.attitude_sigmas(alignment);
         self.apply_alignment(Unknown::after(alignment), sigma_tilt, sigma_yaw);
@@ -531,6 +538,7 @@ impl Eskf {
         // one, and every read overwrites it.
         let mut state = self.state;
         state.status = self.derive_status();
+        state.validity = self.validity();
         state
     }
 
@@ -544,24 +552,91 @@ impl Eskf {
         &self.covariance
     }
 
-    /// Whether attitude uncertainty has come down to what a static start would have
-    /// given — the test behind [`Status::Aligning`].
+    /// Whether attitude is good enough to use — the test behind
+    /// [`Status::Aligning`], and the same bar as
+    /// [`Validity::attitude`](crate::Validity::attitude).
     ///
-    /// The bar is [`Initialization::sigma_tilt`](crate::Initialization::sigma_tilt) and
-    /// [`sigma_yaw`](crate::Initialization::sigma_yaw), reused rather than configured
-    /// separately: a filter is aligned once it is at least as sure of its attitude as a
-    /// good static start would have made it. Read from the covariance, so it is the
-    /// filter's own estimate of its convergence and not a timer.
+    /// Read from the covariance against [`Config::accuracy`](crate::Config::accuracy), so
+    /// it is the filter's own estimate of its convergence rather than a timer.
     pub fn is_aligned(&self) -> bool {
+        self.validity().attitude()
+    }
+
+    /// Which parts of the estimate are good enough to use, right now.
+    ///
+    /// Also carried on [`State::validity`](crate::State::validity), which is where most
+    /// callers will meet it.
+    pub fn validity(&self) -> Validity {
         if !self.initialized {
-            return false;
+            return Validity::NONE;
         }
-        let init = &self.config.init;
-        let tilt = init.sigma_tilt.as_radians();
-        let yaw = init.sigma_yaw.as_radians();
-        self.covariance.variance(ErrorState::AttitudeX) <= tilt * tilt
-            && self.covariance.variance(ErrorState::AttitudeY) <= tilt * tilt
-            && self.covariance.variance(ErrorState::AttitudeZ) <= yaw * yaw
+        let accuracy = &self.config.accuracy;
+        let within = |state, sigma: f32| self.covariance.variance(state) <= sigma * sigma;
+        let tilt = accuracy.sigma_tilt.as_radians();
+        let position = accuracy.sigma_position;
+        let velocity = accuracy.sigma_velocity;
+
+        Validity {
+            tilt: within(ErrorState::AttitudeX, tilt) && within(ErrorState::AttitudeY, tilt),
+            heading: within(ErrorState::AttitudeZ, accuracy.sigma_heading.as_radians()),
+            // A quantity a coarse start never established is not valid however tight the
+            // prior on it looks: nobody set that number.
+            horizontal_position: !self.unknown.position
+                && within(ErrorState::PositionNorth, position)
+                && within(ErrorState::PositionEast, position),
+            vertical_position: !self.unknown.position && within(ErrorState::PositionDown, position),
+            horizontal_velocity: !self.unknown.velocity
+                && within(ErrorState::VelocityNorth, velocity)
+                && within(ErrorState::VelocityEast, velocity),
+            vertical_velocity: !self.unknown.velocity && within(ErrorState::VelocityDown, velocity),
+        }
+    }
+
+    /// Which parts of the estimate the filter expects to be good **if the vehicle left
+    /// the ground now** — the arming question, rather than the current one.
+    ///
+    /// Sitting still, some states are simply unobservable: heading without a
+    /// magnetometer, horizontal position before the first fix is fused. Asking
+    /// [`validity`](Self::validity) at that moment says no, and says it about a filter
+    /// that would in fact be navigating a second after takeoff. A vehicle that refused to
+    /// arm on that answer would never arm at all.
+    ///
+    /// So a quantity counts here if it is already valid, or if a source that constrains
+    /// it is currently being accepted — the aiding is there, and using it is a matter of
+    /// time. `pred_horiz_pos_rel` in ArduPilot's status word is the same idea; PX4 has no
+    /// equivalent.
+    ///
+    /// Tilt is the exception with no aiding path: nothing but a static window brings it
+    /// in today, so it predicts exactly what it is. That changes when in-motion leveling
+    /// lands — see `GOALS.md`.
+    ///
+    /// **Stub.** With no covariance propagation, "expects" cannot mean a projection
+    /// forward; it means aiding is arriving. A real implementation should propagate to a
+    /// horizon and test that.
+    pub fn predicted_validity(&self) -> Validity {
+        let now = self.validity();
+        if !self.initialized {
+            return now;
+        }
+        let fresh = |source: SourceHealth| {
+            source.time_since_accepted.is_some_and(|elapsed| {
+                elapsed.as_secs() <= self.config.timeouts.degraded_after.as_secs()
+            })
+        };
+        let d = &self.diagnostics;
+        let (position, velocity) = (fresh(d.gnss_position), fresh(d.gnss_velocity));
+        let height = position || fresh(d.baro_altitude);
+
+        Validity {
+            // Gravity is not an aiding source the filter tracks, so tilt speaks for
+            // itself.
+            tilt: now.tilt,
+            heading: now.heading || fresh(d.mag_heading),
+            horizontal_position: now.horizontal_position || position,
+            vertical_position: now.vertical_position || height,
+            horizontal_velocity: now.horizontal_velocity || velocity,
+            vertical_velocity: now.vertical_velocity || velocity,
+        }
     }
 
     /// The barometric reference `α₀` fixed at initialization, or `None` if the static
@@ -631,18 +706,26 @@ impl Eskf {
                 (init.sigma_tilt.as_radians(), UNKNOWN_HEADING_SIGMA)
             }
             Alignment::Coarse(Coarse::NotStationary {
+                peak_gyro,
                 peak_accel_deviation,
-                ..
+                span,
             }) => {
-                let tilt = peak_accel_deviation / GRAVITY;
-                (
-                    if tilt > init.sigma_tilt.as_radians() {
-                        tilt
-                    } else {
-                        init.sigma_tilt.as_radians()
-                    },
-                    UNKNOWN_HEADING_SIGMA,
-                )
+                // Two ways a moving window spoils tilt, and the worse one governs.
+                // Specific force that is not gravity tilts the answer directly,
+                // small-angle, by `deviation / g`. Rotation spoils it instead by turning
+                // the vehicle while its gravity vector is being averaged, by at most
+                // `ω · span`. A window can suffer either without the other: a vehicle
+                // rotating about its own gravity vector reads a clean `g`.
+                let from_force = peak_accel_deviation / GRAVITY;
+                let from_rotation = peak_gyro * span.as_secs();
+                let mut tilt = init.sigma_tilt.as_radians();
+                if from_force > tilt {
+                    tilt = from_force;
+                }
+                if from_rotation > tilt {
+                    tilt = from_rotation;
+                }
+                (tilt, UNKNOWN_HEADING_SIGMA)
             }
         }
     }
@@ -1121,6 +1204,23 @@ mod tests {
     }
 
     #[test]
+    fn rotation_spoils_tilt_even_when_the_specific_force_reads_a_clean_g() {
+        let mut filter = Eskf::new(Config::default());
+        let mut window = [still(); 8];
+        // Turning about the gravity vector: |a| stays exactly g, and the average of a
+        // gravity vector taken while the vehicle turned 0.8 rad is worth that much less.
+        window[3].imu.gyro = AngularRate::from_rad_per_s(0.0, 0.0, 0.4);
+        let _ = filter
+            .initialize(&window, Seconds::from_secs(0.25))
+            .expect("moving, not unusable");
+        let tilt = filter.covariance().variance(ErrorState::AttitudeX);
+        assert!(
+            (tilt - 0.8 * 0.8).abs() < 1e-4,
+            "0.4 rad/s over a 2 s window is 0.8 rad of turn, got sigma^2 {tilt}"
+        );
+    }
+
+    #[test]
     fn a_coarse_start_widens_tilt_in_proportion_to_the_motion_it_saw() {
         let mut filter = Eskf::new(Config::default());
         let mut window = [still(); 8];
@@ -1280,6 +1380,115 @@ mod tests {
             "the caller vouched for this velocity; its covariance says how far"
         );
         assert_eq!(filter.state().velocity, state.velocity);
+    }
+
+    #[test]
+    fn a_static_start_is_valid_in_every_part() {
+        let filter = initialized();
+        let validity = filter.state().validity;
+        assert!(validity.all(), "{validity:?}");
+        assert!(validity.attitude() && validity.navigation());
+    }
+
+    #[test]
+    fn an_uninitialized_filter_claims_nothing() {
+        let filter = Eskf::new(Config::default());
+        assert_eq!(filter.validity(), Validity::NONE);
+        assert_eq!(filter.predicted_validity(), Validity::NONE);
+    }
+
+    #[test]
+    fn a_coarse_start_has_attitude_invalid_and_position_unset() {
+        let filter = coarse();
+        let validity = filter.validity();
+        assert!(!validity.heading, "heading is somewhere on the circle");
+        assert!(
+            !validity.horizontal_position && !validity.horizontal_velocity,
+            "a tight prior on a number nobody set is not validity"
+        );
+    }
+
+    #[test]
+    fn adopting_a_fix_makes_position_valid_without_touching_attitude() {
+        let mut filter = coarse();
+        let before = filter.validity();
+        assert!(
+            filter
+                .fuse_gnss_position(
+                    Position::<Ned>::from_meters(120.0, -40.0, -75.0),
+                    PositionVariance::isotropic(2.25),
+                )
+                .is_reset()
+        );
+
+        let after = filter.validity();
+        assert!(
+            after.horizontal_position && after.vertical_position,
+            "position is now as good as the receiver"
+        );
+        assert_eq!(
+            (after.tilt, after.heading),
+            (before.tilt, before.heading),
+            "a position fix says nothing about attitude"
+        );
+        assert_eq!(
+            filter.state().status,
+            Status::Aligning,
+            "and the summary still says the worst of it"
+        );
+    }
+
+    #[test]
+    fn takeoff_prediction_counts_aiding_that_has_not_been_used_yet() {
+        let mut filter = coarse();
+        assert!(!filter.predicted_validity().horizontal_position);
+
+        // A fix arrives and is adopted, so position is valid outright...
+        let _ = filter.fuse_gnss_position(
+            Position::<Ned>::from_meters(0.0, 0.0, 0.0),
+            PositionVariance::isotropic(2.25),
+        );
+        // ...and the magnetometer is being accepted, so heading will come in even though
+        // it is worthless at this instant.
+        assert!(
+            filter
+                .fuse_mag_heading(
+                    MagField::<Body>::from_components(0.22, 0.0, 0.44),
+                    HeadingVariance::from_rad2(0.05),
+                )
+                .is_accepted()
+        );
+
+        let predicted = filter.predicted_validity();
+        assert!(!filter.validity().heading, "not yet");
+        assert!(predicted.heading, "but it is arriving");
+        assert!(
+            !predicted.tilt,
+            "tilt has no aiding path until in-motion leveling lands"
+        );
+    }
+
+    #[test]
+    fn a_vehicle_with_only_a_barometer_has_height_and_nothing_horizontal() {
+        let mut filter = Eskf::new(Config::default());
+        let _ = filter
+            .initialize(&window_with_baro([100.0; 8]), Seconds::from_secs(0.1))
+            .expect("short, so coarse");
+        assert!(
+            filter
+                .fuse_baro_altitude(Altitude::from_meters(100.0), AltitudeVariance::from_m2(4.0))
+                .is_accepted()
+        );
+
+        let predicted = filter.predicted_validity();
+        assert!(
+            predicted.vertical_position,
+            "the barometer constrains height"
+        );
+        assert!(
+            !predicted.horizontal_position,
+            "and says nothing about where it is"
+        );
     }
 
     #[test]

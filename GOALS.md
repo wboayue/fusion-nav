@@ -191,6 +191,35 @@ And what stays with the user, because no amount of data yields it:
 Status: one value derived today, `α₀`. This is a commitment, not a present fact, and it is the
 differentiator most likely to be judged on whether the offline tool actually gets written.
 
+### Per-quantity validity, not one ladder
+
+`Status` answers how bad the worst thing is. PX4 and ArduPilot both answer a different question —
+which output can I use — per quantity: ArduPilot's `nav_filter_status` carries `attitude`,
+`horiz_vel`, `vert_vel`, `horiz_pos_rel`, `horiz_pos_abs` and `vert_pos` as separate bits, and
+PX4 publishes `xy_valid`, `z_valid`, `v_xy_valid`, `v_z_valid` and `heading_good_for_control`
+alongside the estimate.
+
+The single ladder cannot express what a coarse start produces: position as good as the receiver
+the moment a fix is adopted, while attitude is still converging. It also masks — the corpus log
+that starts in motion reports `Aligning` throughout, and its 888 aiding transitions disappear
+behind it.
+
+**Decided:** keep `Status` as the one-glance summary and add `Validity` alongside it on the state,
+six flags derived from the covariance against a new `Config::accuracy`. Horizontal and vertical
+are separate because sources are. Validity also requires that the quantity was ever established,
+since a coarse start's untouched prior is tight and meaningless.
+
+`Config::accuracy` is deliberately the exception to [differentiator 7](#7-configuration-derived-not-demanded):
+how accurate is good enough is a property of the mission, not of the hardware or the mathematics,
+and no flight data settles it. Asking is correct here.
+
+`Eskf::predicted_validity` answers the arming question that neither `Status` nor `Validity` can —
+whether each quantity will be good if the vehicle leaves the ground now, rather than whether it
+is good while sitting still with half its states unobservable. ArduPilot's `pred_horiz_pos_rel`
+is the same idea and PX4 has no equivalent, which makes it the one place the status model here is
+ahead of both. In the stub it means *aiding is arriving*; with covariance propagation it should
+mean *projected to a horizon and tested*.
+
 ## Open design questions
 
 Two gaps in the current design still need a decision before implementation.

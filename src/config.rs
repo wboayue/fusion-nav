@@ -171,6 +171,45 @@ impl Default for Initialization {
     }
 }
 
+/// How good an estimate has to be before the filter calls it valid.
+///
+/// The one group of numbers here that is **meant** to be supplied rather than derived: a
+/// survey platform and a racing quadrotor disagree about what "good enough" means, and no
+/// amount of flight data settles it. Everything else in [`Config`] is a property of the
+/// hardware or the mathematics; this is a property of the mission.
+///
+/// Each is a standard deviation, compared against the covariance the filter carries. For
+/// limits that differ between axes, read [`Eskf::covariance`](crate::Eskf::covariance)
+/// directly — these are the coarse per-quantity bar.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Accuracy {
+    /// Roll and pitch, rad. Also the bar for alignment:
+    /// [`Status::Aligning`](crate::Status::Aligning) lasts until tilt and heading are
+    /// both within these.
+    pub sigma_tilt: Radians,
+    /// Heading, rad.
+    pub sigma_heading: Radians,
+    /// Position, m, horizontally and vertically.
+    pub sigma_position: f32,
+    /// Velocity, m s⁻¹, horizontally and vertically.
+    pub sigma_velocity: f32,
+}
+
+impl Default for Accuracy {
+    /// Attitude matches what a good static alignment gives, so a filter that started
+    /// still is aligned from its first sample. Position and velocity are **placeholders**
+    /// — loose enough to admit a 1 Hz GNSS solution, and nothing more considered than
+    /// that.
+    fn default() -> Self {
+        Self {
+            sigma_tilt: Radians::from_radians(0.02),
+            sigma_heading: Radians::from_radians(0.35),
+            sigma_position: 5.0,
+            sigma_velocity: 1.0,
+        }
+    }
+}
+
 /// Everything the filter is tuned by.
 ///
 /// Construct by updating the default:
@@ -196,6 +235,8 @@ pub struct Config {
     pub timeouts: Timeouts,
     /// Static initialization.
     pub init: Initialization,
+    /// How good an estimate must be to count as valid.
+    pub accuracy: Accuracy,
     /// Largest `dt` [`Eskf::predict`](crate::Eskf::predict) will propagate over.
     ///
     /// Beyond this the step is refused and the state left alone, because the
@@ -223,6 +264,7 @@ impl Default for Config {
             gates: Gates::default(),
             timeouts: Timeouts::default(),
             init: Initialization::default(),
+            accuracy: Accuracy::default(),
             max_predict_dt: Seconds::from_secs(0.1),
             magnetic_declination: Radians::ZERO,
         }
