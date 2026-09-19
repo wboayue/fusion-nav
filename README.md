@@ -160,6 +160,12 @@ the window the filter takes:
   constant, so a window with no barometer samples leaves altitudes with nothing to be relative
   to, and `fuse_baro_altitude` returns `Fusion::NoReference` for the whole flight.
 
+Only a static start establishes `α₀`, because only it declares the vehicle to be at zero here and
+now. A coarse start — a restart at altitude, most obviously — keeps the reference the flight began
+with rather than calling the current altitude zero. `set_baro_reference(α₀)` names one instead,
+which is also how an `initialize_from` seed gets one; it returns `false` for a value that is not a
+number.
+
 A window that is short or moving is **not refused**. It gives a coarse start: attitude
 uncertainty inflated to match the motion actually measured, and `Status::Aligning` until tilt
 and heading are within `Config::accuracy`. A filter that will not start is worth less than one
@@ -223,6 +229,7 @@ test ratio, so a rejection is diagnosable:
 | `Reset` | adopted outright after a coarse start (once per quantity) |
 | `NoReference` | barometer altitude with no `α₀` from initialization, or a geodetic fix that cannot place an origin |
 | `NotFinite` | a NaN or infinity in the measurement or its noise; discarded |
+| `InvalidNoise` | a zero or negative variance in the noise — no sensor has one, and `S` would be singular or worse; discarded |
 | `NotInitialized` | no state to fuse against |
 
 ### The navigation origin
@@ -291,7 +298,9 @@ false however much GNSS is accepted.
 
 The filter gates but does **not** recover on its own. Only the application knows whether to
 reset states, degrade the flight mode, or alert the operator. `reset_position_to(fix, noise)`
-and `reset_velocity_to(fix, noise)` exist so that `DeadReckoning` is actionable. PX4 resets
+and `reset_velocity_to(fix, noise)` exist so that `DeadReckoning` is actionable. Both return
+`false`, changing nothing, for a fix or a noise a `fuse_*` would have refused: a reset writes the
+noise onto the covariance diagonal with no gate in the way. PX4 resets
 after a 7 s horizontal or 5 s height fusion timeout, which are reasonable starting points for an
 integrator's own policy. See [rejection handling](GOALS.md#rejection-handling-report-do-not-self-recover).
 

@@ -101,6 +101,16 @@ pub use state::{CovarianceMatrix, STATES};
 ///     AltitudeNoise::from_sigma(2.0),
 /// );
 /// assert!(outcome.is_accepted());
+///
+/// // `R` describes that one measurement, so it travels with it — and it has to be a
+/// // variance some sensor could have. Zero or negative is refused, not fused.
+/// assert_eq!(
+///     filter.fuse_baro_altitude(
+///         Altitude::from_meters(60.0),
+///         AltitudeNoise::from_variance(0.0),
+///     ),
+///     Fusion::InvalidNoise,
+/// );
 /// # Ok::<(), InitError>(())
 /// ```
 ///

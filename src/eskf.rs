@@ -82,6 +82,13 @@ impl Eskf {
     /// Where no window exists at all, use [`initialize_coarse`](Self::initialize_coarse)
     /// or [`initialize_from`](Self::initialize_from).
     ///
+    /// `α₀`, the barometric reference of equation (30), is taken from the window only on
+    /// [`Alignment::Static`] — the boundary [`origin`](Self::origin) has, for the same
+    /// reason. A static start declares the vehicle to be at zero, here and now, so the
+    /// altitude it reads is what zero means. A coarse start declares nothing of the kind
+    /// and keeps the reference the flight began with, as
+    /// [`initialize_coarse`](Self::initialize_coarse) does.
+    ///
     /// Position and velocity start at the configured priors either way, which assume the
     /// origin is here and the vehicle is at rest. A launch that knows better — off a
     /// moving deck, say — should say so through [`initialize_from`](Self::initialize_from)
@@ -106,7 +113,12 @@ impl Eskf {
     ) -> Result<Alignment, InitError> {
         let alignment = self.alignment_of(window, dt)?;
         self.apply_alignment(alignment);
-        self.baro_reference = baro_reference(window);
+        // A restart at 100 m would otherwise call the altitude it reads the reference, and
+        // the barometer would say z ~ 0 while GNSS about the flight's origin says z ~ -100.
+        // A coarse window carrying no barometer sample at all would wipe the reference.
+        if alignment.is_static() {
+            self.baro_reference = baro_reference(window);
+        }
         Ok(alignment)
     }
 
@@ -229,8 +241,16 @@ impl Eskf {
     /// when drift in it has become the dominant vertical error. That remedy is the
     /// application's to apply, because the filter cannot tell a drifting reference from a
     /// genuine climb.
-    pub const fn set_baro_reference(&mut self, reference: Altitude) {
+    ///
+    /// Returns `false`, changing nothing, for a reference that is not a number: `α₀`
+    /// appears in every barometric measurement for the rest of the flight, so a NaN here
+    /// is not one bad update but the end of barometric aiding.
+    pub const fn set_baro_reference(&mut self, reference: Altitude) -> bool {
+        if !reference.as_meters().is_finite() {
+            return false;
+        }
         self.baro_reference = Some(reference);
+        true
     }
 
     /// Put the navigation origin at a known point, such as a surveyed home or a landing
@@ -357,7 +377,11 @@ impl Eskf {
         if !position.is_finite() || !noise.is_finite() {
             return Fusion::NotFinite;
         }
+        if !noise.is_positive() {
+            return Fusion::InvalidNoise;
+        }
         if self.unestablished.position {
+            // Cannot refuse: the fix and its noise cleared the same checks just above.
             self.reset_position_to(position, noise);
             self.diagnostics.gnss_position.record_accepted(0.0);
             return Fusion::Reset;
@@ -402,6 +426,9 @@ impl Eskf {
         if !fix.is_finite() || !noise.is_finite() {
             return Fusion::NotFinite;
         }
+        if !noise.is_positive() {
+            return Fusion::InvalidNoise;
+        }
         if let Some(origin) = self.origin {
             return self.fuse_gnss_position(origin.to_ned(fix), noise);
         }
@@ -420,6 +447,7 @@ impl Eskf {
             return Fusion::NoReference;
         };
         self.origin = Some(origin);
+        // Cannot refuse; see `fuse_gnss_position`.
         self.reset_position_to(self.state.position, noise);
         self.diagnostics.gnss_position.record_accepted(0.0);
         Fusion::Accepted { test_ratio: 0.0 }
@@ -448,7 +476,11 @@ impl Eskf {
         if !velocity.is_finite() || !noise.is_finite() {
             return Fusion::NotFinite;
         }
+        if !noise.is_positive() {
+            return Fusion::InvalidNoise;
+        }
         if self.unestablished.velocity {
+            // Cannot refuse; see `fuse_gnss_position`.
             self.reset_velocity_to(velocity, noise);
             self.diagnostics.gnss_velocity.record_accepted(0.0);
             return Fusion::Reset;
@@ -471,6 +503,9 @@ impl Eskf {
         if !altitude.as_meters().is_finite() || !noise.is_finite() {
             return Fusion::NotFinite;
         }
+        if !noise.is_positive() {
+            return Fusion::InvalidNoise;
+        }
         if self.baro_reference.is_none() {
             return Fusion::NoReference;
         }
@@ -492,6 +527,9 @@ impl Eskf {
         }
         if !field.is_finite() || !noise.is_finite() {
             return Fusion::NotFinite;
+        }
+        if !noise.is_positive() {
+            return Fusion::InvalidNoise;
         }
         let _ = (field, noise);
         stub_accept(&mut self.diagnostics.mag_heading)
@@ -630,7 +668,19 @@ impl Eskf {
     /// is the only layer that knows whether a step input to the controller is acceptable.
     /// The one exception is a quantity that was never established at all; see
     /// [`Fusion::Reset`].
-    pub fn reset_position_to(&mut self, position: Position<Ned>, noise: PositionNoise<Ned>) {
+    ///
+    /// Returns `false`, changing nothing, for a fix or a noise that is not a number, or a
+    /// variance that is not positive — the bar every `fuse_*` applies, and it matters more
+    /// here: this writes `noise` straight onto the covariance diagonal, with no gate and
+    /// no innovation to dilute it. See [`Fusion::NotFinite`] and [`Fusion::InvalidNoise`].
+    pub fn reset_position_to(
+        &mut self,
+        position: Position<Ned>,
+        noise: PositionNoise<Ned>,
+    ) -> bool {
+        if !position.is_finite() || !noise.is_finite() || !noise.is_positive() {
+            return false;
+        }
         self.state.position = position;
         self.covariance.reset_block(
             [
@@ -641,12 +691,20 @@ impl Eskf {
             noise.variance().into(),
         );
         self.unestablished.position = false;
+        true
     }
 
     /// Force velocity to an external solution and reset its covariance block.
     ///
-    /// See [`reset_position_to`](Self::reset_position_to).
-    pub fn reset_velocity_to(&mut self, velocity: Velocity<Ned>, noise: VelocityNoise<Ned>) {
+    /// See [`reset_position_to`](Self::reset_position_to), including what is refused.
+    pub fn reset_velocity_to(
+        &mut self,
+        velocity: Velocity<Ned>,
+        noise: VelocityNoise<Ned>,
+    ) -> bool {
+        if !velocity.is_finite() || !noise.is_finite() || !noise.is_positive() {
+            return false;
+        }
         self.state.velocity = velocity;
         self.covariance.reset_block(
             [
@@ -657,6 +715,7 @@ impl Eskf {
             noise.variance().into(),
         );
         self.unestablished.velocity = false;
+        true
     }
 
     /// Commit an alignment: reset state, covariance and health for a fresh start whose
@@ -860,13 +919,38 @@ mod tests {
     }
 
     #[test]
-    fn reinitializing_replaces_the_reference() {
+    fn a_static_restart_replaces_the_reference() {
         let mut filter = aided();
         assert_eq!(filter.baro_reference(), Some(Altitude::from_meters(100.0)));
-        let _ = filter
+        let alignment = filter
             .initialize(&window_with_baro([250.0; 8]), Seconds::from_secs(0.25))
             .expect("a 2 s window");
-        assert_eq!(filter.baro_reference(), Some(Altitude::from_meters(250.0)));
+        assert_eq!(alignment, Alignment::Static);
+        assert_eq!(
+            filter.baro_reference(),
+            Some(Altitude::from_meters(250.0)),
+            "a static start declares this altitude to be zero"
+        );
+    }
+
+    #[test]
+    fn a_coarse_restart_keeps_the_reference_the_flight_began_with() {
+        let mut filter = aided();
+
+        // Restarted at altitude, so the window is short and the barometer reads 250 m.
+        // Taking that as the reference would call the current altitude zero: the barometer
+        // would then say z ~ 0 while GNSS about the flight's origin says z ~ -150.
+        let alignment = filter
+            .initialize(&window_with_baro([250.0; 8]), Seconds::from_secs(0.1))
+            .expect("short, so coarse");
+        assert!(matches!(alignment, Alignment::Coarse(..)));
+        assert_eq!(filter.baro_reference(), Some(Altitude::from_meters(100.0)));
+
+        // And a coarse window with no barometer in it does not wipe the reference either.
+        let _ = filter
+            .initialize(&[still(); 8], Seconds::from_secs(0.1))
+            .expect("short, so coarse");
+        assert_eq!(filter.baro_reference(), Some(Altitude::from_meters(100.0)));
     }
 
     /// An attitude and biases such as a companion AHRS would hand over, with the
@@ -908,7 +992,7 @@ mod tests {
             Fusion::NoReference
         );
 
-        filter.set_baro_reference(Altitude::from_meters(52.0));
+        assert!(filter.set_baro_reference(Altitude::from_meters(52.0)));
         assert!(
             filter
                 .fuse_baro_altitude(Altitude::from_meters(60.0), AltitudeNoise::from_sigma(2.0))
@@ -983,6 +1067,8 @@ mod tests {
         let _ = filter
             .initialize(&window_with_baro([100.0; 8]), Seconds::from_secs(0.1))
             .expect("short, not unusable");
+        // A coarse start establishes no reference, so the application names one.
+        assert!(filter.set_baro_reference(Altitude::from_meters(100.0)));
         assert_eq!(
             filter.state().status,
             Status::DeadReckoning,
@@ -1245,6 +1331,7 @@ mod tests {
         let _ = filter
             .initialize(&window_with_baro([100.0; 8]), Seconds::from_secs(0.1))
             .expect("short, so coarse");
+        assert!(filter.set_baro_reference(Altitude::from_meters(100.0)));
         assert!(
             filter
                 .fuse_baro_altitude(Altitude::from_meters(100.0), AltitudeNoise::from_sigma(2.0))
@@ -1336,7 +1423,7 @@ mod tests {
     #[test]
     fn every_source_refuses_a_measurement_that_is_not_a_number() {
         let mut filter = initialized();
-        filter.set_baro_reference(Altitude::from_meters(52.0));
+        assert!(filter.set_baro_reference(Altitude::from_meters(52.0)));
         let nan = f32::NAN;
         assert_eq!(
             filter.fuse_gnss_position(
@@ -1364,6 +1451,104 @@ mod tests {
             Fusion::NotFinite
         );
         assert_eq!(filter.diagnostics().gnss_position.accepted, 0);
+    }
+
+    #[test]
+    fn every_source_refuses_a_variance_no_sensor_could_have() {
+        let mut filter = initialized();
+        assert!(filter.set_baro_reference(Altitude::from_meters(52.0)));
+        assert_eq!(
+            filter.fuse_gnss_position(
+                Position::ned(1.0, 2.0, 3.0),
+                PositionNoise::<Ned>::from_variance(0.0, 1.0, 1.0),
+            ),
+            Fusion::InvalidNoise,
+            "zero variance claims a perfect measurement and makes S singular"
+        );
+        assert_eq!(
+            filter.fuse_gnss_velocity(
+                Velocity::ned(0.0, 0.0, 0.0),
+                VelocityNoise::<Ned>::from_variance(1.0, -4.0, 1.0),
+            ),
+            Fusion::InvalidNoise
+        );
+        assert_eq!(
+            filter.fuse_baro_altitude(
+                Altitude::from_meters(60.0),
+                AltitudeNoise::from_variance(0.0)
+            ),
+            Fusion::InvalidNoise
+        );
+        assert_eq!(
+            filter.fuse_mag_heading(
+                MagField::body(0.2, 0.0, 0.4),
+                HeadingNoise::from_variance(-1.0)
+            ),
+            Fusion::InvalidNoise
+        );
+        assert_eq!(
+            filter.fuse_gnss_geodetic(zurich(), PositionNoise::<Ned>::from_variance(1.0, 1.0, 0.0)),
+            Fusion::InvalidNoise
+        );
+        assert_eq!(filter.origin(), None, "and no origin was placed on the way");
+
+        for (name, source) in filter.diagnostics().sources() {
+            assert_eq!(source.accepted, 0, "{name} counted a refused measurement");
+            assert_eq!(source.time_since_accepted, None, "{name} started aiding");
+        }
+    }
+
+    #[test]
+    fn a_coarse_start_does_not_adopt_a_fix_whose_noise_is_impossible() {
+        // Where the check matters most: adoption writes `noise` onto the covariance
+        // diagonal with no gate in the way, and a negative variance there passes
+        // `validity`'s `variance <= sigma^2` — position would be reported valid.
+        let mut filter = coarse();
+        let fix = Position::ned(120.0, -40.0, -75.0);
+        assert_eq!(
+            filter.fuse_gnss_position(fix, PositionNoise::<Ned>::from_variance(-1.0, -1.0, -1.0)),
+            Fusion::InvalidNoise
+        );
+        assert_eq!(filter.state().position, Position::zero(), "nothing adopted");
+        assert!(!filter.validity().horizontal_position);
+        assert!(
+            filter
+                .fuse_gnss_position(fix, PositionNoise::horizontal_vertical(1.5, 1.5))
+                .is_reset(),
+            "the adoption is still owed to the first usable fix"
+        );
+    }
+
+    #[test]
+    fn an_external_reset_refuses_what_would_poison_the_state() {
+        let mut filter = initialized();
+        assert!(!filter.reset_position_to(
+            Position::ned(f32::NAN, 0.0, 0.0),
+            PositionNoise::horizontal_vertical(1.5, 1.5)
+        ));
+        assert!(!filter.reset_position_to(
+            Position::ned(10.0, 0.0, 0.0),
+            PositionNoise::<Ned>::from_variance(1.0, 0.0, 1.0)
+        ));
+        assert_eq!(
+            filter.state().position,
+            Position::zero(),
+            "a refused reset changes nothing"
+        );
+
+        assert!(!filter.reset_velocity_to(
+            Velocity::ned(1.0, 0.0, 0.0),
+            VelocityNoise::<Ned>::from_variance(1.0, 1.0, -0.25)
+        ));
+        assert_eq!(filter.state().velocity, Velocity::zero());
+
+        assert!(!filter.set_baro_reference(Altitude::from_meters(f32::NAN)));
+        assert_eq!(
+            filter.baro_reference(),
+            None,
+            "a NaN alpha_0 would end barometric aiding for the flight, not one update"
+        );
+        assert!(filter.set_baro_reference(Altitude::from_meters(52.0)));
     }
 
     #[test]

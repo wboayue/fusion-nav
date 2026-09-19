@@ -55,14 +55,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Recovery is the application's call, not the filter's.
     if filter.state().status == Status::DeadReckoning {
-        filter.reset_position_to(
+        // A reset refuses a fix or a noise the covariance could not hold, so it answers.
+        assert!(filter.reset_position_to(
             Position::ned(120.0, -43.0, -60.0),
             PositionNoise::horizontal_vertical(1.6, 1.6),
-        );
-        filter.reset_velocity_to(
+        ));
+        assert!(filter.reset_velocity_to(
             Velocity::<Ned>::zero(),
             VelocityNoise::from_speed_accuracy(0.5),
-        );
+        ));
         println!("applied an external position reset\n");
     }
 

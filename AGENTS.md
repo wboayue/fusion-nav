@@ -70,8 +70,10 @@ it uniquely covers. Changing a `Config` default or the `summary` line requires u
 affected expectations.
 
 Expectations are matched pair by pair as substrings, so **adding** a key to the `summary` line is
-safe and pinning new behavior there is cheap — `align=` and `resets=` were added that way, and
-each now guards a decision that would otherwise rot into a comment. Renaming or removing a key
+safe and pinning new behavior there is cheap — `align=`, `resets=` and `alpha0=` were added that
+way, and each now guards a decision that would otherwise rot into a comment (`alpha0=` catches
+the coarse log's 35575 barometer rows going from fused to `NoReference`, which no other key
+noticed). Renaming or removing a key
 breaks every entry at once.
 
 ## How defaults get decided
@@ -189,8 +191,9 @@ Single crate, `no_std`, `forbid(unsafe_code)`, `deny(missing_docs)`, allocation-
   any measurement; `sigma_yaw` >> `sigma_tilt` because gravity pins tilt and yaw inherits the
   magnetometer's error.
 
-The static window also fixes `α₀`, the barometric reference (`StaticSample::baro` →
-`Eskf::baro_reference`, equation (30)). It is neither of the three above: a constant, not noise
+A *static* window also fixes `α₀`, the barometric reference (`StaticSample::baro` →
+`Eskf::baro_reference`, equation (30)); a coarse one keeps whatever reference the flight already
+had, since it cannot claim the current altitude is zero — the same boundary the origin has. It is neither of the three above: a constant, not noise
 and not a state, and the only initialization output an application may need to keep. A window
 with no barometer sample leaves it unset and `fuse_baro_altitude` returns `Fusion::NoReference`
 rather than referring altitudes to an invented origin — the LPE log in the corpus

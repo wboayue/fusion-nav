@@ -94,6 +94,21 @@ pub enum Fusion {
     /// NaN in the state or covariance spreads to every quantity at the next update and
     /// never leaves.
     NotFinite,
+    /// A variance in the measurement noise is zero or negative. The measurement was
+    /// discarded and no health timer moved.
+    ///
+    /// `R` has to be a variance some sensor could have. Zero makes the innovation
+    /// covariance `S = H P Hᵀ + R` of equation (25) singular as soon as the state it
+    /// observes is itself certain, and a negative one is worse: it claims a measurement
+    /// better than perfect, and where a coarse start adopts the measurement outright it
+    /// writes that negative variance straight into `P`, which
+    /// [`Validity`] then reads as an excellent estimate.
+    ///
+    /// Usually a floor or a unit mistake at the boundary — a receiver reporting `eph = 0`
+    /// while it has no fix, or a variance arrived at by subtracting one σ² from another.
+    /// Refused alongside [`NotFinite`](Self::NotFinite), before the adoption a coarse
+    /// start allows.
+    InvalidNoise,
 }
 
 impl Fusion {
@@ -114,7 +129,11 @@ impl Fusion {
         match self {
             Self::Accepted { test_ratio } | Self::Rejected { test_ratio } => Some(test_ratio),
             // A reset ran no gate: there was nothing to be inconsistent with.
-            Self::Reset | Self::NotInitialized | Self::NoReference | Self::NotFinite => None,
+            Self::Reset
+            | Self::NotInitialized
+            | Self::NoReference
+            | Self::NotFinite
+            | Self::InvalidNoise => None,
         }
     }
 }
