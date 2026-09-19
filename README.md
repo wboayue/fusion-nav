@@ -310,9 +310,10 @@ Known and deliberate, stated here rather than discovered in flight.
 * **In-motion alignment is coarse.** A moving start runs and reports `Aligning`, but full
   alignment of a bare vehicle in motion is not yet built; `initialize_from` covers a held
   estimate. See [alignment beyond the static window](GOALS.md#alignment-beyond-the-static-window).
-* **Local tangent plane.** Position is Cartesian NED about a fixed origin, converted by a
-  first-order expansion ([equation (43)](EQUATIONS.md#geodetic-origin)), so accuracy degrades
-  over ranges where Earth curvature matters: about 0.2 m at 1 km by 1 km, 17 m at 10 km by 10 km.
+* **Local tangent plane.** Position is Cartesian NED about a fixed origin. The geodetic
+  conversion is exact at any range ([equation (43)](EQUATIONS.md#geodetic-origin)), but a plane
+  leaves a curved Earth: `d` from the origin it sits `d²/2R` above the surface, 8 cm at 1 km and
+  7.8 m at 10 km, so `-p_D` far out is not height and the barometer model has to correct for it.
 * **No self-recovery**, by design — see above.
 
 Features deliberately deferred (wind, terrain, optical flow, airspeed, ...) are listed in

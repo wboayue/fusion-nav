@@ -84,7 +84,7 @@ pub enum Fusion {
     /// sample happened to arrive first.
     ///
     /// Geodetic GNSS: no navigation origin is held and this fix cannot place one, because
-    /// it sits on a pole. The next usable fix will. See
+    /// its latitude is beyond ±90°. The next usable fix will. See
     /// [`Eskf::fuse_gnss_geodetic`](crate::Eskf::fuse_gnss_geodetic).
     NoReference,
     /// A number in the measurement or its noise is NaN or infinite. The measurement was

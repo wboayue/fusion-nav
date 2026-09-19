@@ -130,7 +130,7 @@ Single crate, `no_std`, `forbid(unsafe_code)`, `deny(missing_docs)`, allocation-
   for callers on another version.
 - `src/frames.rs` — `Ned`, `Enu`, `Body` as sealed zero-sized type parameters on quantities.
 - `src/geodetic.rs` — `Geodetic` (f64 lat/lon/height) and `LocalOrigin`, the tangent plane of
-  equations (43)–(44). The filter owns the origin: `fuse_gnss_geodetic` places it on the first
+  equations (43)–(44), exact via ECEF (fixed-iteration inverse, no data-dependent loops). The filter owns the origin: `fuse_gnss_geodetic` places it on the first
   fix (under the estimate, or at the fix after a coarse start), a static start clears it.
 - `src/config.rs` — tuning. Defaults are **placeholders** except the three listed under "How
   defaults get decided"; each doc comment records why. Preserve that habit: a default
