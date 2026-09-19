@@ -203,3 +203,12 @@ layout changes. `README.md` is the user guide (why an ESKF, how to initialize, r
 health); architecture and implementation detail go in `DESIGN.md`, replay/corpus usage in
 `data/README.md`. `GOALS.md` records positioning, the six differentiators, and decisions already
 made — check it before changing scope; the non-goals list is deliberate.
+
+The README is not compiled — `lib.rs` does not `include_str!` it — so its snippets rot silently;
+its old API block went missing `Status::Aligning`, `Fusion::Reset`, and `Fusion::NoReference`
+without anything failing. When an enum or signature changes, check the README's tables and quick
+start against the `lib.rs` doctest, which is the compiled source of truth. Snippets handle every
+`#[must_use]` outcome rather than `let _ =`; the README is where integrators copy from, and
+discarding outcomes is the one habit the API is built to prevent. Cross-doc anchors
+(`DESIGN.md#measurement-rejection` from `GOALS.md`) break on heading renames — grep for
+`.md#` before renaming one.
