@@ -38,11 +38,14 @@
 //!
 //! assert!(filter.predict(ImuSample::default(), dt).is_propagated());
 //!
-//! let outcome = filter.fuse_gnss_position(
-//!     Position::<Ned>::from_meters(12.0, -3.0, -40.0),
+//! // GNSS in latitude and longitude. The filter holds the navigation origin: the first
+//! // fix places it, under the estimate, so every later fix converts about the same point.
+//! let outcome = filter.fuse_gnss_geodetic(
+//!     Geodetic::from_degrees(47.397_742, 8.545_594, 488.0),
 //!     PositionVariance::isotropic(1.5),
 //! );
 //! assert!(outcome.is_accepted());
+//! assert!(filter.origin().is_some());
 //!
 //! let state = filter.state();
 //! assert_eq!(state.status, Status::Healthy);
@@ -58,6 +61,7 @@
 mod config;
 mod eskf;
 mod frames;
+mod geodetic;
 mod health;
 mod init;
 mod propagate;
@@ -106,6 +110,7 @@ pub mod prelude {
     pub use crate::config::{Accuracy, Config, GRAVITY, Gates, ImuNoise, Initialization, Timeouts};
     pub use crate::eskf::Eskf;
     pub use crate::frames::{Body, Enu, Ned};
+    pub use crate::geodetic::{Geodetic, LocalOrigin};
     pub use crate::health::{Diagnostics, Fusion, Propagation, SourceHealth, Status, Validity};
     pub use crate::init::{Alignment, Coarse, InitError, StaticSample};
     pub use crate::propagate::ImuSample;

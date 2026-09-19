@@ -569,6 +569,47 @@ Diagonal variances are floored at a small positive value to prevent a state from
 unobservably certain and then unrecoverable. With `f32` these are not optional refinements;
 they are what keeps a 15-state filter stable over a long flight.
 
+## Geodetic origin
+
+The navigation frame is a local tangent plane about an origin $`(\varphi_0, \lambda_0, h_0)`$,
+which the filter holds so that a geodetic fix and the estimate are relative to the same point.
+With the WGS84 radii of curvature at the origin,
+
+```math
+M = \frac{a(1 - e^2)}{(1 - e^2 \sin^2\varphi_0)^{3/2}}, \qquad
+N = \frac{a}{\sqrt{1 - e^2 \sin^2\varphi_0}}
+```
+
+a fix $`(\varphi, \lambda, h)`$ is, in NED meters,
+
+**(43)**
+
+```math
+p_N = (\varphi - \varphi_0)(M + h_0), \qquad
+p_E = \operatorname{wrap}(\lambda - \lambda_0)(N + h_0)\cos\varphi_0, \qquad
+p_D = -(h - h_0)
+```
+
+A first-order expansion about the origin: exact there, with an error that grows as
+$`p_N p_E / R`$ — 0.2 m at 1 km by 1 km at mid latitudes. Its inverse is exact, so converting the
+estimate back to latitude and longitude returns what (43) was given. Undefined at the poles, where
+$`\cos\varphi_0 = 0`$.
+
+The first geodetic fix $`z_g`$ places the origin. A filter that already has a position estimate
+$`\hat{p}`$ — it has been navigating relative to its own start — places it so the fix lands on
+the estimate:
+
+**(44)**
+
+```math
+(\varphi_0, \lambda_0, h_0) = \text{(43)}^{-1}_{z_g}\!\left(-\hat{p}\right)
+```
+
+that is, the point $`-\hat{p}`$ from the fix, with (43) taken about the fix. The first fix then
+carries no information about position, which is correct: before it, the filter's absolute
+position was unknown, not wrong. Without an estimate (a coarse start) the origin is the fix and
+the fix is adopted as $`\hat{p} = 0`$, per (28).
+
 ## Equation-to-code mapping
 
 Intended layout. Each implementing function cites its equation numbers in a doc comment.
@@ -594,6 +635,8 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | — | per-source health tracking | `health.rs` | `SourceHealth`, `Status` |
 | (39)–(41) | injection and reset | `update.rs` | `inject`, `reset` |
 | (42) | symmetry enforcement | `math.rs` | `enforce_symmetry` |
+| (43) | local tangent plane | `geodetic.rs` | `LocalOrigin::to_ned`, `to_geodetic` |
+| (44) | origin placement | `geodetic.rs` | `LocalOrigin::placing`; committed by `Eskf::fuse_gnss_geodetic` |
 | — | skew, quaternion exponential, angle wrap | `math.rs` | `skew`, `exp_quat`, `wrap_pi` |
 
 ## Deferred

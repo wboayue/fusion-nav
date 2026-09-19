@@ -73,12 +73,17 @@ pub enum Fusion {
     /// No initialization has succeeded — [`Eskf::initialize`](crate::Eskf::initialize),
     /// `initialize_coarse` or `initialize_from` — so there is no state to fuse against. The measurement was discarded.
     NotInitialized,
-    /// Barometer only: no reference altitude was established, because the static window
-    /// carried no barometer sample. The measurement was discarded.
+    /// The measurement has nothing to be relative to. The measurement was discarded.
     ///
-    /// `α₀` of equation (30) is a constant fixed at initialization, not a state, so a
-    /// barometric altitude without one has no origin to be relative to. Fusing it anyway
-    /// would silently invent the origin from whichever sample happened to arrive first.
+    /// Barometer: no reference altitude was established, because the static window
+    /// carried no barometer sample. `α₀` of equation (30) is a constant fixed at
+    /// initialization, not a state, so a barometric altitude without one has no origin to
+    /// be relative to. Fusing it anyway would silently invent the origin from whichever
+    /// sample happened to arrive first.
+    ///
+    /// Geodetic GNSS: no navigation origin is held and this fix cannot place one, because
+    /// a coordinate is not a number or it sits on a pole. The next usable fix will. See
+    /// [`Eskf::fuse_gnss_geodetic`](crate::Eskf::fuse_gnss_geodetic).
     NoReference,
 }
 

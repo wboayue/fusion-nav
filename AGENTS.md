@@ -123,6 +123,9 @@ Single crate, `no_std`, `forbid(unsafe_code)`, `deny(missing_docs)`, allocation-
 - `src/units.rs` — typed scalars/vectors; every constructor names its unit (`from_meters`,
   `from_rad_per_s`). Payloads are `nalgebra` `Vector3<f32>` / `UnitQuaternion<f32>`.
 - `src/frames.rs` — `Ned`, `Enu`, `Body` as sealed zero-sized type parameters on quantities.
+- `src/geodetic.rs` — `Geodetic` (f64 lat/lon/height) and `LocalOrigin`, the tangent plane of
+  equations (43)–(44). The filter owns the origin: `fuse_gnss_geodetic` places it on the first
+  fix (under the estimate, or at the fix after a coarse start), a static start clears it.
 - `src/config.rs` — tuning. Defaults are **placeholders** except the three listed under "How
   defaults get decided"; each doc comment records why. Preserve that habit: a default
   justified by data says so.
@@ -195,7 +198,7 @@ to an offline tool that prints a `Config`, not into the filter.
 
 ### Documentation is the specification
 
-`EQUATIONS.md` holds numbered equations (1)–(42) and an equation-to-code mapping table naming
+`EQUATIONS.md` holds numbered equations (1)–(44) and an equation-to-code mapping table naming
 the module and function intended to implement each. Implementation work follows that layout
 (`init.rs`, `propagate.rs`, `update.rs`, `observation/{gnss,baro,mag}.rs`, `math.rs`), cites its
 equation numbers in the doc comment (existing stubs already do), and updates the table when the

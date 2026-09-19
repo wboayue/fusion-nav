@@ -2,6 +2,7 @@
 
 use crate::config::Config;
 use crate::frames::{Body, Ned};
+use crate::geodetic::{Geodetic, LocalOrigin};
 use crate::health::{Diagnostics, Fusion, Propagation, SourceHealth, Status, Validity};
 use crate::init::{
     self, Alignment, Coarse, InitError, StaticSample, baro_reference, peak_motion,
@@ -27,6 +28,7 @@ pub struct Eskf {
     covariance: Covariance,
     diagnostics: Diagnostics,
     baro_reference: Option<Altitude>,
+    origin: Option<LocalOrigin>,
     unestablished: Unestablished,
     initialized: bool,
 }
@@ -49,6 +51,7 @@ impl Eskf {
             covariance: Covariance::zero(),
             diagnostics: Diagnostics::default(),
             baro_reference: None,
+            origin: None,
             unestablished: Unestablished::default(),
             initialized: false,
         }
@@ -184,7 +187,9 @@ impl Eskf {
     /// [`baro_reference`](Self::baro_reference) is left alone, so re-initializing in
     /// flight keeps the reference the flight began with; a filter that never had one
     /// needs [`set_baro_reference`](Self::set_baro_reference) before barometric fusion
-    /// will be accepted.
+    /// will be accepted. [`origin`](Self::origin) is left alone for the same reason, and
+    /// `state.position` is taken as relative to it — or, with no origin yet, to the one
+    /// the first [`fuse_gnss_geodetic`](Self::fuse_gnss_geodetic) will place around it.
     ///
     /// # Errors
     ///
@@ -228,6 +233,56 @@ impl Eskf {
         self.baro_reference = Some(reference);
     }
 
+    /// Put the navigation origin at a known point, such as a surveyed home or a landing
+    /// pad. Equation (43).
+    ///
+    /// Without this, the first [`fuse_gnss_geodetic`](Self::fuse_gnss_geodetic) places
+    /// the origin, which is right for most flights. Setting it is for an application whose
+    /// positions mean something relative to a fixed point.
+    ///
+    /// The vehicle does not move. With an origin already held, the position estimate is
+    /// re-expressed about the new one, so the geodetic position is unchanged and only the
+    /// numbers describing it are; its covariance is untouched, because a change of origin
+    /// adds no uncertainty. With none held, the current position is taken to be relative
+    /// to this one, which is the caller's claim to make — true after a static start on
+    /// the point being named, false anywhere else.
+    ///
+    /// Call it after initializing: a static start clears the origin, since it declares
+    /// position zero to be wherever the vehicle is.
+    ///
+    /// Returns `false`, changing nothing, for an origin with a coordinate that is not a
+    /// number or that sits on a pole, where east is undefined.
+    pub fn set_origin(&mut self, origin: Geodetic) -> bool {
+        if !LocalOrigin::is_usable(origin) {
+            return false;
+        }
+        let new = LocalOrigin::new(origin);
+        if let Some(old) = self.origin {
+            self.state.position = new.to_ned(old.to_geodetic(self.state.position));
+        }
+        self.origin = Some(new);
+        true
+    }
+
+    /// The navigation origin: the point [`State::position`](crate::State::position) is
+    /// relative to, and the tangent plane the filter converts geodetic fixes in. `None`
+    /// until the first [`fuse_gnss_geodetic`](Self::fuse_gnss_geodetic) or
+    /// [`set_origin`](Self::set_origin).
+    ///
+    /// Also the conversion an application wants for anything else it holds in latitude
+    /// and longitude — a waypoint, a geofence — so that it lands in the same frame as the
+    /// estimate.
+    pub const fn origin(&self) -> Option<LocalOrigin> {
+        self.origin
+    }
+
+    /// The position estimate as latitude, longitude and height, once there is an
+    /// [`origin`](Self::origin) to place it with.
+    pub fn geodetic_position(&self) -> Option<Geodetic> {
+        self.origin
+            .map(|origin| origin.to_geodetic(self.state.position))
+    }
+
     /// Propagate the nominal state and covariance over `dt`. Equations (9)–(22).
     ///
     /// The hot path, called at IMU rate. `dt` is explicit; the filter never reads a clock.
@@ -262,7 +317,14 @@ impl Eskf {
         Propagation::Propagated
     }
 
-    /// Fuse a GNSS position fix. Equation (28).
+    /// Fuse a position fix already expressed in NED meters about the filter's origin.
+    /// Equation (28).
+    ///
+    /// For a receiver reporting latitude and longitude, use
+    /// [`fuse_gnss_geodetic`](Self::fuse_gnss_geodetic), which converts about the origin
+    /// the filter holds. This one is for a caller that owns the conversion, or whose
+    /// positions were never geodetic — a local RTK base, motion capture. Mixing the two is
+    /// only right if the caller's origin is [`origin`](Self::origin).
     ///
     /// After a coarse start the first fix is adopted rather than fused; see
     /// [`Fusion::Reset`].
@@ -296,6 +358,39 @@ impl Eskf {
         }
         let _ = (position, variance);
         stub_accept(&mut self.diagnostics.gnss_position)
+    }
+
+    /// Fuse a GNSS fix given as latitude, longitude and height. Equations (43), (44),
+    /// then (28).
+    ///
+    /// The filter holds the navigation origin and converts about it, so the fix and the
+    /// estimate are relative to the same point by construction. The first fix places the
+    /// origin, unless [`set_origin`](Self::set_origin) already has:
+    ///
+    /// * With a position estimate — a static start, a seed — the origin goes where that
+    ///   estimate says the vehicle started, so the fix lands on the estimate and nothing
+    ///   steps. Equation (44).
+    /// * Without one — after a coarse start — the origin goes at the fix, and the fix is
+    ///   adopted as position zero; see [`Fusion::Reset`].
+    ///
+    /// `variance` is as for [`fuse_gnss_position`](Self::fuse_gnss_position), floor
+    /// included.
+    ///
+    /// A fix with a coordinate that is not a number, or on a pole, cannot place an origin:
+    /// with none held it is refused with [`Fusion::NoReference`], and the next usable fix
+    /// places it instead.
+    pub fn fuse_gnss_geodetic(&mut self, fix: Geodetic, variance: PositionVariance<Ned>) -> Fusion {
+        if !self.initialized {
+            return Fusion::NotInitialized;
+        }
+        let origin = match self.origin {
+            Some(origin) => origin,
+            None if !LocalOrigin::is_usable(fix) => return Fusion::NoReference,
+            None if self.unestablished.position => LocalOrigin::new(fix),
+            None => LocalOrigin::placing(fix, self.state.position),
+        };
+        self.origin = Some(origin);
+        self.fuse_gnss_position(origin.to_ned(fix), variance)
     }
 
     /// Fuse a GNSS velocity solution. Equation (29).
@@ -526,12 +621,21 @@ impl Eskf {
     /// attitude uncertainty matches how good the alignment was. The barometric reference
     /// is the caller's to set, because only it knows whether this start establishes a new
     /// one.
+    ///
+    /// A static start clears the origin. It declares position zero to be where the
+    /// vehicle is now, and an origin held from before says zero is somewhere else; the
+    /// next geodetic fix places a new one. A coarse start keeps it, because its position
+    /// is unestablished and the first fix is adopted about the origin the flight already
+    /// has.
     fn apply_alignment(&mut self, alignment: Alignment) {
         let (sigma_tilt, sigma_yaw) = init::attitude_sigmas(&self.config.init, alignment);
         self.covariance = init::initial_covariance(&self.config.init, sigma_tilt, sigma_yaw);
         self.state = State::default();
         self.diagnostics = Diagnostics::default();
         self.unestablished = Unestablished::after(alignment);
+        if alignment.is_static() {
+            self.origin = None;
+        }
         self.initialized = true;
     }
 
@@ -597,6 +701,7 @@ fn stub_accept(source: &mut SourceHealth) -> Fusion {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geodetic::LocalOrigin;
     use crate::init::tests::still;
     use crate::state::ErrorState;
     use crate::units::{Acceleration, AngularRate};
@@ -1113,6 +1218,131 @@ mod tests {
             !predicted.horizontal_position,
             "and says nothing about where it is"
         );
+    }
+
+    fn zurich() -> Geodetic {
+        Geodetic::from_degrees(47.3977, 8.5456, 488.0)
+    }
+
+    fn near(a: Position<Ned>, b: Position<Ned>) -> bool {
+        (a.as_meters() - b.as_meters()).norm() < 1e-2
+    }
+
+    #[test]
+    fn the_first_geodetic_fix_places_the_origin_under_the_estimate() {
+        let mut filter = initialized();
+        assert_eq!(filter.origin(), None);
+        let outcome = filter.fuse_gnss_geodetic(zurich(), PositionVariance::isotropic(2.25));
+        assert!(outcome.is_accepted() && !outcome.is_reset(), "{outcome:?}");
+
+        let origin = filter.origin().expect("placed by the first fix");
+        assert!(
+            near(origin.to_ned(zurich()), filter.state().position),
+            "the fix lands on the estimate, so nothing steps"
+        );
+    }
+
+    #[test]
+    fn an_origin_placed_after_moving_accounts_for_the_move() {
+        let (mut state, covariance) = seed();
+        state.position = Position::from_meters(40.0, -15.0, -3.0);
+        let mut filter = Eskf::new(Config::default());
+        let _ = filter
+            .initialize_from(state, covariance)
+            .expect("a sane seed");
+        let _ = filter.fuse_gnss_geodetic(zurich(), PositionVariance::isotropic(2.25));
+
+        let origin = filter.origin().expect("placed");
+        assert!(near(origin.to_ned(zurich()), state.position));
+        assert_ne!(
+            origin.geodetic(),
+            zurich(),
+            "the origin is where it started"
+        );
+    }
+
+    #[test]
+    fn after_a_coarse_start_the_origin_is_the_first_fix_and_it_is_adopted() {
+        let mut filter = coarse();
+        let outcome = filter.fuse_gnss_geodetic(zurich(), PositionVariance::isotropic(2.25));
+        assert_eq!(outcome, Fusion::Reset);
+        assert_eq!(filter.origin().map(|o| o.geodetic()), Some(zurich()));
+        assert_eq!(filter.state().position, Position::zero());
+    }
+
+    #[test]
+    fn later_fixes_are_converted_about_the_same_origin() {
+        let mut filter = coarse();
+        let _ = filter.fuse_gnss_geodetic(zurich(), PositionVariance::isotropic(2.25));
+        // Position is established now, so this one is fused, not adopted.
+        let north = Geodetic::from_degrees(47.3987, 8.5456, 488.0);
+        assert!(
+            !filter
+                .fuse_gnss_geodetic(north, PositionVariance::isotropic(2.25))
+                .is_reset()
+        );
+        let p = filter.origin().expect("held").to_ned(north).as_meters();
+        assert!((p.x - 111.2).abs() < 0.1 && p.y.abs() < 1e-3, "{p:?}");
+    }
+
+    #[test]
+    fn a_fix_that_cannot_place_an_origin_is_refused_and_the_next_one_places_it() {
+        let mut filter = initialized();
+        let nonsense = Geodetic::from_degrees(f64::NAN, 8.5, 488.0);
+        assert_eq!(
+            filter.fuse_gnss_geodetic(nonsense, PositionVariance::isotropic(2.25)),
+            Fusion::NoReference
+        );
+        assert_eq!(filter.origin(), None);
+        assert!(
+            filter
+                .fuse_gnss_geodetic(zurich(), PositionVariance::isotropic(2.25))
+                .is_accepted()
+        );
+        assert!(filter.origin().is_some());
+    }
+
+    #[test]
+    fn moving_the_origin_does_not_move_the_vehicle() {
+        let mut filter = initialized();
+        let _ = filter.fuse_gnss_geodetic(zurich(), PositionVariance::isotropic(2.25));
+        let before = filter.geodetic_position().expect("an origin is held");
+        let variance = filter.covariance().variance(ErrorState::PositionNorth);
+
+        let home = Geodetic::from_degrees(47.3967, 8.5446, 480.0);
+        assert!(filter.set_origin(home));
+        let after = filter.geodetic_position().expect("still held");
+        let moved = LocalOrigin::new(before).to_ned(after).as_meters().norm();
+        assert!(moved < 1e-2, "the vehicle moved {moved} m");
+        assert_ne!(filter.state().position, Position::zero(), "the numbers did");
+        assert_eq!(
+            filter.covariance().variance(ErrorState::PositionNorth),
+            variance
+        );
+    }
+
+    #[test]
+    fn a_static_start_clears_the_origin_and_a_coarse_one_keeps_it() {
+        let mut filter = initialized();
+        assert!(filter.set_origin(zurich()));
+        let _ = filter
+            .initialize(&[still(); 8], Seconds::from_secs(0.1))
+            .expect("short, so coarse");
+        assert!(
+            filter.origin().is_some(),
+            "a coarse restart keeps the flight's origin"
+        );
+        let _ = filter
+            .initialize(&[still(); 8], Seconds::from_secs(0.25))
+            .expect("a 2 s window");
+        assert_eq!(filter.origin(), None, "zero is here now, wherever here is");
+    }
+
+    #[test]
+    fn a_polar_origin_is_refused() {
+        let mut filter = initialized();
+        assert!(!filter.set_origin(Geodetic::from_degrees(90.0, 0.0, 0.0)));
+        assert_eq!(filter.origin(), None);
     }
 
     #[test]

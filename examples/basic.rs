@@ -39,9 +39,11 @@ fn main() -> Result<(), InitError> {
         assert!(filter.predict(imu_sample(), dt).is_propagated());
 
         if tick % (IMU_HZ / GNSS_HZ) == 0 {
-            // The outcome is `#[must_use]`, so a rejection cannot be dropped silently.
-            let outcome = filter.fuse_gnss_position(
-                Position::<Ned>::from_meters(120.0, -43.0, -60.0),
+            // Latitude and longitude straight from the receiver: the filter places its
+            // origin on the first fix and converts every later one about it. The outcome
+            // is `#[must_use]`, so a rejection cannot be dropped silently.
+            let outcome = filter.fuse_gnss_geodetic(
+                Geodetic::from_degrees(47.397_742, 8.545_594, 488.0),
                 PositionVariance::isotropic(1.5),
             );
             if let Some(test_ratio) = outcome.test_ratio() {
@@ -75,6 +77,16 @@ fn main() -> Result<(), InitError> {
     println!("fusion-nav basic example — no filtering is performed\n");
     println!("status    {:?}", state.status);
     println!("position  {:?}", state.position);
+    if let (Some(origin), Some(here)) = (filter.origin(), filter.geodetic_position()) {
+        let origin = origin.geodetic();
+        println!(
+            "origin    {:.6}, {:.6}; here {:.6}, {:.6}",
+            origin.latitude_deg(),
+            origin.longitude_deg(),
+            here.latitude_deg(),
+            here.longitude_deg()
+        );
+    }
     println!("velocity  {:?}", state.velocity);
     println!("attitude  roll {roll:.3} pitch {pitch:.3} yaw {yaw:.3} rad");
     println!("biases    {:?}", state.gyro_bias);

@@ -89,7 +89,9 @@ loop {
 
     // Measurement updates whenever a sensor delivers, each with its own variance.
     // A rejection carries its test ratio.
-    if !filter.fuse_gnss_position(position, PositionVariance::isotropic(1.5)).is_accepted() {
+    // GNSS goes in as latitude and longitude: the filter holds the origin and converts.
+    let fix = Geodetic::from_degrees_e7(pvt.lat, pvt.lon, pvt.height_mm);
+    if !filter.fuse_gnss_geodetic(fix, PositionVariance::isotropic(1.5)).is_accepted() {
         /* diagnostics() has the detail */
     }
 
@@ -189,7 +191,8 @@ Call `predict(imu, dt)` on every IMU sample. The result is `#[must_use]`:
 
 | method | measurement |
 | ------ | ----------- |
-| `fuse_gnss_position(position, variance)` | NED position |
+| `fuse_gnss_geodetic(fix, variance)` | latitude, longitude, height; converted about the filter's origin |
+| `fuse_gnss_position(position, variance)` | NED position about the filter's origin, for a caller that converts itself |
 | `fuse_gnss_velocity(velocity, variance)` | NED velocity |
 | `fuse_baro_altitude(altitude, variance)` | altitude, relative to `α₀` |
 | `fuse_mag_heading(field, variance)` | body-frame field, fused as heading only |
@@ -207,8 +210,19 @@ test ratio, so a rejection is diagnosable:
 | `Accepted { test_ratio }` | fused; ratio ≤ 1 |
 | `Rejected { test_ratio }` | gated out; ratio > 1, state unchanged |
 | `Reset` | adopted outright after a coarse start (once per quantity) |
-| `NoReference` | barometer altitude with no `α₀` from initialization |
+| `NoReference` | barometer altitude with no `α₀` from initialization, or a geodetic fix that cannot place an origin |
 | `NotInitialized` | no state to fuse against |
+
+### The navigation origin
+
+Position is NED meters about an origin the filter holds. The first `fuse_gnss_geodetic` places
+it: under the current estimate after a static start or a seed, so nothing steps, and at the fix
+itself after a coarse start, where the fix is adopted. `set_origin` names one instead, such as a
+surveyed home; call it after initializing, since a static start clears it.
+
+Read it back with `origin()`, and use it for anything else held in latitude and longitude — a
+waypoint, a geofence — so it lands in the estimate's frame. `geodetic_position()` is the estimate
+converted back.
 
 ## Health reporting
 
@@ -283,8 +297,9 @@ Known and deliberate, stated here rather than discovered in flight.
 * **In-motion alignment is coarse.** A moving start runs and reports `Aligning`, but full
   alignment of a bare vehicle in motion is not yet built; `initialize_from` covers a held
   estimate. See [alignment beyond the static window](GOALS.md#alignment-beyond-the-static-window).
-* **Local tangent plane.** Position is Cartesian NED about a fixed origin, so accuracy degrades
-  over ranges where Earth curvature matters.
+* **Local tangent plane.** Position is Cartesian NED about a fixed origin, converted by a
+  first-order expansion ([equation (43)](EQUATIONS.md#geodetic-origin)), so accuracy degrades
+  over ranges where Earth curvature matters: about 0.2 m at 1 km by 1 km, 17 m at 10 km by 10 km.
 * **No self-recovery**, by design — see above.
 
 Features deliberately deferred (wind, terrain, optical flow, airspeed, ...) are listed in
