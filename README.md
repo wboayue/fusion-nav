@@ -333,8 +333,10 @@ Known and deliberate, stated here rather than discovered in flight.
   uncalibrated magnetometer gives a heading bias the filter cannot detect.
 * **Heading needs a magnetometer.** It is the only heading source the filter has, so a vehicle
   without one never leaves `Aligning` and never reports `validity.heading`, however good the rest
-  of the estimate is. Yaw from course over ground and a GSF yaw estimator are the answers, both
-  unbuilt. See [alignment beyond the static window](GOALS.md#alignment-beyond-the-static-window).
+  of the estimate is. `Aligning` hides `Degraded`, so such a vehicle's source timeouts stop
+  showing in `Status` too and have to be read from `diagnostics()`. Yaw from course over ground
+  and a GSF yaw estimator are the answers, both unbuilt. See
+  [alignment beyond the static window](GOALS.md#alignment-beyond-the-static-window).
 * **In-motion alignment is coarse.** A moving start runs and reports `Aligning`, but full
   alignment of a bare vehicle in motion is not yet built; `initialize_from` covers a held
   estimate. See [alignment beyond the static window](GOALS.md#alignment-beyond-the-static-window).

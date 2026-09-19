@@ -197,9 +197,9 @@ pub struct Accuracy {
 
 impl Default for Accuracy {
     /// Attitude matches what a good static alignment gives, so a filter that started
-    /// still is aligned from its first sample. Position and velocity are **placeholders**
-    /// — loose enough to admit a 1 Hz GNSS solution, and nothing more considered than
-    /// that.
+    /// still — and had a magnetometer to take a heading from — is aligned from its first
+    /// sample. Position and velocity are **placeholders** — loose enough to admit a 1 Hz
+    /// GNSS solution, and nothing more considered than that.
     ///
     /// The attitude equality is a knife edge, and it holds only because the stub never
     /// propagates. [`tilt`](Accuracy::tilt) equals

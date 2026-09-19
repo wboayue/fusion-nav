@@ -5,11 +5,14 @@
 # They are what makes "the only log that exercises StepTooLong" a claim the build
 # enforces rather than a comment that quietly goes stale.
 #
-# heading= is Validity::heading at the end of the log. Only a magnetometer
-# observes the rotation about gravity, and the covariance cannot say so on its
-# own -- Initialization::sigma_yaw and Accuracy::heading are the same 0.35 rad,
-# so a yaw nobody measured passes the bar exactly. Every log here carries a
-# magnetometer in its window; the key is what would notice if one stopped.
+# heading= is Validity::heading as initialization left it, not as the log
+# ended. Only a magnetometer observes the rotation about gravity, and the
+# covariance cannot say so on its own -- Initialization::sigma_yaw and
+# Accuracy::heading are the same 0.35 rad, so a yaw nobody measured passes the
+# bar exactly. Every log here carries a magnetometer in its window, so every
+# static one is valid; the key is what would notice if one stopped. Taking it
+# at the end of the log instead would say only that some heading was fused at
+# some point, which transitions= already notices.
 #
 # PX4 Flight Review public logs are CC BY 4.0, so a corpus can be pinned here and
 # redistributed with attribution. The files themselves stay out of the repo
@@ -85,10 +88,10 @@ b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-
 #     the application would have to name a reference. That is the whole
 #     reason the alpha0 key exists: nothing else in the summary line
 #     notices barometric aiding disappearing. It is also the one entry with
-#     heading=invalid: its magnetometer is accepted 35580 times, but a coarse
-#     start widens yaw to the full circle and a stub that fuses nothing never
-#     narrows it again. Expect this to become valid when equations (34)-(36)
-#     land.
+#     heading=invalid: its window carries a magnetometer, but a coarse start
+#     has no tilt to level a heading against, so yaw starts at the full circle
+#     and nothing has measured it. Expect this to change when equations
+#     (34)-(36) land and the yaw reset it describes is performed.
 # The 888 Healthy/Degraded transitions this log used to show are masked
 # while alignment is a stub: Aligning outranks Degraded, and a stub
 # covariance never shrinks, so it never leaves Aligning. Expect them back,

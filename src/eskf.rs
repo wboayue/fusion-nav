@@ -568,7 +568,8 @@ impl Eskf {
     /// widening the prior does not fix it. The bookkeeping below is the same either way.
     ///
     /// **Stub.** Records an acceptance with a zero test ratio; corrects nothing, and
-    /// computes no heading from `field`, so the reset above is not yet performed.
+    /// computes no heading from `field`, so the reset above is not yet performed: the
+    /// validity flag moves, the yaw it describes does not.
     pub fn fuse_mag_heading(&mut self, field: MagField<Body>, noise: HeadingNoise) -> Fusion {
         if !self.initialized {
             return Fusion::NotInitialized;
@@ -620,7 +621,10 @@ impl Eskf {
     /// [`Validity::attitude`](crate::Validity::attitude).
     ///
     /// Read from the covariance against [`Config::accuracy`](crate::Config::accuracy), so
-    /// it is the filter's own estimate of its convergence rather than a timer.
+    /// convergence is measured rather than timed. With one thing the covariance cannot
+    /// say: a heading nothing ever observed is not aligned however tight
+    /// [`sigma_yaw`](crate::Initialization::sigma_yaw) is, so this stays false on a
+    /// vehicle with no magnetometer. See [`validity`](Self::validity).
     pub fn is_aligned(&self) -> bool {
         self.validity().attitude()
     }

@@ -73,8 +73,9 @@ Expectations are matched pair by pair as substrings, so **adding** a key to the 
 safe and pinning new behavior there is cheap — `align=`, `resets=`, `alpha0=` and `heading=` were
 added that way, and each now guards a decision that would otherwise rot into a comment (`alpha0=`
 catches the coarse log's 35575 barometer rows going from fused to `NoReference`, which no other key
-noticed; `heading=` catches a yaw reported valid that no magnetometer ever observed). Renaming or
-removing a key breaks every entry at once.
+noticed; `heading=` is the validity verdict on the initialization window, which catches a yaw
+reported valid that no magnetometer ever observed — taken at the end of the log it would only
+restate `transitions=`). Renaming or removing a key breaks every entry at once.
 
 ## How defaults get decided
 
@@ -155,7 +156,8 @@ Single crate, `no_std`, `forbid(unsafe_code)`, `deny(missing_docs)`, allocation-
   `NotFinite`, `InvalidVariance`). Three entry points — `initialize`, `initialize_coarse`,
   `initialize_from` — and each reports an `Alignment`; `alignment_of` classifies without
   mutating. `is_aligned` reads the covariance against `Initialization`'s sigmas, so promotion is
-  measured rather than timed.
+  measured rather than timed — except heading, which no covariance can promote because
+  stillness never observes yaw; that one waits for a magnetometer.
 - **`Status` is the summary; `State::validity` is the detail.** Six per-quantity flags derived
   from the covariance against `Config::accuracy` (the one knob meant to be supplied, since
   mission accuracy is not derivable), plus "was this ever established" — the `Unestablished` flags
