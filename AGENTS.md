@@ -113,14 +113,17 @@ Single crate, `no_std`, `forbid(unsafe_code)`, `deny(missing_docs)`, allocation-
   of GOALS.md's "Alignment beyond the static window": the static window stays the preferred path,
   and coarse in-motion alignment plus a `Status::Aligning` phase is designed there but unbuilt —
   read that section before touching initialization.
+- `src/init.rs` — initialization's types (`StaticSample`, `Alignment`, `Coarse`, `InitError`)
+  and pure functions (`classify`, `attitude_sigmas`, `initial_covariance`, `baro_reference`).
+  The `initialize*` methods on `Eskf` call these and commit the result.
 - `src/state.rs` — `State` (nominal, 16 values), `Covariance`/`CovarianceMatrix` (15×15), and
   `ErrorState`, whose discriminants define the covariance ordering `[δp δv δθ δβa δβg]`.
 - `src/units.rs` — typed scalars/vectors; every constructor names its unit (`from_meters`,
   `from_rad_per_s`). Payloads are `nalgebra` `Vector3<f32>` / `UnitQuaternion<f32>`.
 - `src/frames.rs` — `Ned`, `Enu`, `Body` as sealed zero-sized type parameters on quantities.
-- `src/config.rs` — tuning. Defaults are **placeholders** except `Timeouts::degraded_after`,
-  which was corrected from replay evidence; the doc comment records why. Preserve that habit:
-  a default justified by data says so.
+- `src/config.rs` — tuning. Defaults are **placeholders** except the three listed under "How
+  defaults get decided"; each doc comment records why. Preserve that habit: a default
+  justified by data says so.
 - `src/health.rs` — `Propagation`, `Fusion` (both `#[must_use]`), `SourceHealth`, `Status`.
 - `examples/replay.rs` — the normalized CSV format and the offline harness.
 

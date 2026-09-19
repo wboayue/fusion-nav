@@ -1,7 +1,7 @@
 //! Filter tuning.
 //!
 //! Every default here is a **placeholder** chosen to make the shape of the API concrete,
-//! and none has been validated against flight data — with two exceptions:
+//! and none has been validated against flight data — with three exceptions:
 //! [`Timeouts::degraded_after`] and [`Initialization`]'s stationarity tolerances, both
 //! corrected after replaying the PX4 corpus, and [`ImuNoise`], re-baselined against the
 //! defaults PX4 and ArduPilot ship.

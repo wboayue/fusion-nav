@@ -29,9 +29,9 @@ pub enum Status {
     /// Position and velocity are being estimated and are usable to the extent the
     /// covariance says. Attitude is not yet what a static alignment would have given, so
     /// a controller should not fly on it. The filter leaves this state on its own, as
-    /// soon as the covariance says the attitude uncertainty has come down to what
-    /// [`Initialization`](crate::Initialization) asks of a static start — there is no
-    /// timer and nothing to acknowledge.
+    /// soon as the covariance says tilt and heading uncertainty are within
+    /// [`Config::accuracy`](crate::Config::accuracy) — there is no timer and nothing to
+    /// acknowledge.
     Aligning,
     /// Nothing is aiding the filter. Position and velocity error grows without bound.
     #[default]
