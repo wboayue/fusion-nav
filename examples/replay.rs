@@ -71,21 +71,21 @@ type Column = fn(&State) -> f32;
 /// The estimate columns: each name next to the value it reads. Drives both the header and
 /// the row, so the two cannot drift apart.
 const ESTIMATE: [(&str, Column); 15] = [
-    ("pos_n", |s| s.position.as_meters().x),
-    ("pos_e", |s| s.position.as_meters().y),
-    ("pos_d", |s| s.position.as_meters().z),
-    ("vel_n", |s| s.velocity.as_m_per_s().x),
-    ("vel_e", |s| s.velocity.as_m_per_s().y),
-    ("vel_d", |s| s.velocity.as_m_per_s().z),
+    ("pos_n", |s| s.position.x()),
+    ("pos_e", |s| s.position.y()),
+    ("pos_d", |s| s.position.z()),
+    ("vel_n", |s| s.velocity.x()),
+    ("vel_e", |s| s.velocity.y()),
+    ("vel_d", |s| s.velocity.z()),
     ("roll", |s| s.attitude.euler_angles().0),
     ("pitch", |s| s.attitude.euler_angles().1),
     ("yaw", |s| s.attitude.euler_angles().2),
-    ("ba_x", |s| s.accel_bias.as_m_per_s2().x),
-    ("ba_y", |s| s.accel_bias.as_m_per_s2().y),
-    ("ba_z", |s| s.accel_bias.as_m_per_s2().z),
-    ("bg_x", |s| s.gyro_bias.as_rad_per_s().x),
-    ("bg_y", |s| s.gyro_bias.as_rad_per_s().y),
-    ("bg_z", |s| s.gyro_bias.as_rad_per_s().z),
+    ("ba_x", |s| s.accel_bias.x()),
+    ("ba_y", |s| s.accel_bias.y()),
+    ("ba_z", |s| s.accel_bias.z()),
+    ("bg_x", |s| s.gyro_bias.x()),
+    ("bg_y", |s| s.gyro_bias.y()),
+    ("bg_z", |s| s.gyro_bias.z()),
 ];
 
 /// The covariance diagonal, in the error-state ordering. Drives both the header and the
@@ -241,8 +241,8 @@ impl Replay {
         match r.source {
             "imu" => {
                 let imu = ImuSample {
-                    gyro: AngularRate::from_rad_per_s(r.value(0)?, r.value(1)?, r.value(2)?),
-                    accel: Acceleration::from_m_per_s2(r.value(3)?, r.value(4)?, r.value(5)?),
+                    gyro: AngularRate::body(r.value(0)?, r.value(1)?, r.value(2)?),
+                    accel: Acceleration::body(r.value(3)?, r.value(4)?, r.value(5)?),
                 };
                 if self.filter.is_initialized() {
                     self.propagate(r.t, imu, out)?;
@@ -254,19 +254,15 @@ impl Replay {
                 // Variance comes from the log, per sample: a real GNSS reports its own
                 // accuracy, and it degrades before it drops out.
                 let outcome = self.filter.fuse_gnss_position(
-                    Position::<Ned>::from_meters(r.value(0)?, r.value(1)?, r.value(2)?),
-                    PositionVariance::from_m2(r.variance(0)?, r.variance(1)?, r.variance(2)?),
+                    Position::ned(r.value(0)?, r.value(1)?, r.value(2)?),
+                    PositionNoise::from_variance(r.variance(0)?, r.variance(1)?, r.variance(2)?),
                 );
                 self.observe(GNSS_POS, outcome);
             }
             "gnss_vel" => {
                 let outcome = self.filter.fuse_gnss_velocity(
-                    Velocity::<Ned>::from_m_per_s(r.value(0)?, r.value(1)?, r.value(2)?),
-                    VelocityVariance::from_m2_per_s2(
-                        r.variance(0)?,
-                        r.variance(1)?,
-                        r.variance(2)?,
-                    ),
+                    Velocity::ned(r.value(0)?, r.value(1)?, r.value(2)?),
+                    VelocityNoise::from_variance(r.variance(0)?, r.variance(1)?, r.variance(2)?),
                 );
                 self.observe(GNSS_VEL, outcome);
             }
@@ -275,16 +271,15 @@ impl Replay {
                 self.last_baro = Some(altitude);
                 let outcome = self
                     .filter
-                    .fuse_baro_altitude(altitude, AltitudeVariance::from_m2(r.variance(0)?));
+                    .fuse_baro_altitude(altitude, AltitudeNoise::from_variance(r.variance(0)?));
                 self.observe(BARO, outcome);
             }
             "mag" => {
-                let field =
-                    MagField::<Body>::from_components(r.value(0)?, r.value(1)?, r.value(2)?);
+                let field = MagField::body(r.value(0)?, r.value(1)?, r.value(2)?);
                 self.last_mag = Some(field);
                 let outcome = self
                     .filter
-                    .fuse_mag_heading(field, HeadingVariance::from_rad2(r.variance(0)?));
+                    .fuse_mag_heading(field, HeadingNoise::from_variance(r.variance(0)?));
                 self.observe(MAG, outcome);
             }
             other => return Err(format!("unknown source `{other}`").into()),

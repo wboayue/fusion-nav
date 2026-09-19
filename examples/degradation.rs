@@ -31,7 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // A measurement before initialization is refused rather than silently dropped.
     let early =
-        filter.fuse_baro_altitude(Altitude::from_meters(0.0), AltitudeVariance::from_m2(4.0));
+        filter.fuse_baro_altitude(Altitude::from_meters(0.0), AltitudeNoise::from_sigma(2.0));
     println!("before initialize: {early:?}");
 
     // Quasi-static initialization. A real window is captured from the IMU while the
@@ -56,10 +56,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Recovery is the application's call, not the filter's.
     if filter.state().status == Status::DeadReckoning {
         filter.reset_position_to(
-            Position::<Ned>::from_meters(120.0, -43.0, -60.0),
-            PositionVariance::isotropic(2.5),
+            Position::ned(120.0, -43.0, -60.0),
+            PositionNoise::horizontal_vertical(1.6, 1.6),
         );
-        filter.reset_velocity_to(Velocity::<Ned>::zero(), VelocityVariance::isotropic(0.25));
+        filter.reset_velocity_to(
+            Velocity::<Ned>::zero(),
+            VelocityNoise::from_speed_accuracy(0.5),
+        );
         println!("applied an external position reset\n");
     }
 
@@ -82,8 +85,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Frames are checked at compile time. Uncommenting this fails to build:
     //
     //     filter.fuse_gnss_position(
-    //         Position::<fusion_nav::Enu>::from_meters(0.0, 0.0, 0.0),
-    //         PositionVariance::isotropic(1.0),
+    //         Position::enu(0.0, 0.0, 0.0),
+    //         PositionNoise::horizontal_vertical(1.0, 1.0),
     //     );
 
     Ok(())
@@ -131,16 +134,16 @@ fn run(filter: &mut Eskf, ticks: u32, sources: Sources) {
         assert!(filter.predict(imu_sample(), dt).is_propagated());
 
         if sources.gnss && tick % (IMU_HZ / GNSS_HZ) == 0 {
-            let fix = Position::<Ned>::from_meters(120.0, -43.0, -60.0);
+            let fix = Position::ned(120.0, -43.0, -60.0);
             check(
                 "gnss position",
-                filter.fuse_gnss_position(fix, PositionVariance::isotropic(1.5)),
+                filter.fuse_gnss_position(fix, PositionNoise::horizontal_vertical(1.5, 3.0)),
             );
             check(
                 "gnss velocity",
                 filter.fuse_gnss_velocity(
-                    Velocity::<Ned>::from_m_per_s(14.0, 0.5, -0.2),
-                    VelocityVariance::isotropic(0.09),
+                    Velocity::ned(14.0, 0.5, -0.2),
+                    VelocityNoise::from_speed_accuracy(0.3),
                 ),
             );
         }
@@ -150,7 +153,7 @@ fn run(filter: &mut Eskf, ticks: u32, sources: Sources) {
                 "baro",
                 filter.fuse_baro_altitude(
                     Altitude::from_meters(60.0),
-                    AltitudeVariance::from_m2(4.0),
+                    AltitudeNoise::from_sigma(2.0),
                 ),
             );
         }
@@ -159,8 +162,8 @@ fn run(filter: &mut Eskf, ticks: u32, sources: Sources) {
             check(
                 "mag",
                 filter.fuse_mag_heading(
-                    MagField::from_components(0.21, 0.03, 0.44),
-                    HeadingVariance::from_rad2(0.05),
+                    MagField::body(0.21, 0.03, 0.44),
+                    HeadingNoise::from_sigma(0.22),
                 ),
             );
         }
@@ -192,18 +195,18 @@ fn report(label: &str, filter: &Eskf) {
 
 fn imu_sample() -> ImuSample {
     ImuSample {
-        gyro: AngularRate::from_rad_per_s(0.01, -0.002, 0.03),
-        accel: Acceleration::from_m_per_s2(0.2, 0.1, -GRAVITY),
+        gyro: AngularRate::body(0.01, -0.002, 0.03),
+        accel: Acceleration::body(0.2, 0.1, -GRAVITY),
     }
 }
 
 fn stationary_sample() -> StaticSample {
     StaticSample {
         imu: ImuSample {
-            gyro: AngularRate::from_rad_per_s(0.0, 0.0, 0.0),
-            accel: Acceleration::from_m_per_s2(0.0, 0.0, -GRAVITY),
+            gyro: AngularRate::body(0.0, 0.0, 0.0),
+            accel: Acceleration::body(0.0, 0.0, -GRAVITY),
         },
-        mag: Some(MagField::from_components(0.22, 0.0, 0.44)),
+        mag: Some(MagField::body(0.22, 0.0, 0.44)),
         // Ground level at the launch point. This is what fixes the barometer's
         // reference, so the 60 m fused later reads as 8 m above the origin rather than
         // as an absolute altitude. Without it `fuse_baro_altitude` refuses.

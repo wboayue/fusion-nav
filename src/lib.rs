@@ -22,8 +22,8 @@
 //! // at 400 Hz is the 2 s `Initialization::min_duration` wants.
 //! let still = StaticSample {
 //!     imu: ImuSample {
-//!         gyro: AngularRate::from_rad_per_s(0.0, 0.0, 0.0),
-//!         accel: Acceleration::from_m_per_s2(0.0, 0.0, -GRAVITY),
+//!         gyro: AngularRate::body(0.0, 0.0, 0.0),
+//!         accel: Acceleration::body(0.0, 0.0, -GRAVITY),
 //!     },
 //!     ..StaticSample::default()
 //! };
@@ -38,11 +38,14 @@
 //!
 //! assert!(filter.predict(ImuSample::default(), dt).is_propagated());
 //!
-//! let outcome = filter.fuse_gnss_position(
-//!     Position::<Ned>::from_meters(12.0, -3.0, -40.0),
-//!     PositionVariance::isotropic(1.5),
+//! // GNSS in latitude and longitude. The filter holds the navigation origin: the first
+//! // fix places it, under the estimate, so every later fix converts about the same point.
+//! let outcome = filter.fuse_gnss_geodetic(
+//!     Geodetic::from_degrees(47.397_742, 8.545_594, 488.0),
+//!     PositionNoise::horizontal_vertical(1.5, 3.0),
 //! );
 //! assert!(outcome.is_accepted());
+//! assert!(filter.origin().is_some());
 //!
 //! let state = filter.state();
 //! assert_eq!(state.status, Status::Healthy);
@@ -58,6 +61,7 @@
 mod config;
 mod eskf;
 mod frames;
+mod geodetic;
 mod health;
 mod init;
 mod propagate;
@@ -83,8 +87,8 @@ pub use state::{CovarianceMatrix, STATES};
 /// // relative to. Without it that call refuses with `Fusion::NoReference`.
 /// let still = StaticSample {
 ///     imu: ImuSample {
-///         gyro: AngularRate::from_rad_per_s(0.0, 0.0, 0.0),
-///         accel: Acceleration::from_m_per_s2(0.0, 0.0, -GRAVITY),
+///         gyro: AngularRate::body(0.0, 0.0, 0.0),
+///         accel: Acceleration::body(0.0, 0.0, -GRAVITY),
 ///     },
 ///     baro: Some(Altitude::from_meters(112.0)),
 ///     mag: None,
@@ -94,7 +98,7 @@ pub use state::{CovarianceMatrix, STATES};
 ///
 /// let outcome = filter.fuse_baro_altitude(
 ///     Altitude::from_meters(60.0),
-///     AltitudeVariance::from_m2(4.0),
+///     AltitudeNoise::from_sigma(2.0),
 /// );
 /// assert!(outcome.is_accepted());
 /// # Ok::<(), InitError>(())
@@ -106,13 +110,14 @@ pub mod prelude {
     pub use crate::config::{Accuracy, Config, GRAVITY, Gates, ImuNoise, Initialization, Timeouts};
     pub use crate::eskf::Eskf;
     pub use crate::frames::{Body, Enu, Ned};
+    pub use crate::geodetic::{Geodetic, LocalOrigin};
     pub use crate::health::{Diagnostics, Fusion, Propagation, SourceHealth, Status, Validity};
     pub use crate::init::{Alignment, Coarse, InitError, StaticSample};
     pub use crate::propagate::ImuSample;
     pub use crate::state::{Covariance, ErrorState, State};
     pub use crate::units::{
-        Acceleration, Altitude, AltitudeVariance, AngularRate, Attitude, HeadingVariance, MagField,
-        Meters, MetersPerSecond, MetersPerSecond2, Position, PositionVariance, Radians,
-        RadiansPerSecond, Seconds, Velocity, VelocityVariance,
+        Acceleration, Altitude, AltitudeNoise, AngularRate, Attitude, HeadingNoise, MagField,
+        Meters, MetersPerSecond, MetersPerSecond2, Position, PositionNoise, Radians,
+        RadiansPerSecond, Seconds, Velocity, VelocityNoise,
     };
 }

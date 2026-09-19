@@ -120,9 +120,18 @@ Single crate, `no_std`, `forbid(unsafe_code)`, `deny(missing_docs)`, allocation-
 - `src/propagate.rs` — `ImuSample` today; equations (9)–(22) land here.
 - `src/state.rs` — `State` (nominal, 16 values), `Covariance`/`CovarianceMatrix` (15×15), and
   `ErrorState`, whose discriminants define the covariance ordering `[δp δv δθ δβa δβg]`.
-- `src/units.rs` — typed scalars/vectors; every constructor names its unit (`from_meters`,
-  `from_rad_per_s`). Payloads are `nalgebra` `Vector3<f32>` / `UnitQuaternion<f32>`.
+- `src/units.rs` — typed scalars/vectors. Types carry the claims that cause bugs — frame,
+  value vs noise, sign convention — not units: SI throughout, and a constructor names a unit
+  only where sources commonly supply another (`Radians::from_degrees`, `body_deg_per_s`).
+  Vector constructors name the frame (`Position::ned`, `AngularRate::body`) and convert ENU/FLU
+  input (`Position::enu(..).to_ned()`, `AngularRate::flu`); noise types are built `from_sigma`
+  or `from_variance`. No `From<[f32; 3]>` on framed types: `.into()` would claim a frame
+  silently. Payloads are `nalgebra` `Vector3<f32>` / `UnitQuaternion<f32>`, with `.to_array()`
+  for callers on another version.
 - `src/frames.rs` — `Ned`, `Enu`, `Body` as sealed zero-sized type parameters on quantities.
+- `src/geodetic.rs` — `Geodetic` (f64 lat/lon/height) and `LocalOrigin`, the tangent plane of
+  equations (43)–(44). The filter owns the origin: `fuse_gnss_geodetic` places it on the first
+  fix (under the estimate, or at the fix after a coarse start), a static start clears it.
 - `src/config.rs` — tuning. Defaults are **placeholders** except the three listed under "How
   defaults get decided"; each doc comment records why. Preserve that habit: a default
   justified by data says so.
@@ -167,8 +176,10 @@ Single crate, `no_std`, `forbid(unsafe_code)`, `deny(missing_docs)`, allocation-
 ### Three kinds of noise number, easily confused
 
 - **`R`, measurement noise** — a per-call argument to every `fuse_*`, never stored in `Config`,
-  because the accuracy of a fix is a property of that fix. GNSS supplies its own (`eph`/`epv`,
-  `s_variance_m_s`, squared into variances by `tools/ulog2replay.py`). PX4 logs no barometer or
+  because the accuracy of a fix is a property of that fix. Passed as `PositionNoise` and friends,
+  built from σ or variance as the source reports it. GNSS supplies its own (`eph`/`epv`,
+  `s_variance_m_s` — a σ despite the name — squared into the replay CSV's variance columns by
+  `tools/ulog2replay.py`). PX4 logs no barometer or
   magnetic-heading variance, so the converter substitutes constants and says so; the honest
   source for those is bench characterization of the residual after calibration, which is a
   different activity from calibration itself (this crate does no calibration — that is the
@@ -195,7 +206,7 @@ to an offline tool that prints a `Config`, not into the filter.
 
 ### Documentation is the specification
 
-`EQUATIONS.md` holds numbered equations (1)–(42) and an equation-to-code mapping table naming
+`EQUATIONS.md` holds numbered equations (1)–(44) and an equation-to-code mapping table naming
 the module and function intended to implement each. Implementation work follows that layout
 (`init.rs`, `propagate.rs`, `update.rs`, `observation/{gnss,baro,mag}.rs`, `math.rs`), cites its
 equation numbers in the doc comment (existing stubs already do), and updates the table when the

@@ -69,6 +69,7 @@ measurements together with their associated uncertainty.
 | `src/health.rs` | `Propagation`, `Fusion`, `Status`, `Validity`, per-source diagnostics |
 | `src/config.rs` | tuning; each default's doc comment records its evidence or says it is a placeholder |
 | `src/units.rs`, `src/frames.rs` | typed quantities and the sealed `Ned` / `Enu` / `Body` frame markers |
+| `src/geodetic.rs` | `Geodetic` and `LocalOrigin`: the navigation origin the filter holds and the tangent plane about it, equations (43)–(44) |
 
 The [equation-to-code mapping](EQUATIONS.md#equation-to-code-mapping) names the function
 intended to implement each numbered equation, including modules not yet written.

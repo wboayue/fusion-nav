@@ -260,8 +260,8 @@ pub(crate) fn peak_motion(window: &[StaticSample]) -> (RadiansPerSecond, MetersP
     let mut peak_gyro = 0.0f32;
     let mut peak_deviation = 0.0f32;
     for sample in window {
-        let gyro = sample.imu.gyro.as_rad_per_s().norm();
-        let deviation = (sample.imu.accel.as_m_per_s2().norm() - GRAVITY).abs();
+        let gyro = sample.imu.gyro.vector().norm();
+        let deviation = (sample.imu.accel.vector().norm() - GRAVITY).abs();
         peak_gyro = peak_gyro.max(gyro);
         peak_deviation = peak_deviation.max(deviation);
     }
@@ -273,12 +273,9 @@ pub(crate) fn peak_motion(window: &[StaticSample]) -> (RadiansPerSecond, MetersP
 
 /// Whether every number in a window sample is finite.
 pub(crate) fn sample_is_finite(sample: &StaticSample) -> bool {
-    let gyro = sample.imu.gyro.as_rad_per_s();
-    let accel = sample.imu.accel.as_m_per_s2();
-    gyro.iter().chain(accel.iter()).all(|v| v.is_finite())
-        && sample
-            .mag
-            .is_none_or(|field| field.as_components().iter().all(|v| v.is_finite()))
+    sample.imu.gyro.is_finite()
+        && sample.imu.accel.is_finite()
+        && sample.mag.is_none_or(|field| field.is_finite())
         && sample.baro.is_none_or(|b| b.as_meters().is_finite())
 }
 
@@ -286,16 +283,11 @@ pub(crate) fn sample_is_finite(sample: &StaticSample) -> bool {
 /// so only its finiteness is in question here.
 pub(crate) fn state_is_finite(state: &State) -> bool {
     let q = state.attitude.quaternion();
-    let vectors = [
-        state.position.as_meters(),
-        state.velocity.as_m_per_s(),
-        state.accel_bias.as_m_per_s2(),
-        state.gyro_bias.as_rad_per_s(),
-    ];
     [q.w, q.i, q.j, q.k].iter().all(|v| v.is_finite())
-        && vectors
-            .iter()
-            .all(|v| v.iter().all(|component| component.is_finite()))
+        && state.position.is_finite()
+        && state.velocity.is_finite()
+        && state.accel_bias.is_finite()
+        && state.gyro_bias.is_finite()
 }
 
 /// Mean barometric altitude over the samples that carry one: `α₀` of equation (30).
@@ -328,8 +320,8 @@ pub(crate) mod tests {
     pub(crate) fn still() -> StaticSample {
         StaticSample {
             imu: ImuSample {
-                gyro: AngularRate::from_rad_per_s(0.0, 0.0, 0.0),
-                accel: Acceleration::from_m_per_s2(0.0, 0.0, -GRAVITY),
+                gyro: AngularRate::body(0.0, 0.0, 0.0),
+                accel: Acceleration::body(0.0, 0.0, -GRAVITY),
             },
             ..StaticSample::default()
         }
@@ -367,7 +359,7 @@ pub(crate) mod tests {
     #[test]
     fn a_moving_window_is_coarse_and_reports_what_it_measured() {
         let mut window = [still(); 8];
-        window[3].imu.gyro = AngularRate::from_rad_per_s(0.0, 0.4, 0.0);
+        window[3].imu.gyro = AngularRate::body(0.0, 0.4, 0.0);
         let alignment = classify_default(&window, DT).expect("moving, not unusable");
         let Alignment::Coarse(Coarse::NotStationary { peak_gyro, .. }) = alignment else {
             panic!("0.4 rad/s is over the 0.262 default: {alignment:?}");
@@ -381,7 +373,7 @@ pub(crate) mod tests {
         let mut window = [still(); 8];
         // Turning about the gravity vector: |a| stays exactly g, and the average of a
         // gravity vector taken while the vehicle turned 0.8 rad is worth that much less.
-        window[3].imu.gyro = AngularRate::from_rad_per_s(0.0, 0.0, 0.4);
+        window[3].imu.gyro = AngularRate::body(0.0, 0.0, 0.4);
         let tilt = coarse_tilt(&window);
         assert!(
             (tilt - 0.8).abs() < 1e-4,
@@ -394,7 +386,7 @@ pub(crate) mod tests {
         let mut window = [still(); 8];
         // 2.94 m/s^2 of unexplained specific force — over the stationarity tolerance,
         // and three tenths of a radian of tilt the filter cannot account for.
-        window[0].imu.accel = Acceleration::from_m_per_s2(0.0, 0.0, -GRAVITY - 2.941_995);
+        window[0].imu.accel = Acceleration::body(0.0, 0.0, -GRAVITY - 2.941_995);
         let tilt = coarse_tilt(&window);
         assert!(
             (tilt - 0.3).abs() < 1e-4,
@@ -411,7 +403,7 @@ pub(crate) mod tests {
             Err(InitError::InvalidStep { dt: zero })
         );
         let mut poisoned = [still(); 8];
-        poisoned[2].imu.accel = Acceleration::from_m_per_s2(f32::NAN, 0.0, 0.0);
+        poisoned[2].imu.accel = Acceleration::body(f32::NAN, 0.0, 0.0);
         assert_eq!(classify_default(&poisoned, DT), Err(InitError::NotFinite));
     }
 
