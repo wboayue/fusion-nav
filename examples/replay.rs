@@ -322,7 +322,9 @@ impl Replay {
         // Already classified above; committing it cannot disagree.
         let _ = self.filter.initialize(window, dt)?;
         self.initialized_at = Some(t);
-        self.mag_at_init = window.iter().all(|s| s.mag.is_some());
+        // The filter's own rule: one magnetometer sample anywhere in the window observes
+        // heading, and none at all leaves yaw a prior until a heading is fused.
+        self.mag_at_init = window.iter().any(|s| s.mag.is_some());
         self.status = self.filter.state().status;
         self.transitions.push((t, self.status));
         Ok(())
@@ -456,7 +458,7 @@ impl Replay {
                 let heading = if self.mag_at_init {
                     "magnetometer present, heading observed"
                 } else {
-                    "no magnetometer in the window, heading unobserved"
+                    "no magnetometer in the window, heading unobserved until one is fused"
                 };
                 let reference = match self.filter.baro_reference() {
                     Some(reference) => format!(
@@ -548,8 +550,8 @@ impl Replay {
     fn report_summary(&self) {
         let state = self.filter.state();
         println!(
-            "\nsummary rate={:.0} window={} align={} alpha0={} resets={} refused={} invalid={} \
-             epochs={} transitions={} status={:?}",
+            "\nsummary rate={:.0} window={} align={} alpha0={} heading={} resets={} \
+             refused={} invalid={} epochs={} transitions={} status={:?}",
             self.interval.map_or(0.0, |interval| 1.0 / interval),
             self.window_samples,
             match self.alignment {
@@ -565,6 +567,15 @@ impl Replay {
                 "set"
             } else {
                 "none"
+            },
+            // Nothing pins the rotation about gravity except a magnetometer, so this is
+            // the one flag a still vehicle cannot earn. Pinned here because the
+            // covariance would report it good either way: `Initialization::sigma_yaw`
+            // and `Accuracy::heading` are the same number.
+            if state.validity.heading {
+                "valid"
+            } else {
+                "invalid"
             },
             self.resets,
             self.refused_steps,

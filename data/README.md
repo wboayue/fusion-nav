@@ -31,8 +31,8 @@ side-by-side diff.
 
 `data/fetch.sh --check` converts and replays the whole pinned corpus and asserts the per-log
 expectations recorded beside each checksum — the IMU rate, the window it implies, how many
-propagation steps get refused, and the status transitions — against the `summary` line the replay
-example prints. It needs `pyulog`, so it is a local tool rather than a CI job.
+propagation steps get refused, whether heading and the barometric reference were ever established,
+and the status transitions — against the `summary` line the replay example prints. It needs `pyulog`, so it is a local tool rather than a CI job.
 
 `data/fetch.sh --add <url> [name]` downloads a log once and appends a manifest line to commit; the
 files stay out of the repo, the checksums do not. Each entry should cover something no other log

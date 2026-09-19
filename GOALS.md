@@ -207,7 +207,8 @@ behind it.
 **Decided:** keep `Status` as the one-glance summary and add `Validity` alongside it on the state,
 six flags derived from the covariance against a new `Config::accuracy`. Horizontal and vertical
 are separate because sources are. Validity also requires that the quantity was ever established,
-since a coarse start's untouched prior is tight and meaningless.
+since a coarse start's untouched prior is tight and meaningless — position and velocity until the
+first fix, and heading until a magnetometer is fused, which stillness never supplies.
 
 `Config::accuracy` is deliberately the exception to [differentiator 7](#7-configuration-derived-not-demanded):
 how accurate is good enough is a property of the mission, not of the hardware or the mathematics,

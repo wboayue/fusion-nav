@@ -200,8 +200,9 @@ impl Propagation {
 ///
 /// Every flag is derived from the covariance against
 /// [`Config::accuracy`](crate::Config::accuracy), plus the requirement that the quantity
-/// was ever established at all — a coarse start has no position until a fix arrives, and
-/// a tight prior on a number nobody set is not validity.
+/// was ever established at all — a coarse start has no position until a fix arrives, a
+/// window with no magnetometer has no heading until one is fused, and a tight prior on a
+/// number nobody set is not validity.
 ///
 /// Horizontal and vertical are separate because sources are: a vehicle with a barometer
 /// and no GNSS has a usable height and no horizontal position at all, which describes two
@@ -210,7 +211,11 @@ impl Propagation {
 pub struct Validity {
     /// Roll and pitch.
     pub tilt: bool,
-    /// Heading.
+    /// Heading. False until something observes the rotation about gravity: a
+    /// magnetometer in the initialization window, or an accepted
+    /// [`Eskf::fuse_mag_heading`](crate::Eskf::fuse_mag_heading). Stillness does not
+    /// observe it, so a perfect static alignment on a vehicle with no magnetometer
+    /// reports `tilt` and not this.
     pub heading: bool,
     /// North and east position.
     pub horizontal_position: bool,

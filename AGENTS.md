@@ -70,11 +70,11 @@ it uniquely covers. Changing a `Config` default or the `summary` line requires u
 affected expectations.
 
 Expectations are matched pair by pair as substrings, so **adding** a key to the `summary` line is
-safe and pinning new behavior there is cheap — `align=`, `resets=` and `alpha0=` were added that
-way, and each now guards a decision that would otherwise rot into a comment (`alpha0=` catches
-the coarse log's 35575 barometer rows going from fused to `NoReference`, which no other key
-noticed). Renaming or removing a key
-breaks every entry at once.
+safe and pinning new behavior there is cheap — `align=`, `resets=`, `alpha0=` and `heading=` were
+added that way, and each now guards a decision that would otherwise rot into a comment (`alpha0=`
+catches the coarse log's 35575 barometer rows going from fused to `NoReference`, which no other key
+noticed; `heading=` catches a yaw reported valid that no magnetometer ever observed). Renaming or
+removing a key breaks every entry at once.
 
 ## How defaults get decided
 
@@ -158,8 +158,10 @@ Single crate, `no_std`, `forbid(unsafe_code)`, `deny(missing_docs)`, allocation-
   measured rather than timed.
 - **`Status` is the summary; `State::validity` is the detail.** Six per-quantity flags derived
   from the covariance against `Config::accuracy` (the one knob meant to be supplied, since
-  mission accuracy is not derivable), plus "was this ever established" — the `unknown` flags a
-  coarse start sets. `Eskf::predicted_validity` answers the arming question instead: valid now,
+  mission accuracy is not derivable), plus "was this ever established" — the `Unestablished` flags
+  a coarse start sets on position and velocity, and the one a window with no magnetometer sets on
+  heading, since stillness observes tilt but never yaw. A prior is not an estimate, and
+  `sigma_yaw` equals `Accuracy::heading` exactly, so the covariance cannot tell them apart. `Eskf::predicted_validity` answers the arming question instead: valid now,
   or a constraining source is being accepted. Both exist because PX4 and ArduPilot answer
   per-quantity validity and a single ladder cannot.
 - **`Status` precedence is most-severe-first**: `DeadReckoning` > `Aligning` > `Degraded` >

@@ -5,6 +5,12 @@
 # They are what makes "the only log that exercises StepTooLong" a claim the build
 # enforces rather than a comment that quietly goes stale.
 #
+# heading= is Validity::heading at the end of the log. Only a magnetometer
+# observes the rotation about gravity, and the covariance cannot say so on its
+# own -- Initialization::sigma_yaw and Accuracy::heading are the same 0.35 rad,
+# so a yaw nobody measured passes the bar exactly. Every log here carries a
+# magnetometer in its window; the key is what would notice if one stopped.
+#
 # PX4 Flight Review public logs are CC BY 4.0, so a corpus can be pinned here and
 # redistributed with attribution. The files themselves stay out of the repo
 # (data/logs/ is gitignored); this manifest is what makes the corpus reproducible.
@@ -34,14 +40,14 @@
 # and 1 Hz GNSS. Its fix intervals of 0.988-1.024 s are what showed the old
 # 1.0 s Timeouts::degraded_after default flapping 76 times in 124 s.
 # Source: PX4 Flight Review (CC BY 4.0).
-b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-4425-b118-7b7187331a98.ulg  https://cdn.logs.px4.io/3949f175-26b4-4425-b118-7b7187331a98.ulg  rate=250 window=500 align=static alpha0=set resets=0 refused=0 invalid=0 transitions=2 status=Healthy
+b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-4425-b118-7b7187331a98.ulg  https://cdn.logs.px4.io/3949f175-26b4-4425-b118-7b7187331a98.ulg  rate=250 window=500 align=static alpha0=set heading=valid resets=0 refused=0 invalid=0 transitions=2 status=Healthy
 
 # 64 s quadrotor, PX4 v1.10.0, EKF2. No GNSS topic; baro and mag only.
 # 11 SD-card dropouts totalling 2796 ms leave four holes in sensor_combined up
 # to 1.304 s. The only log that exercises Propagation::StepTooLong, and the
 # reason Config::max_predict_dt exists.
 # Source: PX4 Flight Review (CC BY 4.0).
-1f3132990f6c9c220a99e1b51aaa21d555ab80224c02cbc336d6841811fae5d2  f16771dd-fe7f-4ebe-a0bb-77ca2a5de6a7.ulg  https://cdn.logs.px4.io/f16771dd-fe7f-4ebe-a0bb-77ca2a5de6a7.ulg  rate=250 window=500 align=static alpha0=set resets=0 refused=4 invalid=0 transitions=2 status=Healthy
+1f3132990f6c9c220a99e1b51aaa21d555ab80224c02cbc336d6841811fae5d2  f16771dd-fe7f-4ebe-a0bb-77ca2a5de6a7.ulg  https://cdn.logs.px4.io/f16771dd-fe7f-4ebe-a0bb-77ca2a5de6a7.ulg  rate=250 window=500 align=static alpha0=set heading=valid resets=0 refused=4 invalid=0 transitions=2 status=Healthy
 
 # 61 s, vendor firmware reporting v6.5.22, EKF2, airframe unknown type.
 # Logs in bursts: shortest IMU interval 2.5 ms against a true period of 20 ms.
@@ -49,7 +55,7 @@ b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-
 # window 8x, which is what forced replay's median estimator. Also uses the old
 # lat/lon/alt integer field spelling.
 # Source: PX4 Flight Review (CC BY 4.0).
-1c0ea42d6e22cef5cb8730e71a7740b4f5a35988e88e677a72351835cd42990a  a299e722-a7f0-4e2e-bcdf-ce487d556ac1.ulg  https://cdn.logs.px4.io/a299e722-a7f0-4e2e-bcdf-ce487d556ac1.ulg  rate=50 window=101 align=static alpha0=set resets=0 refused=0 invalid=0 transitions=2 status=Healthy
+1c0ea42d6e22cef5cb8730e71a7740b4f5a35988e88e677a72351835cd42990a  a299e722-a7f0-4e2e-bcdf-ce487d556ac1.ulg  https://cdn.logs.px4.io/a299e722-a7f0-4e2e-bcdf-ce487d556ac1.ulg  rate=50 window=101 align=static alpha0=set heading=valid resets=0 refused=0 invalid=0 transitions=2 status=Healthy
 
 # 68 s quadrotor on AUAV_X21, genuinely old firmware, LPE estimator.
 # The only log where the barometer and magnetometer are fields of
@@ -60,7 +66,7 @@ b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-
 # either, so alpha0=none: this is the entry that covers Fusion::NoReference
 # on a static start.
 # Source: PX4 Flight Review (CC BY 4.0).
-81952e6059bc095717e7911c010e07f85749d6b04d332a5ffc51575a3fd0a558  7592c9b2-91f8-4b2d-a088-1c3d5e1166b0.ulg  https://cdn.logs.px4.io/7592c9b2-91f8-4b2d-a088-1c3d5e1166b0.ulg  rate=250 window=500 align=static alpha0=none resets=0 refused=0 invalid=0 transitions=2 status=Healthy
+81952e6059bc095717e7911c010e07f85749d6b04d332a5ffc51575a3fd0a558  7592c9b2-91f8-4b2d-a088-1c3d5e1166b0.ulg  https://cdn.logs.px4.io/7592c9b2-91f8-4b2d-a088-1c3d5e1166b0.ulg  rate=250 window=500 align=static alpha0=none heading=valid resets=0 refused=0 invalid=0 transitions=2 status=Healthy
 
 # 7127 s quadrotor, PX4 v1.11.3, EKF2. The big one: 209 MB, 1.48M rows,
 # a 105 MB CSV. Three things nothing else covers.
@@ -78,10 +84,14 @@ b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-
 #     35575 barometer rows are all refused with Fusion::NoReference --
 #     the application would have to name a reference. That is the whole
 #     reason the alpha0 key exists: nothing else in the summary line
-#     notices barometric aiding disappearing.
+#     notices barometric aiding disappearing. It is also the one entry with
+#     heading=invalid: its magnetometer is accepted 35580 times, but a coarse
+#     start widens yaw to the full circle and a stub that fuses nothing never
+#     narrows it again. Expect this to become valid when equations (34)-(36)
+#     land.
 # The 888 Healthy/Degraded transitions this log used to show are masked
 # while alignment is a stub: Aligning outranks Degraded, and a stub
 # covariance never shrinks, so it never leaves Aligning. Expect them back,
 # and this expectation to change again, when propagation lands.
 # Source: PX4 Flight Review (CC BY 4.0).
-9289375e4280ddec891b26b870f5065f2310d2e39527e4e8706d22e537d047dd  2c42096b-fa9b-4c74-8b89-ac79bf067a1d.ulg  https://cdn.logs.px4.io/2c42096b-fa9b-4c74-8b89-ac79bf067a1d.ulg  rate=199 window=398 align=coarse alpha0=none resets=2 refused=0 invalid=0 transitions=2 status=Aligning
+9289375e4280ddec891b26b870f5065f2310d2e39527e4e8706d22e537d047dd  2c42096b-fa9b-4c74-8b89-ac79bf067a1d.ulg  https://cdn.logs.px4.io/2c42096b-fa9b-4c74-8b89-ac79bf067a1d.ulg  rate=199 window=398 align=coarse alpha0=none heading=invalid resets=2 refused=0 invalid=0 transitions=2 status=Aligning
