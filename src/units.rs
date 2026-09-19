@@ -92,6 +92,14 @@ scalar!(
     get = as_secs
 );
 
+impl Seconds {
+    /// Whether this is a real, forward step in time: positive and not NaN. `is_nan` is
+    /// spelled out because `<= 0.0` alone is false for NaN.
+    pub(crate) fn is_usable_step(self) -> bool {
+        self.0 > 0.0 && !self.0.is_nan()
+    }
+}
+
 scalar!(
     /// An angle.
     Radians,

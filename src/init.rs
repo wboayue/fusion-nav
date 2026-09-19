@@ -6,16 +6,20 @@
 //! functions here and then commit the result to the filter.
 
 use crate::config::{GRAVITY, Initialization};
-use crate::eskf::{ImuSample, is_usable_step};
 use crate::frames::Body;
+use crate::propagate::ImuSample;
 use crate::state::{Covariance, State};
 use crate::units::{Altitude, MagField, MetersPerSecond2, Radians, RadiansPerSecond, Seconds};
 
 /// One sample from the quasi-static initialization window.
 ///
-/// The magnetometer is optional: without it, heading is unobserved and is initialized to
-/// zero with [`Initialization::sigma_yaw`](crate::Initialization::sigma_yaw) inflated,
-/// leaving the first accepted magnetic heading to correct it.
+/// The magnetometer is optional: without it, heading is unobserved and should start at
+/// zero with its variance inflated, leaving the first accepted magnetic heading to correct
+/// it.
+///
+/// **Stub.** No heading is computed yet, so a static window starts with
+/// [`Initialization::sigma_yaw`](crate::Initialization::sigma_yaw) whether or not it
+/// carried a magnetometer.
 ///
 /// The barometer is optional in the same way, but less forgivingly: its reference is a
 /// constant rather than a state, so a window carrying none leaves nothing for a later
@@ -151,7 +155,7 @@ pub(crate) fn classify(
     if window.is_empty() {
         return Err(InitError::NoSamples);
     }
-    if !is_usable_step(dt) {
+    if !dt.is_usable_step() {
         return Err(InitError::InvalidStep { dt });
     }
     if !window.iter().all(sample_is_finite) {
@@ -180,10 +184,10 @@ pub(crate) fn classify(
 
 /// Initial tilt and yaw standard deviations for an alignment.
 ///
-/// A static start gets the configured figures. A coarse one gets a tilt bound derived
-/// from how far the specific force was from gravity — small-angle, so
-/// `σ ≈ deviation / g` — and never tighter than the configured value, together with
-/// the standard deviation of a heading known only to be somewhere on the circle.
+/// A static start gets the configured figures. A coarse one gets the standard deviation
+/// of a heading known only to be somewhere on the circle, and a tilt bound that is the
+/// worst of three: the configured value, specific force away from gravity
+/// (small-angle, `deviation / g`), and rotation during the window (`ω · span`).
 pub(crate) fn attitude_sigmas(init: &Initialization, alignment: Alignment) -> (Radians, Radians) {
     match alignment {
         Alignment::Static | Alignment::Seeded => (init.sigma_tilt, init.sigma_yaw),
@@ -310,4 +314,129 @@ pub(crate) fn baro_reference(window: &[StaticSample]) -> Option<Altitude> {
         }
     }
     (count > 0).then(|| Altitude::from_meters((sum / f64::from(count)) as f32))
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::units::{Acceleration, AngularRate};
+
+    /// A sample from a vehicle genuinely sitting still: no rotation, gravity the only
+    /// specific force. `StaticSample::default()` is not this — its zero acceleration is
+    /// a full `g` away from anything the world does — so the stationarity check reads it
+    /// as motion, correctly.
+    pub(crate) fn still() -> StaticSample {
+        StaticSample {
+            imu: ImuSample {
+                gyro: AngularRate::from_rad_per_s(0.0, 0.0, 0.0),
+                accel: Acceleration::from_m_per_s2(0.0, 0.0, -GRAVITY),
+            },
+            ..StaticSample::default()
+        }
+    }
+
+    /// 8 samples at 4 Hz: exactly the default 2 s `min_duration`.
+    const DT: Seconds = Seconds::from_secs(0.25);
+
+    fn classify_default(window: &[StaticSample], dt: Seconds) -> Result<Alignment, InitError> {
+        classify(window, dt, &Initialization::default())
+    }
+
+    /// The tilt sigma a window would start with, in radians.
+    fn coarse_tilt(window: &[StaticSample]) -> f32 {
+        let init = Initialization::default();
+        let alignment = classify(window, DT, &init).expect("moving, not unusable");
+        attitude_sigmas(&init, alignment).0.as_radians()
+    }
+
+    #[test]
+    fn a_still_window_of_min_duration_is_static() {
+        assert_eq!(classify_default(&[still(); 8], DT), Ok(Alignment::Static));
+    }
+
+    #[test]
+    fn the_static_window_is_measured_in_seconds_not_samples() {
+        // The same 8 samples, now spanning 0.8 s instead of 2 s.
+        let alignment = classify_default(&[still(); 8], Seconds::from_secs(0.1));
+        assert!(matches!(
+            alignment,
+            Ok(Alignment::Coarse(Coarse::WindowTooShort { .. }))
+        ));
+    }
+
+    #[test]
+    fn a_moving_window_is_coarse_and_reports_what_it_measured() {
+        let mut window = [still(); 8];
+        window[3].imu.gyro = AngularRate::from_rad_per_s(0.0, 0.4, 0.0);
+        let alignment = classify_default(&window, DT).expect("moving, not unusable");
+        let Alignment::Coarse(Coarse::NotStationary { peak_gyro, .. }) = alignment else {
+            panic!("0.4 rad/s is over the 0.262 default: {alignment:?}");
+        };
+        let peak_gyro = peak_gyro.as_rad_per_s();
+        assert!((peak_gyro - 0.4).abs() < 1e-6, "got {peak_gyro}");
+    }
+
+    #[test]
+    fn rotation_spoils_tilt_even_when_the_specific_force_reads_a_clean_g() {
+        let mut window = [still(); 8];
+        // Turning about the gravity vector: |a| stays exactly g, and the average of a
+        // gravity vector taken while the vehicle turned 0.8 rad is worth that much less.
+        window[3].imu.gyro = AngularRate::from_rad_per_s(0.0, 0.0, 0.4);
+        let tilt = coarse_tilt(&window);
+        assert!(
+            (tilt - 0.8).abs() < 1e-4,
+            "0.4 rad/s over a 2 s window is 0.8 rad of turn, got {tilt}"
+        );
+    }
+
+    #[test]
+    fn a_coarse_start_widens_tilt_in_proportion_to_the_motion_it_saw() {
+        let mut window = [still(); 8];
+        // 2.94 m/s^2 of unexplained specific force — over the stationarity tolerance,
+        // and three tenths of a radian of tilt the filter cannot account for.
+        window[0].imu.accel = Acceleration::from_m_per_s2(0.0, 0.0, -GRAVITY - 2.941_995);
+        let tilt = coarse_tilt(&window);
+        assert!(
+            (tilt - 0.3).abs() < 1e-4,
+            "tilt should be about 0.3 rad, got {tilt}"
+        );
+    }
+
+    #[test]
+    fn an_empty_window_or_an_unusable_step_is_still_an_error() {
+        assert_eq!(classify_default(&[], DT), Err(InitError::NoSamples));
+        let zero = Seconds::from_secs(0.0);
+        assert_eq!(
+            classify_default(&[still(); 8], zero),
+            Err(InitError::InvalidStep { dt: zero })
+        );
+        let mut poisoned = [still(); 8];
+        poisoned[2].imu.accel = Acceleration::from_m_per_s2(f32::NAN, 0.0, 0.0);
+        assert_eq!(classify_default(&poisoned, DT), Err(InitError::NotFinite));
+    }
+
+    #[test]
+    fn the_baro_reference_is_the_mean_over_the_window() {
+        let window =
+            [99.0, 101.0, 100.0, 100.0, 99.5, 100.5, 100.0, 100.0].map(|altitude| StaticSample {
+                baro: Some(Altitude::from_meters(altitude)),
+                ..still()
+            });
+        let reference = baro_reference(&window).expect("the window carried barometer samples");
+        assert!(
+            (reference.as_meters() - 100.0).abs() < 1e-4,
+            "mean of the window is 100 m, got {}",
+            reference.as_meters()
+        );
+    }
+
+    #[test]
+    fn samples_without_a_barometer_stay_out_of_the_mean() {
+        // A barometer runs slower than the IMU, so most samples in a real window carry
+        // nothing. Counting those as zero would drag the reference to the ground.
+        let mut window = [still(); 8];
+        window[0].baro = Some(Altitude::from_meters(10.0));
+        window[7].baro = Some(Altitude::from_meters(20.0));
+        assert_eq!(baro_reference(&window), Some(Altitude::from_meters(15.0)));
+    }
 }

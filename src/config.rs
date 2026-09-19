@@ -186,13 +186,13 @@ pub struct Accuracy {
     /// Roll and pitch. Also the bar for alignment:
     /// [`Status::Aligning`](crate::Status::Aligning) lasts until tilt and heading are
     /// both within these.
-    pub sigma_tilt: Radians,
+    pub tilt: Radians,
     /// Heading.
-    pub sigma_heading: Radians,
+    pub heading: Radians,
     /// Position, horizontally and vertically.
-    pub sigma_position: Meters,
+    pub position: Meters,
     /// Velocity, horizontally and vertically.
-    pub sigma_velocity: MetersPerSecond,
+    pub velocity: MetersPerSecond,
 }
 
 impl Default for Accuracy {
@@ -202,10 +202,10 @@ impl Default for Accuracy {
     /// that.
     fn default() -> Self {
         Self {
-            sigma_tilt: Radians::from_radians(0.02),
-            sigma_heading: Radians::from_radians(0.35),
-            sigma_position: Meters::from_meters(5.0),
-            sigma_velocity: MetersPerSecond::from_m_per_s(1.0),
+            tilt: Radians::from_radians(0.02),
+            heading: Radians::from_radians(0.35),
+            position: Meters::from_meters(5.0),
+            velocity: MetersPerSecond::from_m_per_s(1.0),
         }
     }
 }

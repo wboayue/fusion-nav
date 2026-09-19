@@ -71,8 +71,8 @@ pub enum Fusion {
         /// Test ratio, greater than 1.
         test_ratio: f32,
     },
-    /// [`Eskf::initialize`](crate::Eskf::initialize) has not been called, so there is no
-    /// state to fuse against. The measurement was discarded.
+    /// No initialization has succeeded — [`Eskf::initialize`](crate::Eskf::initialize),
+    /// `initialize_coarse` or `initialize_from` — so there is no state to fuse against. The measurement was discarded.
     NotInitialized,
     /// Barometer only: no reference altitude was established, because the static window
     /// carried no barometer sample. The measurement was discarded.
@@ -138,7 +138,7 @@ pub enum Propagation {
         /// The `dt` offered.
         dt: Seconds,
     },
-    /// [`Eskf::initialize`](crate::Eskf::initialize) has not been called. Nothing was
+    /// No initialization has succeeded; see [`Fusion::NotInitialized`]. Nothing was
     /// propagated and no timer advanced.
     NotInitialized,
 }

@@ -60,14 +60,16 @@ mod eskf;
 mod frames;
 mod health;
 mod init;
+mod propagate;
 mod state;
 mod units;
 
 pub use config::{Accuracy, Config, GRAVITY, Gates, ImuNoise, Initialization, Timeouts};
-pub use eskf::{Eskf, ImuSample};
+pub use eskf::Eskf;
 pub use frames::{Body, Enu, Frame, Ned};
 pub use health::{Diagnostics, Fusion, Propagation, SourceHealth, Status, Validity};
 pub use init::{Alignment, Coarse, InitError, StaticSample};
+pub use propagate::ImuSample;
 pub use state::{Covariance, CovarianceMatrix, ErrorState, STATES, State};
 pub use units::{
     Acceleration, Altitude, AltitudeVariance, AngularRate, Attitude, HeadingVariance, MagField,
@@ -108,10 +110,11 @@ pub use units::{
 /// [`Frame`], [`STATES`], and [`CovarianceMatrix`]. Import those by path.
 pub mod prelude {
     pub use crate::config::{Accuracy, Config, GRAVITY, Gates, ImuNoise, Initialization, Timeouts};
-    pub use crate::eskf::{Eskf, ImuSample};
+    pub use crate::eskf::Eskf;
     pub use crate::frames::{Body, Enu, Ned};
     pub use crate::health::{Diagnostics, Fusion, Propagation, SourceHealth, Status, Validity};
     pub use crate::init::{Alignment, Coarse, InitError, StaticSample};
+    pub use crate::propagate::ImuSample;
     pub use crate::state::{Covariance, ErrorState, State};
     pub use crate::units::{
         Acceleration, Altitude, AltitudeVariance, AngularRate, Attitude, HeadingVariance, MagField,

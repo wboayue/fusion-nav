@@ -578,7 +578,7 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | (1)–(4) | state definitions | `state.rs` | `State`, `ErrorState` |
 | (5)–(8) | static initialization | `init.rs` | `classify`, `attitude_sigmas`, `initial_covariance`; unbuilt: `level_from_accel`, `heading_from_mag` |
 | (30) `α₀` | barometric reference | `init.rs` | `baro_reference` |
-| (9)–(11) | bias correction, gravity | `propagate.rs` | `corrected_imu` |
+| (9)–(11) | bias correction, gravity | `propagate.rs` | `ImuSample`; unbuilt: `corrected_imu` |
 | (12)–(15) | nominal propagation | `propagate.rs` | `propagate_nominal` |
 | (16)–(19) | error dynamics | `propagate.rs` | `error_dynamics` |
 | (20) | state transition matrix | `propagate.rs` | `transition_matrix` |

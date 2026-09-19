@@ -29,7 +29,7 @@ implementation someone can learn an ESKF from by reading it — GOALS.md differe
 ## Commands
 
 ```bash
-cargo test --all-targets          # unit tests (all inline `mod tests`, currently only src/eskf.rs)
+cargo test --all-targets          # unit tests (inline `mod tests` in src/eskf.rs and src/init.rs)
 cargo test --doc                  # doctests in lib.rs / prelude carry the usage contract
 cargo test --lib eskf::tests::a_step_over_the_limit_is_refused_but_the_time_still_passes  # one test
 cargo fmt --all -- --check
@@ -109,13 +109,15 @@ Single crate, `no_std`, `forbid(unsafe_code)`, `deny(missing_docs)`, allocation-
 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
 
 - `src/eskf.rs` — `Eskf`, the whole public filter: `initialize`, `initialize_from`, `predict`,
-  `fuse_*`, `state`, `reset_*_to`. The only place with tests today. `initialize_from` is stage 1
+  `fuse_*`, `state`, `reset_*_to`. `initialize_from` is stage 1
   of GOALS.md's "Alignment beyond the static window": the static window stays the preferred path,
   and coarse in-motion alignment plus a `Status::Aligning` phase is designed there but unbuilt —
   read that section before touching initialization.
 - `src/init.rs` — initialization's types (`StaticSample`, `Alignment`, `Coarse`, `InitError`)
   and pure functions (`classify`, `attitude_sigmas`, `initial_covariance`, `baro_reference`).
-  The `initialize*` methods on `Eskf` call these and commit the result.
+  The `initialize*` methods on `Eskf` call these and commit the result. Tests for the pure
+  functions live here; tests of what the filter does with them stay in `eskf.rs`.
+- `src/propagate.rs` — `ImuSample` today; equations (9)–(22) land here.
 - `src/state.rs` — `State` (nominal, 16 values), `Covariance`/`CovarianceMatrix` (15×15), and
   `ErrorState`, whose discriminants define the covariance ordering `[δp δv δθ δβa δβg]`.
 - `src/units.rs` — typed scalars/vectors; every constructor names its unit (`from_meters`,

@@ -7,20 +7,12 @@ use crate::init::{
     self, Alignment, Coarse, InitError, StaticSample, baro_reference, peak_motion,
     sample_is_finite, state_is_finite,
 };
+use crate::propagate::ImuSample;
 use crate::state::{Covariance, ErrorState, STATES, State};
 use crate::units::{
-    Acceleration, Altitude, AltitudeVariance, AngularRate, HeadingVariance, MagField, Position,
-    PositionVariance, Radians, Seconds, Velocity, VelocityVariance,
+    Altitude, AltitudeVariance, HeadingVariance, MagField, Position, PositionVariance, Radians,
+    Seconds, Velocity, VelocityVariance,
 };
-
-/// One IMU measurement, uncorrected. The filter subtracts its own bias estimates.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ImuSample {
-    /// Angular rate, body frame.
-    pub gyro: AngularRate<Body>,
-    /// Specific force, body frame. A level, stationary vehicle reads `(0, 0, -g)`.
-    pub accel: Acceleration<Body>,
-}
 
 /// A 15-state error-state Kalman filter.
 ///
@@ -36,13 +28,14 @@ pub struct Eskf {
     diagnostics: Diagnostics,
     baro_reference: Option<Altitude>,
     /// Quantities a coarse start left unknown. See [`Fusion::Reset`].
-    unknown: Unknown,
+    unestablished: Unestablished,
     initialized: bool,
 }
 
-/// What initialization could not establish.
+/// Quantities a coarse start could not establish, which wait for the first fix. See
+/// [`Fusion::Reset`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct Unknown {
+struct Unestablished {
     position: bool,
     velocity: bool,
 }
@@ -57,7 +50,7 @@ impl Eskf {
             covariance: Covariance::zero(),
             diagnostics: Diagnostics::default(),
             baro_reference: None,
-            unknown: Unknown::default(),
+            unestablished: Unestablished::default(),
             initialized: false,
         }
     }
@@ -111,7 +104,7 @@ impl Eskf {
     ) -> Result<Alignment, InitError> {
         let alignment = self.alignment_of(window, dt)?;
         let (sigma_tilt, sigma_yaw) = init::attitude_sigmas(&self.config.init, alignment);
-        self.apply_alignment(Unknown::after(alignment), sigma_tilt, sigma_yaw);
+        self.apply_alignment(Unestablished::after(alignment), sigma_tilt, sigma_yaw);
         self.baro_reference = baro_reference(window);
         Ok(alignment)
     }
@@ -168,7 +161,7 @@ impl Eskf {
             span: Seconds::ZERO,
         });
         let (sigma_tilt, sigma_yaw) = init::attitude_sigmas(&self.config.init, alignment);
-        self.apply_alignment(Unknown::after(alignment), sigma_tilt, sigma_yaw);
+        self.apply_alignment(Unestablished::after(alignment), sigma_tilt, sigma_yaw);
         // The barometric reference is left alone: one sample does not establish one, and
         // a restart at altitude should keep the reference the flight began with.
         Ok(alignment)
@@ -219,9 +212,9 @@ impl Eskf {
         self.covariance = covariance;
         self.diagnostics = Diagnostics::default();
         // A seed carries a position and velocity the caller vouched for, with a
-        // covariance that says how far. Nothing here is unknown in the sense that would
+        // covariance that says how far. Nothing here is unestablished in the sense that would
         // justify overwriting it with the first fix.
-        self.unknown = Unknown::default();
+        self.unestablished = Unestablished::default();
         self.initialized = true;
         Ok(Alignment::Seeded)
     }
@@ -256,7 +249,7 @@ impl Eskf {
         }
         // Rejected ahead of the bookkeeping: a negative `dt` would wind the timers back
         // and a NaN would poison them.
-        if !is_usable_step(dt) {
+        if !dt.is_usable_step() {
             return Propagation::InvalidStep { dt };
         }
 
@@ -298,7 +291,7 @@ impl Eskf {
         if !self.initialized {
             return Fusion::NotInitialized;
         }
-        if self.unknown.position {
+        if self.unestablished.position {
             self.reset_position_to(position, variance);
             self.diagnostics.gnss_position.record_accepted(0.0);
             return Fusion::Reset;
@@ -326,7 +319,7 @@ impl Eskf {
         if !self.initialized {
             return Fusion::NotInitialized;
         }
-        if self.unknown.velocity {
+        if self.unestablished.velocity {
             self.reset_velocity_to(velocity, variance);
             self.diagnostics.gnss_velocity.record_accepted(0.0);
             return Fusion::Reset;
@@ -371,16 +364,17 @@ impl Eskf {
 
     /// The current estimate, including its [`Status`].
     ///
-    /// The status is derived here rather than cached: it is a pure function of
-    /// [`diagnostics`](Self::diagnostics) and [`Timeouts`](crate::Timeouts), so computing
-    /// it on read means there is no invariant for the mutating methods to maintain. The
-    /// loop costs four comparisons.
+    /// Status and validity are derived here rather than cached: they are pure functions
+    /// of [`diagnostics`](Self::diagnostics), the covariance, and [`Config`], so computing
+    /// them on read means there is no invariant for the mutating methods to maintain. The
+    /// cost is nine covariance entries and four source timers, compared.
     pub fn state(&self) -> State {
-        // `self.state.status` is inert; the stored estimate never carries a meaningful
-        // one, and every read overwrites it.
+        // `self.state.status` and `.validity` are inert; the stored estimate never
+        // carries meaningful ones, and every read overwrites them.
+        let validity = self.validity();
         let mut state = self.state;
-        state.status = self.derive_status();
-        state.validity = self.validity();
+        state.status = self.derive_status(validity);
+        state.validity = validity;
         state
     }
 
@@ -414,23 +408,25 @@ impl Eskf {
         }
         let accuracy = &self.config.accuracy;
         let within = |state, sigma: f32| self.covariance.variance(state) <= sigma * sigma;
-        let tilt = accuracy.sigma_tilt.as_radians();
-        let position = accuracy.sigma_position.as_meters();
-        let velocity = accuracy.sigma_velocity.as_m_per_s();
+        let tilt = accuracy.tilt.as_radians();
+        let position = accuracy.position.as_meters();
+        let velocity = accuracy.velocity.as_m_per_s();
 
         Validity {
             tilt: within(ErrorState::AttitudeX, tilt) && within(ErrorState::AttitudeY, tilt),
-            heading: within(ErrorState::AttitudeZ, accuracy.sigma_heading.as_radians()),
+            heading: within(ErrorState::AttitudeZ, accuracy.heading.as_radians()),
             // A quantity a coarse start never established is not valid however tight the
             // prior on it looks: nobody set that number.
-            horizontal_position: !self.unknown.position
+            horizontal_position: !self.unestablished.position
                 && within(ErrorState::PositionNorth, position)
                 && within(ErrorState::PositionEast, position),
-            vertical_position: !self.unknown.position && within(ErrorState::PositionDown, position),
-            horizontal_velocity: !self.unknown.velocity
+            vertical_position: !self.unestablished.position
+                && within(ErrorState::PositionDown, position),
+            horizontal_velocity: !self.unestablished.velocity
                 && within(ErrorState::VelocityNorth, velocity)
                 && within(ErrorState::VelocityEast, velocity),
-            vertical_velocity: !self.unknown.velocity && within(ErrorState::VelocityDown, velocity),
+            vertical_velocity: !self.unestablished.velocity
+                && within(ErrorState::VelocityDown, velocity),
         }
     }
 
@@ -512,7 +508,7 @@ impl Eskf {
             ],
             variance.as_m2().into(),
         );
-        self.unknown.position = false;
+        self.unestablished.position = false;
     }
 
     /// Force velocity to an external solution and reset its covariance block.
@@ -528,17 +524,22 @@ impl Eskf {
             ],
             variance.as_m2_per_s2().into(),
         );
-        self.unknown.velocity = false;
+        self.unestablished.velocity = false;
     }
 
     /// Reset state, covariance and health for a fresh start with these attitude sigmas.
     /// The barometric reference is the caller's to set, because only it knows whether
     /// this start establishes a new one.
-    fn apply_alignment(&mut self, unknown: Unknown, sigma_tilt: Radians, sigma_yaw: Radians) {
+    fn apply_alignment(
+        &mut self,
+        unestablished: Unestablished,
+        sigma_tilt: Radians,
+        sigma_yaw: Radians,
+    ) {
         self.covariance = init::initial_covariance(&self.config.init, sigma_tilt, sigma_yaw);
         self.state = State::default();
         self.diagnostics = Diagnostics::default();
-        self.unknown = unknown;
+        self.unestablished = unestablished;
         self.initialized = true;
     }
 
@@ -546,7 +547,7 @@ impl Eskf {
     ///
     /// Only sources that have ever been accepted count toward aiding: a vehicle with no
     /// magnetometer is not permanently `Degraded` for lacking one.
-    fn derive_status(&self) -> Status {
+    fn derive_status(&self, validity: Validity) -> Status {
         let degraded_after = self.config.timeouts.degraded_after.as_secs();
         let dead_after = self.config.timeouts.dead_reckoning_after.as_secs();
 
@@ -570,7 +571,7 @@ impl Eskf {
             // Nothing is arriving that could align the filter either, so this outranks
             // `Aligning`.
             Status::DeadReckoning
-        } else if !self.is_aligned() {
+        } else if !validity.attitude() {
             Status::Aligning
         } else if fresh == used {
             Status::Healthy
@@ -580,7 +581,7 @@ impl Eskf {
     }
 }
 
-impl Unknown {
+impl Unestablished {
     /// What an alignment leaves unestablished.
     ///
     /// A static start defines the origin as where the vehicle was and its velocity as
@@ -596,13 +597,6 @@ impl Unknown {
     }
 }
 
-/// Whether `dt` is a real, forward step in time: positive and not NaN. `is_nan` is
-/// spelled out because `<= 0.0` alone is false for NaN.
-pub(crate) fn is_usable_step(dt: Seconds) -> bool {
-    let seconds = dt.as_secs();
-    seconds > 0.0 && !seconds.is_nan()
-}
-
 /// What every `fuse_*` stub does in place of an update: record an acceptance with a zero
 /// test ratio.
 fn stub_accept(source: &mut SourceHealth) -> Fusion {
@@ -613,24 +607,11 @@ fn stub_accept(source: &mut SourceHealth) -> Fusion {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::GRAVITY;
+    use crate::init::tests::still;
     use crate::state::ErrorState;
+    use crate::units::{Acceleration, AngularRate};
 
     const DT: Seconds = Seconds::from_secs(0.01);
-
-    /// A sample from a vehicle genuinely sitting still: no rotation, gravity the only
-    /// specific force. `StaticSample::default()` is not this — its zero acceleration is
-    /// a full `g` away from anything the world does — so the stationarity check reads it
-    /// as motion, correctly.
-    fn still() -> StaticSample {
-        StaticSample {
-            imu: ImuSample {
-                gyro: AngularRate::from_rad_per_s(0.0, 0.0, 0.0),
-                accel: Acceleration::from_m_per_s2(0.0, 0.0, -GRAVITY),
-            },
-            ..StaticSample::default()
-        }
-    }
 
     /// A window of exactly `Initialization::min_duration`: 8 samples at 4 Hz is 2 s.
     /// No barometer, so no reference is established.
@@ -724,37 +705,6 @@ mod tests {
             1.304,
             "a refused step still happened in real time"
         );
-    }
-
-    #[test]
-    fn the_baro_reference_is_the_mean_over_the_window() {
-        let mut filter = Eskf::new(Config::default());
-        let window = window_with_baro([99.0, 101.0, 100.0, 100.0, 99.5, 100.5, 100.0, 100.0]);
-        let _ = filter
-            .initialize(&window, Seconds::from_secs(0.25))
-            .expect("a 2 s window");
-        let reference = filter
-            .baro_reference()
-            .expect("the window carried barometer samples");
-        assert!(
-            (reference.as_meters() - 100.0).abs() < 1e-4,
-            "mean of the window is 100 m, got {}",
-            reference.as_meters()
-        );
-    }
-
-    #[test]
-    fn samples_without_a_barometer_stay_out_of_the_mean() {
-        let mut filter = Eskf::new(Config::default());
-        // A barometer runs slower than the IMU, so most samples in a real window carry
-        // nothing. Counting those as zero would drag the reference to the ground.
-        let mut window = [still(); 8];
-        window[0].baro = Some(Altitude::from_meters(10.0));
-        window[7].baro = Some(Altitude::from_meters(20.0));
-        let _ = filter
-            .initialize(&window, Seconds::from_secs(0.25))
-            .expect("a 2 s window");
-        assert_eq!(filter.baro_reference(), Some(Altitude::from_meters(15.0)));
     }
 
     #[test]
@@ -880,74 +830,6 @@ mod tests {
     }
 
     #[test]
-    fn the_static_window_is_measured_in_seconds_not_samples() {
-        let mut filter = Eskf::new(Config::default());
-        // The same 8 samples, now spanning 0.8 s instead of 2 s.
-        let alignment = filter
-            .initialize(&[still(); 8], Seconds::from_secs(0.1))
-            .expect("a short window is a coarse start, not a refusal");
-        assert!(matches!(
-            alignment,
-            Alignment::Coarse(Coarse::WindowTooShort { .. })
-        ));
-        assert!(
-            filter.is_initialized(),
-            "refusing to run is the old behavior"
-        );
-        assert!(!filter.is_aligned());
-    }
-
-    #[test]
-    fn a_moving_window_is_coarse_and_reports_what_it_measured() {
-        let mut filter = Eskf::new(Config::default());
-        let mut window = [still(); 8];
-        window[3].imu.gyro = AngularRate::from_rad_per_s(0.0, 0.4, 0.0);
-        let alignment = filter
-            .initialize(&window, Seconds::from_secs(0.25))
-            .expect("moving, not unusable");
-        let Alignment::Coarse(Coarse::NotStationary { peak_gyro, .. }) = alignment else {
-            panic!("0.4 rad/s is over the 0.262 default: {alignment:?}");
-        };
-        let peak_gyro = peak_gyro.as_rad_per_s();
-        assert!((peak_gyro - 0.4).abs() < 1e-6, "got {peak_gyro}");
-        assert!(!filter.is_aligned());
-    }
-
-    #[test]
-    fn rotation_spoils_tilt_even_when_the_specific_force_reads_a_clean_g() {
-        let mut filter = Eskf::new(Config::default());
-        let mut window = [still(); 8];
-        // Turning about the gravity vector: |a| stays exactly g, and the average of a
-        // gravity vector taken while the vehicle turned 0.8 rad is worth that much less.
-        window[3].imu.gyro = AngularRate::from_rad_per_s(0.0, 0.0, 0.4);
-        let _ = filter
-            .initialize(&window, Seconds::from_secs(0.25))
-            .expect("moving, not unusable");
-        let tilt = filter.covariance().variance(ErrorState::AttitudeX);
-        assert!(
-            (tilt - 0.8 * 0.8).abs() < 1e-4,
-            "0.4 rad/s over a 2 s window is 0.8 rad of turn, got sigma^2 {tilt}"
-        );
-    }
-
-    #[test]
-    fn a_coarse_start_widens_tilt_in_proportion_to_the_motion_it_saw() {
-        let mut filter = Eskf::new(Config::default());
-        let mut window = [still(); 8];
-        // 2.94 m/s^2 of unexplained specific force — over the stationarity tolerance,
-        // and three tenths of a radian of tilt the filter cannot account for.
-        window[0].imu.accel = Acceleration::from_m_per_s2(0.0, 0.0, -GRAVITY - 2.941_995);
-        let _ = filter
-            .initialize(&window, Seconds::from_secs(0.25))
-            .expect("moving, not unusable");
-        let tilt = filter.covariance().variance(ErrorState::AttitudeX);
-        assert!(
-            (tilt - 0.09).abs() < 1e-4,
-            "tilt variance should be about (0.3 rad)^2, got {tilt}"
-        );
-    }
-
-    #[test]
     fn with_no_window_at_all_one_sample_still_starts_the_filter() {
         let mut filter = Eskf::new(Config::default());
         let alignment = filter
@@ -976,6 +858,48 @@ mod tests {
                 .is_accepted()
         );
         assert_eq!(filter.state().status, Status::Aligning);
+    }
+
+    #[test]
+    fn a_coarse_window_still_starts_the_filter_with_its_tilt_widened() {
+        // Classification itself is tested in `init`; this is what the filter does with it.
+        let mut filter = Eskf::new(Config::default());
+        let alignment = filter
+            .initialize(&[still(); 8], Seconds::from_secs(0.1))
+            .expect("a short window is a coarse start, not a refusal");
+        assert!(matches!(alignment, Alignment::Coarse(..)));
+        assert!(
+            filter.is_initialized(),
+            "refusing to run is the old behavior"
+        );
+        assert!(!filter.is_aligned());
+
+        let mut window = [still(); 8];
+        window[3].imu.gyro = AngularRate::from_rad_per_s(0.0, 0.0, 0.4);
+        let _ = filter
+            .initialize(&window, Seconds::from_secs(0.25))
+            .expect("moving, not unusable");
+        let tilt = filter.covariance().variance(ErrorState::AttitudeX);
+        assert!(
+            (tilt - 0.8 * 0.8).abs() < 1e-4,
+            "the covariance carries the widened tilt, got sigma^2 {tilt}"
+        );
+    }
+
+    #[test]
+    fn a_refused_window_leaves_the_filter_uninitialized() {
+        let mut filter = Eskf::new(Config::default());
+        assert_eq!(
+            filter.initialize(&[], Seconds::from_secs(0.25)),
+            Err(InitError::NoSamples)
+        );
+        let mut poisoned = [still(); 8];
+        poisoned[2].imu.accel = Acceleration::from_m_per_s2(f32::NAN, 0.0, 0.0);
+        assert_eq!(
+            filter.initialize(&poisoned, Seconds::from_secs(0.25)),
+            Err(InitError::NotFinite)
+        );
+        assert!(!filter.is_initialized());
     }
 
     /// A filter that started while moving: it knows neither where it is nor how fast.
@@ -1215,27 +1139,5 @@ mod tests {
             .initialize_from(state, Covariance::from_sigmas([2.0; STATES]))
             .expect("a sane seed");
         assert!(!filter.is_aligned());
-    }
-
-    #[test]
-    fn an_empty_window_or_an_unusable_step_is_still_an_error() {
-        let mut filter = Eskf::new(Config::default());
-        assert_eq!(
-            filter.initialize(&[], Seconds::from_secs(0.25)),
-            Err(InitError::NoSamples)
-        );
-        assert_eq!(
-            filter.initialize(&[still(); 8], Seconds::from_secs(0.0)),
-            Err(InitError::InvalidStep {
-                dt: Seconds::from_secs(0.0)
-            })
-        );
-        let mut poisoned = [still(); 8];
-        poisoned[2].imu.accel = Acceleration::from_m_per_s2(f32::NAN, 0.0, 0.0);
-        assert_eq!(
-            filter.initialize(&poisoned, Seconds::from_secs(0.25)),
-            Err(InitError::NotFinite)
-        );
-        assert!(!filter.is_initialized());
     }
 }

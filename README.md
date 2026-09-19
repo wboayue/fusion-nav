@@ -389,7 +389,7 @@ let mut filter = Eskf::new(Config::default());
 
 // Quasi-static initialization from a window of stationary samples. Each `StaticSample`
 // is an `ImuSample` plus an optional `MagField<Body>`; without the magnetometer, heading
-// is unobserved and starts with an inflated yaw variance.
+// is unobserved and is meant to start with an inflated yaw variance (not yet built).
 filter.initialize(&static_window, dt)?;  // dt sizes the window in seconds
 
 // High-rate propagation. `dt` is explicit; the filter never reads a clock.
