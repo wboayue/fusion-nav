@@ -64,18 +64,12 @@ mod propagate;
 mod state;
 mod units;
 
-pub use config::{Accuracy, Config, GRAVITY, Gates, ImuNoise, Initialization, Timeouts};
-pub use eskf::Eskf;
-pub use frames::{Body, Enu, Frame, Ned};
-pub use health::{Diagnostics, Fusion, Propagation, SourceHealth, Status, Validity};
-pub use init::{Alignment, Coarse, InitError, StaticSample};
-pub use propagate::ImuSample;
-pub use state::{Covariance, CovarianceMatrix, ErrorState, STATES, State};
-pub use units::{
-    Acceleration, Altitude, AltitudeVariance, AngularRate, Attitude, HeadingVariance, MagField,
-    Meters, MetersPerSecond, MetersPerSecond2, Position, PositionVariance, Radians,
-    RadiansPerSecond, Seconds, Velocity, VelocityVariance,
-};
+// The prelude is the one list of public types; the root adds back the three it leaves out.
+#[doc(inline)]
+pub use prelude::*;
+
+pub use frames::Frame;
+pub use state::{CovarianceMatrix, STATES};
 
 /// Everything needed to write an integration loop, in one import.
 ///

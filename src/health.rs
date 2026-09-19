@@ -27,11 +27,10 @@ pub enum Status {
     /// initialized without a static window, or seeded coarsely, and is still learning.
     ///
     /// Position and velocity are being estimated and are usable to the extent the
-    /// covariance says. Attitude is not yet what a static alignment would have given, so
-    /// a controller should not fly on it. The filter leaves this state on its own, as
-    /// soon as the covariance says tilt and heading uncertainty are within
-    /// [`Config::accuracy`](crate::Config::accuracy) — there is no timer and nothing to
-    /// acknowledge.
+    /// covariance says. Attitude is not yet good enough to fly on. The filter leaves this
+    /// state on its own, as soon as the covariance says tilt and heading uncertainty are
+    /// within [`Config::accuracy`](crate::Config::accuracy) — there is no timer and
+    /// nothing to acknowledge.
     Aligning,
     /// Nothing is aiding the filter. Position and velocity error grows without bound.
     #[default]
@@ -242,6 +241,13 @@ impl SourceHealth {
         self.accepted > 0
     }
 
+    /// Whether a measurement from this source was accepted no more than `timeout` ago.
+    /// Never, for a source that has not been accepted at all.
+    pub fn accepted_within(&self, timeout: Seconds) -> bool {
+        self.time_since_accepted
+            .is_some_and(|elapsed| elapsed <= timeout)
+    }
+
     /// Advance the fusion clock. Called from `predict`, since the filter has no clock.
     pub(crate) fn advance(&mut self, dt: Seconds) {
         if let Some(elapsed) = self.time_since_accepted {
@@ -249,6 +255,8 @@ impl SourceHealth {
         }
     }
 
+    /// Record a measurement that passed the gate: its test ratio, a restarted fusion
+    /// clock, and the end of any run of rejections.
     pub(crate) fn record_accepted(&mut self, test_ratio: f32) {
         self.test_ratio = Some(test_ratio);
         self.time_since_accepted = Some(Seconds::ZERO);
@@ -256,6 +264,8 @@ impl SourceHealth {
         self.accepted = self.accepted.saturating_add(1);
     }
 
+    /// Record a measurement the gate refused. The fusion clock keeps running, which is
+    /// what lets a source that is only ever rejected time out.
     #[allow(dead_code, reason = "used once gating is implemented")]
     pub(crate) fn record_rejected(&mut self, test_ratio: f32) {
         self.test_ratio = Some(test_ratio);

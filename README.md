@@ -138,7 +138,7 @@ be relative to and `fuse_baro_altitude` refuses them for the whole flight.
 
 A window that is short or moving is **not refused**. It gives a coarse start instead: attitude
 uncertainty inflated to match the motion actually measured, and `Status::Aligning` reported until
-that uncertainty comes down to what a static start would have given. Refusing would restrict the
+tilt and heading uncertainty are within `Config::accuracy` (by default, what a static start gives). Refusing would restrict the
 launch envelope — no moving deck, no hand launch, no restart at altitude — and a filter that will
 not start is worth less than one that starts and says how much to trust it.
 

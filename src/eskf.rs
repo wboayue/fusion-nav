@@ -10,8 +10,8 @@ use crate::init::{
 use crate::propagate::ImuSample;
 use crate::state::{Covariance, ErrorState, STATES, State};
 use crate::units::{
-    Altitude, AltitudeVariance, HeadingVariance, MagField, Position, PositionVariance, Radians,
-    Seconds, Velocity, VelocityVariance,
+    Altitude, AltitudeVariance, HeadingVariance, MagField, Position, PositionVariance, Seconds,
+    Velocity, VelocityVariance,
 };
 
 /// A 15-state error-state Kalman filter.
@@ -27,7 +27,6 @@ pub struct Eskf {
     covariance: Covariance,
     diagnostics: Diagnostics,
     baro_reference: Option<Altitude>,
-    /// Quantities a coarse start left unknown. See [`Fusion::Reset`].
     unestablished: Unestablished,
     initialized: bool,
 }
@@ -103,8 +102,7 @@ impl Eskf {
         dt: Seconds,
     ) -> Result<Alignment, InitError> {
         let alignment = self.alignment_of(window, dt)?;
-        let (sigma_tilt, sigma_yaw) = init::attitude_sigmas(&self.config.init, alignment);
-        self.apply_alignment(Unestablished::after(alignment), sigma_tilt, sigma_yaw);
+        self.apply_alignment(alignment);
         self.baro_reference = baro_reference(window);
         Ok(alignment)
     }
@@ -146,6 +144,7 @@ impl Eskf {
     ///
     /// [`InitError::NotFinite`] if the sample carries a value that is not a number.
     pub fn initialize_coarse(&mut self, imu: ImuSample) -> Result<Alignment, InitError> {
+        // Treated as a window of one, so the same finiteness and motion measures apply.
         let sample = StaticSample {
             imu,
             ..StaticSample::default()
@@ -160,8 +159,7 @@ impl Eskf {
             // One sample is not an average, so no rotation smears it.
             span: Seconds::ZERO,
         });
-        let (sigma_tilt, sigma_yaw) = init::attitude_sigmas(&self.config.init, alignment);
-        self.apply_alignment(Unestablished::after(alignment), sigma_tilt, sigma_yaw);
+        self.apply_alignment(alignment);
         // The barometric reference is left alone: one sample does not establish one, and
         // a restart at altitude should keep the reference the flight began with.
         Ok(alignment)
@@ -258,7 +256,7 @@ impl Eskf {
         self.diagnostics.advance(dt);
 
         let limit = self.config.max_predict_dt;
-        if dt.as_secs() > limit.as_secs() {
+        if dt > limit {
             return Propagation::StepTooLong { dt, limit };
         }
         Propagation::Propagated
@@ -456,11 +454,8 @@ impl Eskf {
         if !self.initialized {
             return now;
         }
-        let fresh = |source: SourceHealth| {
-            source.time_since_accepted.is_some_and(|elapsed| {
-                elapsed.as_secs() <= self.config.timeouts.degraded_after.as_secs()
-            })
-        };
+        let fresh =
+            |source: SourceHealth| source.accepted_within(self.config.timeouts.degraded_after);
         let d = &self.diagnostics;
         let (position, velocity) = (fresh(d.gnss_position), fresh(d.gnss_velocity));
         let height = position || fresh(d.baro_altitude);
@@ -527,19 +522,16 @@ impl Eskf {
         self.unestablished.velocity = false;
     }
 
-    /// Reset state, covariance and health for a fresh start with these attitude sigmas.
-    /// The barometric reference is the caller's to set, because only it knows whether
-    /// this start establishes a new one.
-    fn apply_alignment(
-        &mut self,
-        unestablished: Unestablished,
-        sigma_tilt: Radians,
-        sigma_yaw: Radians,
-    ) {
+    /// Commit an alignment: reset state, covariance and health for a fresh start whose
+    /// attitude uncertainty matches how good the alignment was. The barometric reference
+    /// is the caller's to set, because only it knows whether this start establishes a new
+    /// one.
+    fn apply_alignment(&mut self, alignment: Alignment) {
+        let (sigma_tilt, sigma_yaw) = init::attitude_sigmas(&self.config.init, alignment);
         self.covariance = init::initial_covariance(&self.config.init, sigma_tilt, sigma_yaw);
         self.state = State::default();
         self.diagnostics = Diagnostics::default();
-        self.unestablished = unestablished;
+        self.unestablished = Unestablished::after(alignment);
         self.initialized = true;
     }
 
@@ -548,21 +540,19 @@ impl Eskf {
     /// Only sources that have ever been accepted count toward aiding: a vehicle with no
     /// magnetometer is not permanently `Degraded` for lacking one.
     fn derive_status(&self, validity: Validity) -> Status {
-        let degraded_after = self.config.timeouts.degraded_after.as_secs();
-        let dead_after = self.config.timeouts.dead_reckoning_after.as_secs();
-
+        let timeouts = &self.config.timeouts;
         let mut used = 0;
         let mut fresh = 0;
         let mut aiding = 0;
         for (_, source) in self.diagnostics.sources() {
-            let Some(elapsed) = source.time_since_accepted else {
+            if !source.has_been_used() {
                 continue;
-            };
+            }
             used += 1;
-            if elapsed.as_secs() <= degraded_after {
+            if source.accepted_within(timeouts.degraded_after) {
                 fresh += 1;
             }
-            if elapsed.as_secs() <= dead_after {
+            if source.accepted_within(timeouts.dead_reckoning_after) {
                 aiding += 1;
             }
         }

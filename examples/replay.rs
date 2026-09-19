@@ -299,6 +299,43 @@ impl Replay {
     /// recorded and dropped.
     fn accumulate(&mut self, t: f64, imu: ImuSample) -> Result<(), Box<dyn Error>> {
         self.first_imu.get_or_insert(t);
+        self.probe_rate(t);
+        self.push_to_window(StaticSample {
+            imu,
+            mag: self.last_mag,
+            baro: self.last_baro,
+        });
+
+        // One interval is needed before the window can be sized at all.
+        let Some(interval) = self.interval else {
+            return Ok(());
+        };
+        let needed = self.samples_needed(interval)?;
+        if self.filled < needed {
+            return Ok(());
+        }
+        self.window_samples = needed;
+        let window = &self.window[self.filled - needed..self.filled];
+
+        let dt = Seconds::from_secs(interval as f32);
+        let alignment = self.filter.alignment_of(window, dt)?;
+        if !self.worth_committing(t, alignment) {
+            return Ok(());
+        }
+
+        self.alignment = Some(alignment);
+        // Already classified above; committing it cannot disagree.
+        let _ = self.filter.initialize(window, dt)?;
+        self.initialized_at = Some(t);
+        self.mag_at_init = window.iter().all(|s| s.mag.is_some());
+        self.status = self.filter.state().status;
+        self.transitions.push((t, self.status));
+        Ok(())
+    }
+
+    /// Record one IMU interval toward the rate estimate, and fix the rate as the median
+    /// once `PROBE` of them are in. See [`Replay::interval`] for why the median.
+    fn probe_rate(&mut self, t: f64) {
         let step = self.previous_imu.replace(t).map(|previous| t - previous);
         if let Some(step) = step.filter(|step| *step > 0.0)
             && self.probed < PROBE
@@ -311,12 +348,10 @@ impl Replay {
                 self.interval = Some(sorted[PROBE / 2]);
             }
         }
+    }
 
-        let sample = StaticSample {
-            imu,
-            mag: self.last_mag,
-            baro: self.last_baro,
-        };
+    /// Append a sample, dropping the oldest once the window is full.
+    fn push_to_window(&mut self, sample: StaticSample) {
         if self.filled == WINDOW {
             self.window.copy_within(1.., 0);
             self.window[WINDOW - 1] = sample;
@@ -324,48 +359,31 @@ impl Replay {
             self.window[self.filled] = sample;
             self.filled += 1;
         }
+    }
 
-        // One interval is needed before the window can be sized at all.
-        let Some(interval) = self.interval else {
-            return Ok(());
-        };
+    /// Samples it takes to span `Initialization::min_duration` at this interval.
+    fn samples_needed(&self, interval: f64) -> Result<usize, String> {
         let required = f64::from(self.filter.config().init.min_duration.as_secs());
         let needed = (required / interval).ceil() as usize;
         if needed > WINDOW {
             return Err(format!(
                 "{required} s at {:.0} Hz needs {needed} samples; the window holds {WINDOW}",
                 1.0 / interval
-            )
-            .into());
+            ));
         }
-        if self.filled < needed {
-            return Ok(());
-        }
-        self.window_samples = needed;
-        let window = &self.window[self.filled - needed..self.filled];
+        Ok(needed)
+    }
 
-        let dt = Seconds::from_secs(interval as f32);
-        let alignment = self.filter.alignment_of(window, dt)?;
-
-        // Prefer a static window, but do not wait forever for one: a log that begins in
-        // motion, or a vehicle that never gets a quiet moment, should still fly. This is
-        // the policy an application has to choose, which is why the filter reports the
-        // alignment rather than deciding this itself.
-        if !alignment.is_static() {
-            let waited = t - self.first_imu.unwrap_or(t);
-            if waited < PATIENCE {
-                return Ok(());
-            }
-        }
-
-        self.alignment = Some(alignment);
-        // Already classified above; committing it cannot disagree.
-        let _ = self.filter.initialize(window, dt)?;
-        self.initialized_at = Some(t);
-        self.mag_at_init = window.iter().all(|s| s.mag.is_some());
-        self.status = self.filter.state().status;
-        self.transitions.push((t, self.status));
-        Ok(())
+    /// The wait-for-stillness policy: commit a static window at once, a coarse one only
+    /// after `PATIENCE` seconds of log have gone by without a static one.
+    ///
+    /// Prefer a static window, but do not wait forever for one: a log that begins in
+    /// motion, or a vehicle that never gets a quiet moment, should still fly. This is the
+    /// policy an application has to choose, which is why the filter reports the alignment
+    /// rather than deciding this itself.
+    fn worth_committing(&self, t: f64, alignment: Alignment) -> bool {
+        let waited = t - self.first_imu.unwrap_or(t);
+        alignment.is_static() || waited >= PATIENCE
     }
 
     fn propagate(&mut self, t: f64, imu: ImuSample, out: &mut impl Write) -> io::Result<()> {
@@ -422,7 +440,18 @@ impl Replay {
         writeln!(out)
     }
 
+    /// Print what happened. `summary` is the only line anything parses.
     fn report(&self, input: &Path, output: &Path) {
+        self.report_initialization(input, output);
+        self.report_steps();
+        self.report_transitions();
+        self.report_summary();
+        self.report_validity();
+        self.report_sources();
+    }
+
+    /// The input, the output, and how initialization went.
+    fn report_initialization(&self, input: &Path, output: &Path) {
         println!("fusion-nav replay — no filtering is performed\n");
         println!("in   {}", input.display());
         println!("out  {}", output.display());
@@ -469,7 +498,10 @@ impl Replay {
             }
             None => println!("\nnever initialized: no window covering min_duration"),
         }
+    }
 
+    /// Epochs written, measurements rejected or adopted, and steps refused.
+    fn report_steps(&self) {
         println!(
             "\n{} epochs written, {} measurements rejected",
             self.epochs, self.rejections
@@ -497,7 +529,10 @@ impl Replay {
                 self.filter.config().max_predict_dt.as_secs(),
             );
         }
+    }
 
+    /// Status transitions, the first few of them.
+    fn report_transitions(&self) {
         // A real log can flap hundreds of times; print enough to see the pattern.
         const SHOWN: usize = 12;
         println!("\nstatus ({} transitions)", self.transitions.len());
@@ -509,9 +544,11 @@ impl Replay {
         {
             println!("  … {rest} more");
         }
+    }
 
-        // One machine-readable line, so `data/fetch.sh --check` can assert against the
-        // expectations recorded in the manifest.
+    /// One machine-readable line, which `data/fetch.sh --check` asserts against the
+    /// expectations recorded in the manifest.
+    fn report_summary(&self) {
         let state = self.filter.state();
         println!(
             "\nsummary rate={:.0} window={} align={} resets={} refused={} invalid={} \
@@ -531,7 +568,10 @@ impl Replay {
             self.transitions.len(),
             state.status,
         );
+    }
 
+    /// Per-quantity validity now, and predicted at takeoff.
+    fn report_validity(&self) {
         let validity = self.filter.state().validity;
         let predicted = self.filter.predicted_validity();
         println!("\nvalidity at end of log        now  at takeoff");
@@ -562,7 +602,10 @@ impl Replay {
             let mark = |flag| if flag { "yes" } else { " no" };
             println!("  {name:<13} {}        {}", mark(now), mark(then));
         }
+    }
 
+    /// Per-source health at the end of the log.
+    fn report_sources(&self) {
         println!("\nper-source health at end of log");
         for (name, health) in self.filter.diagnostics().sources() {
             match health.time_since_accepted {

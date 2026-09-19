@@ -57,8 +57,8 @@ pub enum Alignment {
     Static,
     /// The window was usable but not a static interval, so attitude starts coarse and
     /// the covariance is inflated to say so. The filter runs and reports
-    /// [`Status::Aligning`](crate::Status::Aligning) until attitude uncertainty comes
-    /// down to what a static start would have given.
+    /// [`Status::Aligning`](crate::Status::Aligning) until tilt and heading uncertainty
+    /// are within [`Config::accuracy`](crate::Config::accuracy).
     Coarse(Coarse),
     /// The state came from [`Eskf::initialize_from`](crate::Eskf::initialize_from) rather
     /// than from a window. Whether it counts as aligned is a question for the covariance
@@ -164,7 +164,7 @@ pub(crate) fn classify(
 
     let required = init.min_duration;
     let provided = Seconds::from_secs(window.len() as f32 * dt.as_secs());
-    if provided.as_secs() < required.as_secs() {
+    if provided < required {
         return Ok(Alignment::Coarse(Coarse::WindowTooShort {
             required,
             provided,
