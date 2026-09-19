@@ -279,13 +279,23 @@ Two API decisions shape the rest, and are worth settling early:
   `Aligning` throughout and its 888 aiding transitions are masked behind it, because a stub
   covariance never shrinks and the filter therefore never finishes aligning.
 
-What remains for a bare vehicle with no second attitude source is options 4 and 5 — the launch
-that is moving and has nothing to seed from still starts coarse and stays that way until aiding
-brings the uncertainty down. Position and velocity are a related gap: both still start at the
-configured priors, which assume the origin is here and the vehicle at rest, so a moving launch
-should expect its first GNSS fix to arrive as a large innovation. Resetting position and velocity
-to the first fix, as PX4 does, rather than fusing it, is the obvious answer and is not
-implemented.
+Position and velocity were a related gap, and are now closed. A static start defines the origin
+as where the vehicle was and its velocity as zero, both true by construction; a coarse start can
+claim neither, so the first GNSS fix after one is **adopted rather than fused** —
+`Fusion::Reset`, once per quantity. That is the exact limit of fusing against an infinitely
+uncertain prior, taken exactly rather than approached with an invented variance, and it avoids
+the alternative failure: a 0.1 m s⁻¹ velocity prior on a vehicle doing 18 m s⁻¹ gates out the fix
+that would have corrected it.
+
+This is a bounded exception to [rejection handling](#rejection-handling-report-do-not-self-recover),
+and the boundary is what keeps it honest: the filter adopts a quantity it has **never
+established**, where there is no estimate to step away from and no controller yet flying on one.
+It never does so to recover. A quantity that was once known and has since been rejected stays the
+application's problem, through `reset_position_to` and `reset_velocity_to`.
+
+What remains for a bare vehicle with no second attitude source is options 4 and 5: a launch that
+is moving and has nothing to seed from still starts coarse in **attitude** and stays that way
+until aiding brings the uncertainty down.
 
 ## Decisions
 

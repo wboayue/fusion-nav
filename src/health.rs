@@ -51,6 +51,19 @@ pub enum Fusion {
         /// Test ratio, in `[0, 1]`.
         test_ratio: f32,
     },
+    /// The measurement was adopted outright rather than fused, because the filter had no
+    /// estimate of that quantity to fuse it against.
+    ///
+    /// This happens once per quantity, on the first GNSS fix after a coarse start: a
+    /// vehicle that initialized while moving does not know its velocity, and no gate can
+    /// judge a measurement against nothing. The state becomes the measurement and its
+    /// covariance block becomes the measurement's, which is what fusing against an
+    /// infinitely uncertain prior converges to — the limit, taken exactly rather than
+    /// approached with an invented variance.
+    ///
+    /// Worth reacting to: position or velocity stepped, which a controller consuming the
+    /// estimate may care about.
+    Reset,
     /// The measurement failed the gate and was discarded. The state is unchanged.
     Rejected {
         /// Test ratio, greater than 1.
@@ -69,16 +82,24 @@ pub enum Fusion {
 }
 
 impl Fusion {
-    /// Whether the measurement was fused.
+    /// Whether the filter took the measurement, whether by fusing it or by adopting it
+    /// outright. See [`is_reset`](Self::is_reset) to tell those apart.
     pub const fn is_accepted(self) -> bool {
-        matches!(self, Self::Accepted { .. })
+        matches!(self, Self::Accepted { .. } | Self::Reset)
+    }
+
+    /// Whether the measurement replaced the estimate rather than correcting it, stepping
+    /// the state.
+    pub const fn is_reset(self) -> bool {
+        matches!(self, Self::Reset)
     }
 
     /// The test ratio, where the gate ran at all.
     pub const fn test_ratio(self) -> Option<f32> {
         match self {
             Self::Accepted { test_ratio } | Self::Rejected { test_ratio } => Some(test_ratio),
-            Self::NotInitialized | Self::NoReference => None,
+            // A reset ran no gate: there was nothing to be inconsistent with.
+            Self::Reset | Self::NotInitialized | Self::NoReference => None,
         }
     }
 }

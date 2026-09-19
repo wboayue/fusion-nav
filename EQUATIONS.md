@@ -356,6 +356,18 @@ arithmetic on an embedded target.
 z = p_{\text{GNSS}}, \qquad h(x) = p, \qquad H = \begin{bmatrix} I_3 & 0 & 0 & 0 & 0 \end{bmatrix}
 ```
 
+Where the filter has no position estimate at all — a coarse initialization, with the vehicle
+moving through somewhere it cannot name — the first fix is adopted rather than fused:
+
+```math
+\hat{p} \leftarrow z, \qquad P_{pp} \leftarrow R, \qquad P_{p\ast} \leftarrow 0
+```
+
+which is $`\lim_{P_{pp} \to \infty}`$ of the update above, taken exactly. The correlations go to
+zero because the new error is the measurement's and has nothing to do with what preceded it.
+Applies once, to a quantity never established; it is not a recovery mechanism. See
+[gate lockout](#gate-lockout).
+
 ### GNSS velocity
 
 **(29)**
@@ -367,6 +379,9 @@ z = v_{\text{GNSS}}, \qquad h(x) = v, \qquad H = \begin{bmatrix} 0 & I_3 & 0 & 0
 Velocity observations matter disproportionately: velocity error grows linearly from accelerometer
 and attitude error, so constraining it directly also constrains those states through the
 covariance.
+
+The same adoption applies to the first velocity solution after a coarse start, and matters more
+there: a static initialization knows the vehicle is at rest, a coarse one knows nothing at all.
 
 ### Barometric altitude
 

@@ -153,6 +153,12 @@ There are three ways in, and each reports which alignment it achieved:
 `alignment_of(window, dt)` answers what `initialize` would make of a window without touching the
 filter, for an application that would rather wait for stillness than start coarsely.
 
+After a coarse start the first GNSS position and the first GNSS velocity are **adopted rather
+than fused**, reported as `Fusion::Reset`. A vehicle that initialized while moving has no
+position or velocity for a gate to judge a measurement against, and claiming the configured
+priors — origin here, at rest — would gate out the very fix that would have corrected them. It
+happens once per quantity; everything after is fused normally.
+
 Stillness remains worth arranging where it is available, because initialization quality dominates
 early-flight performance, and the filter validates the claim rather than assuming it.
 

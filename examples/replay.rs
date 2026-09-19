@@ -166,6 +166,9 @@ struct Replay {
     mag_at_init: bool,
     epochs: u32,
     rejections: u32,
+    /// Measurements the filter adopted outright because a coarse start left it nothing to
+    /// fuse them against. At most one per source, and only after a coarse start.
+    resets: u32,
     /// Steps the filter refused as longer than `Config::max_predict_dt`, and the worst.
     /// Real logs contain them: an SD card that misses messages leaves a hole the replay
     /// sees as one long step.
@@ -198,6 +201,7 @@ impl Replay {
             mag_at_init: false,
             epochs: 0,
             rejections: 0,
+            resets: 0,
             refused_steps: 0,
             longest_step: (0.0, 0.0),
             invalid_steps: 0,
@@ -374,6 +378,9 @@ impl Replay {
         if matches!(outcome, Fusion::Rejected { .. }) {
             self.rejections += 1;
         }
+        if outcome.is_reset() {
+            self.resets += 1;
+        }
     }
 
     fn write_row(&self, t: f64, state: State, out: &mut impl Write) -> io::Result<()> {
@@ -464,6 +471,13 @@ impl Replay {
             "\n{} epochs written, {} measurements rejected",
             self.epochs, self.rejections
         );
+        if self.resets > 0 {
+            println!(
+                "{} adopted outright: a coarse start had no position or velocity to fuse \
+                 them against",
+                self.resets
+            );
+        }
         if self.invalid_steps > 0 {
             println!(
                 "{} steps refused as zero or negative — duplicate IMU timestamps",
@@ -497,8 +511,8 @@ impl Replay {
         // expectations recorded in the manifest.
         let state = self.filter.state();
         println!(
-            "\nsummary rate={:.0} window={} align={} refused={} invalid={} epochs={} \
-             transitions={} status={:?}",
+            "\nsummary rate={:.0} window={} align={} resets={} refused={} invalid={} \
+             epochs={} transitions={} status={:?}",
             self.interval.map_or(0.0, |interval| 1.0 / interval),
             self.window_samples,
             match self.alignment {
@@ -507,6 +521,7 @@ impl Replay {
                 Some(Alignment::Seeded) => "seeded",
                 None => "none",
             },
+            self.resets,
             self.refused_steps,
             self.invalid_steps,
             self.epochs,

@@ -154,7 +154,17 @@ pub struct Eskf {
     covariance: Covariance,
     diagnostics: Diagnostics,
     baro_reference: Option<Altitude>,
+    /// Quantities a coarse start left unknown, to be adopted from the first fix rather
+    /// than fused against a prior the filter does not have.
+    unknown: Unknown,
     initialized: bool,
+}
+
+/// What initialization could not establish.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Unknown {
+    position: bool,
+    velocity: bool,
 }
 
 impl Eskf {
@@ -167,6 +177,7 @@ impl Eskf {
             covariance: Covariance::zero(),
             diagnostics: Diagnostics::default(),
             baro_reference: None,
+            unknown: Unknown::default(),
             initialized: false,
         }
     }
@@ -220,7 +231,7 @@ impl Eskf {
     ) -> Result<Alignment, InitError> {
         let alignment = self.alignment_of(window, dt)?;
         let (sigma_tilt, sigma_yaw) = self.attitude_sigmas(alignment);
-        self.apply_alignment(sigma_tilt, sigma_yaw);
+        self.apply_alignment(Unknown::after(alignment), sigma_tilt, sigma_yaw);
         self.baro_reference = baro_reference(window);
         Ok(alignment)
     }
@@ -303,7 +314,7 @@ impl Eskf {
             peak_accel_deviation,
         });
         let (sigma_tilt, sigma_yaw) = self.attitude_sigmas(alignment);
-        self.apply_alignment(sigma_tilt, sigma_yaw);
+        self.apply_alignment(Unknown::after(alignment), sigma_tilt, sigma_yaw);
         // The barometric reference is left alone: one sample does not establish one, and
         // a restart at altitude should keep the reference the flight began with.
         Ok(alignment)
@@ -353,6 +364,10 @@ impl Eskf {
         self.state = state;
         self.covariance = covariance;
         self.diagnostics = Diagnostics::default();
+        // A seed carries a position and velocity the caller vouched for, with a
+        // covariance that says how far. Nothing here is unknown in the sense that would
+        // justify overwriting it with the first fix.
+        self.unknown = Unknown::default();
         self.initialized = true;
         Ok(Alignment::Seeded)
     }
@@ -406,6 +421,12 @@ impl Eskf {
 
     /// Fuse a GNSS position fix. Equation (28).
     ///
+    /// After a coarse start the first fix is **adopted, not fused** — [`Fusion::Reset`] —
+    /// because a vehicle that initialized while moving has no position for a gate to
+    /// judge a measurement against. The state becomes the fix and its covariance block
+    /// becomes the fix's, which is the exact limit of fusing against an infinitely
+    /// uncertain prior. It happens once; the next fix is fused normally.
+    ///
     /// `variance` is the receiver's own accuracy where it reports one — `eph²`
     /// horizontally, `epv²` vertically — but **floor it first**. An accuracy estimate is
     /// the receiver's view of its own geometry and residuals, and under multipath it
@@ -425,11 +446,25 @@ impl Eskf {
         position: Position<Ned>,
         variance: PositionVariance<Ned>,
     ) -> Fusion {
+        if !self.initialized {
+            return Fusion::NotInitialized;
+        }
+        if self.unknown.position {
+            self.reset_position_to(position, variance);
+            self.diagnostics.gnss_position.record_accepted(0.0);
+            return Fusion::Reset;
+        }
         let _ = (position, variance);
         self.stub_fuse(|d| &mut d.gnss_position)
     }
 
     /// Fuse a GNSS velocity solution. Equation (29).
+    ///
+    /// As with [`fuse_gnss_position`](Self::fuse_gnss_position), the first solution after
+    /// a coarse start is adopted rather than fused. Velocity is the sharper case: a
+    /// static start knows the vehicle is at rest, a coarse start knows nothing, and
+    /// claiming the configured 0.1 m s⁻¹ prior for a vehicle doing 18 m s⁻¹ would gate
+    /// out the fix that would have corrected it.
     ///
     /// `variance` is the receiver's speed accuracy squared, `sacc²`, and wants the same
     /// floor as [`fuse_gnss_position`](Self::fuse_gnss_position): PX4 fuses
@@ -442,6 +477,14 @@ impl Eskf {
         velocity: Velocity<Ned>,
         variance: VelocityVariance<Ned>,
     ) -> Fusion {
+        if !self.initialized {
+            return Fusion::NotInitialized;
+        }
+        if self.unknown.velocity {
+            self.reset_velocity_to(velocity, variance);
+            self.diagnostics.gnss_velocity.record_accepted(0.0);
+            return Fusion::Reset;
+        }
         let _ = (velocity, variance);
         self.stub_fuse(|d| &mut d.gnss_velocity)
     }
@@ -533,24 +576,43 @@ impl Eskf {
 
     /// Force position to an external fix and reset its covariance block.
     ///
-    /// The filter never does this on its own: on sustained rejection it reports
-    /// [`Status::DeadReckoning`] and leaves recovery policy to the application, which is
-    /// the only layer that knows whether a step input to the controller is acceptable.
+    /// The position becomes the fix, its variances become the fix's, and its
+    /// correlations with the rest of the state are dropped — the new error came from the
+    /// measurement and has nothing to do with the errors that preceded it.
     ///
-    /// **Stub.** Sets the state; does not touch the covariance.
+    /// The filter does not do this on its own to **recover**: on sustained rejection it
+    /// reports [`Status::DeadReckoning`] and leaves the policy to the application, which
+    /// is the only layer that knows whether a step input to the controller is acceptable.
+    /// The one exception is a quantity that was never established at all — see
+    /// [`fuse_gnss_position`](Self::fuse_gnss_position) — where there is no estimate to
+    /// step away from.
     pub fn reset_position_to(&mut self, position: Position<Ned>, variance: PositionVariance<Ned>) {
-        let _ = variance;
         self.state.position = position;
+        self.covariance.reset_block(
+            [
+                ErrorState::PositionNorth,
+                ErrorState::PositionEast,
+                ErrorState::PositionDown,
+            ],
+            variance.as_m2().into(),
+        );
+        self.unknown.position = false;
     }
 
     /// Force velocity to an external solution and reset its covariance block.
     ///
     /// See [`reset_position_to`](Self::reset_position_to).
-    ///
-    /// **Stub.** Sets the state; does not touch the covariance.
     pub fn reset_velocity_to(&mut self, velocity: Velocity<Ned>, variance: VelocityVariance<Ned>) {
-        let _ = variance;
         self.state.velocity = velocity;
+        self.covariance.reset_block(
+            [
+                ErrorState::VelocityNorth,
+                ErrorState::VelocityEast,
+                ErrorState::VelocityDown,
+            ],
+            variance.as_m2_per_s2().into(),
+        );
+        self.unknown.velocity = false;
     }
 
     /// Initial tilt and yaw standard deviations for an alignment.
@@ -588,7 +650,7 @@ impl Eskf {
     /// Reset state, covariance and health for a fresh start with these attitude sigmas.
     /// The barometric reference is the caller's to set, because only it knows whether
     /// this start establishes a new one.
-    fn apply_alignment(&mut self, sigma_tilt: f32, sigma_yaw: f32) {
+    fn apply_alignment(&mut self, unknown: Unknown, sigma_tilt: f32, sigma_yaw: f32) {
         let init = &self.config.init;
         self.covariance = Covariance::from_sigmas([
             init.sigma_position,
@@ -609,6 +671,7 @@ impl Eskf {
         ]);
         self.state = State::default();
         self.diagnostics = Diagnostics::default();
+        self.unknown = unknown;
         self.initialized = true;
     }
 
@@ -658,6 +721,22 @@ impl Eskf {
             Status::Healthy
         } else {
             Status::Degraded
+        }
+    }
+}
+
+impl Unknown {
+    /// What an alignment leaves unestablished.
+    ///
+    /// A static start defines the origin as where the vehicle was and its velocity as
+    /// zero, and both are true by construction. A coarse start can say neither: the
+    /// vehicle was moving, through somewhere the filter cannot name. Those wait for the
+    /// first fix.
+    const fn after(alignment: Alignment) -> Self {
+        let coarse = matches!(alignment, Alignment::Coarse(..));
+        Self {
+            position: coarse,
+            velocity: coarse,
         }
     }
 }
@@ -1087,6 +1166,120 @@ mod tests {
                 .is_accepted()
         );
         assert_eq!(filter.state().status, Status::Aligning);
+    }
+
+    /// A filter that started while moving: it knows neither where it is nor how fast.
+    fn coarse() -> Eskf {
+        let mut filter = Eskf::new(Config::default());
+        let mut window = [still(); 8];
+        window[3].imu.gyro = AngularRate::from_rad_per_s(0.0, 0.4, 0.0);
+        let alignment = filter
+            .initialize(&window, Seconds::from_secs(0.25))
+            .expect("moving, not unusable");
+        assert!(matches!(alignment, Alignment::Coarse(..)));
+        filter
+    }
+
+    #[test]
+    fn after_a_coarse_start_the_first_fix_is_adopted_not_fused() {
+        let mut filter = coarse();
+        let fix = Position::<Ned>::from_meters(120.0, -40.0, -75.0);
+        let outcome = filter.fuse_gnss_position(fix, PositionVariance::isotropic(2.25));
+
+        assert_eq!(outcome, Fusion::Reset);
+        assert!(outcome.is_accepted(), "the measurement was used");
+        assert!(outcome.is_reset(), "and it stepped the state");
+        assert_eq!(filter.state().position, fix);
+        assert!(
+            (filter.covariance().variance(ErrorState::PositionNorth) - 2.25).abs() < 1e-6,
+            "the fix's own variance, not the configured prior"
+        );
+
+        // Once is once: there is now an estimate for a gate to judge against.
+        let outcome = filter.fuse_gnss_position(fix, PositionVariance::isotropic(2.25));
+        assert!(!outcome.is_reset());
+    }
+
+    #[test]
+    fn velocity_is_adopted_too_and_the_two_are_independent() {
+        let mut filter = coarse();
+        let velocity = Velocity::<Ned>::from_m_per_s(18.0, 1.0, -0.5);
+        assert!(
+            filter
+                .fuse_gnss_velocity(velocity, VelocityVariance::isotropic(0.09))
+                .is_reset()
+        );
+        assert_eq!(filter.state().velocity, velocity);
+
+        // Adopting velocity says nothing about position, which is still unknown.
+        assert!(
+            filter
+                .fuse_gnss_position(
+                    Position::<Ned>::from_meters(1.0, 2.0, 3.0),
+                    PositionVariance::isotropic(2.25)
+                )
+                .is_reset()
+        );
+    }
+
+    #[test]
+    fn a_static_start_knows_where_it_is_so_its_first_fix_is_fused() {
+        let mut filter = initialized();
+        let outcome = filter.fuse_gnss_position(
+            Position::<Ned>::from_meters(0.2, -0.1, 0.0),
+            PositionVariance::isotropic(2.25),
+        );
+        assert!(
+            !outcome.is_reset(),
+            "the origin is where it was, by definition"
+        );
+        assert!(outcome.is_accepted());
+    }
+
+    #[test]
+    fn a_reset_drops_the_correlations_the_old_estimate_had() {
+        let mut filter = coarse();
+        // Give the covariance a correlation to destroy.
+        let mut matrix = *filter.covariance().as_matrix();
+        let (p_n, v_n) = (
+            ErrorState::PositionNorth.index(),
+            ErrorState::VelocityNorth.index(),
+        );
+        matrix[(p_n, v_n)] = 0.5;
+        matrix[(v_n, p_n)] = 0.5;
+        filter.covariance = Covariance::from_matrix(matrix);
+
+        filter.reset_position_to(
+            Position::<Ned>::from_meters(10.0, 0.0, 0.0),
+            PositionVariance::isotropic(1.0),
+        );
+
+        let after = filter.covariance().as_matrix();
+        assert_eq!(after[(p_n, v_n)], 0.0, "the new error came from the fix");
+        assert_eq!(after[(v_n, p_n)], 0.0);
+        assert_eq!(after[(p_n, p_n)], 1.0);
+        assert!(
+            after[(v_n, v_n)] > 0.0,
+            "resetting position must not disturb velocity"
+        );
+    }
+
+    #[test]
+    fn a_seed_is_trusted_and_is_never_overwritten_by_a_fix() {
+        let (state, covariance) = seed();
+        let mut filter = Eskf::new(Config::default());
+        let _ = filter
+            .initialize_from(state, covariance)
+            .expect("a sane seed");
+        let outcome = filter.fuse_gnss_velocity(
+            Velocity::<Ned>::from_m_per_s(0.0, 0.0, 0.0),
+            VelocityVariance::isotropic(0.09),
+        );
+        assert!(
+            !outcome.is_reset(),
+            "the caller vouched for this velocity; its covariance says how far"
+        );
+        assert_eq!(filter.state().velocity, state.velocity);
     }
 
     #[test]

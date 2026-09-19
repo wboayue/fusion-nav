@@ -116,7 +116,11 @@ Single crate, `no_std`, `forbid(unsafe_code)`, `deny(missing_docs)`, allocation-
   2 transitions rather than 888.
 - **The filter gates but never self-recovers.** On sustained rejection it reports
   `DeadReckoning`; `reset_position_to` / `reset_velocity_to` exist for the application to
-  decide. Do not add automatic resets — that is a documented decision in GOALS.md.
+  decide. Do not add automatic resets — that is a documented decision in GOALS.md. The single
+  exception, and its boundary: after a *coarse* start the first GNSS position and velocity are
+  adopted (`Fusion::Reset`, once per quantity), because those were never established and there
+  is no estimate to step away from. Never for recovery, never for a quantity that was once
+  known.
 - Frames and units are fixed at the boundary: NED navigation frame, FRD body, Hamilton
   quaternion scalar-first, down-positive gravity. Not configurable.
 

@@ -117,6 +117,24 @@ impl Covariance {
         self.get(state, state)
     }
 
+    /// Replace a block's variances and drop its correlations with everything else.
+    ///
+    /// The reset of a quantity the filter is adopting rather than correcting: the new
+    /// error came from the measurement, so it carries the measurement's variance and is
+    /// uncorrelated with the errors the filter accumulated before it. Zeroing the row and
+    /// column is what makes the second part true; leaving them would let the old
+    /// correlation pull the reset value straight back.
+    pub(crate) fn reset_block(&mut self, states: [ErrorState; 3], variances: [f32; 3]) {
+        for (state, variance) in states.iter().zip(variances) {
+            let i = state.index();
+            for k in 0..STATES {
+                self.0[(i, k)] = 0.0;
+                self.0[(k, i)] = 0.0;
+            }
+            self.0[(i, i)] = variance;
+        }
+    }
+
     /// The whole matrix, for callers that want to do their own algebra.
     pub const fn as_matrix(&self) -> &CovarianceMatrix {
         &self.0
