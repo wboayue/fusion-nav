@@ -273,12 +273,9 @@ pub(crate) fn peak_motion(window: &[StaticSample]) -> (RadiansPerSecond, MetersP
 
 /// Whether every number in a window sample is finite.
 pub(crate) fn sample_is_finite(sample: &StaticSample) -> bool {
-    let gyro = sample.imu.gyro.vector();
-    let accel = sample.imu.accel.vector();
-    gyro.iter().chain(accel.iter()).all(|v| v.is_finite())
-        && sample
-            .mag
-            .is_none_or(|field| field.vector().iter().all(|v| v.is_finite()))
+    sample.imu.gyro.is_finite()
+        && sample.imu.accel.is_finite()
+        && sample.mag.is_none_or(|field| field.is_finite())
         && sample.baro.is_none_or(|b| b.as_meters().is_finite())
 }
 
@@ -286,16 +283,11 @@ pub(crate) fn sample_is_finite(sample: &StaticSample) -> bool {
 /// so only its finiteness is in question here.
 pub(crate) fn state_is_finite(state: &State) -> bool {
     let q = state.attitude.quaternion();
-    let vectors = [
-        state.position.vector(),
-        state.velocity.vector(),
-        state.accel_bias.vector(),
-        state.gyro_bias.vector(),
-    ];
     [q.w, q.i, q.j, q.k].iter().all(|v| v.is_finite())
-        && vectors
-            .iter()
-            .all(|v| v.iter().all(|component| component.is_finite()))
+        && state.position.is_finite()
+        && state.velocity.is_finite()
+        && state.accel_bias.is_finite()
+        && state.gyro_bias.is_finite()
 }
 
 /// Mean barometric altitude over the samples that carry one: `α₀` of equation (30).

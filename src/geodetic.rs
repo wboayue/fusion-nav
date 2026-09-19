@@ -88,7 +88,8 @@ impl Geodetic {
         self.height
     }
 
-    fn is_finite(self) -> bool {
+    /// Whether every coordinate is a number, neither NaN nor infinite.
+    pub(crate) fn is_finite(self) -> bool {
         self.latitude.is_finite() && self.longitude.is_finite() && self.height.is_finite()
     }
 }
@@ -120,19 +121,24 @@ pub struct LocalOrigin {
 }
 
 impl LocalOrigin {
-    /// The tangent plane about `origin`.
-    pub fn new(origin: Geodetic) -> Self {
+    /// The tangent plane about `origin`, or `None` for a point that cannot be one: a
+    /// coordinate that is not a number, or a pole, where the east scale is zero and the
+    /// inverse would divide by it.
+    pub fn new(origin: Geodetic) -> Option<Self> {
+        if !Self::is_usable(origin) {
+            return None;
+        }
         let sin_phi = ComplexField::sin(origin.latitude);
         let cos_phi = ComplexField::cos(origin.latitude);
         let w2 = 1.0 - WGS84_E2 * sin_phi * sin_phi;
         // Radii of curvature in the meridian (M) and in the prime vertical (N).
         let meridian = WGS84_A * (1.0 - WGS84_E2) / (w2 * ComplexField::sqrt(w2));
         let prime_vertical = WGS84_A / ComplexField::sqrt(w2);
-        Self {
+        Some(Self {
             origin,
             meridian_radius: meridian + origin.height,
             parallel_radius: (prime_vertical + origin.height) * cos_phi,
-        }
+        })
     }
 
     /// Where the origin is.
@@ -170,11 +176,15 @@ impl LocalOrigin {
     ///
     /// The radii are taken at the fix rather than at the origin being solved for; the
     /// difference is second order in the displacement.
-    pub fn placing(fix: Geodetic, estimate: Position<Ned>) -> Self {
-        Self::new(Self::new(fix).to_geodetic(Position::from_vector(-estimate.vector())))
+    ///
+    /// `None` if either the fix or the origin it places cannot be one; see
+    /// [`new`](Self::new).
+    pub fn placing(fix: Geodetic, estimate: Position<Ned>) -> Option<Self> {
+        let about_fix = Self::new(fix)?;
+        Self::new(about_fix.to_geodetic(Position::from_vector(-estimate.vector())))
     }
 
-    pub(crate) fn is_usable(origin: Geodetic) -> bool {
+    fn is_usable(origin: Geodetic) -> bool {
         origin.is_finite() && origin.latitude.abs() < core::f64::consts::FRAC_PI_2
     }
 }
@@ -198,13 +208,13 @@ mod tests {
 
     #[test]
     fn the_origin_is_zero() {
-        let origin = LocalOrigin::new(zurich());
+        let origin = LocalOrigin::new(zurich()).expect("usable");
         assert_eq!(origin.to_ned(zurich()), Position::zero());
     }
 
     #[test]
     fn a_round_trip_returns_what_went_in() {
-        let origin = LocalOrigin::new(zurich());
+        let origin = LocalOrigin::new(zurich()).expect("usable");
         let p = Position::ned(1234.5, -876.25, -120.0);
         let back = origin.to_ned(origin.to_geodetic(p));
         assert!(
@@ -217,7 +227,7 @@ mod tests {
     fn scales_match_the_converter() {
         // tools/ulog2replay.py::geodetic_to_ned for 0.01° each way from zurich():
         //   (1111.8711, 754.9557, -10.0)
-        let origin = LocalOrigin::new(zurich());
+        let origin = LocalOrigin::new(zurich()).expect("usable");
         let p = origin
             .to_ned(Geodetic::from_degrees(47.4077, 8.5556, 498.0))
             .vector();
@@ -228,14 +238,15 @@ mod tests {
 
     #[test]
     fn up_is_negative_down() {
-        let origin = LocalOrigin::new(zurich());
+        let origin = LocalOrigin::new(zurich()).expect("usable");
         let above = Geodetic::from_degrees(47.3977, 8.5456, 500.0);
         assert_eq!(origin.to_ned(above).z(), -12.0);
     }
 
     #[test]
     fn crossing_the_antimeridian_is_a_short_step() {
-        let origin = LocalOrigin::new(Geodetic::from_degrees(-17.0, 179.9999, 0.0));
+        let origin =
+            LocalOrigin::new(Geodetic::from_degrees(-17.0, 179.9999, 0.0)).expect("usable");
         let east = origin.to_ned(Geodetic::from_degrees(-17.0, -179.9999, 0.0));
         let e = east.y();
         assert!(e > 0.0 && e < 25.0, "0.0002° east, got {e} m");
@@ -244,14 +255,17 @@ mod tests {
     #[test]
     fn the_integer_encoding_is_the_same_position() {
         let e7 = Geodetic::from_degrees_e7(473_977_000, 85_456_000, 488_000);
-        let p = LocalOrigin::new(zurich()).to_ned(e7).vector();
+        let p = LocalOrigin::new(zurich())
+            .expect("usable")
+            .to_ned(e7)
+            .vector();
         assert!(p.norm() < 1e-3, "{p:?}");
     }
 
     #[test]
     fn placing_puts_the_fix_at_the_estimate() {
         let estimate = Position::ned(35.0, -12.0, -4.0);
-        let origin = LocalOrigin::placing(zurich(), estimate);
+        let origin = LocalOrigin::placing(zurich(), estimate).expect("usable");
         let p = origin.to_ned(zurich());
         assert!(
             (p.vector() - estimate.vector()).norm() < 1e-2,
@@ -261,14 +275,18 @@ mod tests {
 
     #[test]
     fn poles_and_nonsense_are_not_origins() {
-        assert!(LocalOrigin::is_usable(zurich()));
-        assert!(!LocalOrigin::is_usable(Geodetic::from_degrees(
-            90.0, 0.0, 0.0
-        )));
-        assert!(!LocalOrigin::is_usable(Geodetic::from_degrees(
-            f64::NAN,
-            0.0,
-            0.0
-        )));
+        assert!(LocalOrigin::new(zurich()).is_some());
+        let pole = Geodetic::from_degrees(90.0, 0.0, 0.0);
+        assert_eq!(LocalOrigin::new(pole), None);
+        assert_eq!(
+            LocalOrigin::new(Geodetic::from_degrees(f64::NAN, 0.0, 0.0)),
+            None
+        );
+        // A fix near a pole, placed about an estimate that walks over it.
+        let near_pole = Geodetic::from_degrees(89.9999, 0.0, 0.0);
+        assert_eq!(
+            LocalOrigin::placing(near_pole, Position::ned(-100.0, 0.0, 0.0)),
+            None
+        );
     }
 }

@@ -607,8 +607,24 @@ the estimate:
 
 that is, the point $`-\hat{p}`$ from the fix, with (43) taken about the fix. The first fix then
 carries no information about position, which is correct: before it, the filter's absolute
-position was unknown, not wrong. Without an estimate (a coarse start) the origin is the fix and
-the fix is adopted as $`\hat{p} = 0`$, per (28).
+position was unknown, not wrong. It is spent placing the origin and is not fused as well, which
+would count it twice.
+
+It does fix the position uncertainty. With $`e_g`$ the fix's error, the origin sits $`e_g`$
+from where it should, so the position error about it is $`\delta p = -e_g`$ — whatever $`P`$
+said about position relative to the start no longer applies, and $`e_g`$ is independent of
+every other error state:
+
+```math
+P_{pp} \leftarrow R_g, \qquad P_{px} \leftarrow 0
+```
+
+the covariance half of `Eskf::reset_position_to`, with $`\hat{p}`$ unchanged. Fusing the fix
+instead, at zero innovation, would give $`(P_{pp}^{-1} + R_g^{-1})^{-1}`$: after a static start,
+where $`P_{pp}`$ is small, an estimate claiming centimeters about an origin placed to meters.
+
+Without an estimate (a coarse start) the origin is the fix and the fix is adopted as
+$`\hat{p} = 0`$, per (28).
 
 ## Equation-to-code mapping
 

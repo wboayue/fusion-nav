@@ -57,7 +57,9 @@ pub enum Fusion {
     /// velocity after a coarse start: a vehicle that initialized while moving knows
     /// neither where it is nor how fast it is going, and no gate can judge a measurement
     /// against nothing. A static start and a seed both have an estimate, so their first
-    /// fix is fused normally. The state becomes the measurement and its
+    /// fix is fused normally, or, given as latitude and longitude, places the origin
+    /// under that estimate; see [`Eskf::fuse_gnss_geodetic`](crate::Eskf::fuse_gnss_geodetic).
+    /// The state becomes the measurement and its
     /// covariance block becomes the measurement's, which is what fusing against an
     /// infinitely uncertain prior converges to — the limit, taken exactly rather than
     /// approached with an invented variance.
@@ -82,9 +84,16 @@ pub enum Fusion {
     /// sample happened to arrive first.
     ///
     /// Geodetic GNSS: no navigation origin is held and this fix cannot place one, because
-    /// a coordinate is not a number or it sits on a pole. The next usable fix will. See
+    /// it sits on a pole. The next usable fix will. See
     /// [`Eskf::fuse_gnss_geodetic`](crate::Eskf::fuse_gnss_geodetic).
     NoReference,
+    /// A number in the measurement or its noise is NaN or infinite. The measurement was
+    /// discarded and no health timer moved.
+    ///
+    /// Refused before anything else, including the adoption a coarse start allows: one
+    /// NaN in the state or covariance spreads to every quantity at the next update and
+    /// never leaves.
+    NotFinite,
 }
 
 impl Fusion {
@@ -105,7 +114,7 @@ impl Fusion {
         match self {
             Self::Accepted { test_ratio } | Self::Rejected { test_ratio } => Some(test_ratio),
             // A reset ran no gate: there was nothing to be inconsistent with.
-            Self::Reset | Self::NotInitialized | Self::NoReference => None,
+            Self::Reset | Self::NotInitialized | Self::NoReference | Self::NotFinite => None,
         }
     }
 }

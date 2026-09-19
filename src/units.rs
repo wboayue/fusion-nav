@@ -199,6 +199,11 @@ macro_rules! noise {
             pub const fn variance(self) -> f32 {
                 self.variance
             }
+
+            /// Whether the variance is a number, neither NaN nor infinite.
+            pub(crate) fn is_finite(self) -> bool {
+                self.variance.is_finite()
+            }
         }
     };
 }
@@ -218,6 +223,45 @@ noise!(
     variance = "radians squared"
 );
 
+/// `Clone`, `Copy`, `PartialEq` and `Debug` for a type holding a `Vector3<f32>` field and a
+/// frame marker.
+///
+/// Written out rather than derived: `derive` would add an `F: Clone` bound, and the frame
+/// markers are only ever type-level.
+macro_rules! vector_impls {
+    ($name:ident, $field:ident, $unit:literal) => {
+        impl<F: Frame> Clone for $name<F> {
+            fn clone(&self) -> Self {
+                *self
+            }
+        }
+
+        impl<F: Frame> Copy for $name<F> {}
+
+        impl<F: Frame> PartialEq for $name<F> {
+            fn eq(&self, other: &Self) -> bool {
+                self.$field == other.$field
+            }
+        }
+
+        impl<F: Frame> fmt::Debug for $name<F> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                let v = self.$field;
+                write!(
+                    f,
+                    "{}<{}>({}, {}, {}) {}",
+                    stringify!($name),
+                    F::NAME,
+                    v.x,
+                    v.y,
+                    v.z,
+                    $unit
+                )
+            }
+        }
+    };
+}
+
 macro_rules! framed {
     (
         $(#[$meta:meta])*
@@ -232,8 +276,8 @@ macro_rules! framed {
         impl<F: Frame> $name<F> {
             #[doc = concat!("From an `nalgebra` vector whose components are in ", $unit, ".")]
             ///
-            /// The frame is the type parameter, so name it: `from_vector::<Ned>` or a
-            /// binding with a stated type. The frame-named constructors say it for you.
+            /// The frame is the type parameter, so name it: `Position::<Ned>::from_vector` or
+            /// a binding with a stated type. The frame-named constructors say it for you.
             pub const fn from_vector(value: Vector3<f32>) -> Self {
                 Self {
                     value,
@@ -259,31 +303,26 @@ macro_rules! framed {
                 self.value.into()
             }
 
-            /// First component: north, or body forward.
+            /// First component on the axes of `F`: north, east for ENU, or body forward.
             pub fn x(self) -> f32 {
                 self.value.x
             }
 
-            /// Second component: east, or body right.
+            /// Second component on the axes of `F`: east, north for ENU, or body right.
             pub fn y(self) -> f32 {
                 self.value.y
             }
 
-            /// Third component: down, or body down.
+            /// Third component on the axes of `F`: down, up for ENU, or body down.
             pub fn z(self) -> f32 {
                 self.value.z
             }
-        }
 
-        // Written out rather than derived: `derive` would add an `F: Clone` bound, and the
-        // frame markers are only ever type-level.
-        impl<F: Frame> Clone for $name<F> {
-            fn clone(&self) -> Self {
-                *self
+            /// Whether every component is a number, neither NaN nor infinite.
+            pub(crate) fn is_finite(self) -> bool {
+                self.value.iter().all(|v| v.is_finite())
             }
         }
-
-        impl<F: Frame> Copy for $name<F> {}
 
         impl<F: Frame> Default for $name<F> {
             fn default() -> Self {
@@ -291,26 +330,7 @@ macro_rules! framed {
             }
         }
 
-        impl<F: Frame> PartialEq for $name<F> {
-            fn eq(&self, other: &Self) -> bool {
-                self.value == other.value
-            }
-        }
-
-        impl<F: Frame> fmt::Debug for $name<F> {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write!(
-                    f,
-                    "{}<{}>({}, {}, {}) {}",
-                    stringify!($name),
-                    F::NAME,
-                    self.value.x,
-                    self.value.y,
-                    self.value.z,
-                    $unit
-                )
-            }
-        }
+        vector_impls!($name, value, $unit);
     };
 }
 
@@ -446,37 +466,14 @@ macro_rules! noise3 {
             pub const fn variance(self) -> Vector3<f32> {
                 self.variance
             }
-        }
 
-        impl<F: Frame> Clone for $name<F> {
-            fn clone(&self) -> Self {
-                *self
+            /// Whether every variance is a number, neither NaN nor infinite.
+            pub(crate) fn is_finite(self) -> bool {
+                self.variance.iter().all(|v| v.is_finite())
             }
         }
 
-        impl<F: Frame> Copy for $name<F> {}
-
-        impl<F: Frame> PartialEq for $name<F> {
-            fn eq(&self, other: &Self) -> bool {
-                self.variance == other.variance
-            }
-        }
-
-        impl<F: Frame> fmt::Debug for $name<F> {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                let v = self.variance;
-                write!(
-                    f,
-                    "{}<{}>({}, {}, {}) {}",
-                    stringify!($name),
-                    F::NAME,
-                    v.x,
-                    v.y,
-                    v.z,
-                    $variance_unit
-                )
-            }
-        }
+        vector_impls!($name, variance, $variance_unit);
     };
 }
 

@@ -253,10 +253,9 @@ impl Eskf {
     /// Returns `false`, changing nothing, for an origin with a coordinate that is not a
     /// number or that sits on a pole, where east is undefined.
     pub fn set_origin(&mut self, origin: Geodetic) -> bool {
-        if !LocalOrigin::is_usable(origin) {
+        let Some(new) = LocalOrigin::new(origin) else {
             return false;
-        }
-        let new = LocalOrigin::new(origin);
+        };
         if let Some(old) = self.origin {
             self.state.position = new.to_ned(old.to_geodetic(self.state.position));
         }
@@ -276,9 +275,12 @@ impl Eskf {
         self.origin
     }
 
-    /// The position estimate as latitude, longitude and height, once there is an
-    /// [`origin`](Self::origin) to place it with.
+    /// The position estimate as latitude, longitude and height, once the filter is
+    /// initialized and has an [`origin`](Self::origin) to place it with.
     pub fn geodetic_position(&self) -> Option<Geodetic> {
+        if !self.initialized {
+            return None;
+        }
         self.origin
             .map(|origin| origin.to_geodetic(self.state.position))
     }
@@ -352,6 +354,9 @@ impl Eskf {
         if !self.initialized {
             return Fusion::NotInitialized;
         }
+        if !position.is_finite() || !noise.is_finite() {
+            return Fusion::NotFinite;
+        }
         if self.unestablished.position {
             self.reset_position_to(position, noise);
             self.diagnostics.gnss_position.record_accepted(0.0);
@@ -370,28 +375,53 @@ impl Eskf {
     ///
     /// * With a position estimate — a static start, a seed — the origin goes where that
     ///   estimate says the vehicle started, so the fix lands on the estimate and nothing
-    ///   steps. Equation (44).
+    ///   steps. Equation (44). The fix is not fused: it was spent placing the origin, and
+    ///   fusing it as well would count it twice. What it does settle is the position
+    ///   uncertainty. About the new origin the position error *is* the fix's error, so
+    ///   the position covariance block becomes `noise` and its correlations are dropped,
+    ///   as [`reset_position_to`](Self::reset_position_to) does, with the value unchanged.
+    ///   Reported as accepted with a zero test ratio: nothing was inconsistent.
     /// * Without one — after a coarse start — the origin goes at the fix, and the fix is
     ///   adopted as position zero; see [`Fusion::Reset`].
+    ///
+    /// Check the receiver's fix type before calling. Many report latitude and longitude
+    /// zero until they have a fix, and a finite zero is a usable origin: the first one
+    /// would put the navigation frame in the Gulf of Guinea for the rest of the flight.
     ///
     /// `noise` is as for [`fuse_gnss_position`](Self::fuse_gnss_position), floor
     /// included.
     ///
-    /// A fix with a coordinate that is not a number, or on a pole, cannot place an origin:
-    /// with none held it is refused with [`Fusion::NoReference`], and the next usable fix
-    /// places it instead.
+    /// A fix or noise that is not a number is refused with [`Fusion::NotFinite`]. A fix on
+    /// a pole cannot place an origin: with none held it is refused with
+    /// [`Fusion::NoReference`], and the next usable fix places it instead.
     pub fn fuse_gnss_geodetic(&mut self, fix: Geodetic, noise: PositionNoise<Ned>) -> Fusion {
         if !self.initialized {
             return Fusion::NotInitialized;
         }
-        let origin = match self.origin {
-            Some(origin) => origin,
-            None if !LocalOrigin::is_usable(fix) => return Fusion::NoReference,
-            None if self.unestablished.position => LocalOrigin::new(fix),
-            None => LocalOrigin::placing(fix, self.state.position),
+        if !fix.is_finite() || !noise.is_finite() {
+            return Fusion::NotFinite;
+        }
+        if let Some(origin) = self.origin {
+            return self.fuse_gnss_position(origin.to_ned(fix), noise);
+        }
+
+        if self.unestablished.position {
+            let Some(origin) = LocalOrigin::new(fix) else {
+                return Fusion::NoReference;
+            };
+            self.origin = Some(origin);
+            return self.fuse_gnss_position(Position::zero(), noise);
+        }
+
+        // Equation (44): the origin under the estimate, and the fix's error as the
+        // position's.
+        let Some(origin) = LocalOrigin::placing(fix, self.state.position) else {
+            return Fusion::NoReference;
         };
         self.origin = Some(origin);
-        self.fuse_gnss_position(origin.to_ned(fix), noise)
+        self.reset_position_to(self.state.position, noise);
+        self.diagnostics.gnss_position.record_accepted(0.0);
+        Fusion::Accepted { test_ratio: 0.0 }
     }
 
     /// Fuse a GNSS velocity solution. Equation (29).
@@ -414,6 +444,9 @@ impl Eskf {
         if !self.initialized {
             return Fusion::NotInitialized;
         }
+        if !velocity.is_finite() || !noise.is_finite() {
+            return Fusion::NotFinite;
+        }
         if self.unestablished.velocity {
             self.reset_velocity_to(velocity, noise);
             self.diagnostics.gnss_velocity.record_accepted(0.0);
@@ -434,6 +467,9 @@ impl Eskf {
         if !self.initialized {
             return Fusion::NotInitialized;
         }
+        if !altitude.as_meters().is_finite() || !noise.is_finite() {
+            return Fusion::NotFinite;
+        }
         if self.baro_reference.is_none() {
             return Fusion::NoReference;
         }
@@ -452,6 +488,9 @@ impl Eskf {
     pub fn fuse_mag_heading(&mut self, field: MagField<Body>, noise: HeadingNoise) -> Fusion {
         if !self.initialized {
             return Fusion::NotInitialized;
+        }
+        if !field.is_finite() || !noise.is_finite() {
+            return Fusion::NotFinite;
         }
         let _ = (field, noise);
         stub_accept(&mut self.diagnostics.mag_heading)
@@ -1246,6 +1285,87 @@ mod tests {
     }
 
     #[test]
+    fn placing_the_origin_makes_the_fix_error_the_position_error() {
+        let mut filter = initialized();
+        let mut matrix = *filter.covariance().as_matrix();
+        let (pn, vn) = (
+            ErrorState::PositionNorth as usize,
+            ErrorState::VelocityNorth as usize,
+        );
+        matrix[(pn, vn)] = 0.01;
+        matrix[(vn, pn)] = 0.01;
+        filter.covariance = Covariance::from_matrix(matrix);
+
+        let _ = filter.fuse_gnss_geodetic(zurich(), PositionNoise::horizontal_vertical(1.5, 3.0));
+
+        let p = filter.covariance();
+        assert_eq!(p.variance(ErrorState::PositionNorth), 2.25);
+        assert_eq!(p.variance(ErrorState::PositionDown), 9.0);
+        assert_eq!(
+            p.as_matrix()[(pn, vn)],
+            0.0,
+            "the fix's error owes nothing to velocity"
+        );
+    }
+
+    #[test]
+    fn a_fix_that_is_not_a_number_is_refused_even_with_an_origin_held() {
+        // The case that matters: an origin held and position unestablished, where a NaN
+        // would otherwise be adopted outright.
+        let mut filter = initialized();
+        assert!(filter.set_origin(zurich()));
+        let _ = filter
+            .initialize(&[still(); 8], Seconds::from_secs(0.1))
+            .expect("short, so coarse");
+        let noise = PositionNoise::horizontal_vertical(1.5, 1.5);
+
+        let nonsense = Geodetic::from_degrees(f64::NAN, 8.5, 488.0);
+        assert_eq!(
+            filter.fuse_gnss_geodetic(nonsense, noise),
+            Fusion::NotFinite
+        );
+        assert_eq!(
+            filter.fuse_gnss_geodetic(zurich(), PositionNoise::from_sigma(f32::NAN, 1.5, 1.5)),
+            Fusion::NotFinite
+        );
+        assert!(filter.state().position.is_finite());
+        assert!(filter.fuse_gnss_geodetic(zurich(), noise).is_reset());
+    }
+
+    #[test]
+    fn every_source_refuses_a_measurement_that_is_not_a_number() {
+        let mut filter = initialized();
+        filter.set_baro_reference(Altitude::from_meters(52.0));
+        let nan = f32::NAN;
+        assert_eq!(
+            filter.fuse_gnss_position(
+                Position::ned(nan, 0.0, 0.0),
+                PositionNoise::horizontal_vertical(1.5, 1.5)
+            ),
+            Fusion::NotFinite
+        );
+        assert_eq!(
+            filter.fuse_gnss_velocity(
+                Velocity::ned(0.0, 0.0, 0.0),
+                VelocityNoise::from_speed_accuracy(nan)
+            ),
+            Fusion::NotFinite
+        );
+        assert_eq!(
+            filter.fuse_baro_altitude(Altitude::from_meters(nan), AltitudeNoise::from_sigma(2.0)),
+            Fusion::NotFinite
+        );
+        assert_eq!(
+            filter.fuse_mag_heading(
+                MagField::body(0.2, 0.0, 0.4),
+                HeadingNoise::from_variance(f32::INFINITY)
+            ),
+            Fusion::NotFinite
+        );
+        assert_eq!(filter.diagnostics().gnss_position.accepted, 0);
+    }
+
+    #[test]
     fn an_origin_placed_after_moving_accounts_for_the_move() {
         let (mut state, covariance) = seed();
         state.position = Position::ned(40.0, -15.0, -3.0);
@@ -1292,9 +1412,9 @@ mod tests {
     #[test]
     fn a_fix_that_cannot_place_an_origin_is_refused_and_the_next_one_places_it() {
         let mut filter = initialized();
-        let nonsense = Geodetic::from_degrees(f64::NAN, 8.5, 488.0);
+        let pole = Geodetic::from_degrees(90.0, 0.0, 0.0);
         assert_eq!(
-            filter.fuse_gnss_geodetic(nonsense, PositionNoise::horizontal_vertical(1.5, 1.5)),
+            filter.fuse_gnss_geodetic(pole, PositionNoise::horizontal_vertical(1.5, 1.5)),
             Fusion::NoReference
         );
         assert_eq!(filter.origin(), None);
@@ -1316,7 +1436,11 @@ mod tests {
         let home = Geodetic::from_degrees(47.3967, 8.5446, 480.0);
         assert!(filter.set_origin(home));
         let after = filter.geodetic_position().expect("still held");
-        let moved = LocalOrigin::new(before).to_ned(after).vector().norm();
+        let moved = LocalOrigin::new(before)
+            .expect("usable")
+            .to_ned(after)
+            .vector()
+            .norm();
         assert!(moved < 1e-2, "the vehicle moved {moved} m");
         assert_ne!(filter.state().position, Position::zero(), "the numbers did");
         assert_eq!(

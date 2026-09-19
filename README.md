@@ -90,9 +90,12 @@ loop {
     // Measurement updates whenever a sensor delivers, each with its own noise. GNSS goes
     // in as the receiver reports it: latitude and longitude, converted about the origin
     // the filter holds, and accuracy as standard deviations, floored at 0.5 m as PX4
-    // and ArduPilot do. A rejection carries its test ratio.
+    // and ArduPilot do. u-blox reports accuracy in millimeters. Only fuse a real fix:
+    // many receivers report latitude and longitude zero until they have one. A
+    // rejection carries its test ratio.
     let fix = Geodetic::from_degrees_e7(pvt.lat, pvt.lon, pvt.height_mm);
-    let noise = PositionNoise::horizontal_vertical(pvt.h_acc.max(0.5), pvt.v_acc.max(0.5));
+    let (eph, epv) = (pvt.h_acc_mm as f32 * 1e-3, pvt.v_acc_mm as f32 * 1e-3);
+    let noise = PositionNoise::horizontal_vertical(eph.max(0.5), epv.max(0.5));
     if !filter.fuse_gnss_geodetic(fix, noise).is_accepted() {
         /* diagnostics() has the detail */
     }
@@ -219,13 +222,15 @@ test ratio, so a rejection is diagnosable:
 | `Rejected { test_ratio }` | gated out; ratio > 1, state unchanged |
 | `Reset` | adopted outright after a coarse start (once per quantity) |
 | `NoReference` | barometer altitude with no `α₀` from initialization, or a geodetic fix that cannot place an origin |
+| `NotFinite` | a NaN or infinity in the measurement or its noise; discarded |
 | `NotInitialized` | no state to fuse against |
 
 ### The navigation origin
 
 Position is NED meters about an origin the filter holds. The first `fuse_gnss_geodetic` places
 it: under the current estimate after a static start or a seed, so nothing steps, and at the fix
-itself after a coarse start, where the fix is adopted. `set_origin` names one instead, such as a
+itself after a coarse start, where the fix is adopted. Check the fix type first — a receiver
+without a fix often reports latitude and longitude zero, and that would become the origin. `set_origin` names one instead, such as a
 surveyed home; call it after initializing, since a static start clears it.
 
 Read it back with `origin()`, and use it for anything else held in latitude and longitude — a

@@ -85,7 +85,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Frames are checked at compile time. Uncommenting this fails to build:
     //
     //     filter.fuse_gnss_position(
-    //         Position::<fusion_nav::Enu>::from_meters(0.0, 0.0, 0.0),
+    //         Position::enu(0.0, 0.0, 0.0),
     //         PositionNoise::horizontal_vertical(1.0, 1.0),
     //     );
 
