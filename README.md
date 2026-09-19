@@ -182,6 +182,15 @@ and restarts at altitude.
 `alignment_of(window, dt)` reports what `initialize` would make of a window without touching the
 filter, for an application that would rather wait for stillness than start coarsely.
 
+A **seed** is checked where a window is not, because it crosses a boundary the filter does not
+control — another estimator, or storage that may be stale. `initialize_from` returns
+`InitError::NotFinite` for a NaN or an infinity, and `InitError::InvalidVariance` for a variance on
+the covariance diagonal that is not strictly positive: the bar every `fuse_*` puts on `R`. Zero is
+the one that arrives in practice, from a warm start whose diagonal was never populated, and it is
+not a tight prior but a claim of perfect knowledge — nothing would ever correct that quantity, and
+`validity()` would report it good immediately. A refused seed leaves the filter uninitialized
+rather than poisoned.
+
 After a coarse start the first GNSS position and first GNSS velocity are **adopted rather than
 fused**, reported as `Fusion::Reset`. A vehicle that initialized while moving has no position or
 velocity for the gate to judge a fix against. This happens once per quantity; everything after is

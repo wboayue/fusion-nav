@@ -211,8 +211,10 @@ impl Eskf {
     /// # Errors
     ///
     /// [`InitError::NotFinite`] if `state` or `covariance` carries a value that is not a
-    /// number, and [`InitError::NegativeVariance`] for a covariance diagonal no prior
-    /// could have. A rejected seed leaves the filter uninitialized rather than poisoned.
+    /// number, and [`InitError::InvalidVariance`] for a variance on the diagonal that is
+    /// not strictly positive — the bar every `fuse_*` puts on `R`, applied here because a
+    /// seed is the one path that writes a covariance in whole. A rejected seed leaves the
+    /// filter uninitialized rather than poisoned.
     ///
     /// Whether the seed counts as aligned is the covariance's answer, not this one's: a
     /// confident seed reports [`Status::Healthy`] straight away, a coarse one
@@ -225,8 +227,8 @@ impl Eskf {
         if !state_is_finite(&state) || !covariance.as_matrix().iter().all(|e| e.is_finite()) {
             return Err(InitError::NotFinite);
         }
-        if (0..STATES).any(|i| covariance.as_matrix()[(i, i)] < 0.0) {
-            return Err(InitError::NegativeVariance);
+        if (0..STATES).any(|i| covariance.as_matrix()[(i, i)] <= 0.0) {
+            return Err(InitError::InvalidVariance);
         }
         self.state = state;
         self.covariance = covariance;
@@ -1089,7 +1091,7 @@ mod tests {
         )] = -1.0;
         assert_eq!(
             filter.initialize_from(state, Covariance::from_matrix(matrix)),
-            Err(InitError::NegativeVariance)
+            Err(InitError::InvalidVariance)
         );
         matrix[(
             ErrorState::VelocityNorth.index(),
@@ -1100,6 +1102,33 @@ mod tests {
             Err(InitError::NotFinite)
         );
         assert!(!filter.is_initialized());
+    }
+
+    #[test]
+    fn a_seed_certain_of_a_quantity_it_cannot_be_certain_of_is_refused() {
+        // The failure this catches is a warm start off storage whose diagonal was never
+        // populated, so it arrives all zeros rather than obviously broken. A zero
+        // variance is not a tight prior: the gain is zero for that quantity, so nothing
+        // ever corrects it, and `validity`'s `variance <= sigma^2` calls it good on the
+        // first read.
+        let (state, _) = seed();
+        let mut filter = Eskf::new(Config::default());
+        assert_eq!(
+            filter.initialize_from(state, Covariance::zero()),
+            Err(InitError::InvalidVariance)
+        );
+        assert!(!filter.is_initialized(), "a refused seed leaves no state");
+        assert!(!filter.validity().horizontal_position);
+
+        // One zero entry is enough, and it is enough alone: the rest of the diagonal is
+        // a covariance a caller could have meant.
+        let (_, covariance) = seed();
+        let mut matrix = *covariance.as_matrix();
+        matrix[(ErrorState::GyroBiasZ.index(), ErrorState::GyroBiasZ.index())] = 0.0;
+        assert_eq!(
+            filter.initialize_from(state, Covariance::from_matrix(matrix)),
+            Err(InitError::InvalidVariance)
+        );
     }
 
     #[test]
