@@ -152,8 +152,11 @@ the window the filter takes:
 
 * **roll and pitch** from the averaged accelerometer
 * **heading** from the magnetometer if the window carries one, levelled by that roll and
-  pitch. Without one, heading is unobserved and is meant to start with an inflated variance for
-  the first magnetic heading to correct (not yet built)
+  pitch. Without one, heading is unobserved: stillness says nothing about the rotation about
+  gravity. `validity.heading` is false and `Status` stays `Aligning` until the first
+  `fuse_mag_heading` is accepted, however still the window was — `Initialization::sigma_yaw` is a
+  prior on a yaw nobody measured, and the covariance alone cannot tell the two apart (the yaw
+  value itself, and the reset that should replace it, are not yet built)
 * **gyroscope bias** from the averaged gyroscope, observable at rest (accelerometer bias is not,
   and starts at zero)
 * **the barometric reference** `α₀` — the altitude the barometer read at the origin. It is a
@@ -267,7 +270,7 @@ solution cannot be read without them.
 | `Status` | meaning |
 | -------- | ------- |
 | `Healthy` | every source that has been fused is still accepted, and attitude has converged |
-| `Aligning` | running and aided, but attitude has not converged — a coarse start still learning |
+| `Aligning` | running and aided, but attitude has not converged — a coarse start still learning, or a heading no magnetometer has observed yet |
 | `Degraded` | a source has timed out; others still aid the solution |
 | `DeadReckoning` | nothing is aiding; position and velocity drift without bound |
 
@@ -281,7 +284,9 @@ When several apply the most severe wins, in the order `DeadReckoning` > `Alignin
 `vertical_position`, `horizontal_velocity`, `vertical_velocity`. Each is the covariance measured
 against `Config::accuracy`, plus the requirement that the quantity was ever established — a tight
 prior on a number nobody set is not validity. A coarse start with an adopted GNSS fix has valid
-position while its attitude is still `Aligning`; `Status` alone cannot say that.
+position while its attitude is still `Aligning`; `Status` alone cannot say that. Heading is the
+same rule applied to attitude: a vehicle with no magnetometer has valid `tilt` and never valid
+`heading`, until one is fused.
 
 `Config::accuracy` is the one group of numbers meant to be supplied rather than derived: a survey
 platform and a racing quadrotor disagree about what "good enough" means.
@@ -326,6 +331,12 @@ Known and deliberate, stated here rather than discovered in flight.
   [barometric reference as a constant](GOALS.md#barometric-reference-as-a-constant).
 * **No magnetic-field states.** Hard- and soft-iron calibration is the application's job; an
   uncalibrated magnetometer gives a heading bias the filter cannot detect.
+* **Heading needs a magnetometer.** It is the only heading source the filter has, so a vehicle
+  without one never leaves `Aligning` and never reports `validity.heading`, however good the rest
+  of the estimate is. `Aligning` hides `Degraded`, so such a vehicle's source timeouts stop
+  showing in `Status` too and have to be read from `diagnostics()`. Yaw from course over ground
+  and a GSF yaw estimator are the answers, both unbuilt. See
+  [alignment beyond the static window](GOALS.md#alignment-beyond-the-static-window).
 * **In-motion alignment is coarse.** A moving start runs and reports `Aligning`, but full
   alignment of a bare vehicle in motion is not yet built; `initialize_from` covers a held
   estimate. See [alignment beyond the static window](GOALS.md#alignment-beyond-the-static-window).

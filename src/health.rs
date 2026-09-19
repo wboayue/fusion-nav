@@ -24,13 +24,21 @@ pub enum Status {
     /// At least one source has timed out, but the estimate is still aided.
     Degraded,
     /// The filter is running and aided, but its attitude has not converged: it was
-    /// initialized without a static window, or seeded coarsely, and is still learning.
+    /// initialized without a static window, seeded coarsely, or started from a window
+    /// with no magnetometer in it, and is still learning.
     ///
     /// Position and velocity are being estimated and are usable to the extent the
-    /// covariance says. Attitude is not yet good enough to fly on. The filter leaves this
-    /// state on its own, as soon as the covariance says tilt and heading uncertainty are
-    /// within [`Config::accuracy`](crate::Config::accuracy) — there is no timer and
-    /// nothing to acknowledge.
+    /// covariance says. Attitude is not yet good enough to fly on.
+    ///
+    /// Two ways out, and neither is a timer or an acknowledgement. Tilt and a widened
+    /// yaw leave on their own, as soon as the covariance falls within
+    /// [`Config::accuracy`](crate::Config::accuracy). A heading nothing has observed
+    /// needs a measurement instead: stillness never supplies yaw, so a filter that
+    /// started without a magnetometer stays here however small the covariance is, until
+    /// [`Eskf::fuse_mag_heading`](crate::Eskf::fuse_mag_heading) accepts one. A vehicle
+    /// carrying no magnetometer at all therefore never leaves, and — since this hides
+    /// [`Degraded`](Self::Degraded) — its source timeouts stop showing in `Status` and
+    /// have to be read from [`Diagnostics`].
     Aligning,
     /// Nothing is aiding the filter. Position and velocity error grows without bound.
     #[default]
@@ -200,8 +208,9 @@ impl Propagation {
 ///
 /// Every flag is derived from the covariance against
 /// [`Config::accuracy`](crate::Config::accuracy), plus the requirement that the quantity
-/// was ever established at all — a coarse start has no position until a fix arrives, and
-/// a tight prior on a number nobody set is not validity.
+/// was ever established at all — a coarse start has no position until a fix arrives, a
+/// window with no magnetometer has no heading until one is fused, and a tight prior on a
+/// number nobody set is not validity.
 ///
 /// Horizontal and vertical are separate because sources are: a vehicle with a barometer
 /// and no GNSS has a usable height and no horizontal position at all, which describes two
@@ -210,7 +219,11 @@ impl Propagation {
 pub struct Validity {
     /// Roll and pitch.
     pub tilt: bool,
-    /// Heading.
+    /// Heading. False until something observes the rotation about gravity: a
+    /// magnetometer in the initialization window, or an accepted
+    /// [`Eskf::fuse_mag_heading`](crate::Eskf::fuse_mag_heading). Stillness does not
+    /// observe it, so a perfect static alignment on a vehicle with no magnetometer
+    /// reports `tilt` and not this.
     pub heading: bool,
     /// North and east position.
     pub horizontal_position: bool,

@@ -47,8 +47,20 @@
 //! assert!(outcome.is_accepted());
 //! assert!(filter.origin().is_some());
 //!
+//! // Nothing in that window carried a magnetometer either, so nothing observed the
+//! // rotation about gravity: heading is not valid, and `Aligning` says the attitude has
+//! // not converged rather than the aiding having failed.
 //! let state = filter.state();
-//! assert_eq!(state.status, Status::Healthy);
+//! assert_eq!(state.status, Status::Aligning);
+//! assert!(state.validity.tilt && !state.validity.heading);
+//!
+//! // The first accepted magnetic heading is what establishes yaw.
+//! let outcome = filter.fuse_mag_heading(
+//!     MagField::body(0.22, 0.0, 0.44),
+//!     HeadingNoise::from_sigma(0.1),
+//! );
+//! assert!(outcome.is_accepted());
+//! assert_eq!(filter.state().status, Status::Healthy);
 //! # Ok::<(), fusion_nav::InitError>(())
 //! ```
 //!

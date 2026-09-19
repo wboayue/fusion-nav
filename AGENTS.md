@@ -70,11 +70,12 @@ it uniquely covers. Changing a `Config` default or the `summary` line requires u
 affected expectations.
 
 Expectations are matched pair by pair as substrings, so **adding** a key to the `summary` line is
-safe and pinning new behavior there is cheap — `align=`, `resets=` and `alpha0=` were added that
-way, and each now guards a decision that would otherwise rot into a comment (`alpha0=` catches
-the coarse log's 35575 barometer rows going from fused to `NoReference`, which no other key
-noticed). Renaming or removing a key
-breaks every entry at once.
+safe and pinning new behavior there is cheap — `align=`, `resets=`, `alpha0=` and `heading=` were
+added that way, and each now guards a decision that would otherwise rot into a comment (`alpha0=`
+catches the coarse log's 35575 barometer rows going from fused to `NoReference`, which no other key
+noticed; `heading=` is the validity verdict on the initialization window, which catches a yaw
+reported valid that no magnetometer ever observed — taken at the end of the log it would only
+restate `transitions=`). Renaming or removing a key breaks every entry at once.
 
 ## How defaults get decided
 
@@ -155,11 +156,14 @@ Single crate, `no_std`, `forbid(unsafe_code)`, `deny(missing_docs)`, allocation-
   `NotFinite`, `InvalidVariance`). Three entry points — `initialize`, `initialize_coarse`,
   `initialize_from` — and each reports an `Alignment`; `alignment_of` classifies without
   mutating. `is_aligned` reads the covariance against `Initialization`'s sigmas, so promotion is
-  measured rather than timed.
+  measured rather than timed — except heading, which no covariance can promote because
+  stillness never observes yaw; that one waits for a magnetometer.
 - **`Status` is the summary; `State::validity` is the detail.** Six per-quantity flags derived
   from the covariance against `Config::accuracy` (the one knob meant to be supplied, since
-  mission accuracy is not derivable), plus "was this ever established" — the `unknown` flags a
-  coarse start sets. `Eskf::predicted_validity` answers the arming question instead: valid now,
+  mission accuracy is not derivable), plus "was this ever established" — the `Unestablished` flags
+  a coarse start sets on position and velocity, and the one a window with no magnetometer sets on
+  heading, since stillness observes tilt but never yaw. A prior is not an estimate, and
+  `sigma_yaw` equals `Accuracy::heading` exactly, so the covariance cannot tell them apart. `Eskf::predicted_validity` answers the arming question instead: valid now,
   or a constraining source is being accepted. Both exist because PX4 and ArduPilot answer
   per-quantity validity and a single ladder cannot.
 - **`Status` precedence is most-severe-first**: `DeadReckoning` > `Aligning` > `Degraded` >

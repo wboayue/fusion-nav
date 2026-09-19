@@ -197,9 +197,23 @@ pub struct Accuracy {
 
 impl Default for Accuracy {
     /// Attitude matches what a good static alignment gives, so a filter that started
-    /// still is aligned from its first sample. Position and velocity are **placeholders**
-    /// — loose enough to admit a 1 Hz GNSS solution, and nothing more considered than
-    /// that.
+    /// still — and had a magnetometer to take a heading from — is aligned from its first
+    /// sample. Position and velocity are **placeholders** — loose enough to admit a 1 Hz
+    /// GNSS solution, and nothing more considered than that.
+    ///
+    /// The attitude equality is a knife edge, and it holds only because the stub never
+    /// propagates. [`tilt`](Accuracy::tilt) equals
+    /// [`Initialization::sigma_tilt`](Initialization::sigma_tilt) and
+    /// [`heading`](Accuracy::heading) equals
+    /// [`Initialization::sigma_yaw`](Initialization::sigma_yaw), and
+    /// [`Validity`](crate::Validity) compares with `<=`, so a static start passes by
+    /// exactly zero margin. The first real [`predict`](crate::Eskf::predict) adds `Q` and
+    /// the covariance grows: a static start will drop to
+    /// [`Status::Aligning`](crate::Status::Aligning) on its first step, and heading — which
+    /// only a magnetometer brings back down — may never return. Recorded rather than
+    /// corrected, because the number to widen these to is a measurement, not a guess: the
+    /// benchmark's `aligned_at` metric over the replay corpus is what should set it, the
+    /// same way the corpus set [`Timeouts::degraded_after`].
     fn default() -> Self {
         Self {
             tilt: Radians::from_radians(0.02),

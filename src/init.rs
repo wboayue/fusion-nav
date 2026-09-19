@@ -15,11 +15,16 @@ use crate::units::{Altitude, MagField, MetersPerSecond2, Radians, RadiansPerSeco
 ///
 /// The magnetometer is optional: without it, heading is unobserved and should start at
 /// zero with its variance inflated, leaving the first accepted magnetic heading to correct
-/// it.
+/// it. A window with none anywhere in it says so — [`Validity::heading`](crate::Validity)
+/// stays false until
+/// [`Eskf::fuse_mag_heading`](crate::Eskf::fuse_mag_heading) accepts one — because
+/// [`sigma_yaw`](crate::Initialization::sigma_yaw) is a prior and would otherwise read as
+/// an estimate of a quantity nothing measured.
 ///
 /// **Stub.** No heading is computed yet, so a static window starts with
 /// [`Initialization::sigma_yaw`](crate::Initialization::sigma_yaw) whether or not it
-/// carried a magnetometer.
+/// carried a magnetometer; what the magnetometer's presence changes today is the validity
+/// flag, not the yaw.
 ///
 /// The barometer is optional in the same way, but less forgivingly: its reference is a
 /// constant rather than a state, so a window carrying none leaves nothing for a later

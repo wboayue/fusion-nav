@@ -185,6 +185,10 @@ struct Replay {
     initialized_at: Option<f64>,
     alignment: Option<Alignment>,
     mag_at_init: bool,
+    /// `Validity::heading` the moment initialization committed — the filter's own verdict
+    /// on the window, which is not the same as `mag_at_init`: a coarse start carrying a
+    /// magnetometer has observed nothing it could level a heading with.
+    heading_at_init: bool,
     epochs: u32,
     rejections: u32,
     /// Measurements the filter adopted outright because a coarse start left it nothing to
@@ -220,6 +224,7 @@ impl Replay {
             initialized_at: None,
             alignment: None,
             mag_at_init: false,
+            heading_at_init: false,
             epochs: 0,
             rejections: 0,
             resets: 0,
@@ -322,8 +327,12 @@ impl Replay {
         // Already classified above; committing it cannot disagree.
         let _ = self.filter.initialize(window, dt)?;
         self.initialized_at = Some(t);
-        self.mag_at_init = window.iter().all(|s| s.mag.is_some());
-        self.status = self.filter.state().status;
+        // The filter's own rule: one magnetometer sample anywhere in the window observes
+        // heading, and none at all leaves yaw a prior until a heading is fused.
+        self.mag_at_init = window.iter().any(|s| s.mag.is_some());
+        let state = self.filter.state();
+        self.heading_at_init = state.validity.heading;
+        self.status = state.status;
         self.transitions.push((t, self.status));
         Ok(())
     }
@@ -456,7 +465,7 @@ impl Replay {
                 let heading = if self.mag_at_init {
                     "magnetometer present, heading observed"
                 } else {
-                    "no magnetometer in the window, heading unobserved"
+                    "no magnetometer in the window, heading unobserved until one is fused"
                 };
                 let reference = match self.filter.baro_reference() {
                     Some(reference) => format!(
@@ -548,8 +557,8 @@ impl Replay {
     fn report_summary(&self) {
         let state = self.filter.state();
         println!(
-            "\nsummary rate={:.0} window={} align={} alpha0={} resets={} refused={} invalid={} \
-             epochs={} transitions={} status={:?}",
+            "\nsummary rate={:.0} window={} align={} alpha0={} heading={} resets={} \
+             refused={} invalid={} epochs={} transitions={} status={:?}",
             self.interval.map_or(0.0, |interval| 1.0 / interval),
             self.window_samples,
             match self.alignment {
@@ -565,6 +574,18 @@ impl Replay {
                 "set"
             } else {
                 "none"
+            },
+            // `Validity::heading` as initialization left it, not as the log ended.
+            // Nothing pins the rotation about gravity except a magnetometer, and the
+            // covariance would report it good either way — `Initialization::sigma_yaw`
+            // and `Accuracy::heading` are the same number — so what is worth pinning is
+            // the verdict on the window. At the end of the log this says only that some
+            // magnetic heading was fused at some point, which `transitions` already
+            // notices.
+            if self.heading_at_init {
+                "valid"
+            } else {
+                "invalid"
             },
             self.resets,
             self.refused_steps,

@@ -33,12 +33,19 @@ pub struct Eskf {
     initialized: bool,
 }
 
-/// Quantities a coarse start could not establish, which wait for the first fix. See
-/// [`Fusion::Reset`].
+/// Quantities the start never established, which wait for the first measurement that
+/// observes them: position and velocity for the first GNSS fix after a coarse start (see
+/// [`Fusion::Reset`]), heading for the first magnetic heading.
+///
+/// The covariance cannot carry this on its own. Every entry on its diagonal is a prior,
+/// and a prior tight enough to pass [`Config::accuracy`](crate::Config::accuracy) reads as
+/// an estimate whether or not anything ever measured the quantity. This is the flag that
+/// tells the two apart.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Unestablished {
     position: bool,
     velocity: bool,
+    heading: bool,
 }
 
 impl Eskf {
@@ -95,6 +102,14 @@ impl Eskf {
     /// moving deck, say — should say so through [`initialize_from`](Self::initialize_from)
     /// rather than let the first GNSS fix arrive as a large innovation.
     ///
+    /// Heading is the one thing stillness cannot supply. Gravity pins roll and pitch;
+    /// nothing pins the rotation about it, so a window carrying no magnetometer leaves
+    /// yaw unobserved however long and however still it was, and
+    /// [`validity`](Self::validity) withholds `heading` until the first
+    /// [`fuse_mag_heading`](Self::fuse_mag_heading) is accepted. The covariance alone
+    /// cannot say that: [`sigma_yaw`](crate::Initialization::sigma_yaw) is a prior on a
+    /// number nobody measured.
+    ///
     /// `dt` is the interval between consecutive samples, so that
     /// [`min_duration`](crate::Initialization::min_duration) can be checked against a real
     /// span of time. As everywhere else, the filter never reads a clock.
@@ -123,6 +138,12 @@ impl Eskf {
         let (peak_gyro, peak_accel_deviation) = peak_motion(window);
         if init::at_rest(peak_gyro, peak_accel_deviation, &self.config.init) {
             self.baro_reference = baro_reference(window);
+        }
+        // Stillness observes tilt and gyroscope bias; it does not observe yaw. A window
+        // with no magnetometer anywhere in it leaves heading a prior rather than an
+        // estimate, and says so, whatever the alignment was.
+        if !window.iter().any(|sample| sample.mag.is_some()) {
+            self.unestablished.heading = true;
         }
         Ok(alignment)
     }
@@ -233,9 +254,10 @@ impl Eskf {
         self.state = state;
         self.covariance = covariance;
         self.diagnostics = Diagnostics::default();
-        // A seed carries a position and velocity the caller vouched for, with a
-        // covariance that says how far. Nothing here is unestablished in the sense that would
-        // justify overwriting it with the first fix.
+        // A seed carries a position, a velocity and an attitude the caller vouched for,
+        // with a covariance that says how far. Nothing here is unestablished in the sense
+        // that would justify overwriting it with the first measurement — including
+        // heading, which arrived with the seed rather than needing a magnetometer.
         self.unestablished = Unestablished::default();
         self.initialized = true;
         Ok(Alignment::Seeded)
@@ -534,7 +556,20 @@ impl Eskf {
     /// corrupt yaw but cannot reach roll or pitch. `noise` is on the resulting
     /// heading, not on the field components.
     ///
-    /// **Stub.** Records an acceptance with a zero test ratio; corrects nothing.
+    /// This is also where heading becomes an estimate. A static window with no
+    /// magnetometer in it, and any coarse start, leave yaw unobserved — see
+    /// [`initialize`](Self::initialize) — and [`validity`](Self::validity) reports
+    /// `heading` false until the first heading is accepted here, however tight
+    /// [`sigma_yaw`](crate::Initialization::sigma_yaw) was.
+    ///
+    /// That first heading is the point `GOALS.md` names for a yaw **reset** rather than an
+    /// ordinary update: the error-state attitude of equation (2) is a small-angle
+    /// quantity, so a yaw error of a radian is wrong in a way no variance expresses, and
+    /// widening the prior does not fix it. The bookkeeping below is the same either way.
+    ///
+    /// **Stub.** Records an acceptance with a zero test ratio; corrects nothing, and
+    /// computes no heading from `field`, so the reset above is not yet performed: the
+    /// validity flag moves, the yaw it describes does not.
     pub fn fuse_mag_heading(&mut self, field: MagField<Body>, noise: HeadingNoise) -> Fusion {
         if !self.initialized {
             return Fusion::NotInitialized;
@@ -546,7 +581,13 @@ impl Eskf {
             return Fusion::InvalidNoise;
         }
         let _ = (field, noise);
-        stub_accept(&mut self.diagnostics.mag_heading)
+        let outcome = stub_accept(&mut self.diagnostics.mag_heading);
+        // A rejected heading establishes nothing: it is the measurement the filter chose
+        // not to believe.
+        if outcome.is_accepted() {
+            self.unestablished.heading = false;
+        }
+        outcome
     }
 
     /// The current estimate, including its [`Status`].
@@ -580,7 +621,10 @@ impl Eskf {
     /// [`Validity::attitude`](crate::Validity::attitude).
     ///
     /// Read from the covariance against [`Config::accuracy`](crate::Config::accuracy), so
-    /// it is the filter's own estimate of its convergence rather than a timer.
+    /// convergence is measured rather than timed. With one thing the covariance cannot
+    /// say: a heading nothing ever observed is not aligned however tight
+    /// [`sigma_yaw`](crate::Initialization::sigma_yaw) is, so this stays false on a
+    /// vehicle with no magnetometer. See [`validity`](Self::validity).
     pub fn is_aligned(&self) -> bool {
         self.validity().attitude()
     }
@@ -601,9 +645,11 @@ impl Eskf {
 
         Validity {
             tilt: within(ErrorState::AttitudeX, tilt) && within(ErrorState::AttitudeY, tilt),
-            heading: within(ErrorState::AttitudeZ, accuracy.heading.as_radians()),
-            // A quantity a coarse start never established is not valid however tight the
-            // prior on it looks: nobody set that number.
+            // A quantity nothing ever established is not valid however tight the prior on
+            // it looks: nobody set that number. Heading waits for a magnetometer, and
+            // position and velocity for the first fix after a coarse start.
+            heading: !self.unestablished.heading
+                && within(ErrorState::AttitudeZ, accuracy.heading.as_radians()),
             horizontal_position: !self.unestablished.position
                 && within(ErrorState::PositionNorth, position)
                 && within(ErrorState::PositionEast, position),
@@ -801,11 +847,17 @@ impl Unestablished {
     /// zero, and both are true by construction. A coarse start can say neither: the
     /// vehicle was moving, through somewhere the filter cannot name. Those wait for the
     /// first fix.
+    ///
+    /// Heading needs a magnetometer either way, so a coarse start is only half the
+    /// question: [`Eskf::initialize`] adds the window that carried none. A coarse start is
+    /// unestablished even with one, because levelling a magnetic heading needs the tilt
+    /// that start did not get.
     const fn after(alignment: Alignment) -> Self {
         let coarse = matches!(alignment, Alignment::Coarse(..));
         Self {
             position: coarse,
             velocity: coarse,
+            heading: coarse,
         }
     }
 }
@@ -844,6 +896,15 @@ mod tests {
             baro: Some(Altitude::from_meters(altitude)),
             ..still()
         })
+    }
+
+    /// A still window carrying a magnetometer on every sample, which is what makes
+    /// heading an estimate rather than a prior. `initialized()`'s window has none.
+    fn window_with_mag() -> [StaticSample; 8] {
+        [StaticSample {
+            mag: Some(MagField::body(0.22, 0.0, 0.44)),
+            ..still()
+        }; 8]
     }
 
     /// Timers only run for a source that has been accepted, so fuse one first. Baro
@@ -1320,10 +1381,78 @@ mod tests {
 
     #[test]
     fn a_static_start_is_valid_in_every_part() {
-        let filter = initialized();
+        let mut filter = Eskf::new(Config::default());
+        let alignment = filter
+            .initialize(&window_with_mag(), Seconds::from_secs(0.25))
+            .expect("a 2 s window of stillness");
+        assert_eq!(alignment, Alignment::Static);
+
         let validity = filter.state().validity;
         assert!(validity.all(), "{validity:?}");
         assert!(validity.attitude() && validity.navigation());
+    }
+
+    #[test]
+    fn a_static_window_without_a_magnetometer_leaves_heading_unestablished() {
+        // The covariance on its own would say otherwise: `Initialization::sigma_yaw` and
+        // `Accuracy::heading` are both 0.35 rad, so the prior passes the bar exactly. It
+        // is a prior on a yaw nothing ever observed.
+        let filter = initialized();
+        let validity = filter.validity();
+        assert!(validity.tilt, "gravity pins roll and pitch");
+        assert!(!validity.heading, "nothing pins the rotation about gravity");
+        assert!(!filter.is_aligned());
+    }
+
+    #[test]
+    fn the_first_accepted_magnetic_heading_establishes_yaw() {
+        let mut filter = initialized();
+        assert!(
+            filter
+                .fuse_mag_heading(
+                    MagField::body(0.22, 0.0, 0.44),
+                    HeadingNoise::from_sigma(0.1),
+                )
+                .is_accepted()
+        );
+        assert!(filter.validity().heading, "something observed it at last");
+        assert!(filter.is_aligned());
+    }
+
+    #[test]
+    fn a_magnetometer_in_the_window_establishes_heading_at_once() {
+        let mut filter = Eskf::new(Config::default());
+        let _ = filter
+            .initialize(&window_with_mag(), Seconds::from_secs(0.25))
+            .expect("a 2 s window of stillness");
+        assert!(filter.validity().heading);
+    }
+
+    #[test]
+    fn a_coarse_start_needs_more_than_a_magnetometer_to_call_heading_valid() {
+        // Having observed the quantity is necessary, not sufficient: a coarse start
+        // widened yaw far past `Accuracy::heading`, and only fusion brings it back down.
+        let mut filter = Eskf::new(Config::default());
+        let mut window = window_with_mag();
+        window[3].imu.gyro = AngularRate::body(0.0, 0.4, 0.0);
+        let alignment = filter
+            .initialize(&window, Seconds::from_secs(0.25))
+            .expect("moving, not unusable");
+        assert!(matches!(alignment, Alignment::Coarse(..)));
+        assert!(!filter.validity().heading, "the window was moving");
+
+        assert!(
+            filter
+                .fuse_mag_heading(
+                    MagField::body(0.22, 0.0, 0.44),
+                    HeadingNoise::from_sigma(0.1),
+                )
+                .is_accepted()
+        );
+        assert!(
+            !filter.validity().heading,
+            "the covariance still says yaw is somewhere on the circle"
+        );
     }
 
     #[test]
