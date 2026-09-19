@@ -121,11 +121,21 @@ pub enum InitError {
     },
     /// A measurement, state, or covariance carried a value that is not finite.
     NotFinite,
-    /// A seed covariance had a negative variance on its diagonal, which no prior has.
+    /// A seed covariance had a variance on its diagonal that no prior has: zero or
+    /// negative.
+    ///
+    /// Zero is the one that arrives in practice, from a warm start deserialized out of
+    /// storage that never populated the diagonal. It reads as a tight prior and is not
+    /// one: it claims perfect knowledge, so the gain `K = P Hᵀ S⁻¹` of equation (25) is
+    /// zero for that quantity and no measurement ever corrects it, while
+    /// [`Validity`](crate::Validity) compares the zero variance against
+    /// [`Config::accuracy`](crate::Config::accuracy) and reports the quantity good from
+    /// the first read. A negative variance claims better than perfect. The bar is the one
+    /// every `fuse_*` puts on `R`; see [`Fusion::InvalidNoise`](crate::Fusion::InvalidNoise).
     ///
     /// Symmetry and positive-definiteness are not checked: that is a factorization on the
     /// caller's data, not a guard.
-    NegativeVariance,
+    InvalidVariance,
 }
 
 impl core::fmt::Display for InitError {
@@ -136,7 +146,9 @@ impl core::fmt::Display for InitError {
                 write!(f, "initialization dt of {} s is not usable", dt.as_secs())
             }
             Self::NotFinite => write!(f, "initialization input was not finite"),
-            Self::NegativeVariance => write!(f, "seed covariance had a negative variance"),
+            Self::InvalidVariance => {
+                write!(f, "seed covariance had a variance that was not positive")
+            }
         }
     }
 }

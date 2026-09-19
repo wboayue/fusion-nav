@@ -100,7 +100,7 @@ pub enum Fusion {
     /// discarded and no health timer moved.
     ///
     /// `R` has to be a variance some sensor could have. Zero makes the innovation
-    /// covariance `S = H P Hᵀ + R` of equation (25) singular as soon as the state it
+    /// covariance `S = H P Hᵀ + R` of equation (24) singular as soon as the state it
     /// observes is itself certain, and a negative one is worse: it claims a measurement
     /// better than perfect, and where a coarse start adopts the measurement outright it
     /// writes that negative variance straight into `P`, which

@@ -152,7 +152,7 @@ Single crate, `no_std`, `forbid(unsafe_code)`, `deny(missing_docs)`, allocation-
 - **Initialization does not refuse a usable window.** A short or moving one gives
   `Alignment::Coarse` with what it measured, the filter runs, and `Status::Aligning` says the
   attitude has not converged. Only genuinely unusable input errors (`NoSamples`, `InvalidStep`,
-  `NotFinite`, `NegativeVariance`). Three entry points — `initialize`, `initialize_coarse`,
+  `NotFinite`, `InvalidVariance`). Three entry points — `initialize`, `initialize_coarse`,
   `initialize_from` — and each reports an `Alignment`; `alignment_of` classifies without
   mutating. `is_aligned` reads the covariance against `Initialization`'s sigmas, so promotion is
   measured rather than timed.
