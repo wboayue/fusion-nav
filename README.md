@@ -87,11 +87,13 @@ loop {
     // step leaves the state where it was.
     if !filter.predict(imu, dt).is_propagated() { /* log the gap */ }
 
-    // Measurement updates whenever a sensor delivers, each with its own variance.
-    // A rejection carries its test ratio.
-    // GNSS goes in as latitude and longitude: the filter holds the origin and converts.
+    // Measurement updates whenever a sensor delivers, each with its own noise. GNSS goes
+    // in as the receiver reports it: latitude and longitude, converted about the origin
+    // the filter holds, and accuracy as standard deviations, floored at 0.5 m as PX4
+    // and ArduPilot do. A rejection carries its test ratio.
     let fix = Geodetic::from_degrees_e7(pvt.lat, pvt.lon, pvt.height_mm);
-    if !filter.fuse_gnss_geodetic(fix, PositionVariance::isotropic(1.5)).is_accepted() {
+    let noise = PositionNoise::horizontal_vertical(pvt.h_acc.max(0.5), pvt.v_acc.max(0.5));
+    if !filter.fuse_gnss_geodetic(fix, noise).is_accepted() {
         /* diagnostics() has the detail */
     }
 
@@ -114,8 +116,9 @@ $ cargo run --example replay        # a recorded flight in, the estimate out, as
 
 ## Conventions
 
-Fixed, not configurable. Applications in ENU or NWU convert at the boundary; the conversions are
-exact signed permutations.
+Fixed, not configurable. ENU and FLU input converts at the boundary, through constructors that
+do it — `Position::enu(e, n, u).to_ned()`, `AngularRate::flu(..)` — so the exact signed
+permutation is written once, in the crate.
 
 ```text
 navigation (NED)        body (FRD)
@@ -129,9 +132,12 @@ navigation (NED)        body (FRD)
 * Attitude is a unit quaternion rotating body to navigation, Hamilton convention, scalar first.
 * Positions and velocities are in the navigation frame; IMU measurements in the body frame.
 
-Frames are in the types, so passing a `Position<Enu>` where NED is expected is a compile error.
-Units are named by every constructor: `Position::from_meters`, `AngularRate::from_rad_per_s`,
-`HeadingVariance::from_rad2`.
+Frames are in the types, and constructors name them: `Position::ned(n, e, d)`,
+`AngularRate::body(x, y, z)`. Passing a `Position<Enu>` where NED is expected is a compile error.
+Units are SI and named only where a source commonly supplies something else:
+`Radians::from_degrees`, `AngularRate::body_deg_per_s`, `Geodetic::from_degrees_e7`. Noise is
+built `from_sigma` or `from_variance`, so a receiver's σ cannot arrive as a variance.
+Components come out as plain numbers: `.x()`, `.to_array()`, or `.vector()` for `nalgebra`.
 
 The filter never reads a clock. `dt` is an argument everywhere, including initialization.
 
@@ -191,15 +197,17 @@ Call `predict(imu, dt)` on every IMU sample. The result is `#[must_use]`:
 
 | method | measurement |
 | ------ | ----------- |
-| `fuse_gnss_geodetic(fix, variance)` | latitude, longitude, height; converted about the filter's origin |
-| `fuse_gnss_position(position, variance)` | NED position about the filter's origin, for a caller that converts itself |
-| `fuse_gnss_velocity(velocity, variance)` | NED velocity |
-| `fuse_baro_altitude(altitude, variance)` | altitude, relative to `α₀` |
-| `fuse_mag_heading(field, variance)` | body-frame field, fused as heading only |
+| `fuse_gnss_geodetic(fix, noise)` | latitude, longitude, height; converted about the filter's origin |
+| `fuse_gnss_position(position, noise)` | NED position about the filter's origin, for a caller that converts itself |
+| `fuse_gnss_velocity(velocity, noise)` | NED velocity |
+| `fuse_baro_altitude(altitude, noise)` | altitude, relative to `α₀` |
+| `fuse_mag_heading(field, noise)` | body-frame field, fused as heading only |
 
-The variance is an argument, not configuration, because the accuracy of a fix is a property of
-that fix. Where a GNSS receiver supplies it (`eph`, `epv`, speed accuracy), floor it: PX4 and
-ArduPilot both clamp from 0.5 m rather than fusing raw values. The magnetometer must already be
+The noise is an argument, not configuration, because the accuracy of a fix is a property of that
+fix. Build it the way the source reports it: `PositionNoise::horizontal_vertical(eph, epv)` and
+`VelocityNoise::from_speed_accuracy(sacc)` take a receiver's standard deviations, `from_variance`
+takes a covariance diagonal as ROS carries it. Floor a receiver's figures first: PX4 and ArduPilot
+both clamp from 0.5 m rather than fusing raw values. The magnetometer must already be
 calibrated for hard and soft iron.
 
 Every measurement passes through an innovation gate first. The `#[must_use]` result carries the
@@ -277,8 +285,8 @@ false however much GNSS is accepted.
 ## Recovery is the application's job
 
 The filter gates but does **not** recover on its own. Only the application knows whether to
-reset states, degrade the flight mode, or alert the operator. `reset_position_to(fix, variance)`
-and `reset_velocity_to(fix, variance)` exist so that `DeadReckoning` is actionable. PX4 resets
+reset states, degrade the flight mode, or alert the operator. `reset_position_to(fix, noise)`
+and `reset_velocity_to(fix, noise)` exist so that `DeadReckoning` is actionable. PX4 resets
 after a 7 s horizontal or 5 s height fusion timeout, which are reasonable starting points for an
 integrator's own policy. See [rejection handling](GOALS.md#rejection-handling-report-do-not-self-recover).
 

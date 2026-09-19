@@ -44,27 +44,27 @@ fn main() -> Result<(), InitError> {
             // is `#[must_use]`, so a rejection cannot be dropped silently.
             let outcome = filter.fuse_gnss_geodetic(
                 Geodetic::from_degrees(47.397_742, 8.545_594, 488.0),
-                PositionVariance::isotropic(1.5),
+                PositionNoise::horizontal_vertical(1.5, 3.0),
             );
             if let Some(test_ratio) = outcome.test_ratio() {
                 assert!(test_ratio <= 1.0, "gnss position rejected");
             }
 
             let _ = filter.fuse_gnss_velocity(
-                Velocity::<Ned>::from_m_per_s(14.0, 0.5, -0.2),
-                VelocityVariance::isotropic(0.09),
+                Velocity::ned(14.0, 0.5, -0.2),
+                VelocityNoise::from_speed_accuracy(0.3),
             );
         }
 
         if tick % (IMU_HZ / BARO_HZ) == 0 {
             let _ = filter
-                .fuse_baro_altitude(Altitude::from_meters(60.0), AltitudeVariance::from_m2(4.0));
+                .fuse_baro_altitude(Altitude::from_meters(60.0), AltitudeNoise::from_sigma(2.0));
         }
 
         if tick % (IMU_HZ / MAG_HZ) == 0 {
             let _ = filter.fuse_mag_heading(
-                MagField::from_components(0.21, 0.03, 0.44),
-                HeadingVariance::from_rad2(0.05),
+                MagField::body(0.21, 0.03, 0.44),
+                HeadingNoise::from_sigma(0.22),
             );
         }
     }
@@ -103,18 +103,18 @@ fn main() -> Result<(), InitError> {
 
 fn imu_sample() -> ImuSample {
     ImuSample {
-        gyro: AngularRate::from_rad_per_s(0.01, -0.002, 0.03),
-        accel: Acceleration::from_m_per_s2(0.2, 0.1, -GRAVITY),
+        gyro: AngularRate::body(0.01, -0.002, 0.03),
+        accel: Acceleration::body(0.2, 0.1, -GRAVITY),
     }
 }
 
 fn stationary_sample() -> StaticSample {
     StaticSample {
         imu: ImuSample {
-            gyro: AngularRate::from_rad_per_s(0.0, 0.0, 0.0),
-            accel: Acceleration::from_m_per_s2(0.0, 0.0, -GRAVITY),
+            gyro: AngularRate::body(0.0, 0.0, 0.0),
+            accel: Acceleration::body(0.0, 0.0, -GRAVITY),
         },
-        mag: Some(MagField::from_components(0.22, 0.0, 0.44)),
+        mag: Some(MagField::body(0.22, 0.0, 0.44)),
         // Ground level at the launch point. This is what fixes the barometer's
         // reference, so the 60 m fused later reads as 8 m above the origin rather than
         // as an absolute altitude. Without it `fuse_baro_altitude` refuses.

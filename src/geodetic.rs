@@ -152,7 +152,7 @@ impl LocalOrigin {
     /// NED meters from the origin as a geodetic position. The exact inverse of
     /// [`to_ned`](Self::to_ned), so a round trip returns what went in.
     pub fn to_geodetic(&self, position: Position<Ned>) -> Geodetic {
-        let p = position.as_meters();
+        let p = position.vector();
         Geodetic {
             latitude: self.origin.latitude + f64::from(p.x) / self.meridian_radius,
             longitude: wrap_pi(self.origin.longitude + f64::from(p.y) / self.parallel_radius),
@@ -171,7 +171,7 @@ impl LocalOrigin {
     /// The radii are taken at the fix rather than at the origin being solved for; the
     /// difference is second order in the displacement.
     pub fn placing(fix: Geodetic, estimate: Position<Ned>) -> Self {
-        Self::new(Self::new(fix).to_geodetic(Position::from_vector(-estimate.as_meters())))
+        Self::new(Self::new(fix).to_geodetic(Position::from_vector(-estimate.vector())))
     }
 
     pub(crate) fn is_usable(origin: Geodetic) -> bool {
@@ -205,10 +205,10 @@ mod tests {
     #[test]
     fn a_round_trip_returns_what_went_in() {
         let origin = LocalOrigin::new(zurich());
-        let p = Position::<Ned>::from_meters(1234.5, -876.25, -120.0);
+        let p = Position::ned(1234.5, -876.25, -120.0);
         let back = origin.to_ned(origin.to_geodetic(p));
         assert!(
-            (back.as_meters() - p.as_meters()).norm() < 1e-3,
+            (back.vector() - p.vector()).norm() < 1e-3,
             "{back:?} != {p:?}"
         );
     }
@@ -220,7 +220,7 @@ mod tests {
         let origin = LocalOrigin::new(zurich());
         let p = origin
             .to_ned(Geodetic::from_degrees(47.4077, 8.5556, 498.0))
-            .as_meters();
+            .vector();
         assert!((p.x - 1111.8711).abs() < 1e-3, "north {}", p.x);
         assert!((p.y - 754.9557).abs() < 1e-3, "east {}", p.y);
         assert_eq!(p.z, -10.0, "down is negative height");
@@ -230,31 +230,31 @@ mod tests {
     fn up_is_negative_down() {
         let origin = LocalOrigin::new(zurich());
         let above = Geodetic::from_degrees(47.3977, 8.5456, 500.0);
-        assert_eq!(origin.to_ned(above).as_meters().z, -12.0);
+        assert_eq!(origin.to_ned(above).z(), -12.0);
     }
 
     #[test]
     fn crossing_the_antimeridian_is_a_short_step() {
         let origin = LocalOrigin::new(Geodetic::from_degrees(-17.0, 179.9999, 0.0));
         let east = origin.to_ned(Geodetic::from_degrees(-17.0, -179.9999, 0.0));
-        let e = east.as_meters().y;
+        let e = east.y();
         assert!(e > 0.0 && e < 25.0, "0.0002° east, got {e} m");
     }
 
     #[test]
     fn the_integer_encoding_is_the_same_position() {
         let e7 = Geodetic::from_degrees_e7(473_977_000, 85_456_000, 488_000);
-        let p = LocalOrigin::new(zurich()).to_ned(e7).as_meters();
+        let p = LocalOrigin::new(zurich()).to_ned(e7).vector();
         assert!(p.norm() < 1e-3, "{p:?}");
     }
 
     #[test]
     fn placing_puts_the_fix_at_the_estimate() {
-        let estimate = Position::<Ned>::from_meters(35.0, -12.0, -4.0);
+        let estimate = Position::ned(35.0, -12.0, -4.0);
         let origin = LocalOrigin::placing(zurich(), estimate);
         let p = origin.to_ned(zurich());
         assert!(
-            (p.as_meters() - estimate.as_meters()).norm() < 1e-2,
+            (p.vector() - estimate.vector()).norm() < 1e-2,
             "{p:?} != {estimate:?}"
         );
     }
