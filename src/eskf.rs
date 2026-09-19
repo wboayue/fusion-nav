@@ -392,8 +392,9 @@ impl Eskf {
     /// included.
     ///
     /// A fix or noise that is not a number is refused with [`Fusion::NotFinite`]. A fix
-    /// with a latitude beyond ±90° cannot place an origin: with none held it is refused
-    /// with [`Fusion::NoReference`], and the next usable fix places it instead.
+    /// with a latitude beyond ±90° cannot place an origin, nor can one near a pole that no
+    /// origin puts at the estimate (see [`LocalOrigin::placing`]): with none held it is
+    /// refused with [`Fusion::NoReference`], and the next usable fix places it instead.
     pub fn fuse_gnss_geodetic(&mut self, fix: Geodetic, noise: PositionNoise<Ned>) -> Fusion {
         if !self.initialized {
             return Fusion::NotInitialized;

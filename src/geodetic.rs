@@ -182,13 +182,23 @@ impl LocalOrigin {
     ///
     /// Solved by iteration, because the answer depends on itself: stepping `-estimate`
     /// from the fix needs the origin's axes, and those depend on where the origin is. Each
-    /// pass takes the axes from the previous guess, starting at the fix, and shrinks the
-    /// error by `|estimate| / R` — to 40 µm after three passes from 10 km.
+    /// pass takes the axes from the previous guess, starting at the fix. Away from the
+    /// poles each pass shrinks the error by about `|estimate| / R`: measured at Zurich,
+    /// five passes leave 5 nm at 10 km, 20 µm at 100 km, and 13 mm at 300 km.
     ///
-    /// `None` if the fix cannot be an origin; see [`new`](Self::new). Every guess after it
-    /// comes out of `geodetic`, so it has a latitude that exists.
+    /// Near a pole the axes turn with longitude, and each pass shrinks the error only by
+    /// `|estimate|` over the distance to the pole — which grows it once the estimate is the
+    /// longer of the two. There the origin may not exist at all: an origin `r` from the
+    /// pole puts a point `e` due east of it `√(r² + e²)` from the pole, so a fix 11 m from
+    /// the pole is 100 m east of no origin. So the result is checked, not assumed: the fix
+    /// must land on the estimate to within what the `f32` state resolves there — 1 mm, or
+    /// one part in 2²³ of `|estimate|` beyond 8 km — so a placement that passes steps
+    /// nothing the state could represent.
+    ///
+    /// `None` if the fix cannot be an origin — see [`new`](Self::new) — or no origin was
+    /// found that puts it at the estimate.
     pub fn placing(fix: Geodetic, estimate: Position<Ned>) -> Option<Self> {
-        const PASSES: usize = 3;
+        const PASSES: usize = 5;
         if !Self::is_usable(fix) {
             return None;
         }
@@ -198,7 +208,10 @@ impl LocalOrigin {
         for _ in 0..PASSES {
             origin = Self::about(geodetic(fix - origin.ecef_to_ned.transpose() * offset));
         }
-        Some(origin)
+        // Measured in f64, before the narrowing `to_ned` would add.
+        let landed = origin.ecef_to_ned * (fix - origin.ecef);
+        let tolerance = f64::max(1e-3, f64::from(f32::EPSILON) * offset.norm());
+        ((landed - offset).norm() <= tolerance).then_some(origin)
     }
 
     /// Whether `origin` can be one: finite, and a latitude that exists. The poles are
@@ -390,11 +403,12 @@ mod tests {
         for estimate in [
             Position::ned(35.0, -12.0, -4.0),
             Position::ned(8_000.0, -6_000.0, -300.0),
+            Position::ned(210_000.0, 210_000.0, -100.0),
         ] {
             let origin = LocalOrigin::placing(zurich(), estimate).expect("usable");
             let p = origin.to_ned(zurich());
             assert!(
-                (p.vector() - estimate.vector()).norm() < 2e-3,
+                (p.vector() - estimate.vector()).norm() < 0.05,
                 "{p:?} != {estimate:?}"
             );
         }
@@ -416,5 +430,26 @@ mod tests {
             LocalOrigin::new(Geodetic::from_degrees(91.0, 0.0, 0.0)),
             None
         );
+    }
+
+    #[test]
+    fn placing_refuses_an_origin_that_does_not_exist() {
+        // 11 m from the pole, nothing is 100 m due east of any origin. The iteration used
+        // to return its last guess anyway, putting the fix at (99, -11, 0).
+        let near_pole = Geodetic::from_degrees(89.9999, 90.0, 0.0);
+        assert_eq!(
+            LocalOrigin::placing(near_pole, Position::ned(0.0, 100.0, 0.0)),
+            None
+        );
+        let near_pole = Geodetic::from_degrees(89.999, 90.0, 0.0);
+        assert_eq!(
+            LocalOrigin::placing(near_pole, Position::ned(0.0, 300.0, 0.0)),
+            None
+        );
+        // Where one does exist, near the pole is no obstacle.
+        let estimate = Position::ned(-100.0, 0.0, 0.0);
+        let origin = LocalOrigin::placing(near_pole, estimate).expect("100 m south exists");
+        let p = origin.to_ned(near_pole);
+        assert!((p.vector() - estimate.vector()).norm() < 1e-3, "{p:?}");
     }
 }

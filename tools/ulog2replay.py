@@ -160,7 +160,10 @@ def convert_gnss(ulog, rows, used):
     if dataset is None:
         print("warning: no GNSS topic; position and velocity aiding omitted", file=sys.stderr)
         return
-    geodetic = fields_for(dataset, GNSS_GEODETIC)
+    # Some drivers declare the ellipsoid field and never fill it; an all-zero height
+    # column would flatten every fix onto the origin's height. Skip to the MSL one.
+    filled = [c for c in GNSS_GEODETIC if c[0][2] not in dataset.data or dataset.data[c[0][2]].any()]
+    geodetic = fields_for(dataset, filled) or fields_for(dataset, GNSS_GEODETIC)
     if geodetic is None:
         raise ConversionError(
             f"`{dataset.name}` has no recognised geodetic fields; looked for "
