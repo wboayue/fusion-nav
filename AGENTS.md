@@ -199,5 +199,7 @@ to an offline tool that prints a `Config`, not into the filter.
 the module and function intended to implement each. Implementation work follows that layout
 (`init.rs`, `propagate.rs`, `update.rs`, `observation/{gnss,baro,mag}.rs`, `math.rs`), cites its
 equation numbers in the doc comment (existing stubs already do), and updates the table when the
-layout changes. `GOALS.md` records positioning, the six differentiators, and decisions already
+layout changes. `README.md` is the user guide (why an ESKF, how to initialize, run, and read
+health); architecture and implementation detail go in `DESIGN.md`, replay/corpus usage in
+`data/README.md`. `GOALS.md` records positioning, the six differentiators, and decisions already
 made — check it before changing scope; the non-goals list is deliberate.
