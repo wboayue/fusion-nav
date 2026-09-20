@@ -56,11 +56,12 @@ WGS84_E2 = 6.694_379_990_141e-3
 #
 # Heading, sigma = 0.3 rad: PX4's ekf2_head_noise{3.0e-1f} (EKF/common.h:403),
 # used at EKF/aid_sources/magnetometer/mag_control.cpp:603. ArduPilot sits looser
-# again, YAW_M_NSE 0.5 rad (AP_NavEKF3.cpp:472), floored at 0.05 rad where the
-# compass supplies the measurement (AP_NavEKF3_MagFusion.cpp:343). PX4's is the
-# tighter of the two and the corpus is PX4 logs, so it is the one taken: a
-# heading claimed better than either production filter achieves would make the
-# gate optimistic once gating is real.
+# again, YAW_M_NSE 0.5 rad (AP_NavEKF3.cpp:472), used unfloored on the compass
+# path -- case yawFusionMethod::MAGNETOMETER: R_YAW = sq(frontend->_yawNoise) at
+# AP_NavEKF3_MagFusion.cpp:975-978. PX4's is the tighter of the two and the
+# corpus is PX4 logs, so it is the one taken: a heading claimed better than
+# either production filter achieves would make the gate optimistic once gating
+# is real.
 DEFAULT_BARO_VARIANCE = 4.0  # m^2, sigma = 2.0 m
 DEFAULT_MAG_VARIANCE = 0.09  # rad^2, sigma = 0.3 rad
 

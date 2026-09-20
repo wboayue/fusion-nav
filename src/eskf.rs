@@ -405,7 +405,10 @@ impl Eskf {
     /// `noise` is the receiver's own accuracy where it reports one, bounded before it
     /// arrives: [`PositionNoise::clamped`](crate::PositionNoise::clamped) takes `eph` and
     /// `epv` and holds each between a floor and a cap, for the reasons recorded there. A
-    /// two-dimensional fix goes through the same constructor, said with the vertical σ.
+    /// two-dimensional fix instead goes through
+    /// [`PositionNoise::horizontal_vertical`](crate::PositionNoise::horizontal_vertical),
+    /// which leaves the vertical σ where the caller put it: `clamped` caps both axes, so
+    /// it would turn a declined height back into a measurement.
     ///
     /// The filter applies no bound of its own, because `R` describes the measurement and
     /// belongs with it rather than in [`Config`]. A caller handing over a raw `eph` is

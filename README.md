@@ -233,12 +233,13 @@ The noise is an argument, not configuration, because the accuracy of a fix is a 
 fix. Build it the way the source reports it: `PositionNoise::horizontal_vertical(eph, epv)` and
 `VelocityNoise::from_speed_accuracy(sacc)` take a receiver's standard deviations, `from_variance`
 takes a covariance diagonal as ROS carries it. Bound a receiver's figures first —
-`PositionNoise::clamped(eph, epv, 0.5, 100.0)` and `VelocityNoise::clamped(sacc, 0.5, 50.0)` —
-since neither production autopilot fuses one raw, both clamping on the low side against an
-optimistic fix and on the high side against an implausible one. Where a receiver reports the
-vertical axis separately, or reports no usable vertical velocity at all,
-`VelocityNoise::horizontal_vertical` says which axis is which instead of averaging the claim over
-all three. The magnetometer must already be calibrated for hard and soft iron.
+`PositionNoise::clamped(eph, epv, 0.5, 100.0)` and `VelocityNoise::clamped(sacc, sacc, 0.5, 50.0)` —
+since neither production autopilot fuses one raw. Both floor it, against a receiver whose accuracy
+stays small under multipath while the fix is metres wrong; ArduPilot also caps, and PX4 caps
+horizontal position only while GNSS is its sole horizontal aid. Where an axis was not measured at
+all — a two-dimensional fix, a solution with no vertical velocity — `horizontal_vertical` is the
+constructor instead, since it leaves that axis' σ alone where `clamped` would cap it back into a
+measurement. The magnetometer must already be calibrated for hard and soft iron.
 
 Every measurement passes through an innovation gate first. The result carries the test ratio, so
 a rejection is diagnosable. Reading it is optional: `diagnostics()` keeps the ratio, the counts
