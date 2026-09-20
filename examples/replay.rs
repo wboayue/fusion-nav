@@ -33,10 +33,31 @@
 //!
 //! # Output
 //!
-//! One row per IMU epoch after initialization: the state, the covariance diagonal as
-//! standard deviations, and the most recent test ratio per source. The sigma columns are
-//! what make the result plottable as estimate ± 3σ against truth; the test ratios are
-//! directly comparable with the innovation ratios PX4 publishes.
+//! Two files. `<out>.csv` holds one row per IMU epoch after initialization: the state, the
+//! covariance diagonal as standard deviations, and the most recent test ratio per source.
+//! The sigma columns are what make the result plottable as estimate ± 3σ against truth; the
+//! test ratios are directly comparable with the innovation ratios PX4 publishes.
+//!
+//! `<out>.fusion.csv` holds one row per `fuse_*` call — the resolution the epoch file cannot
+//! reach, since it keeps only the *last* ratio per source and so cannot tell two fusions
+//! apart or say what became of one:
+//!
+//! ```text
+//! # one row per fuse_* call. gates gnss_pos=7.81 gnss_vel=7.81 baro=3.84 mag=3.84
+//! t_s,source,nu0,nu1,nu2,s0,s1,s2,ratio,outcome
+//! 2.0000,gnss_pos,,,,,,,0.0000,accepted
+//! 0.1000,baro,,,,,,,,not_initialized
+//! ```
+//!
+//! The gates ride in the header because the filter reports `r = ε / γ`: without `γ` a ratio
+//! does not go back to `ε`, and `ε` is what a consistency statistic needs.
+//!
+//! `nu*` and `s*` are empty. The filter publishes no innovation or innovation covariance,
+//! and the harness deliberately does not work them out from the measurement and the
+//! covariance itself — the update of equations (23)–(28) is about to own that quantity, and
+//! a second implementation of it would disagree eventually, while somebody chased a filter
+//! bug that did not exist. The columns are here so the shape is settled before there are
+//! values for them.
 
 use std::env;
 use std::error::Error;
@@ -139,19 +160,41 @@ fn run() -> Result<(), Box<dyn Error>> {
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mut out = BufWriter::new(File::create(&output)?);
-    write_header(&mut out)?;
+    let fusions = output.with_extension("fusion.csv");
+    let mut epoch_out = BufWriter::new(File::create(&output)?);
+    let mut fusion_out = BufWriter::new(File::create(&fusions)?);
+    write_header(&mut epoch_out)?;
+    write_fusion_header(&mut fusion_out, &config)?;
 
     let mut replay = Replay::new(config);
-    for (n, line) in text.lines().enumerate() {
-        replay
-            .row(line, &mut out)
-            .map_err(|e| format!("{}:{}: {e}", input.display(), n + 1))?;
+    {
+        let mut out = Sinks {
+            epochs: &mut epoch_out,
+            fusions: &mut fusion_out,
+        };
+        for (n, line) in text.lines().enumerate() {
+            replay
+                .row(line, &mut out)
+                .map_err(|e| format!("{}:{}: {e}", input.display(), n + 1))?;
+        }
     }
-    out.flush()?;
+    epoch_out.flush()?;
+    fusion_out.flush()?;
 
-    replay.report(&input, &output);
+    replay.report(&input, &output, &fusions);
     Ok(())
+}
+
+/// The two output streams.
+///
+/// Two files rather than a `row_kind` column: an epoch row and a fusion row share no
+/// columns, and the epoch file's width is what `write_header` and the determinism job in CI
+/// both rest on. `dyn Write` rather than two type parameters, because `Replay` would
+/// otherwise carry them through every method for no gain — the writers are buffered and
+/// this is one virtual call per row.
+struct Sinks<'a> {
+    epochs: &'a mut dyn Write,
+    fusions: &'a mut dyn Write,
 }
 
 /// Everything the loop carries between rows.
@@ -209,6 +252,9 @@ struct Replay {
     /// magnetometer has observed nothing it could level a heading with.
     heading_at_init: bool,
     epochs: u32,
+    /// Rows written to the fusion file: every `fuse_*` call the log made, whatever its
+    /// outcome.
+    fusions: u32,
     /// When the worst refused step happened. The count and the size of the gap come from
     /// `diagnostics()`; the filter reads no clock, so the log timestamp is the harness's to
     /// keep.
@@ -239,13 +285,14 @@ impl Replay {
             aligned_at: None,
             heading_at_init: false,
             epochs: 0,
+            fusions: 0,
             longest_step_at: None,
             status: Status::default(),
             transitions: Vec::new(),
         }
     }
 
-    fn row(&mut self, line: &str, out: &mut impl Write) -> Result<(), Box<dyn Error>> {
+    fn row(&mut self, line: &str, out: &mut Sinks) -> Result<(), Box<dyn Error>> {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') || line.starts_with("t_s") {
             return Ok(());
@@ -271,7 +318,7 @@ impl Replay {
                     Position::ned(r.value(0)?, r.value(1)?, r.value(2)?),
                     PositionNoise::from_variance(r.variance(0)?, r.variance(1)?, r.variance(2)?),
                 );
-                self.observe(GNSS_POS, outcome);
+                self.observe(r.t, GNSS_POS, outcome, out)?;
             }
             "gnss_vel" => {
                 let velocity = Velocity::ned(r.value(0)?, r.value(1)?, r.value(2)?);
@@ -282,7 +329,7 @@ impl Replay {
                     velocity,
                     VelocityNoise::from_variance(r.variance(0)?, r.variance(1)?, r.variance(2)?),
                 );
-                self.observe(GNSS_VEL, outcome);
+                self.observe(r.t, GNSS_VEL, outcome, out)?;
             }
             "baro" => {
                 let altitude = Altitude::from_meters(r.value(0)?);
@@ -290,7 +337,7 @@ impl Replay {
                 let outcome = self
                     .filter
                     .fuse_baro_altitude(altitude, AltitudeNoise::from_variance(r.variance(0)?));
-                self.observe(BARO, outcome);
+                self.observe(r.t, BARO, outcome, out)?;
             }
             "mag" => {
                 let field = MagField::body(r.value(0)?, r.value(1)?, r.value(2)?);
@@ -298,7 +345,7 @@ impl Replay {
                 let outcome = self
                     .filter
                     .fuse_mag_heading(field, HeadingNoise::from_variance(r.variance(0)?));
-                self.observe(MAG, outcome);
+                self.observe(r.t, MAG, outcome, out)?;
             }
             other => return Err(format!("unknown source `{other}`").into()),
         }
@@ -406,7 +453,7 @@ impl Replay {
         alignment.is_static() || waited >= PATIENCE
     }
 
-    fn propagate(&mut self, t: f64, imu: ImuSample, out: &mut impl Write) -> io::Result<()> {
+    fn propagate(&mut self, t: f64, imu: ImuSample, out: &mut Sinks) -> io::Result<()> {
         if let Some(previous) = self.previous_imu.replace(t) {
             // The filter decides what is too long, not the example.
             let worst_before = self.filter.diagnostics().propagation.longest_refused;
@@ -432,11 +479,36 @@ impl Replay {
         self.write_row(t, state, out)
     }
 
-    /// Carry the test ratio into the output row. Counting is the filter's job — `AGENTS.md`,
-    /// one statistic, one implementation — so everything else this row did is read back out
-    /// of `diagnostics()` at the end.
-    fn observe(&mut self, source: usize, outcome: Fusion) {
+    /// Carry the test ratio into the epoch row, and record the fusion itself.
+    ///
+    /// Counting is the filter's job — `AGENTS.md`, one statistic, one implementation — so
+    /// everything else this row did is read back out of `diagnostics()` at the end. What
+    /// the fusion file adds is the one thing totals cannot reconstruct: which measurement,
+    /// at what time, met what verdict.
+    fn observe(
+        &mut self,
+        t: f64,
+        source: usize,
+        outcome: Fusion,
+        out: &mut Sinks,
+    ) -> io::Result<()> {
         self.ratios[source] = outcome.test_ratio();
+        self.fusions += 1;
+        // `ν` and the diagonal of `S` are left empty rather than computed here. The filter
+        // publishes neither, and the harness working them out from the measurement and the
+        // covariance would be a second implementation of a quantity the update of (23)-(28)
+        // is about to own — the disagreement `AGENTS.md` keeps one implementation to avoid.
+        // The columns exist so the shape is fixed before #36 has values to put in it.
+        writeln!(
+            out.fusions,
+            "{t:.4},{},,,,,,,{},{}",
+            RATIOS[source].trim_start_matches("r_"),
+            match outcome.test_ratio() {
+                Some(ratio) => format!("{ratio:.4}"),
+                None => String::new(),
+            },
+            verdict(outcome),
+        )
     }
 
     /// Measurements the gate turned down, over every source.
@@ -515,7 +587,8 @@ impl Replay {
         }
     }
 
-    fn write_row(&self, t: f64, state: State, out: &mut impl Write) -> io::Result<()> {
+    fn write_row(&self, t: f64, state: State, out: &mut Sinks) -> io::Result<()> {
+        let out = &mut out.epochs;
         write!(out, "{t:.4},{:?}", state.status)?;
         for (_, value) in ESTIMATE {
             write!(out, ",{:.6}", value(&state))?;
@@ -534,8 +607,8 @@ impl Replay {
     }
 
     /// Print what happened. `summary` is the only line anything parses.
-    fn report(&self, input: &Path, output: &Path) {
-        self.report_initialization(input, output);
+    fn report(&self, input: &Path, output: &Path, fusions: &Path) {
+        self.report_initialization(input, output, fusions);
         self.report_steps();
         self.report_transitions();
         self.report_summary();
@@ -544,10 +617,11 @@ impl Replay {
     }
 
     /// The input, the output, and how initialization went.
-    fn report_initialization(&self, input: &Path, output: &Path) {
+    fn report_initialization(&self, input: &Path, output: &Path, fusions: &Path) {
         println!("fusion-nav replay — no filtering is performed\n");
         println!("in   {}", input.display());
         println!("out  {}", output.display());
+        println!("     {} ({} fusions)", fusions.display(), self.fusions);
 
         match self.initialized_at {
             Some(t) => {
@@ -869,6 +943,44 @@ impl<'a> Record<'a> {
     }
 }
 
+/// The name the fusion file records for one outcome.
+///
+/// Exhaustive on purpose. `Fusion` is not `#[non_exhaustive]` — an outcome is matched, and a
+/// wildcard arm is the integrator bug the typed outcomes exist to prevent (`AGENTS.md`) — so
+/// a variant added later stops here rather than being written out as something else.
+fn verdict(outcome: Fusion) -> &'static str {
+    match outcome {
+        Fusion::Accepted { .. } => "accepted",
+        Fusion::Reset => "reset",
+        Fusion::Rejected { .. } => "rejected",
+        Fusion::NotInitialized => "not_initialized",
+        Fusion::NoReference => "no_reference",
+        Fusion::NotFinite => "not_finite",
+        Fusion::InvalidNoise => "invalid_noise",
+    }
+}
+
+/// The fusion file's header, and the gates that make its ratios readable.
+///
+/// The filter reports `r = ε / γ`, so a ratio only becomes `ε` — and `ε` only becomes NIS —
+/// if `γ` is known. Recording the gates here rather than expecting a reader to look them up
+/// keeps the file self-describing: a `Config` change moves the number in the file that the
+/// ratios were produced under.
+fn write_fusion_header(out: &mut impl Write, config: &Config) -> io::Result<()> {
+    let gates = config.gates;
+    writeln!(
+        out,
+        "# one row per fuse_* call. gates gnss_pos={} gnss_vel={} baro={} mag={}",
+        gates.gnss_position, gates.gnss_velocity, gates.baro_altitude, gates.mag_heading
+    )?;
+    writeln!(
+        out,
+        "# nu* and s* are empty: the filter publishes no innovation yet, and the harness \
+         does not compute one it would have to agree with later"
+    )?;
+    writeln!(out, "t_s,source,nu0,nu1,nu2,s0,s1,s2,ratio,outcome")
+}
+
 fn write_header(out: &mut impl Write) -> io::Result<()> {
     write!(out, "t_s,status")?;
     for (name, _) in ESTIMATE {
@@ -972,18 +1084,37 @@ mod tests {
         }
     }
 
-    /// Replay a fixture, or report the row that stopped it.
-    fn try_replay(log: &Log) -> Result<Replay, String> {
+    /// Drive a fixture through the harness, keeping the fusion rows it wrote.
+    fn drive(log: &Log) -> Result<(Replay, String), String> {
         let mut replay = Replay::new(Config {
             magnetic_declination: Radians::from_radians(-0.06),
             ..Config::default()
         });
-        for line in log.0.lines() {
-            replay
-                .row(line, &mut io::sink())
-                .map_err(|e| e.to_string())?;
+        let mut fusions = Vec::new();
+        {
+            let mut out = Sinks {
+                epochs: &mut io::sink(),
+                fusions: &mut fusions,
+            };
+            for line in log.0.lines() {
+                replay.row(line, &mut out).map_err(|e| e.to_string())?;
+            }
         }
-        Ok(replay)
+        Ok((replay, String::from_utf8(fusions).expect("utf-8")))
+    }
+
+    /// Replay a fixture, or report the row that stopped it.
+    fn try_replay(log: &Log) -> Result<Replay, String> {
+        drive(log).map(|(replay, _)| replay)
+    }
+
+    /// The fusion rows a fixture produced, header excluded — `write_fusion_header` is not
+    /// part of what `Replay` writes, and is checked on its own.
+    fn fusion_rows(log: &Log) -> Vec<String> {
+        match drive(log) {
+            Ok((_, rows)) => rows.lines().map(str::to_string).collect(),
+            Err(e) => panic!("fixture replays: {e}"),
+        }
     }
 
     fn replay(log: &Log) -> Replay {
@@ -1473,6 +1604,111 @@ mod tests {
         );
     }
 
+    // ---- the fusion file ----
+
+    #[test]
+    fn every_fuse_call_writes_one_row_whatever_it_returned() {
+        // Three aiding rows before the window closes and three after. The summary counts
+        // only what was accepted or refused; this is the record that they happened at all.
+        let mut log = Log::new();
+        for i in 0..100 {
+            let t = i as f64 * DT;
+            if i == 10 {
+                log = log
+                    .gnss_pos(t, 0.0, 0.0, 0.0)
+                    .gnss_vel(t, 0.0, 0.0, 0.0)
+                    .mag(t);
+            }
+            log = log.imu(t, STILL);
+        }
+        log = log
+            .gnss_pos(2.0, 1.0, 2.0, -3.0)
+            .gnss_vel(2.0, 0.5, 0.0, 0.0)
+            .mag(2.0)
+            .imu(2.0, STILL);
+        assert_eq!(fusion_rows(&log).len(), 6);
+    }
+
+    #[test]
+    fn a_fusion_row_names_the_verdict_it_got() {
+        // One fixture per outcome the stub can actually produce. `rejected` needs the χ²
+        // gate of (37); `verdict` is exhaustive on `Fusion`, so the variant cannot be
+        // dropped silently while it waits.
+        let coarse = Log::new()
+            .run(0.0, 501, DT, TURNING)
+            .gnss_pos(10.02, 1.0, 2.0, -3.0)
+            .imu(10.02, TURNING);
+        for (log, expected) in [
+            (still_start().gnss_pos(2.0, 0.0, 0.0, 0.0), "accepted"),
+            (Log::new().gnss_pos(0.0, 0.0, 0.0, 0.0), "not_initialized"),
+            (
+                still_start().raw("2.000000,baro,42,,,,,,4,,"),
+                "no_reference",
+            ),
+            (
+                still_start().raw("2.000000,gnss_pos,0,0,0,,,,0,2.25,5.625"),
+                "invalid_noise",
+            ),
+            (
+                still_start().raw("2.000000,gnss_pos,nan,0,0,,,,2.25,2.25,5.625"),
+                "not_finite",
+            ),
+            (coarse, "reset"),
+        ] {
+            let last = fusion_rows(&log).pop().expect("a fusion row");
+            assert_eq!(
+                last.rsplit(',').next(),
+                Some(expected),
+                "expected {expected}: {last}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_innovation_columns_stay_empty_until_the_filter_publishes_one() {
+        // Pinned rather than left to be noticed. The harness could work `ν` out from the
+        // measurement and the covariance, and must not: the update of (23)-(28) is about to
+        // own that quantity, and two implementations of it would disagree while somebody
+        // chases a filter bug that does not exist.
+        let log = still_start().gnss_pos(2.0, 1.0, 2.0, -3.0);
+        let row = fusion_rows(&log).pop().expect("a fusion row");
+        let fields: Vec<&str> = row.split(',').collect();
+        assert_eq!(&fields[2..8], &["", "", "", "", "", ""], "ν and S: {row}");
+        assert_eq!(fields[8], "0.0000", "the ratio is published: {row}");
+    }
+
+    #[test]
+    fn the_fusion_header_carries_the_gates_the_ratios_were_produced_under() {
+        // `r = ε / γ`, so a ratio without its `γ` is not recoverable to NIS.
+        let mut out = Vec::new();
+        let config = Config {
+            gates: Gates {
+                baro_altitude: 2.71,
+                ..Gates::default()
+            },
+            ..Config::default()
+        };
+        write_fusion_header(&mut out, &config).expect("header");
+        let text = String::from_utf8(out).expect("utf-8");
+        assert!(text.contains("baro=2.71"), "the gate in force: {text}");
+        assert_eq!(
+            text.lines().last(),
+            Some("t_s,source,nu0,nu1,nu2,s0,s1,s2,ratio,outcome")
+        );
+    }
+
+    #[test]
+    fn the_fusion_header_names_one_column_per_field_in_a_row() {
+        let mut out = Vec::new();
+        write_fusion_header(&mut out, &Config::default()).expect("header");
+        let text = String::from_utf8(out).expect("utf-8");
+        let header = text.lines().last().expect("a header");
+        let row = fusion_rows(&still_start().gnss_pos(2.0, 0.0, 0.0, 0.0))
+            .pop()
+            .expect("a fusion row");
+        assert_eq!(header.split(',').count(), row.split(',').count(), "{row}");
+    }
+
     // ---- the output shape ----
 
     #[test]
@@ -1483,8 +1719,14 @@ mod tests {
         write_header(&mut out).expect("header");
         let mut replay = Replay::new(Config::default());
         let log = still_start().run(2.0, 1, DT, STILL);
-        for line in log.0.lines() {
-            replay.row(line, &mut out).expect("fixture replays");
+        {
+            let mut sinks = Sinks {
+                epochs: &mut out,
+                fusions: &mut io::sink(),
+            };
+            for line in log.0.lines() {
+                replay.row(line, &mut sinks).expect("fixture replays");
+            }
         }
         let text = String::from_utf8(out).expect("utf-8");
         let mut lines = text.lines();

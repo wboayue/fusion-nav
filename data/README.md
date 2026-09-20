@@ -4,6 +4,33 @@
 CSV — the normalized log format the [validation harness](../GOALS.md#harness-constraint) is built
 on. The format itself is documented in `examples/replay.rs`.
 
+It writes two files. `<out>.csv` is one row per IMU epoch: the state, the covariance diagonal as
+standard deviations, and the last test ratio per source. `<out>.fusion.csv` is one row per
+`fuse_*` call — `t_s,source,nu0..nu2,s0..s2,ratio,outcome` — which is the resolution the epoch
+file cannot reach, since it keeps only the most recent ratio and so cannot tell two fusions apart
+or say what became of either. The per-source gates ride in that file's header, because the filter
+reports `r = ε / γ` and a ratio without its `γ` does not go back to `ε`.
+
+`nu*` and `s*` are empty for now: the filter publishes no innovation or innovation covariance, and
+the harness does not work them out for itself — see the rule below.
+
+## One statistic, one implementation
+
+The Rust replay harness is the only thing that **computes** a statistic. It emits the per-fusion
+rows above and the scalar keys on the `summary` line. The Python tools under `tools/` read those
+rows and those keys — they aggregate across logs, plot, and compare against the EKF2 reference —
+and never recompute a number the harness already defines.
+
+The test is whether a quantity could ever be produced by both paths. If it could, it belongs to
+the harness, because that is the one CI runs. Where a statistic is only meaningful across logs or
+against the reference — distance from EKF2, the corpus table — it lives in Python and is defined
+there once.
+
+The same rule is why `nu*` and `s*` above stay empty rather than being computed here from the
+measurement and the covariance. The update of equations (23)–(28) is about to own that quantity,
+and two implementations of it would eventually disagree — discovered, as these things are, while
+somebody chases a filter bug that does not exist.
+
 ## Simulated flights
 
 `examples/simulate.rs` generates flights with **analytic ground truth**, which neither of the

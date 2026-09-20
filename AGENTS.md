@@ -301,7 +301,11 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
   justified by data says so.
 - `src/health.rs` — `Propagation` (`#[must_use]`), `Fusion` (not, deliberately — see its doc
   comment), `SourceHealth`, `Status`.
-- `examples/replay.rs` — the normalized CSV format and the offline harness.
+- `examples/replay.rs` — the normalized CSV format and the offline harness. Two output files:
+  one row per IMU epoch, and one row per `fuse_*` call in `<out>.fusion.csv` with the gates in
+  its header. `ν` and `S` are columns without values until the update of (23)–(28) publishes
+  them — the harness must not compute them itself, which is "one statistic, one implementation"
+  applied to the filter rather than to Python.
 - `examples/simulate.rs` — the scenario table, and the only source of truth to score against.
   An example rather than a workspace member on purpose: `panic-check` is a crate out of
   necessity (its own target, profile and link step), while this one imports nothing, needs no
