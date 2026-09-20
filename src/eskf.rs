@@ -5,8 +5,7 @@ use crate::frames::{Body, Ned};
 use crate::geodetic::{Geodetic, LocalOrigin};
 use crate::health::{Diagnostics, Fusion, Propagation, SourceHealth, Status, Validity};
 use crate::init::{
-    self, Alignment, Coarse, InitError, StaticSample, baro_reference, peak_motion,
-    sample_is_finite, state_is_finite,
+    self, Alignment, Coarse, InitError, StaticSample, baro_reference, peak_motion, state_is_finite,
 };
 use crate::propagate::ImuSample;
 use crate::state::{Covariance, ErrorState, STATES, State};
@@ -186,7 +185,7 @@ impl Eskf {
             imu,
             ..StaticSample::default()
         };
-        if !sample_is_finite(&sample) {
+        if !sample.is_finite() {
             return Err(InitError::NotFinite);
         }
         let (peak_gyro, peak_accel_deviation) = peak_motion(&[sample]);
@@ -354,9 +353,7 @@ impl Eskf {
         // Rejected ahead of the bookkeeping: a negative `dt` would wind the timers back
         // and a NaN would poison them.
         if !dt.is_usable_step() {
-            let outcome = Propagation::InvalidStep { dt };
-            self.diagnostics.propagation.record(outcome);
-            return outcome;
+            return self.refuse_step(Propagation::InvalidStep { dt });
         }
 
         // Past here the time genuinely passed, so the health bookkeeping is real even
@@ -365,9 +362,7 @@ impl Eskf {
 
         let limit = self.config.max_predict_dt;
         if dt > limit {
-            let outcome = Propagation::StepTooLong { dt, limit };
-            self.diagnostics.propagation.record(outcome);
-            return outcome;
+            return self.refuse_step(Propagation::StepTooLong { dt, limit });
         }
 
         // Tested after the gap rather than before it, so that the gap is still measured:
@@ -375,11 +370,21 @@ impl Eskf {
         // describes the timing whatever the sample holds. A sensor producing NaN produces
         // it again on the next step, where the count picks it up.
         if !imu.is_finite() {
-            let outcome = Propagation::NotFinite;
-            self.diagnostics.propagation.record(outcome);
-            return outcome;
+            return self.refuse_step(Propagation::NotFinite);
         }
         Propagation::Propagated
+    }
+
+    /// Record a refused step and hand the outcome back, as [`refuse`] does for a
+    /// measurement.
+    ///
+    /// Same reason: one place maps an outcome to what
+    /// [`PropagationHealth`](crate::PropagationHealth) counts, so a guard added to
+    /// [`predict`](Self::predict) cannot forget to count it. Whether the timers moved is
+    /// the guard's business, not this one's.
+    fn refuse_step(&mut self, outcome: Propagation) -> Propagation {
+        self.diagnostics.propagation.record(outcome);
+        outcome
     }
 
     /// Fuse a position fix already expressed in NED meters about the filter's origin.

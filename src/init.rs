@@ -48,6 +48,15 @@ pub struct StaticSample {
     pub baro: Option<Altitude>,
 }
 
+impl StaticSample {
+    /// Whether every number in the sample is finite, the optional ones included.
+    pub(crate) fn is_finite(&self) -> bool {
+        self.imu.is_finite()
+            && self.mag.is_none_or(|field| field.is_finite())
+            && self.baro.is_none_or(|b| b.as_meters().is_finite())
+    }
+}
+
 /// What [`Eskf::initialize`](crate::Eskf::initialize) achieved.
 ///
 /// A window that is short or moving is not a failure — it is a coarser start, and the
@@ -175,7 +184,7 @@ pub(crate) fn classify(
     if !dt.is_usable_step() {
         return Err(InitError::InvalidStep { dt });
     }
-    if !window.iter().all(sample_is_finite) {
+    if !window.iter().all(StaticSample::is_finite) {
         return Err(InitError::NotFinite);
     }
 
@@ -301,13 +310,6 @@ pub(crate) fn peak_motion(window: &[StaticSample]) -> (RadiansPerSecond, MetersP
         RadiansPerSecond::from_rad_per_s(peak_gyro),
         MetersPerSecond2::from_m_per_s2(peak_deviation),
     )
-}
-
-/// Whether every number in a window sample is finite.
-pub(crate) fn sample_is_finite(sample: &StaticSample) -> bool {
-    sample.imu.is_finite()
-        && sample.mag.is_none_or(|field| field.is_finite())
-        && sample.baro.is_none_or(|b| b.as_meters().is_finite())
 }
 
 /// Whether every number in a seed state is finite. A quaternion is unit by construction,
