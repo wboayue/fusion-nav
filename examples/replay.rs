@@ -492,7 +492,10 @@ impl Replay {
                     Some(Alignment::Coarse(Coarse::WindowTooShort { .. })) => {
                         "COARSE: window too short".to_string()
                     }
-                    Some(Alignment::Seeded) | None => "seeded".to_string(),
+                    Some(Alignment::Seeded) => "seeded".to_string(),
+                    // Unreachable while this harness only ever calls `initialize`, and
+                    // labelled rather than assumed away: `summary` says `align=none` here.
+                    None => "no alignment recorded".to_string(),
                 };
                 let interval = self.interval.unwrap_or(f64::NAN);
                 println!(
@@ -522,7 +525,8 @@ impl Replay {
         }
         if self.invalid_steps > 0 {
             println!(
-                "{} steps refused as zero or negative — duplicate IMU timestamps",
+                "{} steps refused as zero, negative or NaN — with rows sorted by \
+                 timestamp, in practice duplicates",
                 self.invalid_steps
             );
         }

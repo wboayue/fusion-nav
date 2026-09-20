@@ -221,7 +221,8 @@ Single crate, `no_std`, `forbid(unsafe_code)`, `deny(missing_docs)`, allocation-
 - `src/config.rs` — tuning. Defaults are **placeholders** except the three listed under "How
   defaults get decided"; each doc comment records why. Preserve that habit: a default
   justified by data says so.
-- `src/health.rs` — `Propagation`, `Fusion` (both `#[must_use]`), `SourceHealth`, `Status`.
+- `src/health.rs` — `Propagation` (`#[must_use]`), `Fusion` (not, deliberately — see its doc
+  comment), `SourceHealth`, `Status`.
 - `examples/replay.rs` — the normalized CSV format and the offline harness.
 
 ### Invariants worth knowing before editing
@@ -331,7 +332,8 @@ The README is not compiled — `lib.rs` does not `include_str!` it — so its sn
 its old API block went missing `Status::Aligning`, `Fusion::Reset`, and `Fusion::NoReference`
 without anything failing. When an enum or signature changes, check the README's tables and quick
 start against the `lib.rs` doctest, which is the compiled source of truth. Snippets handle every
-`#[must_use]` outcome rather than `let _ =`; the README is where integrators copy from, and
-discarding outcomes is the one habit the API is built to prevent. Cross-doc anchors
+`#[must_use]` outcome rather than `let _ =`; the README is where integrators copy from. `Fusion`
+no longer carries the lint, because `Diagnostics` covers acceptance and rejection, but a snippet
+still shows the refusals it does not cover rather than dropping them. Cross-doc anchors
 (`DESIGN.md#measurement-rejection` from `GOALS.md`) break on heading renames — grep for
 `.md#` before renaming one.

@@ -50,7 +50,18 @@ pub enum Status {
 /// Carries the dimensionless test ratio `r = ε / γ` of equation (38) in both the accepted
 /// and rejected cases, so a rejection is diagnosable rather than a bare failure. `r > 1`
 /// means rejected, whatever the dimension of the observation.
-#[must_use = "a rejected measurement is silently dropped unless the outcome is inspected"]
+///
+/// Not `#[must_use]`, unlike [`Propagation`] and the `reset_*` outcomes, because acceptance
+/// and rejection reach the caller by a second route: [`Diagnostics`] keeps the latest test
+/// ratio, the running counts and the timer for every source, so a loop that reads
+/// [`Eskf::state`](crate::Eskf::state) each cycle loses nothing by discarding this value.
+///
+/// The other five variants have no second route. [`NotFinite`](Self::NotFinite) and
+/// [`InvalidNoise`](Self::InvalidNoise) deliberately move no timer, so a sensor feeding the
+/// filter NaN all flight is indistinguishable from one that was never connected;
+/// [`NoReference`](Self::NoReference) and [`NotInitialized`](Self::NotInitialized) are
+/// recorded nowhere; and [`Reset`](Self::Reset) is a state step that happens once and leaves
+/// no trace. Inspect the outcome where those matter, until `Diagnostics` counts them (#67).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Fusion {
     /// The measurement passed the gate and was fused.

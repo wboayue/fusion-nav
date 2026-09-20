@@ -171,10 +171,20 @@ fn run(filter: &mut Eskf, ticks: u32, sources: Sources) {
     }
 }
 
-/// The outcome is `#[must_use]`: a rejection cannot be dropped without a warning.
+/// Report anything that is not an ordinary acceptance.
+///
+/// A rejection is the gate doing its job and shows up in `diagnostics()` either way. The
+/// rest do not: a measurement refused for a NaN or a bad variance moves no timer, and one
+/// refused for a missing reference never reaches the gate at all, so a loop that ignores
+/// them sees a source that looks simply absent.
 fn check(source: &str, outcome: Fusion) {
-    if let Fusion::Rejected { test_ratio } = outcome {
-        println!("  {source} rejected, test ratio {test_ratio:.2}");
+    match outcome {
+        Fusion::Accepted { .. } => {}
+        Fusion::Rejected { test_ratio } => {
+            println!("  {source} rejected, test ratio {test_ratio:.2}");
+        }
+        Fusion::Reset => println!("  {source} adopted outright — nothing to fuse it against"),
+        other => println!("  {source} refused: {other:?}"),
     }
 }
 

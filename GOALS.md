@@ -403,6 +403,15 @@ The obligation this accepts is that the degraded condition must be impossible to
 a status field on the returned state achieves, as distinct from impossible to **ignore**, which
 would cost ergonomics that integrators route around anyway.
 
+`Fusion` is deliberately not `#[must_use]` for the same reason, and the crate's own `basic.rs`
+was the evidence: it discarded three of five outcomes with `let _ =` two lines under a comment
+advertising the lint. Acceptance and rejection are already on the second channel — `Diagnostics`
+keeps the test ratio, the counts and the timer per source — so the lint bought nothing there.
+What it did cover is the refusals that move no timer and the one-shot `Fusion::Reset`, none of
+which `Diagnostics` records; those want counters of their own (#67), which is the condition on
+this decision and has to land before the first release, since `Diagnostics` is public.
+`Propagation` and the `reset_*` outcomes keep the lint, having no second channel at all.
+
 See [gate lockout](EQUATIONS.md#gate-lockout) and
 [measurement rejection](DESIGN.md#measurement-rejection).
 

@@ -229,8 +229,10 @@ takes a covariance diagonal as ROS carries it. Floor a receiver's figures first:
 both clamp from 0.5 m rather than fusing raw values. The magnetometer must already be
 calibrated for hard and soft iron.
 
-Every measurement passes through an innovation gate first. The `#[must_use]` result carries the
-test ratio, so a rejection is diagnosable:
+Every measurement passes through an innovation gate first. The result carries the test ratio, so
+a rejection is diagnosable. Reading it is optional where the gate is the only concern —
+`diagnostics()` keeps the ratio, the counts and the timer per source — but the refusals below
+reach no other channel:
 
 | `Fusion` | meaning |
 | -------- | ------- |
