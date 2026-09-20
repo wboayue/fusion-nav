@@ -77,6 +77,9 @@ None of this is a criticism of `eskf`, which does what it set out to do. It is a
 Ranked by how defensible they are, which is not the same as how valuable. Differentiator 4 is
 true today by construction; differentiator 1 matters most and is entirely unbuilt.
 
+Number 5 is missing on purpose: it was *ecosystem coherence*, and was dropped rather than
+renumbered — see [Decisions](#ecosystem-coherence-dropped).
+
 ### 1. Verified embedded determinism
 
 Publish measured worst-case execution time (cycle counts) and stack high-water marks per
@@ -99,6 +102,18 @@ franca and retrofitting types across the estimator is not worth the churn. A new
 cost once, at the start, and Rust makes it idiomatic rather than merely possible. That is the
 honest answer to "why Rust".
 
+**The boundary is where this pays off for someone coming from an existing autopilot.** A
+`[f32; 4]` cannot carry the frame it is expressed in, so the commitment is not that a family of
+crates agrees on one convention — it is that this crate converts at its own edge and names the
+convention it expects, in the type where that is possible and in the doc comment where it is not.
+The two conventions that matter most already agree with it: PX4's `vehicle_attitude.q` is the
+"rotation from the FRD body frame to the NED earth frame", Hamilton and scalar-first
+(`msg/versioned/VehicleAttitude.msg:2,10`), and ArduPilot publishes `get_quat_body_to_ned`
+(`libraries/AP_AHRS/AP_AHRS.h:672`) — both the same as
+[the convention fixed here](EQUATIONS.md#states-and-measurements), so seeding from either is a
+one-liner. ENU and FLU input already converts explicitly (`Position::enu(..).to_ned()`,
+`AngularRate::flu`); NWU does not yet.
+
 ### 3. Readable mathematics
 
 PX4's fusion equations are SymForce-generated and effectively unauditable by hand.
@@ -116,24 +131,6 @@ and it builds for a Cortex-M target. Direct contrast with `ekf2`.
 
 MIT licensed, with a declared MSRV that is raised only in a minor version bump. Embedded
 projects pin toolchains; a crate that floats its MSRV is a crate they cannot take.
-
-### 5. Ecosystem coherence
-
-`fusion-ahrs`, `fusion-altitude`, and `fusion-nav` as one family sharing units, frames, and
-sensor conventions, forming a graduated ladder from attitude to full navigation.
-
-This is a commitment, not a present fact. `fusion-ahrs` exposes a `Convention` enum over NWU,
-ENU, and NED, and inherits NWU as its upstream default; `fusion-nav` fixes NED, Hamilton,
-scalar-first (see [notation](EQUATIONS.md#frames)). Making NED the documented default across all
-three, with one shared statement of conventions, is work still to be done.
-
-```mermaid
-flowchart TD
-    ahrs["fusion-ahrs<br/>attitude"] --> alt["+ fusion-altitude<br/>attitude, altitude, vertical velocity"]
-    alt --> nav["fusion-nav<br/>attitude, 3D position, 3D velocity, IMU biases"]
-```
-
-No other Rust project offers this progression.
 
 ### 6. Validation that can be inspected
 
@@ -259,7 +256,9 @@ The options, in the order they are worth doing:
 
 1. **Seeded initialization.** Take the estimate from whatever the application already has: a
    companion AHRS, a survey, the previous flight's saved state. No new mathematics, no new
-   states, no hot-path cost, and it fits differentiator 5 directly. **Done** —
+   states, no hot-path cost; what it does need is the boundary work of
+   [differentiator 2](#2-compile-time-frames-and-units), since a seed arrives in whatever
+   convention its source uses. **Done** —
    `Eskf::initialize_from`, with `set_baro_reference` to complete the seed. It covers the
    restart-at-altitude case and any vehicle already carrying an attitude source; it does nothing
    for a bare vehicle with no second source.
@@ -400,6 +399,28 @@ would cost ergonomics that integrators route around anyway.
 
 See [gate lockout](EQUATIONS.md#gate-lockout) and
 [measurement rejection](DESIGN.md#measurement-rejection).
+
+### Ecosystem coherence, dropped
+
+`fusion-ahrs`, `fusion-altitude` and `fusion-nav` were listed as differentiator 5: one family
+sharing units, frames and sensor conventions, with "making NED the documented default across all
+three" named as work still to be done. It was conceded there to be a commitment rather than a fact.
+
+**Dropped.** Each crate should use the conventions that suit its own use case. `fusion-ahrs`
+inherits NWU from upstream and serves attitude-only users who already have it; re-defaulting a
+published crate to NED to serve the positioning of an unpublished one spends someone else's
+compatibility on a claim nobody chooses an estimator for. The graduated-ladder diagram went with
+it. `README.md`'s "which of these do I want" section stays, because that is user guidance rather
+than a differentiator, and the siblings are still worth seeding from — like any other attitude
+source.
+
+What survives is the falsifiable half, and it points at the incumbents rather than the siblings:
+boundary compatibility for integrators arriving from PX4 or ArduPilot, now part of
+[differentiator 2](#2-compile-time-frames-and-units).
+
+The numbering keeps its gap rather than closing up, because `AGENTS.md`, the issue backlog and
+`data/manifest.txt` all cite differentiators by number, and renumbering would silently repoint
+every one of those citations.
 
 ## What would falsify this positioning
 
