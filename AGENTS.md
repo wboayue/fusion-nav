@@ -297,7 +297,12 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
   An example rather than a workspace member on purpose: `panic-check` is a crate out of
   necessity (its own target, profile and link step), while this one imports nothing, needs no
   dependency and costs 16 KB of the packaged crate. The first dependency scoring wants, or a
-  second binary that would share its trajectory code, is when to move it — see #16 and #17.
+  second binary that would share its trajectory code, is when to move it, and the order to try
+  is `examples/common/mod.rs` first, an unpublished member taken as a dev-dependency second, a
+  feature-gated module in `src/` never — that last one qualifies the crate's `no_std` and
+  single-dependency claims in four documents, and puts the simulator one `use` away from sharing
+  the filter's rotations, which is the property its numbers rest on. See #16 and #17.
+  Tests in an example do run under `cargo test --all-targets`, so none of this is about coverage.
 - `panic-check/` — a second, unpublished crate: a bare-metal binary calling the whole public
   API, plus `run.sh`, which links it and reads the panic paths back out of the ELF. A workspace
   member so that one `Cargo.lock` covers both, but not a *default* member, so `cargo test`,
