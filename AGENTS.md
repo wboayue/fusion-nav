@@ -4,8 +4,10 @@ This file provides guidance to coding agents working with code in this repositor
 
 ## Status
 
-**API sketch.** Types and signatures compile; the estimation mathematics does not exist.
-`predict` propagates nothing, every `fuse_*` accepts with a zero test ratio. What is real is
+**API sketch.** Types and signatures compile; almost none of the estimation mathematics exists.
+Initialization is the exception — equations (5)–(8) are implemented, so the filter starts at the
+attitude and biases the window yields. `predict` propagates nothing, every `fuse_*` accepts with
+a zero test ratio. What is real is
 the health bookkeeping (timers, `Status`, `Diagnostics`), the typed API surface, and the replay
 harness. Anything stubbed says so in its doc comment with a `**Stub.**` paragraph — keep that
 marker accurate when landing real math, and keep the same caveat in `README.md`, `DESIGN.md`,
@@ -200,10 +202,11 @@ still applies: a scenario exists because it covers something no other one does, 
 the `covers` field of the table in that file, which is the single place the list lives. Its noise
 tables are deliberately not `Config`'s; matching them would score the filter against its own
 assumptions. `data/flight.csv` is the `flight` scenario's committed output, with
-`data/flight.truth.csv` beside it — regenerate it with the command above, never hand-edit it. Do
-not expect the determinism hash to notice: regenerating it rewrote all 1766 rows and
-`target/replay.csv` did not move a byte, because the filter is a stub and every estimate column
-is constant. The log's contents start mattering to that hash when propagation lands.
+`data/flight.truth.csv` beside it — regenerate it with the command above, never hand-edit it. Its contents reach the
+determinism hash through the initialization window only: the attitude and gyroscope-bias columns
+of `target/replay.csv` are that window's averages, and every column is then constant for the rest
+of the file because nothing propagates. So regenerating the log moves the hash, while a change
+after the window does not — that second half is what changes when propagation lands.
 
 **Converter changes are batched.** Regenerating the corpus is not free — logs fetched, `pyulog`
 installed, every log reconverted, replayed, and every moved expectation explained. Land changes
@@ -273,15 +276,15 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
   and coarse in-motion alignment plus a `Status::Aligning` phase is designed there but unbuilt —
   read that section before touching initialization.
 - `src/init.rs` — initialization's types (`StaticSample`, `Alignment`, `Coarse`, `InitError`)
-  and pure functions (`classify`, `attitude_sigmas`, `initial_covariance`, `baro_reference`,
-  `inertial_acceleration`).
+  and pure functions (`level_from_accel`, `heading_from_mag`, `nominal_state`, `classify`,
+  `attitude_sigmas`, `initial_covariance`, `baro_reference`, `inertial_acceleration`).
   The `initialize*` methods on `Eskf` call these and commit the result. Tests for the pure
   functions live here; tests of what the filter does with them stay in `eskf.rs`.
 - `src/propagate.rs` — `ImuSample` today; equations (9)–(22) land here.
 - `src/math.rs` — the primitives the equations share: `skew`, `exp_quat`, `wrap_pi`,
-  `enforce_symmetry` (42). Pure, stateless, and unit-tested against their definitions; no filter
-  path calls them yet, which a module-level `expect(dead_code)` says and the last caller to land
-  must delete.
+  `enforce_symmetry` (42). Pure, stateless, and unit-tested against their definitions. Each one
+  no filter path calls yet carries its own `expect(dead_code)`, which its first caller must
+  delete; (6) took `wrap_pi`'s.
 - `src/state.rs` — `State` (nominal, 16 values), `Covariance`/`CovarianceMatrix` (15×15), and
   `ErrorState`, whose discriminants define the covariance ordering `[δp δv δθ δβa δβg]`.
 - `src/units.rs` — typed scalars/vectors. Types carry the claims that cause bugs — frame,

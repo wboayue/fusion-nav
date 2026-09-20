@@ -1,9 +1,9 @@
 //! Replay a recorded flight from CSV and write the estimate back out as CSV.
 //!
-//! Nothing here estimates anything — `predict` propagates nothing and every `fuse_*`
-//! accepts unconditionally, so every estimate column comes out constant and every test
-//! ratio comes out zero. What this establishes is the replay harness and the normalized
-//! log format `GOALS.md` commits to. What it exercises, that `basic.rs` and
+//! Nothing here estimates anything after initialization — `predict` propagates nothing and
+//! every `fuse_*` accepts unconditionally, so every estimate column holds whatever the
+//! window put there and every test ratio comes out zero. What this establishes is the replay
+//! harness and the normalized log format `GOALS.md` commits to. What it exercises, that `basic.rs` and
 //! `degradation.rs` cannot, is irregular `dt` taken from timestamps, per-sample variance,
 //! a source that appears partway through the log, and an initialization window found in
 //! the data rather than asserted.
@@ -255,6 +255,11 @@ struct Replay {
     /// on the window, which is not the same as `mag_at_init`: a coarse start carrying a
     /// magnetometer has observed nothing it could level a heading with.
     heading_at_init: bool,
+    /// The attitude equations (5)–(7) committed, captured at that moment rather than read
+    /// off the filter at the end. The stub propagates nothing, so the two agree today and
+    /// would keep agreeing until (12)–(15) land — at which point this key would silently
+    /// become an end-of-log attitude, which is the trap `heading=` already documents.
+    attitude_at_init: Option<Attitude>,
     epochs: u32,
     /// Rows written to the fusion file: every `fuse_*` call the log made, whatever its
     /// outcome.
@@ -288,6 +293,7 @@ impl Replay {
             mag_at_init: false,
             aligned_at: None,
             heading_at_init: false,
+            attitude_at_init: None,
             epochs: 0,
             fusions: 0,
             longest_step_at: None,
@@ -399,6 +405,7 @@ impl Replay {
         let state = self.filter.state();
         self.note_alignment(t, state.validity);
         self.heading_at_init = state.validity.heading;
+        self.attitude_at_init = Some(state.attitude);
         self.status = state.status;
         self.transitions.push((t, self.status));
         Ok(())
@@ -586,6 +593,25 @@ impl Replay {
         }
     }
 
+    /// The attitude initialization committed, as roll, pitch and yaw in degrees, rounded
+    /// to what the `summary` line prints. Zero everywhere if the log never initialized.
+    ///
+    /// `roll0`, `pitch0` and `yaw0` are the only keys on that line that look at attitude,
+    /// so they are what would notice a sign inverted in the down-positive convention, the
+    /// levelling dropped out of (6), or a declination that stopped reaching the filter.
+    ///
+    /// Rounded here rather than by the format string so that an angle rounding to zero
+    /// from below prints `0.00` and not `-0.00`: the same angle either way, and the
+    /// manifest matches these as substrings, so the sign alone would read as a moved
+    /// expectation. IEEE addition makes `-0.0 + 0.0` positive zero, which is the whole of
+    /// the correction.
+    fn angles_at_init(&self) -> (f32, f32, f32) {
+        let attitude = self.attitude_at_init.unwrap_or_default();
+        let (roll, pitch, yaw) = attitude.euler_angles();
+        let rounded = |angle: f32| (angle.to_degrees() * 100.0).round() / 100.0 + 0.0;
+        (rounded(roll), rounded(pitch), rounded(yaw))
+    }
+
     fn write_row(&self, t: f64, state: State, out: &mut Sinks) -> io::Result<()> {
         let out = &mut out.epochs;
         write!(out, "{t:.4},{:?}", state.status)?;
@@ -770,8 +796,10 @@ impl Replay {
     /// expectation it was supposed to be checking.
     fn summary(&self) -> String {
         let state = self.filter.state();
+        let (roll0, pitch0, yaw0) = self.angles_at_init();
         format!(
-            "summary rate={:.0} window={} align={} an={} alpha0={} heading={} resets={} \
+            "summary rate={:.0} window={} align={} an={} alpha0={} heading={} \
+             roll0={roll0:.2} pitch0={pitch0:.2} yaw0={yaw0:.2} resets={} \
              aligned_at={} rejected={} discarded={} refused={} invalid={} epochs={} \
              transitions={} status={:?}",
             self.interval.map_or(0.0, |interval| 1.0 / interval),
@@ -1309,6 +1337,43 @@ mod tests {
         // Stillness observes tilt and never yaw, and the covariance cannot say so:
         // `Initialization::sigma_yaw` and `Accuracy::heading` are the same 0.35 rad.
         assert_eq!(key(&replay(&still_start()).summary(), "heading"), "invalid");
+    }
+
+    #[test]
+    fn the_attitude_keys_report_the_tilt_the_window_was_held_at() {
+        // A vehicle parked 10° right wing down and 5° nose down reads
+        // `f = R₀ᵀ(−g)`, and (5) must give those two angles back. Written out rather
+        // than rotated here, so the fixture is not the equation checking itself.
+        const TILTED: ([f32; 3], [f32; 3]) =
+            ([0.0, 0.0, 0.0], [-0.854_706, -1.696_427, -9.620_915]);
+        let summary = replay(&Log::new().run(0.0, 100, DT, TILTED)).summary();
+        assert_eq!(key(&summary, "align"), "static", "a tilt is not motion");
+        assert_eq!(key(&summary, "roll0"), "10.00");
+        assert_eq!(key(&summary, "pitch0"), "-5.00");
+    }
+
+    #[test]
+    fn the_heading_key_carries_the_declination_the_filter_was_configured_with() {
+        // The fixture's field, levelled, is 0.095 rad east of its own north, and the
+        // harness configures −0.06 rad of declination: −8.88° of true heading. A
+        // declination that stopped reaching the filter would read −5.45° here.
+        let log = Log::new().mag(0.0).run(0.0, 100, DT, STILL);
+        assert_eq!(key(&replay(&log).summary(), "yaw0"), "-8.88");
+    }
+
+    #[test]
+    fn a_window_with_no_magnetometer_reports_a_heading_of_zero() {
+        assert_eq!(key(&replay(&still_start()).summary(), "yaw0"), "0.00");
+    }
+
+    #[test]
+    fn an_angle_just_below_zero_does_not_report_itself_as_negative_zero() {
+        // 10 µm s⁻² of specific force on the forward axis is −5.8e-5° of pitch, which
+        // `{:.2}` alone renders as `-0.00`. The manifest matches these pairs as
+        // substrings, so that sign would read as a moved expectation and is not one.
+        const BARELY: ([f32; 3], [f32; 3]) = ([0.0, 0.0, 0.0], [-1.0e-5, 0.0, -GRAVITY]);
+        let summary = replay(&Log::new().run(0.0, 100, DT, BARELY)).summary();
+        assert_eq!(key(&summary, "pitch0"), "0.00");
     }
 
     #[test]

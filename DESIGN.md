@@ -5,7 +5,8 @@ mathematics see [EQUATIONS.md](EQUATIONS.md); for positioning and decisions alre
 [GOALS.md](GOALS.md).
 
 > **Status: API sketch.** The structure below is the intended one. The types and signatures
-> exist; the estimation mathematics does not.
+> exist; almost none of the estimation mathematics does. Initialization is the exception —
+> equations (5)–(8) are implemented and the filter starts at the attitude it levelled.
 
 ## Error-State Kalman Filter
 

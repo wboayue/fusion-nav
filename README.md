@@ -2,9 +2,10 @@
 
 Embedded-first inertial navigation using a 15-state Error-State Kalman Filter (ESKF).
 
-> **Status: API sketch.** The types and signatures below exist and compile; the estimation
-> mathematics does not. `predict` propagates nothing and every `fuse_*` accepts
-> unconditionally. The design is subject to change.
+> **Status: API sketch.** The types and signatures below exist and compile; almost none of the
+> estimation mathematics does. Initialization is real — the filter levels, takes a heading and a
+> gyroscope bias, and sets its covariance — but `predict` propagates nothing and every `fuse_*`
+> accepts unconditionally. The design is subject to change.
 
 `fusion-nav` estimates 3D attitude, velocity, and position by fusing IMU measurements with GNSS,
 barometric altitude, and magnetometer observations. It is `no_std`, allocation-free, and aimed at
@@ -154,10 +155,12 @@ and GNSS velocity. From the window the filter takes:
   pitch. Without one, heading is unobserved: stillness says nothing about the rotation about
   gravity. `validity.heading` is false and `Status` stays `Aligning` until the first
   `fuse_mag_heading` is accepted, however still the window was — `Initialization::sigma_yaw` is a
-  prior on a yaw nobody measured, and the covariance alone cannot tell the two apart (the yaw
-  value itself, and the reset that should replace it, are not yet built)
-* **gyroscope bias** from the averaged gyroscope, observable at rest (accelerometer bias is not,
-  and starts at zero)
+  prior on a yaw nobody measured, and the covariance alone cannot tell the two apart (the reset
+  that should replace such a yaw is not yet built)
+* **gyroscope bias** from the averaged gyroscope, but only from a window taken at rest, which is
+  what makes the bias observable rather than the vehicle's own turn rate. A window taken in
+  motion starts it at zero, as both PX4 and ArduPilot do at every start. The accelerometer bias
+  is not separable from tilt at rest either way, and starts at zero
 * **the barometric reference** `α₀` — the altitude the barometer read at the origin. It is a
   constant, so a window with no barometer samples leaves altitudes with nothing to be relative
   to, and `fuse_baro_altitude` returns `Fusion::NoReference` for the whole flight.

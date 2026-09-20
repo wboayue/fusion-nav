@@ -1,33 +1,31 @@
-//! Initialization: classifying the window, the initial covariance, and the barometric
-//! reference. Equations (5)–(8), and `α₀` of (30).
+//! Initialization: the attitude and biases the window yields, classifying the window, the
+//! initial covariance, and the barometric reference. Equations (5)–(8), and `α₀` of (30).
 //!
 //! The entry points are methods on [`Eskf`](crate::Eskf) — `initialize`,
 //! `initialize_coarse`, `initialize_from`, and `alignment_of` — which call into the pure
 //! functions here and then commit the result to the filter.
 
+use nalgebra::{ComplexField, RealField, Rotation3, UnitQuaternion, Vector3};
+
 use crate::config::{GRAVITY, Initialization};
 use crate::frames::{Body, Ned};
+use crate::math::wrap_pi;
 use crate::propagate::ImuSample;
 use crate::state::{Covariance, State};
 use crate::units::{
-    Acceleration, Altitude, MagField, MetersPerSecond2, Radians, RadiansPerSecond, Seconds,
-    Velocity,
+    Acceleration, Altitude, AngularRate, Attitude, MagField, MetersPerSecond2, Position, Radians,
+    RadiansPerSecond, Seconds, Velocity,
 };
 
 /// One sample from the quasi-static initialization window.
 ///
-/// The magnetometer is optional: without it, heading is unobserved and should start at
-/// zero with its variance inflated, leaving the first accepted magnetic heading to correct
-/// it. A window with none anywhere in it says so — [`Validity::heading`](crate::Validity)
-/// stays false until
+/// The magnetometer is optional: without it nothing observes the rotation about gravity,
+/// `ψ₀` of equation (6) stays zero, and the first accepted magnetic heading is what
+/// establishes it. A window with none anywhere in it says so —
+/// [`Validity::heading`](crate::Validity) stays false until
 /// [`Eskf::fuse_mag_heading`](crate::Eskf::fuse_mag_heading) accepts one — because
 /// [`sigma_yaw`](crate::Initialization::sigma_yaw) is a prior and would otherwise read as
 /// an estimate of a quantity nothing measured.
-///
-/// **Stub.** No heading is computed yet, so a static window starts with
-/// [`Initialization::sigma_yaw`](crate::Initialization::sigma_yaw) whether or not it
-/// carried a magnetometer; what the magnetometer's presence changes today is the validity
-/// flag, not the yaw.
 ///
 /// The barometer is optional in the same way, but less forgivingly: its reference is a
 /// constant rather than a state, so a window carrying none leaves nothing for a later
@@ -41,6 +39,10 @@ pub struct StaticSample {
     /// IMU measurement.
     pub imu: ImuSample,
     /// Magnetometer measurement, if the vehicle has one.
+    ///
+    /// Averaged over the window to fix `ψ₀`, the initial heading (equation (6)), and
+    /// averaged rather than taken from one sample for the reason the barometer and the
+    /// gyroscope bias are: a single reading carries the sensor's full noise.
     pub mag: Option<MagField<Body>>,
     /// Barometric altitude, if the vehicle has a barometer.
     ///
@@ -248,6 +250,152 @@ pub(crate) fn classify(
     Ok(Alignment::Static)
 }
 
+/// The nominal state a window yields. Equation (7), from the attitude of (5)–(6).
+///
+/// `at_rest` is [`at_rest`]'s verdict on the window, and it gates the gyroscope bias
+/// alone. (7) takes `β̂_g,0 = ω̄` because stillness is what makes the bias observable; a
+/// window that was moving offers the vehicle's own rotation under the same name, and
+/// seeding that would subtract a turn rate from every later measurement as though it
+/// were a sensor error. Neither production estimator averages at all — ArduPilot zeroes
+/// the bias at bootstrap (`libraries/AP_NavEKF3/AP_NavEKF3_core.cpp:546`, `368dc0c4`),
+/// and PX4 refuses to initialize outside 0.8–1.2 g and 15°/s
+/// (`src/modules/ekf2/EKF/ekf.cpp:213-227`, `c4e4ef98`) — so averaging is this crate's,
+/// and it is worth taking only where their precondition holds.
+///
+/// Every value read here is finite and the window is non-empty: [`classify`] refuses
+/// both before any of this is reached.
+pub(crate) fn nominal_state(window: &[StaticSample], declination: Radians, at_rest: bool) -> State {
+    let (roll, pitch) = level_from_accel(mean_specific_force(window));
+    // Stillness observes tilt and never the rotation about it, so a window with no
+    // magnetometer anywhere in it keeps ψ₀ = 0 — a stated direction rather than a
+    // measured one, which is what `Unestablished::heading` records.
+    let yaw = mean_field(window).map_or(Radians::ZERO, |field| {
+        heading_from_mag(field, roll, pitch, declination)
+    });
+
+    State {
+        // q_ZYX(ψ₀, θ₀, φ₀) of (7): `from_euler_angles` composes Rz(ψ) Ry(θ) Rx(φ), the
+        // sequence (6) levels with and `Attitude::euler_angles` reads back.
+        attitude: Attitude::body_to_ned(UnitQuaternion::from_euler_angles(
+            roll.as_radians(),
+            pitch.as_radians(),
+            yaw.as_radians(),
+        )),
+        position: Position::zero(),
+        velocity: Velocity::zero(),
+        // β̂_a,0 = 0. At rest an accelerometer bias is indistinguishable from a tilt —
+        // it leans the measured gravity vector and (5) has already read that lean as
+        // attitude — so there is nothing left for this to hold.
+        accel_bias: Acceleration::zero(),
+        gyro_bias: if at_rest {
+            mean_angular_rate(window)
+        } else {
+            AngularRate::zero()
+        },
+        // `status` and `validity` are inert in the stored state; `Eskf::state`
+        // overwrites both on every read.
+        ..State::default()
+    }
+}
+
+/// Roll and pitch from the averaged specific force. Equation (5).
+///
+/// The signs are the down-positive convention's: a level, stationary accelerometer reads
+/// `f = [0, 0, -γ]ᵀ`, so `-f_z` is `+γ`, `-f_y` is zero, and both angles come out zero.
+///
+/// Written with `atan2` rather than the `asin` on a normalized vector ArduPilot takes
+/// (`libraries/AP_NavEKF3/AP_NavEKF3_core.cpp:527-536`, `368dc0c4`). The two agree; this
+/// form never divides by `‖f‖`, so it needs neither the normalization nor the
+/// `length() > 0.001` guard standing in front of it there, and a stopped or
+/// disconnected accelerometer reading zero levels to zero rather than to NaN. PX4 builds
+/// the same tilt differently again, as the shortest rotation carrying `f` onto `-e₃`
+/// (`src/modules/ekf2/EKF/ekf.cpp:224`, `c4e4ef98`), which is this attitude with the yaw
+/// left at zero; (6) needs the angles themselves.
+pub(crate) fn level_from_accel(specific_force: Acceleration<Body>) -> (Radians, Radians) {
+    let f = specific_force.vector();
+    let roll = RealField::atan2(-f.y, -f.z);
+    let pitch = RealField::atan2(f.x, ComplexField::sqrt(f.y * f.y + f.z * f.z));
+    (Radians::from_radians(roll), Radians::from_radians(pitch))
+}
+
+/// True heading from the averaged magnetic field, levelled by (5)'s roll and pitch.
+/// Equation (6).
+///
+/// The levelling is what makes this a heading rather than a projection. `R₀` is (7)'s
+/// attitude with the yaw left out, so `m̃` sits in a frame differing from NED by the yaw
+/// alone. Reading `atan2(m_y, m_x)` off the body field instead is correct only for a
+/// vehicle already level and wrong by about `tan(dip)` times the tilt everywhere else:
+/// at the 1.107 rad of dip the corpus carries, that factor is 1.96, so a 10° roll is
+/// worth 19° of heading. A test at zero tilt cannot tell the two apart.
+///
+/// `declination` is east-positive, and adding it is what turns magnetic heading into
+/// true.
+pub(crate) fn heading_from_mag(
+    field: MagField<Body>,
+    roll: Radians,
+    pitch: Radians,
+    declination: Radians,
+) -> Radians {
+    // R₀ = R_y(θ₀) R_x(φ₀), which is the ZYX composition of (7) with its yaw set to zero.
+    let levelled =
+        Rotation3::from_euler_angles(roll.as_radians(), pitch.as_radians(), 0.0) * field.vector();
+    // Wrapped because `D_m − atan2(·)` reaches π + |D_m|, and (7) is read back as Euler
+    // angles that a test compares against a heading in range.
+    Radians::from_radians(wrap_pi(
+        declination.as_radians() - RealField::atan2(levelled.y, levelled.x),
+    ))
+}
+
+/// `f̄`, the averaged specific force (5) levels from. Every sample carries one.
+fn mean_specific_force(window: &[StaticSample]) -> Acceleration<Body> {
+    Acceleration::from_vector(mean(window, |sample| Some(sample.imu.accel.vector())))
+}
+
+/// `ω̄`, the averaged angular rate (7) takes as the gyroscope bias. Every sample carries
+/// one.
+fn mean_angular_rate(window: &[StaticSample]) -> AngularRate<Body> {
+    AngularRate::from_vector(mean(window, |sample| Some(sample.imu.gyro.vector())))
+}
+
+/// `m̄`, the averaged magnetic field (6) takes a heading from, over the samples that
+/// carry one. `None` if none do, which is a vehicle with no magnetometer.
+fn mean_field(window: &[StaticSample]) -> Option<MagField<Body>> {
+    mean_present(window, |sample| sample.mag.map(MagField::vector)).map(MagField::from_vector)
+}
+
+/// Mean of a vector every sample carries, and zero for an empty window — which
+/// [`classify`] refuses before any caller here sees it.
+fn mean(
+    window: &[StaticSample],
+    select: impl Fn(&StaticSample) -> Option<Vector3<f32>>,
+) -> Vector3<f32> {
+    mean_present(window, select).unwrap_or_else(Vector3::zeros)
+}
+
+/// Mean of a vector quantity over the samples that carry one. `None` if none do.
+///
+/// Accumulated in `f64`, which here is precaution rather than necessity: summing a few
+/// thousand readings near `γ` in f32 costs on the order of 10⁻⁵ rad of tilt, against a
+/// 0.02 rad prior. It is the choice [`baro_reference`] has to make for real — altitudes
+/// are metres above mean sea level — and this sum is paid once per flight.
+fn mean_present(
+    window: &[StaticSample],
+    select: impl Fn(&StaticSample) -> Option<Vector3<f32>>,
+) -> Option<Vector3<f32>> {
+    let mut sum = Vector3::<f64>::zeros();
+    let mut count = 0u32;
+    for sample in window {
+        if let Some(value) = select(sample) {
+            sum += Vector3::new(f64::from(value.x), f64::from(value.y), f64::from(value.z));
+            count += 1;
+        }
+    }
+    (count > 0).then(|| {
+        let n = f64::from(count);
+        Vector3::new((sum.x / n) as f32, (sum.y / n) as f32, (sum.z / n) as f32)
+    })
+}
+
 /// Initial tilt and yaw standard deviations for an alignment.
 ///
 /// A static start gets the configured figures. A coarse one gets the standard deviation
@@ -426,7 +574,6 @@ pub(crate) fn baro_reference(window: &[StaticSample]) -> Option<Altitude> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::units::AngularRate;
 
     /// A sample from a vehicle genuinely sitting still: no rotation, gravity the only
     /// specific force. `StaticSample::default()` is not this — its zero acceleration is
@@ -454,6 +601,196 @@ pub(crate) mod tests {
         let init = Initialization::default();
         let alignment = classify(window, DT, &init).expect("moving, not unusable");
         attitude_sigmas(&init, alignment).0.as_radians()
+    }
+
+    /// Magnetic inclination, rad, down-positive: the mid-latitude dip the corpus carries
+    /// and `examples/simulate.rs` writes its field with.
+    const INCLINATION: f32 = 1.107;
+
+    /// Both signs on each axis, and the two together. A down-positive convention inverts
+    /// one sign at a time, so a case list that leans one way passes with the sign flipped.
+    const TILTS: [(f32, f32); 6] = [
+        (0.0, 0.0),
+        (0.3, 0.0),
+        (-0.3, 0.0),
+        (0.0, 0.2),
+        (0.0, -0.2),
+        (0.4, -0.25),
+    ];
+
+    /// `R = Rz(ψ) Ry(θ) Rx(φ)`, the attitude of equation (7).
+    fn attitude_of(roll: f32, pitch: f32, yaw: f32) -> Rotation3<f32> {
+        Rotation3::from_euler_angles(roll, pitch, yaw)
+    }
+
+    /// What a vehicle held at this attitude and sitting still reads on its
+    /// accelerometer: equation (11) with `a_n = 0`, so `f = Rᵀ(−g)`.
+    pub(crate) fn gravity_at(roll: f32, pitch: f32, yaw: f32) -> Acceleration<Body> {
+        let f = attitude_of(roll, pitch, yaw).inverse() * Vector3::new(0.0, 0.0, -GRAVITY);
+        Acceleration::from_vector(f)
+    }
+
+    /// What it reads on its magnetometer, for a site whose field dips by [`INCLINATION`]
+    /// and points `declination` east of true north.
+    fn field_at(roll: f32, pitch: f32, yaw: f32, declination: f32) -> MagField<Body> {
+        let (sin_dip, cos_dip) = ComplexField::sin_cos(INCLINATION);
+        let north = attitude_of(0.0, 0.0, declination) * Vector3::new(cos_dip, 0.0, sin_dip);
+        MagField::from_vector(attitude_of(roll, pitch, yaw).inverse() * north)
+    }
+
+    /// A still window of `[still(); 8]` reading this specific force and this field.
+    fn window_at(roll: f32, pitch: f32, yaw: f32, declination: f32) -> [StaticSample; 8] {
+        [StaticSample {
+            imu: ImuSample {
+                accel: gravity_at(roll, pitch, yaw),
+                ..still().imu
+            },
+            mag: Some(field_at(roll, pitch, yaw, declination)),
+            ..still()
+        }; 8]
+    }
+
+    /// The roll, pitch and yaw equation (7) committed, in radians.
+    fn committed_angles(state: &State) -> (f32, f32, f32) {
+        state.attitude.euler_angles()
+    }
+
+    #[test]
+    fn levelling_recovers_the_tilt_gravity_was_rotated_by() {
+        for (roll, pitch) in TILTS {
+            // A yaw the answer must not depend on: gravity says nothing about rotation
+            // about itself, so `Rz(ψ)ᵀ` leaves the specific force where it was.
+            let (measured_roll, measured_pitch) = level_from_accel(gravity_at(roll, pitch, 0.9));
+            assert!(
+                (measured_roll.as_radians() - roll).abs() < 1e-5
+                    && (measured_pitch.as_radians() - pitch).abs() < 1e-5,
+                "({roll}, {pitch}) read back as ({:?}, {:?})",
+                measured_roll,
+                measured_pitch
+            );
+        }
+    }
+
+    #[test]
+    fn the_committed_attitude_carries_the_specific_force_back_onto_gravity() {
+        // (5) and (7) round-tripped: the attitude the filter commits must rotate the
+        // vector it was derived from back onto `−g`, or the two disagree about which
+        // sequence they mean.
+        for (roll, pitch) in TILTS {
+            let window = window_at(roll, pitch, 0.0, 0.0);
+            let state = nominal_state(&window, Radians::ZERO, true);
+            let navigation = state.attitude.quaternion() * window[0].imu.accel.vector();
+            assert!(
+                (navigation - Vector3::new(0.0, 0.0, -GRAVITY)).norm() < 1e-4,
+                "({roll}, {pitch}) rotated back to {navigation:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn heading_survives_the_tilt_it_is_levelled_by() {
+        // The test that fails if the levelling is dropped: a field synthesised for a
+        // known yaw at a tilt that is not zero must still give that yaw back.
+        const DECLINATION: f32 = -0.06;
+        for (roll, pitch) in TILTS {
+            for yaw in [0.0, 0.9, -2.5, 3.0] {
+                let state = nominal_state(
+                    &window_at(roll, pitch, yaw, DECLINATION),
+                    Radians::from_radians(DECLINATION),
+                    true,
+                );
+                let (_, _, committed) = committed_angles(&state);
+                assert!(
+                    wrap_pi(committed - yaw).abs() < 1e-4,
+                    "yaw {yaw} at ({roll}, {pitch}) read back as {committed}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_unlevelled_heading_is_wrong_by_the_dip() {
+        // What the levelling is worth, and why a zero-tilt test proves nothing: at 10°
+        // of roll the raw body field gives a heading 19° from the true one, because the
+        // dip leans into the horizontal axes. `tan(1.107)` is 1.96.
+        let roll = 10.0f32.to_radians();
+        let field = field_at(roll, 0.0, 0.0, 0.0).vector();
+        let unlevelled = RealField::atan2(field.y, field.x);
+        assert!(
+            (unlevelled.to_degrees().abs() - 19.1).abs() < 0.1,
+            "expected about 19 deg of error, got {}",
+            unlevelled.to_degrees()
+        );
+
+        let levelled = heading_from_mag(
+            MagField::from_vector(field),
+            Radians::from_radians(roll),
+            Radians::ZERO,
+            Radians::ZERO,
+        );
+        assert!(levelled.as_radians().abs() < 1e-6, "{levelled:?}");
+    }
+
+    #[test]
+    fn declination_moves_the_heading_by_exactly_itself() {
+        // The same field, read at two sites: true heading differs from magnetic by the
+        // declination and by nothing else.
+        let (roll, pitch) = (0.2, -0.1);
+        let field = field_at(roll, pitch, 0.7, 0.0);
+        let heading = |declination: f32| {
+            heading_from_mag(
+                field,
+                Radians::from_radians(roll),
+                Radians::from_radians(pitch),
+                Radians::from_radians(declination),
+            )
+            .as_radians()
+        };
+        assert!((heading(0.35) - heading(0.0) - 0.35).abs() < 1e-6);
+        assert!((heading(-0.06) - heading(0.0) + 0.06).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_window_with_no_magnetometer_keeps_a_heading_of_zero() {
+        // Stillness observes tilt and never the rotation about it. Zero is a stated
+        // direction rather than a measured one, which `Unestablished::heading` records.
+        let state = nominal_state(&[still(); 8], Radians::from_radians(0.35), true);
+        assert_eq!(committed_angles(&state).2, 0.0);
+    }
+
+    #[test]
+    fn a_still_window_takes_its_gyroscope_bias_from_the_average() {
+        // A gyroscope reading a constant offset while the vehicle does not turn is
+        // reading its own bias, and at rest that is the one place it is observable.
+        let offset = AngularRate::body(0.01, -0.02, 0.003);
+        let window = [StaticSample {
+            imu: ImuSample {
+                gyro: offset,
+                ..still().imu
+            },
+            ..still()
+        }; 8];
+        let state = nominal_state(&window, Radians::ZERO, true);
+        assert!(
+            (state.gyro_bias.vector() - offset.vector()).norm() < 1e-7,
+            "{:?}",
+            state.gyro_bias
+        );
+    }
+
+    #[test]
+    fn a_window_taken_in_motion_takes_no_gyroscope_bias_at_all() {
+        // The average is the vehicle turning, not the sensor lying, and seeding it would
+        // subtract a turn rate from every later measurement as a sensor error.
+        let window = [StaticSample {
+            imu: ImuSample {
+                gyro: AngularRate::body(0.0, 0.4, 0.0),
+                ..still().imu
+            },
+            ..still()
+        }; 8];
+        let state = nominal_state(&window, Radians::ZERO, false);
+        assert_eq!(state.gyro_bias, AngularRate::zero());
     }
 
     #[test]

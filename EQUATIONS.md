@@ -1,11 +1,13 @@
 # Equations
 
-> **Status: the estimation mathematics is unimplemented.** `predict` propagates nothing and every
-> `fuse_*` accepts with a zero test ratio. What is built is the initial covariance (8), the
-> barometric reference `α₀` of (30), the window's own acceleration `ā_n` of (5′) — measured and
-> reported, though nothing levels with it yet — the geodetic origin (43)–(44), and — unit-tested
-> but not yet called from any filter path — the shared primitives and the symmetry enforcement of (42); the
-> [equation-to-code mapping](#equation-to-code-mapping) marks the functions that do not exist yet.
+> **Status: the estimation mathematics is largely unimplemented.** `predict` propagates nothing
+> and every `fuse_*` accepts with a zero test ratio. What is built is initialization — the
+> attitude and biases of (5)–(7), the initial covariance (8), the barometric reference `α₀` of
+> (30) — the window's own acceleration `ā_n` of (5′), measured and reported though nothing levels
+> with it yet, the geodetic origin (43)–(44), the angle wrap of (35), and — unit-tested but not
+> yet called from any filter path — the remaining shared primitives and the symmetry enforcement
+> of (42); the [equation-to-code mapping](#equation-to-code-mapping) marks the functions that do
+> not exist yet.
 
 This document is the normative mathematical description of `fusion-nav`. Equations are numbered
 so that the implementation can cite them directly; see
@@ -203,6 +205,13 @@ $`R = R_z(\psi) R_y(\theta) R_x(\phi)`$, matching $`R_0`$ in (6).
 
 The gyroscope bias is observable at rest and is initialized to the measured average. The
 accelerometer bias is not separable from attitude error at rest and is initialized to zero.
+
+`β̂_{g,0} = \overline{\omega_m}` holds only where the window was taken **at rest**, which is what
+makes the bias observable; a window taken in motion offers the vehicle's own rotation under the
+same name, so it starts at zero instead. That test is `init::at_rest`, not the `Alignment` — the
+same distinction `α₀` draws below. Neither production estimator averages at all: ArduPilot zeroes
+the bias at bootstrap (`libraries/AP_NavEKF3/AP_NavEKF3_core.cpp:546`, `368dc0c4`) and PX4 refuses
+to initialize outside 0.8–1.2 g and 15°/s (`src/modules/ekf2/EKF/ekf.cpp:213-227`, `c4e4ef98`).
 
 The initial covariance is diagonal:
 
@@ -705,8 +714,8 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | equations | concept | module | function |
 | --------- | ------- | ------ | -------- |
 | (1)–(4) | state definitions | `state.rs` | `State`, `ErrorState` |
-| (5)–(8) | static initialization | `init.rs` | `classify`, `attitude_sigmas`, `initial_covariance`; unbuilt: `level_from_accel`, `heading_from_mag` |
-| (5′) `ā_n` | in-motion levelling | `init.rs` | `inertial_acceleration`; the correction itself is unbuilt, and waits on `level_from_accel` |
+| (5)–(8) | static initialization | `init.rs` | `level_from_accel`, `heading_from_mag`, `nominal_state`, `classify`, `attitude_sigmas`, `initial_covariance` |
+| (5′) `ā_n` | in-motion levelling | `init.rs` | `inertial_acceleration`; the correction itself is unbuilt |
 | (30) `α₀` | barometric reference | `init.rs` | `baro_reference` |
 | (9)–(11) | bias correction, gravity | `propagate.rs` | `ImuSample`; unbuilt: `corrected_imu` |
 | (12)–(15) | nominal propagation | `propagate.rs` | `propagate_nominal` |
