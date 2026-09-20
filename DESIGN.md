@@ -70,20 +70,16 @@ measurements together with their associated uncertainty.
 | `src/config.rs` | tuning; each default's doc comment records its evidence or says it is a placeholder |
 | `src/units.rs`, `src/frames.rs` | typed quantities and the sealed `Ned` / `Enu` / `Body` frame markers |
 | `src/geodetic.rs` | `Geodetic` and `LocalOrigin`: the navigation origin the filter holds and the tangent plane about it, equations (43)–(44) |
+| `src/lib.rs` | the crate root: `no_std` and the lint gates, and the prelude — the one list of public types, minus three names too generic to glob-import |
 
 The [equation-to-code mapping](EQUATIONS.md#equation-to-code-mapping) names the function
 intended to implement each numbered equation, including modules not yet written.
 
 ## State Propagation
 
-The IMU drives the high-rate propagation step.
-
-Gyroscope measurements are bias corrected and propagate attitude.
-
-Accelerometer measurements are bias corrected, rotated into the navigation frame, and gravity is
-added.
-
-The resulting acceleration propagates velocity and position.
+The IMU drives propagation, and it is the only path that runs on every sample: gyroscope to
+attitude, accelerometer through that attitude into the navigation frame, gravity added, the
+result integrated into velocity and position. Equations (12)–(15) have the form.
 
 ```mermaid
 flowchart TD
@@ -94,6 +90,12 @@ flowchart TD
     vel --> pos["position"]
 ```
 
+What matters here rather than in the equations is that this is a first-order discretization over
+a short interval, which is why `Config::max_predict_dt` exists: one IMU sample cannot describe a
+long gap, so `predict` refuses a step beyond the limit instead of producing a number that looks
+like an estimate. The health timers advance through the refusal, because the time passed whether
+or not the state moved.
+
 The covariance is propagated alongside the nominal state using the linearized error-state
 dynamics.
 
@@ -102,27 +104,34 @@ See [nominal state propagation](EQUATIONS.md#nominal-state-propagation) and
 
 ## Measurement Updates
 
-External sensors constrain IMU drift through independent measurement updates.
+Each source is fused as its own update against its own gate, rather than assembled into one
+combined measurement: a sensor that goes bad takes out the quantity it observes and nothing else,
+and the health that follows is per source for the same reason.
 
 See [observation models](EQUATIONS.md#observation-models) for the measurement Jacobians.
 
 ### GNSS Position
 
-GNSS position observations correct the estimated navigation position directly.
+The filter converts the fix rather than accepting a converted one, because it owns the navigation
+origin: the fix and the estimate are then relative to the same point by construction.
+`fuse_gnss_geodetic` takes latitude and longitude and converts about that origin;
+`fuse_gnss_position` is for a caller whose positions were never geodetic — a local RTK base,
+motion capture — and is right only if the caller's origin is the filter's.
+
+The first fix places the origin, under the estimate where there is one, and at the fix itself
+after a coarse start, where it is adopted rather than fused. See
+[geodetic origin](EQUATIONS.md#geodetic-origin).
 
 ### GNSS Velocity
 
-GNSS velocity observations correct the estimated navigation velocity directly.
-
-GNSS velocity is particularly useful because velocity errors otherwise accumulate rapidly from
-accelerometer and attitude errors.
+Velocity is the observation that matters most between position fixes: velocity error accumulates
+rapidly from accelerometer and attitude error, and a velocity measurement constrains it directly
+rather than waiting for the position error it would become.
 
 ### Barometric Altitude
 
-Barometric altitude provides an independent vertical-position observation.
-
-This constrains vertical drift between GNSS updates and can provide higher-rate vertical
-corrections than GNSS alone.
+Barometric altitude is the vertical observation that is available when GNSS is not, and at a
+higher rate when it is.
 
 The barometer reference is captured once at initialization and held as a constant. There is no
 barometer bias state, so slow drift in that reference — weather, ground effect, sensor warm-up —
@@ -131,7 +140,9 @@ is not estimated and appears directly as vertical position error. See
 
 ### Magnetometer
 
-Magnetometer measurements constrain yaw drift caused by gyroscope bias.
+The magnetometer is the only source that observes yaw. Gravity pins roll and pitch and says
+nothing about the rotation about them, so without one, yaw follows the gyroscope bias wherever it
+goes.
 
 Fusion is **heading only** by default: the field is reduced to a single scalar heading and fused
 as one measurement, leaving roll and pitch to gravity where they are well determined. A magnetic
@@ -147,13 +158,10 @@ See [magnetometer, heading only](EQUATIONS.md#magnetometer-heading-only).
 
 ## Innovation Gating
 
-Measurements should not automatically be accepted simply because they are available.
-
-For each observation the filter computes the innovation and its covariance, then uses the
-normalized innovation to reject measurements inconsistent with the current state estimate.
-
-This provides a common mechanism for handling GNSS glitches, barometer transients, and magnetic
-interference.
+A measurement is checked against the state it is about to correct before it is allowed to correct
+it. The filter forms the innovation and its covariance and compares the normalized innovation
+against a threshold in the observation's degrees of freedom, which is one mechanism covering GNSS
+glitches, barometer transients and magnetic interference.
 
 Rejections are counted and exposed. A filter that silently discards every measurement looks
 identical to one that is working.
@@ -234,38 +242,25 @@ estimators such as PX4 EKF2.
 
 ## Design Philosophy
 
-`fusion-nav` favors a small, understandable navigation estimator over a feature-complete autopilot
-navigation subsystem.
+The mathematics should be visible in the code rather than hidden behind an abstraction layer, so
+equations in the implementation correspond directly to the numbered equations in the crate's
+documentation. The [equation-to-code mapping](EQUATIONS.md#equation-to-code-mapping) is the
+concrete form of that promise: every numbered equation names the function that implements it,
+including the ones not yet written.
 
-The filter should make the underlying mathematics visible rather than hiding it behind a large
-abstraction layer.
-
-Where practical, equations in the implementation should correspond directly to the equations
-documented in the crate. The [equation-to-code mapping](EQUATIONS.md#equation-to-code-mapping) is
-the concrete form of that promise: every numbered equation names the function that implements it.
-
-The intended result is an estimator that is:
-
-* small enough to understand
-* fast enough for embedded use
-* complete enough for real navigation
+Positioning, the differentiators this follows from, and the decisions already made are in
+[GOALS.md](GOALS.md).
 
 ## References
 
 The architecture is informed by established error-state inertial-navigation literature and
-production UAV estimators, including PX4 EKF2.
+production UAV estimators, including PX4 EKF2 and ArduPilot EK3.
 
-PX4 is used as a reference for practical topics such as:
-
-* IMU propagation
-* covariance propagation
-* sensor fusion
-* innovation gating
-* bias estimation
-* estimator initialization
-* numerical robustness
-
-`fusion-nav` is an independent Rust implementation rather than a source-code port of PX4 EKF2.
+Those two are read as source rather than as documentation — defaults in
+`src/modules/ekf2/EKF/common.h`, alignment in `EKF/ekf.cpp`, the status model in
+`filter_control_status_u`, and ArduPilot's equivalents — because published figures drift from what
+the code does. `fusion-nav` is an independent Rust implementation rather than a source-code port
+of either.
 
 The mathematical formulation follows J. Solà, *Quaternion kinematics for the error-state Kalman
 filter* ([arXiv:1711.02508](https://arxiv.org/abs/1711.02508)), which is the primary source for

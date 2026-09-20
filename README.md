@@ -51,7 +51,7 @@ caused it to drift. The error-state form keeps attitude as a quaternion and esti
 
 ### When you do not need one
 
-`fusion-nav` complements the lighter filters in the Fusion ecosystem:
+`fusion-nav` complements the lighter Fusion filters:
 
 ```mermaid
 flowchart LR
@@ -87,12 +87,9 @@ loop {
     // step leaves the state where it was.
     if !filter.predict(imu, dt).is_propagated() { /* log the gap */ }
 
-    // Measurement updates whenever a sensor delivers, each with its own noise. GNSS goes
-    // in as the receiver reports it: latitude and longitude, converted about the origin
-    // the filter holds, and accuracy as standard deviations, floored at 0.5 m as PX4
-    // and ArduPilot do. u-blox reports accuracy in millimeters. Only fuse a real fix:
-    // many receivers report latitude and longitude zero until they have one. A
-    // rejection carries its test ratio.
+    // Measurement updates whenever a sensor delivers, each with its own noise. Floor a
+    // receiver's accuracy at 0.5 m as PX4 and ArduPilot do, and fuse only a real fix —
+    // the first one places the navigation origin.
     let fix = Geodetic::from_degrees_e7(pvt.lat, pvt.lon, pvt.height_mm);
     let (eph, epv) = (pvt.h_acc_mm as f32 * 1e-3, pvt.v_acc_mm as f32 * 1e-3);
     let noise = PositionNoise::horizontal_vertical(eph.max(0.5), epv.max(0.5));
@@ -180,7 +177,7 @@ and restarts at altitude.
 | ----------- | --- |
 | `initialize(window, dt)` | the usual case; `Alignment::Static` if the window was genuinely still, `Alignment::Coarse` with what it measured otherwise |
 | `initialize_coarse(imu)` | no window at all — one sample of gravity, and the filter runs |
-| `initialize_from(state, covariance)` | an estimate the application already holds: a companion AHRS, the last flight's saved state |
+| `initialize_from(state, covariance)` | an estimate the application already holds: a companion AHRS such as `fusion-ahrs`, the last flight's saved state |
 
 `alignment_of(window, dt)` reports what `initialize` would make of a window without touching the
 filter, for an application that would rather wait for stillness than start coarsely.
@@ -304,6 +301,8 @@ false however much GNSS is accepted.
 
 ### Detail
 
+* `is_aligned()` — whether attitude has converged, on the same bar `Status::Aligning` uses: read
+  from the covariance against `Config::accuracy`, so promotion is measured rather than timed.
 * `diagnostics()` — per source: test ratio, time since last acceptance, consecutive rejections.
   For logging and tuning; not on the hot path.
 * `covariance()` — the 15 × 15 covariance, indexed by name: `p.variance(ErrorState::AttitudeZ)`.
@@ -315,16 +314,18 @@ The filter gates but does **not** recover on its own. Only the application knows
 reset states, degrade the flight mode, or alert the operator. `reset_position_to(fix, noise)`
 and `reset_velocity_to(fix, noise)` exist so that `DeadReckoning` is actionable. Both return
 `false`, changing nothing, for a fix or a noise a `fuse_*` would have refused: a reset writes the
-noise onto the covariance diagonal with no gate in the way. PX4 resets
-after a 7 s horizontal or 5 s height fusion timeout, which are reasonable starting points for an
-integrator's own policy. See [rejection handling](GOALS.md#rejection-handling-report-do-not-self-recover).
+noise onto the covariance diagonal with no gate in the way. PX4 resets after 7 s of horizontal
+dead reckoning or 5 s of failed height fusion (`reset_timeout_max` and `hgt_fusion_timeout_max`,
+`src/modules/ekf2/EKF/common.h:515-517` at PX4 `c4e4ef98e9`), which are reasonable starting points
+for an integrator's own policy. See [rejection handling](GOALS.md#rejection-handling-report-do-not-self-recover).
 
 ## Limitations
 
 Known and deliberate, stated here rather than discovered in flight.
 
-* **Measurement latency is not modelled.** GNSS solutions arrive 100–200 ms stale and are fused
-  as though current; the error grows with speed. PX4 uses a delayed fusion horizon. See
+* **Measurement latency is not modelled.** GNSS solutions arrive typically 100–200 ms stale and
+  are fused as though current; the error grows with speed. PX4 fuses at a delayed horizon and
+  propagates forward from it (`src/modules/ekf2/EKF/output_predictor/output_predictor.cpp`). See
   [measurement latency](GOALS.md#measurement-latency).
 * **No barometer bias state.** Drift in the reference — weather, ground effect, warm-up — becomes
   vertical position error. See
