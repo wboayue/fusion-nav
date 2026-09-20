@@ -68,7 +68,7 @@ fn main() -> Result<(), InitError> {
         if tick % (IMU_HZ / MAG_HZ) == 0 {
             filter.fuse_mag_heading(
                 MagField::body(0.21, 0.03, 0.44),
-                HeadingNoise::from_sigma(0.22),
+                HeadingNoise::from_sigma(0.3),
             );
         }
     }
