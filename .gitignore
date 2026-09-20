@@ -24,4 +24,9 @@ target
 __pycache__/
 
 # uv virtualenv for the Python tools in tools/
-.venv/
+#
+# No trailing slash, here or on data/logs: a worktree shares neither, and linking
+# the main checkout's rather than fetching a second copy is the cheap way round
+# that. A `dir/` pattern matches a directory and not a symlink to one, so the link
+# shows up as untracked and waits to be committed by accident.
+.venv

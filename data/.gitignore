@@ -1,2 +1,3 @@
 # Fetched logs are large and their redistribution terms are usually unstated.
-logs/
+# No trailing slash: see the note on .venv in the root .gitignore.
+logs
