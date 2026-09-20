@@ -62,17 +62,22 @@ $ cargo run --example replay -- \
 score pos_h=101.112 pos_v=14.025 vel=14.527 pos_h_max=125.000 tilt=11.323 yaw=36.041 …
 ```
 
+Those are the **stub's** figures — nothing propagates, so the estimate holds the initialization
+window while truth flies away — and they move when a stage of #31 lands.
+
 What each key means, and what it can and cannot say on these scenarios, is in the module docs of
-`examples/replay.rs`, which owns the definitions. Three things about *using* it belong here:
+`examples/replay.rs`, which owns the definitions. Two things about *using* it belong here:
 
 - **No truth file, no `score` line** — not a line of zeros. Every log in the PX4 corpus below has
   no truth, and `pos_h=0.000` on one of them would claim a perfect filter where the honest answer
   is that nothing knows. `manifest.txt` is untouched by scoring, and `fetch.sh --check` reads
-  `summary` exactly as before.
-- **Convergence is on `summary`, not here.** `aligned_at=` needs no truth and the corpus pins it;
-  one statistic, one implementation.
-- **Five scenarios are one-variable departures from `mission` on `mission`'s seed**, so the figure
-  that attributes a fault is `score(departure) − score(mission)`, not either alone.
+  `summary` exactly as before. A truth file that was scored but matched no epoch is the same case:
+  the line is `score scored=0` and no more.
+- **The truth has to belong to the log.** Both files carry their scenario and seed in a `#`
+  header, and a mismatch is refused rather than scored — nine `*.truth.csv` sit one
+  tab-completion apart in `target/sim/`, and the epoch timestamps of the wrong one line up
+  perfectly often enough that nothing else would notice. A log with no such header — a corpus
+  log, a converted one — is taken on trust, because there is nothing in it to check.
 
 The per-scenario ceilings CI would gate these against are
 [#17](https://github.com/wboayue/fusion-nav/issues/17).

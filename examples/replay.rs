@@ -94,12 +94,17 @@
 //!
 //! `false_valid` counts quantity-epochs where the filter's own [`Validity`] said a quantity
 //! was usable and the truth error was outside `Config::accuracy`. It reads the filter's
-//! verdict rather than re-deriving σ ≤ accuracy from the covariance, and that is the whole
-//! point: a recomputation would be testing a copy of the claim instead of the claim. Read it
-//! as a rate against `epochs=`, not as a defect count — the bar is a 1σ one, so a filter
-//! sitting exactly at it, which `Accuracy::default`'s attitude figures do, scores about a
-//! third of its epochs while being perfectly tuned. A low count therefore means the filter
-//! kept margin; a high one is the evidence for widening either the bar or the report.
+//! verdict rather than re-deriving σ ≤ accuracy from the covariance, and it falsifies that
+//! verdict the way the filter states it — per axis, not on a 2-D norm. Both halves are the
+//! same point: the key is a test of the claim, and re-deriving either half tests a copy of
+//! it instead. [`Quantity::falsified`] has the arithmetic.
+//!
+//! Read it as a rate against `epochs=`, not as a defect count. The bar is a 1σ one, so a
+//! filter sitting exactly at it — which `Accuracy::default`'s attitude figures do — fails it
+//! constantly while being perfectly tuned: about a third of epochs for a single-axis claim
+//! (`heading`, `position (v)`, `velocity (v)`) and about half for a two-axis one, which is
+//! outside the bar if either axis is. A low count means the filter kept margin; a high one
+//! is the evidence for widening either the bar or the report.
 //!
 //! # What the score measures today
 //!
@@ -225,11 +230,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut args = env::args().skip(1);
     let input = args.next().map_or_else(default_input, PathBuf::from);
     let output = args.next().map_or_else(default_output, PathBuf::from);
-    // Optional, and absent on every corpus log: no truth file, no `score` line.
-    let scoring = args
-        .next()
-        .map(|path| Scoring::open(path.into()))
-        .transpose()?;
+    let truth = args.next();
 
     // `examples/simulate.rs` writes its magnetic field for this same declination, and says what
     // divergence costs: a heading fused from a generated log would carry the difference as a
@@ -239,6 +240,12 @@ fn run() -> Result<(), Box<dyn Error>> {
         ..Config::default()
     };
     let text = fs::read_to_string(&input).map_err(|e| format!("{}: {e}", input.display()))?;
+    // Optional, and absent on every corpus log: no truth file, no `score` line. Opened with
+    // the log in hand, so a truth file belonging to another scenario is refused here rather
+    // than scored against this one.
+    let scoring = truth
+        .map(|path| Scoring::open(path.into(), &text))
+        .transpose()?;
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -571,11 +578,16 @@ impl Replay {
         }
         self.epochs += 1;
         // Scored from the same `state` the row is written from, and after a refused step as
-        // well as an accepted one: the stale state is what the filter published.
-        let covariance = *self.filter.covariance();
-        let accuracy = self.filter.config().accuracy;
+        // well as an accepted one: the stale state is what the filter published. Both reads
+        // sit inside the `if let` so a replay with no truth file — which is every CI run and
+        // every corpus log — does no work for a feature it is not using.
         if let Some(scoring) = &mut self.scoring {
-            scoring.epoch(t, &state, &covariance, &accuracy);
+            scoring.epoch(
+                t,
+                &state,
+                self.filter.covariance(),
+                &self.filter.config().accuracy,
+            );
         }
         self.write_row(t, state, out)
     }
@@ -752,6 +764,12 @@ impl Replay {
                 score.unmatched
             );
         }
+        if score.scored == 0 {
+            // Nothing below would mean anything, and printing it as zeros would read as a
+            // perfect filter rather than an unmeasured one.
+            println!("  nothing scored\n\n{}", score.line());
+            return;
+        }
         println!(
             "  position     RMSE {:.3} m horizontal, {:.3} m vertical, worst {:.3} m",
             score.rms(score.position_horizontal),
@@ -765,12 +783,12 @@ impl Replay {
             score.rms(score.yaw).to_degrees(),
         );
         println!(
-            "  consistency  {:.1}% of axis-epochs within 3 sigma; NEES/dof {:.3} pos, \
-             {:.3} vel, {:.3} att",
-            100.0 * score.within_3s as f64 / score.axes.max(1) as f64,
-            score.nees_per_dof(0),
-            score.nees_per_dof(1),
-            score.nees_per_dof(2),
+            "  consistency  {:.1}% of axis-epochs within 3 sigma; NEES/dof {} pos, \
+             {} vel, {} att",
+            100.0 * score.in3s(),
+            score.nees_text(0),
+            score.nees_text(1),
+            score.nees_text(2),
         );
         if score.false_valid() > 0 {
             // Per quantity, because the key is a sum and the sum does not say which claim
@@ -781,9 +799,9 @@ impl Replay {
                  Config::accuracy:",
                 score.false_valid()
             );
-            for (name, count) in CLAIM_NAMES.iter().zip(score.false_valid) {
+            for (quantity, count) in QUANTITIES.iter().zip(score.false_valid) {
                 if count > 0 {
-                    println!("    {name:<13} {count}");
+                    println!("    {:<13} {count}", quantity.name);
                 }
             }
         }
@@ -1017,32 +1035,14 @@ impl Replay {
         let validity = self.filter.state().validity;
         let predicted = self.filter.predicted_validity();
         println!("\nvalidity at end of log        now  at takeoff");
-        for (name, now, then) in [
-            ("tilt", validity.tilt, predicted.tilt),
-            ("heading", validity.heading, predicted.heading),
-            (
-                "position (h)",
-                validity.horizontal_position,
-                predicted.horizontal_position,
-            ),
-            (
-                "position (v)",
-                validity.vertical_position,
-                predicted.vertical_position,
-            ),
-            (
-                "velocity (h)",
-                validity.horizontal_velocity,
-                predicted.horizontal_velocity,
-            ),
-            (
-                "velocity (v)",
-                validity.vertical_velocity,
-                predicted.vertical_velocity,
-            ),
-        ] {
+        for quantity in &QUANTITIES {
             let mark = |flag| if flag { "yes" } else { " no" };
-            println!("  {name:<13} {}        {}", mark(now), mark(then));
+            println!(
+                "  {:<13} {}        {}",
+                quantity.name,
+                mark((quantity.flag)(validity)),
+                mark((quantity.flag)(predicted)),
+            );
         }
     }
 
@@ -1129,7 +1129,7 @@ impl<'a> Record<'a> {
 /// `write_truth_header` in `examples/simulate.rs` at compile time. A column renamed or
 /// reordered there would otherwise score one quantity against another and publish a number
 /// for it.
-const TRUTH_COLUMNS: [&str; 16] = [
+const TRUTH_COLUMNS: [&str; STATES + 1] = [
     "t_s", "pos_n", "pos_e", "pos_d", "vel_n", "vel_e", "vel_d", "roll", "pitch", "yaw", "ba_x",
     "ba_y", "ba_z", "bg_x", "bg_y", "bg_z",
 ];
@@ -1182,6 +1182,29 @@ impl TruthRow {
             gyro_bias: group(12),
         })
     }
+}
+
+/// The scenario a generated file names in its `#` header, as `(name, seed)`.
+///
+/// `examples/simulate.rs` stamps both halves of a scenario with this — the log carries
+/// ``scenario `mission`, seed 2`` and the truth ``truth for `mission.csv`, seed 2`` — and
+/// both parsers read those lines and drop them. It is the only thing that can say a truth
+/// file belongs to the log being scored against it. [`Score::unmatched`] cannot: a 50 Hz log
+/// lands on every fourth row of 200 Hz truth, so the wrong file matches every epoch and
+/// publishes an accuracy figure with nothing tying it to what produced it.
+///
+/// `None` for a file carrying no marker — a corpus log, a converted one, a hand-written one.
+/// Those are taken on trust, because there is nothing in them that could be checked.
+fn scenario_of(text: &str) -> Option<(String, u64)> {
+    let line = text
+        .lines()
+        .take_while(|line| line.starts_with('#'))
+        .find(|line| line.contains("fusion-nav"))?;
+    // The backticked name, which the truth header spells with its `.csv` and the log's
+    // without, and the trailing seed.
+    let name = line.split('`').nth(1)?.trim_end_matches(".csv").to_string();
+    let seed = line.rsplit("seed ").next()?.trim().parse().ok()?;
+    Some((name, seed))
 }
 
 /// The truth file, and how far through it the replay has got.
@@ -1316,60 +1339,84 @@ fn nees(error: &SVector<f32, STATES>, p: &CovarianceMatrix, first: ErrorState) -
     Some(f64::from(delta.dot(&(inverse * delta))))
 }
 
-/// The six per-quantity validity claims, in the order [`claims`] reports them and
-/// [`Score::false_valid`] counts them.
-const CLAIM_NAMES: [&str; 6] = [
-    "tilt",
-    "heading",
-    "position (h)",
-    "position (v)",
-    "velocity (h)",
-    "velocity (v)",
-];
-
-/// Each claim as `(claimed, error, bar)`: what the filter said, what the error was, and the
-/// [`Accuracy`] bar that would falsify it.
+/// One of the six quantities [`Validity`] answers for.
 ///
-/// One place rather than two, so the `false_valid` key and the breakdown printed under it
-/// cannot come to different answers. `claimed` is read off the filter's own [`Validity`] and
-/// never re-derived from the covariance: a recomputation would be testing a copy of the
-/// claim instead of the claim.
-fn claims(
-    error: &SVector<f32, STATES>,
-    validity: Validity,
-    accuracy: &Accuracy,
-) -> [(bool, f32, f32); 6] {
-    let (tilt, heading) = (accuracy.tilt.as_radians(), accuracy.heading.as_radians());
-    let (position, velocity) = (
-        accuracy.position.as_meters(),
-        accuracy.velocity.as_m_per_s(),
-    );
-    use ErrorState::*;
-    [
-        (validity.tilt, horizontal(error, AttitudeX, AttitudeY), tilt),
-        (validity.heading, at(error, AttitudeZ).abs(), heading),
-        (
-            validity.horizontal_position,
-            horizontal(error, PositionNorth, PositionEast),
-            position,
-        ),
-        (
-            validity.vertical_position,
-            at(error, PositionDown).abs(),
-            position,
-        ),
-        (
-            validity.horizontal_velocity,
-            horizontal(error, VelocityNorth, VelocityEast),
-            velocity,
-        ),
-        (
-            validity.vertical_velocity,
-            at(error, VelocityDown).abs(),
-            velocity,
-        ),
-    ]
+/// A table rather than parallel lists. The names, the flags and the bars were written out
+/// separately for `report_validity`, for the `false_valid` count and for the breakdown under
+/// it, with nothing but a doc comment holding the three orders together — reordering one
+/// silently relabelled the others.
+struct Quantity {
+    name: &'static str,
+    /// Which flag on [`Validity`] this is. Read off the filter rather than re-derived from
+    /// the covariance: a recomputation would test a copy of the claim instead of the claim.
+    flag: fn(Validity) -> bool,
+    /// The error states the claim covers.
+    states: &'static [ErrorState],
+    /// The [`Accuracy`] field those states are judged against.
+    bar: fn(&Accuracy) -> f32,
 }
+
+impl Quantity {
+    /// Whether the filter claimed this quantity and the truth error says otherwise.
+    ///
+    /// Per axis, because that is the shape of the claim: `Eskf::validity` asks
+    /// `within(PositionNorth) && within(PositionEast)`, so what falsifies it is either axis
+    /// outside the bar. Testing the 2-D norm instead would hold the filter to a bar √2
+    /// tighter than the one it asserted, and would diverge from the claim exactly as the
+    /// estimate approached it — the regime this count exists to watch.
+    fn falsified(
+        &self,
+        error: &SVector<f32, STATES>,
+        validity: Validity,
+        accuracy: &Accuracy,
+    ) -> bool {
+        (self.flag)(validity)
+            && self
+                .states
+                .iter()
+                .any(|state| at(error, *state).abs() > (self.bar)(accuracy))
+    }
+}
+
+/// The six quantities, in the order [`Score::false_valid`] counts them.
+const QUANTITIES: [Quantity; 6] = [
+    Quantity {
+        name: "tilt",
+        flag: |v| v.tilt,
+        states: &[ErrorState::AttitudeX, ErrorState::AttitudeY],
+        bar: |a| a.tilt.as_radians(),
+    },
+    Quantity {
+        name: "heading",
+        flag: |v| v.heading,
+        states: &[ErrorState::AttitudeZ],
+        bar: |a| a.heading.as_radians(),
+    },
+    Quantity {
+        name: "position (h)",
+        flag: |v| v.horizontal_position,
+        states: &[ErrorState::PositionNorth, ErrorState::PositionEast],
+        bar: |a| a.position.as_meters(),
+    },
+    Quantity {
+        name: "position (v)",
+        flag: |v| v.vertical_position,
+        states: &[ErrorState::PositionDown],
+        bar: |a| a.position.as_meters(),
+    },
+    Quantity {
+        name: "velocity (h)",
+        flag: |v| v.horizontal_velocity,
+        states: &[ErrorState::VelocityNorth, ErrorState::VelocityEast],
+        bar: |a| a.velocity.as_m_per_s(),
+    },
+    Quantity {
+        name: "velocity (v)",
+        flag: |v| v.vertical_velocity,
+        states: &[ErrorState::VelocityDown],
+        bar: |a| a.velocity.as_m_per_s(),
+    },
+];
 
 /// What scoring the replay against truth has found so far.
 ///
@@ -1447,12 +1494,8 @@ impl Score {
             }
         }
 
-        for (count, (claimed, deviation, bar)) in
-            self.false_valid
-                .iter_mut()
-                .zip(claims(&error, state.validity, accuracy))
-        {
-            if claimed && deviation > bar {
+        for (count, quantity) in self.false_valid.iter_mut().zip(&QUANTITIES) {
+            if quantity.falsified(&error, state.validity, accuracy) {
                 *count += 1;
             }
         }
@@ -1463,10 +1506,29 @@ impl Score {
         (sum / f64::from(self.scored.max(1))).sqrt()
     }
 
-    /// Mean NEES per degree of freedom for one block: ≈1 where the covariance describes the
-    /// error it actually made.
-    fn nees_per_dof(&self, block: usize) -> f64 {
-        self.nees[block] / f64::from(self.nees_epochs[block].max(1)) / BLOCK as f64
+    /// Mean NEES per degree of freedom for one block — ≈1 where the covariance describes the
+    /// error it actually made — or `None` where the block was singular at every epoch and
+    /// there is no such figure.
+    fn nees_per_dof(&self, block: usize) -> Option<f64> {
+        match self.nees_epochs[block] {
+            0 => None,
+            epochs => Some(self.nees[block] / f64::from(epochs) / BLOCK as f64),
+        }
+    }
+
+    /// That figure as both the report and the `score` line print it.
+    ///
+    /// A word where it could not be computed, as `aligned_at=never` and `alpha0=none` are.
+    /// `0.0000` would read as an extremely conservative covariance — the opposite of the
+    /// collapsed one that produced it — and nothing else published would tell the two apart.
+    fn nees_text(&self, block: usize) -> String {
+        self.nees_per_dof(block)
+            .map_or_else(|| "none".to_string(), |nees| format!("{nees:.4}"))
+    }
+
+    /// Fraction of axis-epochs within 3σ, over all 15 states.
+    fn in3s(&self) -> f64 {
+        self.within_3s as f64 / self.axes.max(1) as f64
     }
 
     /// Quantity-epochs claimed usable while the error was outside `Config::accuracy`.
@@ -1475,21 +1537,28 @@ impl Score {
     }
 
     /// The `score` line, in `summary`'s `key=value` shape so one parser reads both.
+    ///
+    /// With nothing scored it is `score scored=0` and no more. A full line of zeros would
+    /// put `pos_h=0.000`, the best possible value, beside `in3s=0.0000`, the worst, and
+    /// claim a perfect filter for a log that was never measured — the same reason a log with
+    /// no truth file gets no line at all.
     fn line(&self) -> String {
+        if self.scored == 0 {
+            return "score scored=0".to_string();
+        }
         format!(
             "score pos_h={:.3} pos_v={:.3} vel={:.3} pos_h_max={:.3} tilt={:.3} yaw={:.3} \
-             in3s={:.4} nees_pos={:.4} nees_vel={:.4} nees_att={:.4} false_valid={} \
-             scored={}",
+             in3s={:.4} nees_pos={} nees_vel={} nees_att={} false_valid={} scored={}",
             self.rms(self.position_horizontal),
             self.rms(self.position_vertical),
             self.rms(self.velocity),
             self.position_horizontal_max,
             self.rms(self.tilt).to_degrees(),
             self.rms(self.yaw).to_degrees(),
-            self.within_3s as f64 / self.axes.max(1) as f64,
-            self.nees_per_dof(0),
-            self.nees_per_dof(1),
-            self.nees_per_dof(2),
+            self.in3s(),
+            self.nees_text(0),
+            self.nees_text(1),
+            self.nees_text(2),
             self.false_valid(),
             self.scored,
         )
@@ -1512,9 +1581,23 @@ impl Scoring {
         }
     }
 
-    fn open(path: PathBuf) -> Result<Self, Box<dyn Error>> {
+    /// Read a truth file and check it belongs to the log it will be scored against.
+    fn open(path: PathBuf, log: &str) -> Result<Self, Box<dyn Error>> {
         let text = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         let truth = Truth::parse(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+        if let (Some(from_log), Some(from_truth)) = (scenario_of(log), scenario_of(&text))
+            && from_log != from_truth
+        {
+            return Err(format!(
+                "{}: truth for `{}` seed {}, but the log is `{}` seed {}",
+                path.display(),
+                from_truth.0,
+                from_truth.1,
+                from_log.0,
+                from_log.1,
+            )
+            .into());
+        }
         Ok(Self::new(path, truth))
     }
 
@@ -2403,12 +2486,12 @@ mod tests {
         truth_row(0.0, values)
     }
 
-    /// One truth row, from the same fifteen values [`TruthLog::row`] writes.
+    /// One truth row, written by [`TruthLog::row`] and read back through the real parser, so
+    /// a fixture never hands the scorer a row the file format could not carry.
     fn truth_row(t: f64, values: [f32; STATES]) -> TruthRow {
-        let mut log = TruthLog::new().row(t, values);
-        let row = log.0.lines().last().expect("a row").to_string();
-        log.0.clear();
-        TruthRow::parse(&row).expect("a truth row parses")
+        let log = TruthLog::new().row(t, values);
+        let row = log.0.lines().last().expect("a row");
+        TruthRow::parse(row).expect("a truth row parses")
     }
 
     /// Score one epoch on its own, away from the harness.
@@ -2452,7 +2535,7 @@ mod tests {
         assert_eq!(score.false_valid(), 0);
         assert_eq!(score.within_3s, score.axes, "all 15 axes, not just the 9");
         for block in 0..3 {
-            assert_eq!(score.nees_per_dof(block), 0.0);
+            assert_eq!(score.nees_per_dof(block), Some(0.0));
         }
     }
 
@@ -2517,11 +2600,8 @@ mod tests {
             score.within_3s, score.axes,
             "every marginal is inside 3 sigma"
         );
-        assert!(
-            score.nees_per_dof(0) > 30.0,
-            "the joint test is not: {}",
-            score.nees_per_dof(0)
-        );
+        let joint = score.nees_per_dof(0).expect("position inverts");
+        assert!(joint > 30.0, "the joint test is not: {joint}");
     }
 
     #[test]
@@ -2543,6 +2623,91 @@ mod tests {
             [0, 1, 1],
             "position could not be inverted"
         );
+        assert_eq!(score.nees_per_dof(0), None);
+        assert_eq!(
+            score.nees_text(0),
+            "none",
+            "a word, so it is not read as an extremely conservative covariance"
+        );
+        assert_eq!(
+            score.nees_text(1),
+            "0.0000",
+            "the other blocks still report"
+        );
+    }
+
+    #[test]
+    fn a_claim_is_falsified_per_axis_rather_than_on_the_norm() {
+        // `Eskf::validity` asks `within(PositionNorth) && within(PositionEast)`, so 4 m on
+        // each axis against a 5 m bar is inside the claim the filter actually made — even
+        // though the 2-D norm is 5.66 m. Testing the norm would hold it to a bar √2 tighter
+        // than the one it asserted, and would diverge from the claim exactly as the estimate
+        // approached it.
+        let covariance = Covariance::from_sigmas([0.5; STATES]);
+        let state = state_at(0.0, 0.0, 0.0);
+        let inside = score_one(&state, &covariance, &truth_offset(4.0, 4.0, 0.0));
+        assert_eq!(
+            inside.false_valid(),
+            0,
+            "5.66 m of norm, 4 m on either axis"
+        );
+
+        let outside = score_one(&state, &covariance, &truth_offset(6.0, 0.0, 0.0));
+        assert_eq!(
+            outside.false_valid(),
+            1,
+            "one axis past the bar falsifies it"
+        );
+    }
+
+    #[test]
+    fn nothing_scored_publishes_no_figures() {
+        // The same argument as a log with no truth file at all: a full line would put
+        // `pos_h=0.000`, the best possible value, beside `in3s=0.0000`, the worst, for a log
+        // nothing measured. A consumer looking for `pos_h` finds no key rather than a good
+        // one.
+        assert_eq!(Score::default().line(), "score scored=0");
+    }
+
+    // ---- the truth file belongs to the log ----
+
+    #[test]
+    fn a_log_and_its_truth_name_the_same_scenario() {
+        // The two headers spell it differently — the log without the `.csv`, the truth with
+        // — and the whole check rests on them coming out equal anyway.
+        let log = "# fusion-nav simulated flight - scenario `mission`, seed 2\n# covers\n";
+        let truth = "# fusion-nav truth for `mission.csv`, seed 2\n#\n";
+        assert_eq!(scenario_of(log), Some(("mission".to_string(), 2)));
+        assert_eq!(scenario_of(log), scenario_of(truth));
+    }
+
+    #[test]
+    fn truth_from_another_scenario_does_not_match_the_log() {
+        // The failure this exists for: nine `*.truth.csv` one tab-completion apart, and
+        // `unmatched` blind to the mix-up because a 50 Hz log lands on every fourth row of
+        // 200 Hz truth and matches every epoch.
+        let log = "# fusion-nav simulated flight - scenario `flight`, seed 8\n";
+        let truth = "# fusion-nav truth for `mission.csv`, seed 2\n";
+        assert_ne!(scenario_of(log), scenario_of(truth));
+    }
+
+    #[test]
+    fn the_same_scenario_regenerated_on_another_seed_does_not_match() {
+        // Same trajectory, different draws. The name alone would let this through.
+        let a = "# fusion-nav truth for `mission.csv`, seed 2\n";
+        let b = "# fusion-nav truth for `mission.csv`, seed 3\n";
+        assert_ne!(scenario_of(a), scenario_of(b));
+    }
+
+    #[test]
+    fn a_file_with_no_marker_is_taken_on_trust() {
+        // A corpus log, a converted one, a hand-written one. Nothing in them could be
+        // checked, so the check stands down rather than refusing the file.
+        assert_eq!(scenario_of("t_s,source,v0,v1,v2\n"), None);
+        assert_eq!(
+            scenario_of("# converted from somewhere else\nt_s,source\n"),
+            None
+        );
     }
 
     #[test]
@@ -2555,7 +2720,7 @@ mod tests {
         assert_eq!(claimed.false_valid(), 1);
         assert_eq!(
             claimed.false_valid[2], 1,
-            "horizontal position, in CLAIM_NAMES order"
+            "horizontal position, in QUANTITIES order"
         );
 
         let mut honest = state_at(0.0, 0.0, 0.0);

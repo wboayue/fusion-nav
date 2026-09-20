@@ -312,9 +312,12 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
   applied to the filter rather than to Python. A third argument is a truth CSV, and adds a
   `score` line beside `summary`: RMSE, NEES, `in3s`, `false_valid`. No truth file means no
   `score` line rather than a line of zeros, so the corpus and `manifest.txt` are untouched by
-  it. Every key reads one error vector, built in `error_state` and nowhere else; `false_valid`
-  reads the filter's own `Validity` rather than re-deriving it, which is what makes it a test
-  of the claim instead of a copy of it.
+  it, and a truth file from another scenario is refused rather than scored — both files carry
+  their scenario and seed in a `#` header, and the wrong one's timestamps line up often enough
+  that nothing else notices. Every key reads one error vector, built in `error_state` and
+  nowhere else. `false_valid` reads the filter's own `Validity` *and* falsifies it per axis,
+  the way `Eskf::validity` states it: re-deriving either half tests a copy of the claim
+  instead of the claim.
 - `examples/simulate.rs` — the scenario table, and the only source of truth to score against.
   An example rather than a workspace member on purpose: `panic-check` is a crate out of
   necessity (its own target, profile and link step), while this one imports nothing, needs no
