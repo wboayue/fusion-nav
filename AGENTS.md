@@ -100,7 +100,7 @@ per question answered, never per importance.
 ## Commands
 
 ```bash
-cargo test --all-targets          # unit tests (inline `mod tests` in src/eskf.rs and src/init.rs)
+cargo test --all-targets          # unit tests: inline `mod tests` across src/, and in examples/replay.rs
 cargo test --doc                  # doctests in lib.rs / prelude carry the usage contract
 cargo test --lib eskf::tests::a_step_over_the_limit_is_refused_but_the_time_still_passes  # one test
 cargo fmt --all -- --check
@@ -210,6 +210,15 @@ installed, every log reconverted, replayed, and every moved expectation explaine
 that move `tools/ulog2replay.py` output together, with one `--check` run and one manifest diff
 naming, per moved expectation, which change moved it. Three separate diffs each obscure the last.
 
+The harness has its own `#[cfg(test)] mod tests`, and the reason is that the manifest alone is a
+circular guard: its expectations were produced by the harness they are meant to protect, so a
+miscount becomes a pinned number and then the baseline every later change is measured against.
+The tests cover what the corpus cannot check about itself — the median rate estimator on a burst
+and a dropout, the `f64` timestamp parse past the `f32` mantissa, the counters, and each verdict
+key — against fixtures whose answer is known by construction. Keep them fixtures: the builder
+there emits rows and never a count, a rate or a verdict, so the expected values stay literals
+beside their assertions.
+
 **One statistic, one implementation.** The Rust replay harness is the only thing that *computes* a
 statistic; it emits per-fusion rows and scalar keys on the `summary` and `score` lines. The Python
 tools read those and aggregate, plot, or compare against the EKF2 reference — they never recompute
@@ -292,7 +301,11 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
   justified by data says so.
 - `src/health.rs` — `Propagation` (`#[must_use]`), `Fusion` (not, deliberately — see its doc
   comment), `SourceHealth`, `Status`.
-- `examples/replay.rs` — the normalized CSV format and the offline harness.
+- `examples/replay.rs` — the normalized CSV format and the offline harness. Two output files:
+  one row per IMU epoch, and one row per `fuse_*` call in `<out>.fusion.csv` with the gates in
+  its header. `ν` and `S` are columns without values until the update of (23)–(28) publishes
+  them — the harness must not compute them itself, which is "one statistic, one implementation"
+  applied to the filter rather than to Python.
 - `examples/simulate.rs` — the scenario table, and the only source of truth to score against.
   An example rather than a workspace member on purpose: `panic-check` is a crate out of
   necessity (its own target, profile and link step), while this one imports nothing, needs no

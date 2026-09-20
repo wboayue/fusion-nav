@@ -211,10 +211,13 @@ impl Default for Accuracy {
     /// the covariance grows: a static start will drop to
     /// [`Status::Aligning`](crate::Status::Aligning) on its first step, and heading — which
     /// only a magnetometer brings back down — may never return. Recorded rather than
-    /// corrected, because the number to widen these to is a measurement, not a guess: what
-    /// should set it is how long real logs take to converge, which needs a convergence key
-    /// on the replay `summary` line before it can be read off the corpus the way
-    /// [`Timeouts::degraded_after`] was.
+    /// corrected, because the number to widen these to is a measurement, not a guess: how
+    /// long real logs take to converge, read off the corpus the way
+    /// [`Timeouts::degraded_after`] was. The replay `summary` line reports it as
+    /// `aligned_at=`, which every entry in `data/manifest.txt` now pins — at 0.00 s on
+    /// every static log, since the bar is passed by exactly zero margin, and `never` on the
+    /// coarse one. Both figures measure the stub: they move when covariance propagation
+    /// lands, and that is when they become the evidence this comment is waiting for.
     fn default() -> Self {
         Self {
             tilt: Radians::from_radians(0.02),
