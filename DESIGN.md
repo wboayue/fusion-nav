@@ -197,6 +197,7 @@ The implementation therefore favors:
 * no dynamic allocation
 * deterministic execution time
 * `no_std`
+* no panics, [checked in CI](README.md#the-library-cannot-panic)
 * explicit numerical types
 * minimal dependencies
 

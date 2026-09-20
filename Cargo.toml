@@ -14,6 +14,15 @@ keywords = ["eskf", "navigation", "sensor-fusion", "gnss", "embedded"]
 categories = ["embedded", "no-std", "algorithms", "science"]
 exclude = ["AGENTS.md"]
 
+# `panic-check` builds a bare-metal binary that links the whole public API, so CI can prove
+# nothing in it reaches `core::panicking`. It is a workspace member for one reason: a second
+# `Cargo.lock` would let the gate run against a different `nalgebra` than the library ships.
+# It is not a default member, so `cargo test`, `cargo clippy` and `cargo package` at the root
+# never try to build a `no_std` binary for the host. See `panic-check/run.sh`.
+[workspace]
+members = [".", "panic-check"]
+default-members = ["."]
+
 [dependencies]
 nalgebra = { version = "0.35", default-features = false, features = ["libm"] }
 
