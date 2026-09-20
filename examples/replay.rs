@@ -1340,6 +1340,43 @@ mod tests {
     }
 
     #[test]
+    fn the_attitude_keys_report_the_tilt_the_window_was_held_at() {
+        // A vehicle parked 10° right wing down and 5° nose down reads
+        // `f = R₀ᵀ(−g)`, and (5) must give those two angles back. Written out rather
+        // than rotated here, so the fixture is not the equation checking itself.
+        const TILTED: ([f32; 3], [f32; 3]) =
+            ([0.0, 0.0, 0.0], [-0.854_706, -1.696_427, -9.620_915]);
+        let summary = replay(&Log::new().run(0.0, 100, DT, TILTED)).summary();
+        assert_eq!(key(&summary, "align"), "static", "a tilt is not motion");
+        assert_eq!(key(&summary, "roll0"), "10.00");
+        assert_eq!(key(&summary, "pitch0"), "-5.00");
+    }
+
+    #[test]
+    fn the_heading_key_carries_the_declination_the_filter_was_configured_with() {
+        // The fixture's field, levelled, is 0.095 rad east of its own north, and the
+        // harness configures −0.06 rad of declination: −8.88° of true heading. A
+        // declination that stopped reaching the filter would read −5.45° here.
+        let log = Log::new().mag(0.0).run(0.0, 100, DT, STILL);
+        assert_eq!(key(&replay(&log).summary(), "yaw0"), "-8.88");
+    }
+
+    #[test]
+    fn a_window_with_no_magnetometer_reports_a_heading_of_zero() {
+        assert_eq!(key(&replay(&still_start()).summary(), "yaw0"), "0.00");
+    }
+
+    #[test]
+    fn an_angle_just_below_zero_does_not_report_itself_as_negative_zero() {
+        // 10 µm s⁻² of specific force on the forward axis is −5.8e-5° of pitch, which
+        // `{:.2}` alone renders as `-0.00`. The manifest matches these pairs as
+        // substrings, so that sign would read as a moved expectation and is not one.
+        const BARELY: ([f32; 3], [f32; 3]) = ([0.0, 0.0, 0.0], [-1.0e-5, 0.0, -GRAVITY]);
+        let summary = replay(&Log::new().run(0.0, 100, DT, BARELY)).summary();
+        assert_eq!(key(&summary, "pitch0"), "0.00");
+    }
+
+    #[test]
     fn a_barometer_in_a_still_window_sets_the_reference() {
         let log = Log::new().baro(0.0, 42.0).run(0.0, 100, DT, STILL);
         let replay = replay(&log);
