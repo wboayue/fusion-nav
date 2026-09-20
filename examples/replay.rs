@@ -618,9 +618,19 @@ impl Replay {
     /// One machine-readable line, which `data/fetch.sh --check` asserts against the
     /// expectations recorded in the manifest.
     fn report_summary(&self) {
+        println!("\n{}", self.summary());
+    }
+
+    /// The `summary` line itself.
+    ///
+    /// Built rather than printed, so the tests below can assert on the keys the manifest
+    /// pins. Every number the corpus is guarded by passes through here, and until it
+    /// returned a value nothing could check one except by replaying a log and reading the
+    /// expectation it was supposed to be checking.
+    fn summary(&self) -> String {
         let state = self.filter.state();
-        println!(
-            "\nsummary rate={:.0} window={} align={} an={} alpha0={} heading={} resets={} \
+        format!(
+            "summary rate={:.0} window={} align={} an={} alpha0={} heading={} resets={} \
              refused={} invalid={} epochs={} transitions={} status={:?}",
             self.interval.map_or(0.0, |interval| 1.0 / interval),
             self.window_samples,
@@ -667,7 +677,7 @@ impl Replay {
             self.epochs,
             self.transitions.len(),
             state.status,
-        );
+        )
     }
 
     /// Per-quantity validity now, and predicted at takeoff.
@@ -744,9 +754,11 @@ impl<'a> Record<'a> {
         let mut fields = line.split(',');
         // `f64`, not `f32`. A timestamp is large and a `dt` is small, and in `f32` the
         // magnitude eats the mantissa: at 1200 s into a flight the ULP is 0.12 ms, so a
-        // 2.5 ms step comes back 2.3% wrong, and past ~5 hours consecutive samples
-        // collapse onto the same value and the step reads as zero. That noise would look
-        // like filter error during validation. Values stay `f32`; only time is widened.
+        // 2.5 ms step comes back 2.3% wrong; at 18000 s the ULP is 1.95 ms and the same
+        // step reads 22% short; past 65536 s it exceeds the step entirely and consecutive
+        // samples collapse onto one value, so the step reads as zero. That noise would
+        // look like filter error during validation. Values stay `f32`; only time is
+        // widened.
         let t = fields.next()?.trim().parse().ok()?;
         let source = fields.next()?.trim();
         let mut values = [None; 6];
@@ -795,4 +807,510 @@ fn default_input() -> PathBuf {
 
 fn default_output() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("target/replay.csv")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The rate the fixtures run at, which is `data/flight.csv`'s.
+    const DT: f64 = 0.02;
+
+    /// A still IMU row: no rotation, and specific force reading gravity alone, so
+    /// `classify` sees a peak gyro and a peak deviation of exactly zero.
+    const STILL: ([f32; 3], [f32; 3]) = ([0.0, 0.0, 0.0], [0.0, 0.0, -GRAVITY]);
+
+    /// A turning one, past `Initialization::max_gyro_rate` of 0.262 rad/s.
+    const TURNING: ([f32; 3], [f32; 3]) = ([0.5, 0.0, 0.0], [0.0, 0.0, -GRAVITY]);
+
+    /// Builds a log one row at a time.
+    ///
+    /// Rows only — it returns no count, no rate and no verdict — so every expected value
+    /// below is a literal written beside the assertion that reads it. A fixture that
+    /// derives the answer is a fixture checking itself.
+    ///
+    /// Timestamps carry six decimals, as the converter and `examples/simulate.rs` write
+    /// them, so a rate like 4 kHz survives the formatting rather than rounding into a
+    /// different one.
+    struct Log(String);
+
+    impl Log {
+        fn new() -> Self {
+            Self("t_s,source,v0,v1,v2,v3,v4,v5,var0,var1,var2\n".to_string())
+        }
+
+        fn imu(mut self, t: f64, (gyro, accel): ([f32; 3], [f32; 3])) -> Self {
+            self.0 += &format!(
+                "{t:.6},imu,{},{},{},{},{},{},,,\n",
+                gyro[0], gyro[1], gyro[2], accel[0], accel[1], accel[2]
+            );
+            self
+        }
+
+        /// A raw row, for the malformed and non-finite cases a typed builder would refuse
+        /// to express.
+        fn raw(mut self, line: &str) -> Self {
+            self.0 += line;
+            self.0 += "\n";
+            self
+        }
+
+        fn mag(mut self, t: f64) -> Self {
+            self.0 += &format!("{t:.6},mag,0.21,0.02,0.43,,,,0.0025,,\n");
+            self
+        }
+
+        fn baro(mut self, t: f64, altitude: f32) -> Self {
+            self.0 += &format!("{t:.6},baro,{altitude},,,,,,4,,\n");
+            self
+        }
+
+        fn gnss_pos(mut self, t: f64, north: f32, east: f32, down: f32) -> Self {
+            self.0 += &format!("{t:.6},gnss_pos,{north},{east},{down},,,,2.25,2.25,5.625\n");
+            self
+        }
+
+        fn gnss_vel(mut self, t: f64, north: f32, east: f32, down: f32) -> Self {
+            self.0 += &format!("{t:.6},gnss_vel,{north},{east},{down},,,,0.09,0.09,0.09\n");
+            self
+        }
+
+        /// `rows` IMU rows at a fixed interval, the first at `start`.
+        fn run(
+            mut self,
+            start: f64,
+            rows: usize,
+            interval: f64,
+            sample: ([f32; 3], [f32; 3]),
+        ) -> Self {
+            for i in 0..rows {
+                self = self.imu(start + i as f64 * interval, sample);
+            }
+            self
+        }
+    }
+
+    /// Replay a fixture, or report the row that stopped it.
+    fn try_replay(log: &Log) -> Result<Replay, String> {
+        let mut replay = Replay::new(Config {
+            magnetic_declination: Radians::from_radians(-0.06),
+            ..Config::default()
+        });
+        for line in log.0.lines() {
+            replay
+                .row(line, &mut io::sink())
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(replay)
+    }
+
+    fn replay(log: &Log) -> Replay {
+        match try_replay(log) {
+            Ok(replay) => replay,
+            Err(e) => panic!("fixture replays: {e}"),
+        }
+    }
+
+    /// The error a fixture stops on. A function rather than `expect_err`, which would want
+    /// `Debug` on `Replay` — a derive the example carries only for these two tests.
+    fn replay_error(log: &Log) -> String {
+        match try_replay(log) {
+            Ok(_) => panic!("the fixture was expected to stop"),
+            Err(e) => e,
+        }
+    }
+
+    /// One `key=value` pair off a `summary` line.
+    ///
+    /// Per key rather than by comparing whole lines: #20 and #64 add keys next, and
+    /// expectations are matched pair by pair as substrings anyway (`AGENTS.md`), so a
+    /// whole-line assertion would pin something the manifest itself does not.
+    fn key<'a>(summary: &'a str, name: &str) -> &'a str {
+        summary
+            .split_whitespace()
+            .find_map(|pair| pair.strip_prefix(&format!("{name}=")))
+            .unwrap_or_else(|| panic!("summary has no `{name}=`: {summary}"))
+    }
+
+    /// A still log long enough to initialize: 100 samples covers the 2 s
+    /// `Initialization::min_duration` at 50 Hz, and the first 65 of them fix the rate.
+    fn still_start() -> Log {
+        Log::new().run(0.0, 100, DT, STILL)
+    }
+
+    // ---- the row parser ----
+
+    /// The two magnitudes the comment on `Record::parse` quantifies, pinned so the figures
+    /// stay checkable: at 18000 s a 400 Hz step reads short, and past 65536 s it is gone.
+    #[test]
+    fn a_timestamp_past_the_f32_mantissa_keeps_its_step() {
+        for (t, reads) in [("18000", 0.001_953_125_f32), ("65536", 0.0)] {
+            // Bound rather than inlined: a `Record` borrows the line it parsed.
+            let (first, second) = (
+                format!("{t}.000000,imu,0,0,0,0,0,-9.80665,,,"),
+                format!("{t}.002500,imu,0,0,0,0,0,-9.80665,,,"),
+            );
+            let a = Record::parse(&first).expect("parses");
+            let b = Record::parse(&second).expect("parses");
+            assert!(
+                (b.t - a.t - 0.0025).abs() < 1e-9,
+                "at {t} s the parse keeps a 2.5 ms step: {} s",
+                b.t - a.t
+            );
+            // What the widening bought, named so the test rules out the alternative rather
+            // than only confirming the choice.
+            assert_eq!(
+                b.t as f32 - a.t as f32,
+                reads,
+                "at {t} s the same step in f32 reads {reads} s"
+            );
+        }
+    }
+
+    #[test]
+    fn a_blank_cell_is_absent_rather_than_zero() {
+        let r = Record::parse("1.0,baro,0.0273,,,,,,4,,").expect("parses");
+        assert_eq!(r.value(0), Ok(0.0273));
+        assert!(r.value(1).is_err(), "v1 is blank, not zero");
+        assert_eq!(r.variance(0), Ok(4.0));
+    }
+
+    #[test]
+    fn a_row_missing_a_variance_names_the_column_it_wants() {
+        let r = Record::parse("1.0,gnss_pos,0,0,0,,,,2.25,2.25,").expect("parses");
+        assert_eq!(
+            r.variance(2),
+            Err("`gnss_pos` row has no var2".to_string()),
+            "the message names the column, because the converter is what has to fix it"
+        );
+    }
+
+    #[test]
+    fn columns_past_the_last_variance_are_ignored() {
+        let r = Record::parse("1.0,imu,0,0,0,0,0,-9.80665,,,,extra,columns").expect("parses");
+        assert_eq!(r.value(5), Ok(-9.80665));
+    }
+
+    #[test]
+    fn a_short_row_leaves_the_remaining_columns_absent() {
+        let r = Record::parse("1.0,imu,0,0,0").expect("parses");
+        assert_eq!(r.value(2), Ok(0.0));
+        assert!(r.value(3).is_err(), "the row stopped before v3");
+    }
+
+    #[test]
+    fn a_non_numeric_field_fails_the_row() {
+        assert!(Record::parse("1.0,imu,0,0,0,0,0,-,,,").is_none());
+        assert!(Record::parse("not-a-time,imu,0,0,0,0,0,-9.8,,,").is_none());
+    }
+
+    // ---- the rate estimator ----
+
+    #[test]
+    fn the_rate_is_the_median_of_the_intervals_not_the_mean() {
+        // The burst one corpus log logs in: intervals of 2.5 ms against a true period of
+        // 20 ms. 30 short and 34 long over the 64 the probe takes, so the median is 20 ms
+        // and the mean is 11.8 ms — 50 Hz against the 85 Hz a mean would report.
+        let mut log = Log::new();
+        let mut t = 0.0;
+        log = log.imu(t, STILL);
+        for i in 0..64 {
+            t += if i % 2 == 1 && i < 60 { 0.0025 } else { 0.02 };
+            log = log.imu(t, STILL);
+        }
+        // Enough further samples to fill the window, so the burst is shown not to disturb
+        // the sizing either.
+        for _ in 0..40 {
+            t += 0.02;
+            log = log.imu(t, STILL);
+        }
+        let summary = replay(&log).summary();
+        assert_eq!(key(&summary, "rate"), "50");
+        assert_eq!(key(&summary, "align"), "static", "a burst is not motion");
+    }
+
+    #[test]
+    fn a_dropout_does_not_stretch_the_estimated_rate() {
+        // Four half-second SD-card dropouts among 60 ordinary intervals. The median is
+        // untouched; a mean would read 20 Hz.
+        let mut log = Log::new();
+        let mut t = 0.0;
+        log = log.imu(t, STILL);
+        for i in 0..64 {
+            t += if i % 16 == 15 { 0.5 } else { 0.02 };
+            log = log.imu(t, STILL);
+        }
+        assert_eq!(key(&replay(&log).summary(), "rate"), "50");
+    }
+
+    #[test]
+    fn a_repeated_timestamp_is_not_an_interval() {
+        // Two duplicates per distinct timestamp, so zero steps outnumber real ones two to
+        // one. Counted, they would take the median to zero and the rate to infinity.
+        let mut log = Log::new();
+        for i in 0..70 {
+            let t = i as f64 * DT;
+            log = log.imu(t, STILL).imu(t, STILL).imu(t, STILL);
+        }
+        assert_eq!(key(&replay(&log).summary(), "rate"), "50");
+    }
+
+    #[test]
+    fn a_log_shorter_than_the_probe_never_fixes_a_rate() {
+        let log = Log::new().run(0.0, 2, DT, STILL);
+        let summary = replay(&log).summary();
+        assert_eq!(key(&summary, "rate"), "0", "one interval is not 64");
+        assert_eq!(key(&summary, "window"), "0");
+        assert_eq!(key(&summary, "align"), "none");
+        assert_eq!(key(&summary, "epochs"), "0");
+    }
+
+    #[test]
+    fn a_rate_whose_window_would_not_fit_the_buffer_is_an_error() {
+        // 4 kHz needs 8000 samples to cover 2 s, and the window holds 1024. Reported
+        // rather than silently truncated: a short window is a worse alignment, quietly.
+        let log = Log::new().run(0.0, 66, 0.00025, STILL);
+        let error = replay_error(&log);
+        assert!(
+            error.contains("needs 8000 samples") && error.contains("holds 1024"),
+            "the error says how short the buffer is: {error}"
+        );
+    }
+
+    // ---- the verdict keys ----
+
+    #[test]
+    fn a_still_window_aligns_statically() {
+        let summary = replay(&still_start()).summary();
+        assert_eq!(key(&summary, "align"), "static");
+        assert_eq!(key(&summary, "window"), "100", "2 s at 50 Hz");
+        assert_eq!(key(&summary, "an"), "none", "a static start reports no ā_n");
+    }
+
+    #[test]
+    fn a_magnetometer_in_the_window_makes_the_heading_valid() {
+        let log = Log::new().mag(0.0).run(0.0, 100, DT, STILL);
+        assert_eq!(key(&replay(&log).summary(), "heading"), "valid");
+    }
+
+    #[test]
+    fn no_magnetometer_in_the_window_leaves_the_heading_invalid() {
+        // Stillness observes tilt and never yaw, and the covariance cannot say so:
+        // `Initialization::sigma_yaw` and `Accuracy::heading` are the same 0.35 rad.
+        assert_eq!(key(&replay(&still_start()).summary(), "heading"), "invalid");
+    }
+
+    #[test]
+    fn a_barometer_in_a_still_window_sets_the_reference() {
+        let log = Log::new().baro(0.0, 42.0).run(0.0, 100, DT, STILL);
+        let replay = replay(&log);
+        assert_eq!(key(&replay.summary(), "alpha0"), "set");
+        let reference = replay.filter.baro_reference().expect("α₀ established");
+        assert!(
+            (reference.as_meters() - 42.0).abs() < 1e-3,
+            "the reference is the window's mean altitude: {} m",
+            reference.as_meters()
+        );
+    }
+
+    #[test]
+    fn a_window_without_a_barometer_refuses_altitude() {
+        // The LPE corpus log (`7592c9b2…`) yields no barometer rows at all; this is that
+        // path, and `alpha0=` is the only key that would notice it.
+        let log = still_start().baro(2.0, 42.0);
+        let replay = replay(&log);
+        assert_eq!(key(&replay.summary(), "alpha0"), "none");
+        let (_, baro) = replay
+            .filter
+            .diagnostics()
+            .sources()
+            .into_iter()
+            .find(|(name, _)| *name == "baro_altitude")
+            .expect("a barometer source");
+        assert_eq!(baro.last_refusal, Some(Refusal::NoReference));
+        assert_eq!(
+            baro.accepted, 0,
+            "no altitude is referred to an invented origin"
+        );
+    }
+
+    #[test]
+    fn a_moving_log_waits_for_patience_then_starts_coarse() {
+        // Turning throughout, so no window is ever static and the harness's own policy —
+        // not the filter's — decides when to stop waiting.
+        let log = Log::new().run(0.0, 501, DT, TURNING);
+        let replay = replay(&log);
+        assert_eq!(key(&replay.summary(), "align"), "coarse");
+        assert_eq!(
+            replay.initialized_at,
+            Some(PATIENCE),
+            "committed on the first sample past PATIENCE, not before"
+        );
+    }
+
+    #[test]
+    fn two_gnss_velocities_in_a_moving_window_measure_the_inertial_acceleration() {
+        // The window is the 100 samples before the commit at t = 10 s, so these two land
+        // inside it, 1 s apart, 2 m/s apart: ā_n is 2 m/s² north.
+        let mut log = Log::new();
+        for i in 0..=500 {
+            let t = i as f64 * DT;
+            log = match i {
+                425 => log.gnss_vel(t, 1.0, 0.0, 0.0),
+                475 => log.gnss_vel(t, 3.0, 0.0, 0.0),
+                _ => log,
+            };
+            log = log.imu(t, TURNING);
+        }
+        let replay = replay(&log);
+        assert_eq!(key(&replay.summary(), "an"), "measured");
+        let accel = replay.inertial_accel().expect("ā_n measured");
+        assert!(
+            (accel.x() - 2.0).abs() < 1e-3 && accel.vector().norm() > 1.9,
+            "2 m/s over 1 s, north: {:?}",
+            accel.vector()
+        );
+    }
+
+    #[test]
+    fn a_moving_window_without_two_velocities_measures_nothing() {
+        // One velocity spans no time, and a difference over zero seconds is not an
+        // acceleration. `an=none` covers this as well as a static start, which is why the
+        // manifest pins it per log rather than deriving it.
+        let mut log = Log::new();
+        for i in 0..=500 {
+            let t = i as f64 * DT;
+            if i == 450 {
+                log = log.gnss_vel(t, 1.0, 0.0, 0.0);
+            }
+            log = log.imu(t, TURNING);
+        }
+        let summary = replay(&log).summary();
+        assert_eq!(key(&summary, "align"), "coarse");
+        assert_eq!(key(&summary, "an"), "none");
+    }
+
+    // ---- the counters ----
+
+    #[test]
+    fn epochs_count_every_imu_row_after_initialization() {
+        let log = still_start().run(2.0, 10, DT, STILL);
+        assert_eq!(key(&replay(&log).summary(), "epochs"), "10");
+    }
+
+    #[test]
+    fn a_repeated_timestamp_after_initialization_is_an_invalid_step() {
+        // With rows sorted by time, a zero `dt` is a duplicate in practice. The epoch is
+        // still written: the row existed, and the state is simply the one before it.
+        let log = still_start().imu(99.0 * DT, STILL);
+        let summary = replay(&log).summary();
+        assert_eq!(key(&summary, "invalid"), "1");
+        assert_eq!(key(&summary, "refused"), "0", "nothing here was too long");
+        assert_eq!(key(&summary, "epochs"), "1");
+    }
+
+    #[test]
+    fn a_gap_longer_than_the_limit_is_refused_and_timestamped() {
+        // 0.5 s against a `max_predict_dt` of 0.1 s: a logging dropout, which the filter
+        // refuses while the timers run on.
+        let gap_at = 99.0 * DT + 0.5;
+        let log = still_start().imu(gap_at, STILL);
+        let replay = replay(&log);
+        assert_eq!(key(&replay.summary(), "refused"), "1");
+        assert_eq!(
+            replay.longest_step_at,
+            Some(gap_at),
+            "the filter holds the size of the gap; the harness holds when it happened"
+        );
+        let worst = replay
+            .filter
+            .diagnostics()
+            .propagation
+            .longest_refused
+            .expect("a refused step");
+        assert!(
+            (worst.as_secs() - 0.5).abs() < 1e-3,
+            "{} s",
+            worst.as_secs()
+        );
+    }
+
+    #[test]
+    fn a_coarse_start_adopts_one_position_and_one_velocity() {
+        // Nothing was ever established, so the first fix is adopted rather than fused —
+        // once per quantity, and never for recovery.
+        let mut log = Log::new().run(0.0, 501, DT, TURNING);
+        log = log
+            .gnss_pos(10.02, 1.0, 2.0, -3.0)
+            .gnss_vel(10.02, 0.5, 0.0, 0.0)
+            .imu(10.02, TURNING)
+            .gnss_pos(10.04, 1.1, 2.1, -3.1)
+            .gnss_vel(10.04, 0.6, 0.0, 0.0)
+            .imu(10.04, TURNING);
+        let summary = replay(&log).summary();
+        assert_eq!(key(&summary, "align"), "coarse");
+        assert_eq!(
+            key(&summary, "resets"),
+            "2",
+            "the second pair is fused, not adopted"
+        );
+    }
+
+    #[test]
+    fn a_still_start_adopts_nothing() {
+        let log = still_start()
+            .gnss_pos(2.0, 1.0, 2.0, -3.0)
+            .gnss_vel(2.0, 0.5, 0.0, 0.0)
+            .imu(2.0, STILL);
+        assert_eq!(key(&replay(&log).summary(), "resets"), "0");
+    }
+
+    #[test]
+    fn a_non_finite_imu_row_after_initialization_is_refused_as_the_sensor_not_the_timing() {
+        // `nan` parses, so the converter can hand one through. Counted apart from a bad
+        // `dt`, because otherwise a failed IMU looks like the filter quietly not advancing.
+        let log = still_start().raw("2.000000,imu,0,0,0,0,0,nan,,,");
+        let propagation = replay(&log).filter.diagnostics().propagation;
+        assert_eq!(propagation.refused_not_finite, 1);
+        assert_eq!(propagation.refused_invalid, 0, "the timing was fine");
+    }
+
+    #[test]
+    fn a_non_finite_sample_inside_the_window_stops_the_replay() {
+        // Initialization refuses genuinely unusable input rather than aligning to it, and
+        // the harness has no state it could keep replaying from. Worth pinning as the
+        // asymmetry it is: the same row after initialization is merely counted above.
+        let mut log = Log::new().run(0.0, 99, DT, STILL);
+        log = log.raw("1.980000,imu,0,0,0,0,0,nan,,,");
+        let error = replay_error(&log);
+        assert!(
+            error.contains("not finite"),
+            "the error names the fault: {error}"
+        );
+    }
+
+    // ---- the output shape ----
+
+    #[test]
+    fn the_header_names_one_column_per_field_in_a_row() {
+        // `ESTIMATE`, `SIGMAS` and `RATIOS` drive both sides, and this is what says they
+        // still do.
+        let mut out = Vec::new();
+        write_header(&mut out).expect("header");
+        let mut replay = Replay::new(Config::default());
+        let log = still_start().run(2.0, 1, DT, STILL);
+        for line in log.0.lines() {
+            replay.row(line, &mut out).expect("fixture replays");
+        }
+        let text = String::from_utf8(out).expect("utf-8");
+        let mut lines = text.lines();
+        let header = lines.next().expect("a header");
+        let row = lines.next().expect("an epoch");
+        assert_eq!(
+            header.split(',').count(),
+            row.split(',').count(),
+            "header:\n{header}\nrow:\n{row}"
+        );
+        assert_eq!(header.split(',').count(), 2 + 15 + 15 + 4);
+    }
 }
