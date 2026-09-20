@@ -327,7 +327,14 @@ impl Validity {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[non_exhaustive]
 pub struct SourceHealth {
-    /// Test ratio of the most recent measurement, or `None` if none has been offered.
+    /// Test ratio of the most recent measurement **that reached the gate**, or `None` if none
+    /// has.
+    ///
+    /// A refusal leaves it alone: there was no innovation to normalize, so the alternative is
+    /// inventing a ratio or discarding the last real one. It can therefore read healthy while
+    /// [`refused`](Self::refused) climbs — a receiver that starts reporting `eph = 0` freezes
+    /// this at its last good value — so a consumer plotting it reads
+    /// [`last_refusal`](Self::last_refusal) beside it.
     pub test_ratio: Option<f32>,
     /// Time since a measurement from this source was last accepted, or `None` if none
     /// ever has been. Advances with the `dt` passed to

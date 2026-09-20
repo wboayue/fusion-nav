@@ -230,9 +230,10 @@ both clamp from 0.5 m rather than fusing raw values. The magnetometer must alrea
 calibrated for hard and soft iron.
 
 Every measurement passes through an innovation gate first. The result carries the test ratio, so
-a rejection is diagnosable. Reading it is optional where the gate is the only concern —
-`diagnostics()` keeps the ratio, the counts and the timer per source — but the refusals below
-reach no other channel:
+a rejection is diagnosable. Reading it is optional: `diagnostics()` keeps the ratio, the counts
+and the timer per source, and counts the refusals below with the reason for the latest one, so
+nothing here is lost by discarding the return value. Read it where the response is per call —
+a `Reset` steps the state, and a refusal says the measurement never reached the gate:
 
 | `Fusion` | meaning |
 | -------- | ------- |

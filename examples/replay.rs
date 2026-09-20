@@ -382,11 +382,15 @@ impl Replay {
     fn propagate(&mut self, t: f64, imu: ImuSample, out: &mut impl Write) -> io::Result<()> {
         if let Some(previous) = self.previous_imu.replace(t) {
             // The filter decides what is too long, not the example.
-            let outcome = self
+            let worst_before = self.filter.diagnostics().propagation.longest_refused;
+            let propagated = self
                 .filter
-                .predict(imu, Seconds::from_secs((t - previous) as f32));
-            if let Propagation::StepTooLong { dt, .. } = outcome
-                && self.filter.diagnostics().propagation.longest_refused == Some(dt)
+                .predict(imu, Seconds::from_secs((t - previous) as f32))
+                .is_propagated();
+            // Timestamp the step that set a new worst, which is the one the filter kept.
+            // Comparing to `dt` instead would also match a later step that merely ties it,
+            // and move the report's timestamp off the gap the size belongs to.
+            if !propagated && self.filter.diagnostics().propagation.longest_refused != worst_before
             {
                 self.longest_step_at = Some(t);
             }
@@ -655,7 +659,11 @@ impl Replay {
             // What separates a miswired sensor from one that was never connected: both read
             // `never accepted`, and only this says the filter was turned down and why.
             if let Some(refusal) = health.last_refusal {
-                println!("  {:<13} {} refused, last {refusal:?}", "", health.refused);
+                // "measurements", because `summary`'s `refused=` counts propagation steps.
+                println!(
+                    "  {:<13} {} measurements refused, last {refusal:?}",
+                    "", health.refused
+                );
             }
         }
     }
