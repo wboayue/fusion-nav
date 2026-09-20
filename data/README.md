@@ -17,9 +17,9 @@ the harness does not work them out for itself — see the rule below.
 ## One statistic, one implementation
 
 The Rust replay harness is the only thing that **computes** a statistic. It emits the per-fusion
-rows above and the scalar keys on the `summary` line. The Python tools under `tools/` read those
-rows and those keys — they aggregate across logs, plot, and compare against the EKF2 reference —
-and never recompute a number the harness already defines.
+rows above and the scalar keys on the `summary` and `score` lines. The Python tools under `tools/`
+read those rows and those keys — they aggregate across logs, plot, and compare against the EKF2
+reference — and never recompute a number the harness already defines.
 
 The test is whether a quantity could ever be produced by both paths. If it could, it belongs to
 the harness, because that is the one CI runs. Where a statistic is only meaningful across logs or

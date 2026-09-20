@@ -231,6 +231,25 @@ a number the harness already defines. A quantity that could be produced by both 
 the harness, because that is the one CI runs. Cross-log and against-reference metrics are defined
 once, in Python.
 
+The rule reaches past *computing* a number, and the extension is the one that has actually bitten.
+A statistic that **audits a filter claim** must falsify it in the shape the filter states it, not
+merely read its verdict. `false_valid` took `Validity` off the filter exactly as intended and then
+tested the 2-D norm of the horizontal error, while `Eskf::validity` states the claim per axis
+(`within(PositionNorth) && within(PositionEast)`, `src/eskf.rs:696-698`) — a bar √2 tighter than
+the one the filter asserted, diverging from it precisely as the estimate approaches it, which is
+the only regime where such a count says anything. Reading the verdict and re-deriving the geometry
+is still two implementations of one claim. It applies to every scoring statistic still to land:
+NIS against the gates (#5), distance from EKF2 (#8), and scoring a rejection as correct (#60).
+
+**Say which file a published number came from.** A score is a claim about a specific run, and
+`examples/replay.rs` refuses a truth file whose `#` header names a different scenario or seed than
+the log's. That check exists because the obvious guard does not work: an epoch counter that fails
+to match truth rows catches nothing when a 50 Hz log lands on every fourth row of 200 Hz truth, so
+the wrong file scored cleanly and published a figure with nothing tying it to what produced it.
+Any later source that pairs two generated files — INSANE (#9), UrbanNav (#60) — needs the same
+kind of check, and a file carrying no marker is taken on trust because there is nothing in it to
+check.
+
 ## How defaults get decided
 
 Three defaults are no longer placeholders, and each records its evidence in its doc comment:
