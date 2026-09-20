@@ -129,12 +129,8 @@ impl Eskf {
     ) -> Result<Alignment, InitError> {
         let alignment = self.alignment_of(window, dt)?;
         self.apply_alignment(alignment);
-        // Whether this window establishes `alpha_0` is a question about the vehicle, not
-        // about the alignment: a window taken at rest names the altitude of the point the
-        // first fix will call position zero, however short it was to align an attitude
-        // from. A moving one cannot — a restart at 100 m would call its own altitude the
-        // ground, and the barometer would read z ~ 0 where GNSS about the flight's origin
-        // reads z ~ -100 — so it keeps the reference the flight already has.
+        // Measured from the window rather than read off `alignment`: the test is whether
+        // the vehicle was at rest, which a window too short to align from can still pass.
         let (peak_gyro, peak_accel_deviation) = peak_motion(window);
         if init::at_rest(peak_gyro, peak_accel_deviation, &self.config.init) {
             self.baro_reference = baro_reference(window);
@@ -254,10 +250,8 @@ impl Eskf {
         self.state = state;
         self.covariance = covariance;
         self.diagnostics = Diagnostics::default();
-        // A seed carries a position, a velocity and an attitude the caller vouched for,
-        // with a covariance that says how far. Nothing here is unestablished in the sense
-        // that would justify overwriting it with the first measurement — including
-        // heading, which arrived with the seed rather than needing a magnetometer.
+        // Nothing a seed carries is unestablished: the caller vouched for every quantity,
+        // heading included, so no first measurement overwrites one.
         self.unestablished = Unestablished::default();
         self.initialized = true;
         Ok(Alignment::Seeded)
@@ -646,8 +640,7 @@ impl Eskf {
         Validity {
             tilt: within(ErrorState::AttitudeX, tilt) && within(ErrorState::AttitudeY, tilt),
             // A quantity nothing ever established is not valid however tight the prior on
-            // it looks: nobody set that number. Heading waits for a magnetometer, and
-            // position and velocity for the first fix after a coarse start.
+            // it looks: nobody set that number.
             heading: !self.unestablished.heading
                 && within(ErrorState::AttitudeZ, accuracy.heading.as_radians()),
             horizontal_position: !self.unestablished.position
@@ -848,10 +841,9 @@ impl Unestablished {
     /// vehicle was moving, through somewhere the filter cannot name. Those wait for the
     /// first fix.
     ///
-    /// Heading needs a magnetometer either way, so a coarse start is only half the
-    /// question: [`Eskf::initialize`] adds the window that carried none. A coarse start is
-    /// unestablished even with one, because levelling a magnetic heading needs the tilt
-    /// that start did not get.
+    /// Heading is unestablished after a coarse start even when a magnetometer was there,
+    /// because levelling its reading needs the tilt that start did not get; the still
+    /// window that carried none is [`Eskf::initialize`]'s to add.
     const fn after(alignment: Alignment) -> Self {
         let coarse = matches!(alignment, Alignment::Coarse(..));
         Self {

@@ -3,10 +3,10 @@
 //!
 //! The filter navigates in Cartesian NED about a fixed origin, and GNSS reports latitude,
 //! longitude and height. Something has to convert, and the conversion is only right if it
-//! is taken about the same origin the filter's position is relative to. When the
-//! application did the conversion, nothing checked that: the filter's origin was "where
-//! the vehicle was at initialization", and the application's was whatever point it had
-//! chosen. So the filter owns the origin — see
+//! is taken about the same origin the filter's position is relative to. An application
+//! converting on its own side has nothing to check that against: the filter's origin is
+//! where the vehicle was at initialization, and the application's is whatever point it
+//! chose. So the filter owns the origin — see
 //! [`Eskf::fuse_gnss_geodetic`](crate::Eskf::fuse_gnss_geodetic) — and this module is
 //! the conversion it owns it with.
 

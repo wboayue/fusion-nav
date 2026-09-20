@@ -49,10 +49,11 @@ use fusion_nav::prelude::*;
 /// Capacity of the initialization window, in samples.
 ///
 /// `Initialization::min_duration` is a span of time, so the samples it takes depend on the
-/// log: 2 s is 100 samples at 50 Hz and 800 at 400 Hz, both of which appear in real logs.
-/// This is sized for the fast end. A fixed array rather than a `Vec`, to stay honest about
-/// what the filter itself is allowed to assume — though an embedded caller at 400 Hz would
-/// decimate rather than carry 40 KB of window.
+/// log: 2 s is 100 samples at 50 Hz and 800 at 400 Hz. The corpus needs 500 at most, at
+/// 250 Hz; this is sized for the faster IMUs a converter will eventually hand it. A fixed
+/// array rather than a `Vec`, to stay honest about what the filter itself is allowed to
+/// assume — though an embedded caller at 400 Hz would decimate rather than carry 40 KB of
+/// window.
 const WINDOW: usize = 1024;
 
 /// Intervals sampled before fixing the IMU rate.

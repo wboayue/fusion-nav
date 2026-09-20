@@ -80,7 +80,9 @@ per question answered, never per importance.
   departs from it — saturation, ordering, refusal. Never re-derives. This is the crate's main
   concision lever: the reader who wants the algebra has somewhere to go.
 - **Write for a reader with the equations open and no git history.** No "previously", "now also",
-  "changed to"; present tense about present code. History belongs in the commit message.
+  "changed to"; present tense about present code. History belongs in the commit message. A
+  rejected value and what it measured is evidence, not history: "at 1.0 s the status flaps 76
+  times in 124 s" stays, "the previous default was 1.0 s" goes.
 - **Inline `//` justifies the line beneath it** — an ordering constraint, a tolerance, the
   subtraction that needed f64 — in one or two sentences. Narration of what the next line does is
   deleted; anything longer is a doc comment or a `DESIGN.md` paragraph.

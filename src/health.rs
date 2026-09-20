@@ -213,8 +213,9 @@ impl Propagation {
 /// number nobody set is not validity.
 ///
 /// Horizontal and vertical are separate because sources are: a vehicle with a barometer
-/// and no GNSS has a usable height and no horizontal position at all, which describes two
-/// of the five logs in the replay corpus.
+/// and no GNSS has a usable height and no horizontal position at all, which describes one
+/// of the five logs in the replay corpus. Another carries neither source, so it has no
+/// position of either kind.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Validity {
     /// Roll and pitch.

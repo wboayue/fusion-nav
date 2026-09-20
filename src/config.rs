@@ -3,8 +3,8 @@
 //! Every default here is a **placeholder** chosen to make the shape of the API concrete,
 //! and none has been validated against flight data — with three exceptions:
 //! [`Timeouts::degraded_after`] and [`Initialization`]'s stationarity tolerances, both
-//! corrected after replaying the PX4 corpus, and [`ImuNoise`], re-baselined against the
-//! defaults PX4 and ArduPilot ship.
+//! read off the PX4 replay corpus, and [`ImuNoise`], which follows the defaults PX4 and
+//! ArduPilot ship.
 
 use crate::units::{Meters, MetersPerSecond, MetersPerSecond2, Radians, RadiansPerSecond, Seconds};
 
@@ -33,12 +33,12 @@ impl Default for ImuNoise {
     /// what the model leaves out: vibration, scale-factor and cross-axis error, timing
     /// jitter, and the coning and sculling a first-order propagation does not capture.
     ///
-    /// The previous defaults here were datasheet-grade — 10 to 15 times tighter on every
-    /// term — which would make the covariance claim a precision the estimate does not
-    /// have, and an overconfident covariance gates out measurements that were fine.
-    /// Two independent production estimators agreeing is not the same evidence as a
-    /// replay of our own, so these remain subject to the validation in `GOALS.md`, but
-    /// they are the right order of magnitude to start from.
+    /// Datasheet-grade figures — 10 to 15 times tighter on every term — would make the
+    /// covariance claim a precision the estimate does not have, and an overconfident
+    /// covariance gates out measurements that were fine. Two independent production
+    /// estimators agreeing is not the same evidence as a replay of our own, so these
+    /// remain subject to the validation in `GOALS.md`, but they are the right order of
+    /// magnitude to start from.
     fn default() -> Self {
         Self {
             gyro_white: 1.5e-2,
@@ -97,10 +97,10 @@ pub struct Timeouts {
 impl Default for Timeouts {
     /// Sized for a 1 Hz GNSS, the slowest source in common use.
     ///
-    /// The previous default of 1.0 s was exactly that period: replaying a PX4 log whose
-    /// fix intervals ran 0.988-1.024 s put 37 of 122 of them over the threshold, and the
-    /// status flapped between `Healthy` and `Degraded` 76 times in 124 seconds. 2.5 s
-    /// clears two missed fixes and still leaves half the window to
+    /// Not the 1.0 s that period suggests: on a PX4 log whose fix intervals run
+    /// 0.988-1.024 s, a 1.0 s threshold puts 37 of 122 fixes over it and flaps the status
+    /// between `Healthy` and `Degraded` 76 times in 124 seconds. 2.5 s clears two missed
+    /// fixes and still leaves half the window to
     /// [`dead_reckoning_after`](Timeouts::dead_reckoning_after).
     fn default() -> Self {
         Self {
@@ -118,8 +118,8 @@ pub struct Initialization {
     /// A duration rather than a sample count, because the same count means very
     /// different things across IMU rates: 100 samples is 2 s at 50 Hz and 0.25 s at
     /// 400 Hz, and a quarter second is too short to average sensor noise down or to
-    /// tell stillness from a slow drift. Sample rates from 50 Hz to 400 Hz appear in
-    /// real logs.
+    /// tell stillness from a slow drift. The five logs in `data/manifest.txt` alone span
+    /// 50 Hz to 250 Hz.
     pub min_duration: Seconds,
     /// Largest angular rate magnitude still considered stationary.
     ///
@@ -146,12 +146,12 @@ pub struct Initialization {
 }
 
 impl Default for Initialization {
-    /// The stationarity tolerances are PX4 EKF2's — 15°/s and 20% of gravity — corrected
-    /// from the replay corpus.
+    /// The stationarity tolerances are PX4 EKF2's — 15°/s and 20% of gravity — chosen
+    /// against the replay corpus.
     ///
-    /// The previous 0.05 rad s⁻¹ and 0.5 m s⁻² failed four of the five logs in
-    /// `data/manifest.txt`, on vehicles that were sitting on the ground: peaks of
-    /// 0.026–0.172 rad s⁻¹ and 0.15–1.04 m s⁻², which is idle vibration and prop wash,
+    /// Tighter ones fail parked vehicles: at 0.05 rad s⁻¹ and 0.5 m s⁻², four of the five
+    /// logs in `data/manifest.txt` are called moving while sitting on the ground, on peaks
+    /// of 0.026–0.172 rad s⁻¹ and 0.15–1.04 m s⁻² that are idle vibration and prop wash,
     /// not motion. A tolerance that calls a parked quadrotor moving does not protect the
     /// alignment, it just denies it. At these values four of the five align statically,
     /// and the fifth — peak deviation 6.2 m s⁻² — stays coarse, correctly: 6 m s⁻² is a
@@ -211,9 +211,10 @@ impl Default for Accuracy {
     /// the covariance grows: a static start will drop to
     /// [`Status::Aligning`](crate::Status::Aligning) on its first step, and heading — which
     /// only a magnetometer brings back down — may never return. Recorded rather than
-    /// corrected, because the number to widen these to is a measurement, not a guess: the
-    /// benchmark's `aligned_at` metric over the replay corpus is what should set it, the
-    /// same way the corpus set [`Timeouts::degraded_after`].
+    /// corrected, because the number to widen these to is a measurement, not a guess: what
+    /// should set it is how long real logs take to converge, which needs a convergence key
+    /// on the replay `summary` line before it can be read off the corpus the way
+    /// [`Timeouts::degraded_after`] was.
     fn default() -> Self {
         Self {
             tilt: Radians::from_radians(0.02),
@@ -261,8 +262,10 @@ pub struct Config {
     ///
     /// Gaps come from logging dropouts, a scheduler overrun, or a sensor that genuinely
     /// stopped, and the filter cannot tell which. The default passes normal operation on
-    /// every log in `data/manifest.txt` — whose worst ordinary interval is 65 ms across
-    /// rates from 50 Hz to 400 Hz — while catching real SD-card dropouts of 0.34 s and up.
+    /// every log in `data/manifest.txt` — IMU rates of 50 Hz to 250 Hz, whose longest
+    /// interval short of a dropout is 90.5 ms, twice in the 2 h log's 1.4 M samples —
+    /// while catching real SD-card dropouts of 0.34 s and up. The margin at that worst
+    /// case is 10 ms, so a slower log than any in the corpus would need this raised.
     pub max_predict_dt: Seconds,
     /// Magnetic declination at the operating site, added to magnetic heading to give
     /// true heading. Equation (6).

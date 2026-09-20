@@ -271,8 +271,6 @@ pub(crate) fn initial_covariance(
 /// prior; see `GOALS.md`.
 const UNKNOWN_HEADING_SIGMA: Radians = Radians::from_radians(1.813_799_4);
 
-/// Largest angular rate magnitude, and largest departure of the specific-force magnitude
-/// from gravity, over a window.
 /// Whether measured peak motion is within the tolerances that make a window a still one.
 ///
 /// Half of what [`classify`] asks, and all of what the barometric reference asks, which is
@@ -288,6 +286,8 @@ pub(crate) fn at_rest(
     peak_gyro <= init.max_gyro_rate && peak_accel_deviation <= init.max_accel_deviation
 }
 
+/// Largest angular rate magnitude, and largest departure of the specific-force magnitude
+/// from gravity, over a window. The two measures [`at_rest`] judges.
 pub(crate) fn peak_motion(window: &[StaticSample]) -> (RadiansPerSecond, MetersPerSecond2) {
     let mut peak_gyro = 0.0f32;
     let mut peak_deviation = 0.0f32;
