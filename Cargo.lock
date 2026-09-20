@@ -123,6 +123,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "panic-check"
+version = "0.0.0"
+dependencies = [
+ "fusion-nav",
+]
+
+[[package]]
 name = "simba"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

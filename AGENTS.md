@@ -103,6 +103,7 @@ cargo test --lib eskf::tests::a_step_over_the_limit_is_refused_but_the_time_stil
 cargo fmt --all -- --check
 cargo clippy --all-targets --no-deps   # CI runs with RUSTFLAGS=-D warnings
 cargo build --lib --target thumbv7em-none-eabihf   # also thumbv6m-none-eabi; both gate CI
+panic-check/run.sh                # no reachable panic, both thumb targets; needs llvm-tools
 cargo +1.89 build --lib           # MSRV
 
 cargo run --example basic         # minimal integration loop
@@ -223,8 +224,8 @@ look at what those two publish before inventing something.
 
 ## Architecture
 
-Single crate, `no_std`, `forbid(unsafe_code)`, `deny(missing_docs)`, allocation-free, edition
-2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
+One published crate, `no_std`, `forbid(unsafe_code)`, `deny(missing_docs)`, allocation-free,
+edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
 
 - `src/eskf.rs` — `Eskf`, the whole public filter: `initialize`, `initialize_from`, `predict`,
   `fuse_*`, `state`, `reset_*_to`. `initialize_from` is stage 1
@@ -260,6 +261,12 @@ Single crate, `no_std`, `forbid(unsafe_code)`, `deny(missing_docs)`, allocation-
 - `src/health.rs` — `Propagation` (`#[must_use]`), `Fusion` (not, deliberately — see its doc
   comment), `SourceHealth`, `Status`.
 - `examples/replay.rs` — the normalized CSV format and the offline harness.
+- `panic-check/` — a second, unpublished crate: a bare-metal binary calling the whole public
+  API, plus `run.sh`, which links it and reads the panic paths back out of the ELF. A workspace
+  member so that one `Cargo.lock` covers both, but not a *default* member, so `cargo test`,
+  `cargo clippy` and `cargo package` at the root never try to build a `no_std` binary for the
+  host. Its build knobs live in `run.sh`, not in its `Cargo.toml`, where a member's `[profile]`
+  would be ignored. The only way in is `panic-check/run.sh`.
 
 ### Invariants worth knowing before editing
 
@@ -300,7 +307,12 @@ Single crate, `no_std`, `forbid(unsafe_code)`, `deny(missing_docs)`, allocation-
   `#[cfg(test)]`. On `thumbv6m` a panic is a `udf` and the vehicle is a brick, which is why bad
   input is reported through a typed outcome rather than asserted on. The matrix arithmetic the
   equations bring is where this gets broken — `try_inverse` returns an `Option` and `nalgebra`
-  indexing panics out of range. Refuse or saturate; never unwrap.
+  indexing panics out of range. Refuse or saturate; never unwrap. `panic-check/run.sh` gates it
+  in CI by linking the public API for both thumb targets and failing on a surviving
+  `core::panicking` reference, which catches the indexing nobody wrote down as well as the
+  `unwrap` somebody did. It also refuses to run if `panic-check/src/main.rs` is missing a
+  `pub fn` from `eskf.rs` or `geodetic.rs`, so a new entry point has to be linked into it.
+  `README.md` owns what the gate covers, including why `opt-level = "z"` is not gated.
 - Frames and units are fixed at the boundary: NED navigation frame, FRD body, Hamilton
   quaternion scalar-first, down-positive gravity. Not configurable.
 

@@ -325,6 +325,28 @@ dead reckoning or 5 s of failed height fusion (`reset_timeout_max` and `hgt_fusi
 `src/modules/ekf2/EKF/common.h:515-517` at PX4 `c4e4ef98e9`), which are reasonable starting points
 for an integrator's own policy. See [rejection handling](GOALS.md#rejection-handling-report-do-not-self-recover).
 
+## The library cannot panic
+
+Checked in CI, not remembered: `panic-check/run.sh` links the whole public API for
+`thumbv7em-none-eabihf` and `thumbv6m-none-eabi` with fat LTO and fails if any reference to
+`core::panicking` survives. That covers an `unwrap` and an `expect`, and equally a slice index
+or a `nalgebra` matrix index nobody wrote down. On `thumbv6m` a panic is a `udf` instruction and
+the vehicle is a brick, which is why bad input comes back as `Propagation::InvalidStep` or
+`Fusion::InvalidNoise` rather than as an assertion.
+
+It is a real link rather than a scan of the source, so it proves reachability rather than
+absence of a keyword. `panic-check/src/main.rs` calls every entry point through
+`core::hint::black_box`, and the script refuses to run if a `pub fn` on `Eskf`, `Geodetic` or
+`LocalOrigin` is missing from it — a new entry point joins the gate or CI stops. A failure names
+the function that can panic, not just the symbol it reached.
+
+Gated at `opt-level = 3` and `"s"`. At `"z"` and `1`, LLVM stops proving that `nalgebra`'s
+statically sized `Matrix3 * Vector3` indexes in bounds and leaves the check in as dead code:
+that is the optimizer giving up, not a path this crate can take, and gating it would put CI at
+the mercy of someone else's codegen.
+
+The crate is also `#![forbid(unsafe_code)]`, `no_std`, and allocation-free.
+
 ## Limitations
 
 Known and deliberate, stated here rather than discovered in flight.
