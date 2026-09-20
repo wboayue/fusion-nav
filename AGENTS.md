@@ -25,6 +25,9 @@ covering the area before starting work in it.
 Issues here are worth the length they run to. The convention: cite `file:line` at a pinned
 upstream revision rather than paraphrasing PX4 or ArduPilot, state what it depends on and what it
 blocks, name the replay/manifest impact, and say what the data must say before the issue can close.
+Each carries an area label (`equations`, `validation`, `api`, `perf`, `docs`, `tooling`, `ci`) and
+one of three milestones — *API frozen*, *Equations implemented and scored*, *Measured and
+published*. Trackers carry neither, since they span all three.
 
 **When looking for gaps, audit `GOALS.md` rather than the issue list.** The six differentiators,
 the two open design questions and the derived-configuration table are commitments, and a
@@ -219,6 +222,20 @@ Single crate, `no_std`, `forbid(unsafe_code)`, `deny(missing_docs)`, allocation-
   indexing panics out of range. Refuse or saturate; never unwrap.
 - Frames and units are fixed at the boundary: NED navigation frame, FRD body, Hamilton
   quaternion scalar-first, down-positive gravity. Not configurable.
+
+### Adding a measurement source costs more than a `fuse_*`
+
+Every source touches the same six places, and three of them are public:
+
+- `Diagnostics` gains a field and `sources()`'s return type changes length
+  (`src/health.rs:335-355`) — breaking after a release, so settle the source set before publishing.
+- `Gates` gains a threshold, with its degrees of freedom stated.
+- `Timeouts` is **global**, not per-source (`src/config.rs:84-95`): there is no per-source entry to
+  add, and giving a source its own threshold is a design change. See #56.
+- `Validity` and `predicted_validity`: decide whether the source constrains a quantity, and say so.
+- A `summary` key in `examples/replay.rs`, pinned per log in `data/manifest.txt`, plus a corpus log
+  that uniquely covers the source — or an honest note that none does.
+- The README fusion table, the `lib.rs` doctest, and `EQUATIONS.md`'s mapping table.
 
 ### Three kinds of noise number, easily confused
 
