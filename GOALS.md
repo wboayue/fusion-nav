@@ -302,7 +302,9 @@ The options, in the order they are worth doing:
    (5′) would subtract noise. On the same window the specific force peaks 5.46 m s⁻² off gravity
    while the *averaged* specific force is 0.93° off plumb, which says the tilt prior loses far
    more by charging a peak against an average than option 4 could recover there. Judging it needs
-   a log that actually accelerates: #15's simulator, or INSANE.
+   a log that actually accelerates, which the simulator's `moving_start` now is — a banked,
+   climbing turn from the first sample, with truth beside it. Reading a verdict off it needs the
+   scoring of #16.
 5. **Yaw from course over ground.** While moving, velocity direction is heading, nearly free.
    Works for fixed-wing and ground vehicles, not for a multirotor that crabs and hovers.
 6. **An EKF-GSF yaw estimator.** A bank of small filters over yaw hypotheses weighted by GNSS
@@ -532,6 +534,12 @@ reality.
 | [strapdown-data](https://github.com/jbrodovsky/strapdown-rs) | smartphone MEMS IMU and GNSS, aimed at this use case | phone-grade, limited dynamics |
 
 ### Plan
+
+Simulation comes first, and is the only source already in the repository: `examples/simulate.rs`
+writes seeded flights with analytic truth (`data/README.md`), so an equation stage is scorable the
+day it lands rather than after a download. It does not displace the four below — synthetic data
+cannot falsify a sensor model, which is exactly what INSANE and the PX4 corpus are for — and what
+it measures is only as good as the error models in its own tables.
 
 1. INSANE as the accuracy benchmark — the only source exercising all four sensors on a UAV with
    centimeter ground truth.
