@@ -37,6 +37,13 @@ jobs:
       - run: cargo test --doc
       # Smoke-test the replay harness end to end. No hardware, no ROS, no PX4 tooling.
       - run: cargo run --example replay
+      # Accuracy against the simulator's analytic truth, per scenario, against the ceilings in
+      # `data/scenarios.txt`. The comparator runs its own fixtures first so that a broken
+      # comparison fails as itself rather than as a filter regression -- `data/scenarios.txt`
+      # was produced by the harness it guards, the same circularity `examples/replay.rs`
+      # answers with its own tests.
+      - run: data/expect.sh --self-test
+      - run: data/bench.sh
 
   embedded:
     name: no_std build

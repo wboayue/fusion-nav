@@ -120,6 +120,10 @@ cargo run --example replay -- data/flight.csv target/replay.csv data/flight.trut
 
 cargo run --example simulate      # seeded flights with truth -> target/sim/<scenario>{,.truth}.csv
 cargo run --example simulate -- flight data   # regenerate the committed data/flight.csv
+
+data/bench.sh                     # score every scenario against data/scenarios.txt; a CI gate
+data/bench.sh mission static      # only these
+data/expect.sh --self-test        # the comparator both bench.sh and the manifest rules read
 ```
 
 ## Replay corpus
@@ -209,6 +213,25 @@ determinism hash through the initialization window only: the attitude and gyrosc
 of `target/replay.csv` are that window's averages, and every column is then constant for the rest
 of the file because nothing propagates. So regenerating the log moves the hash, while a change
 after the window does not — that second half is what changes when propagation lands.
+
+**Scenario ceilings ratchet, in both directions.** `data/scenarios.txt` holds a measured ceiling
+per `score` key per scenario and `data/bench.sh` asserts them in CI, which is the only gate in the
+repository that reads *accuracy* rather than self-consistency. Same discipline as the manifest: a
+number that moves needs a sentence saying what the data said, and the whole `score` line is
+printed on a breach so re-measuring is a copy rather than a second run. Tightening is the usual
+direction as each stage of #31 improves on the stub the ceilings were taken from, but a loosening
+is honest where the equation that landed is the reason — `static`'s position ceilings are exactly
+zero because nothing propagates, and stage 3 will have to raise them. What a ceiling cannot do is
+test the covariance's own promise: it passes a filter that grew more accurate and more
+overconfident at once, which is #89 (ANEES over N seeds), after #35 gives it a covariance that
+moves. The format is already indifferent to several seeds per scenario.
+
+The comparison itself is shared, not copied: `data/expect.sh` owns `key=value`, `key<=value` and
+`key>=value` for both `data/scenarios.txt` and `data/manifest.txt`, so the pair syntax is one
+language and #4's tolerance ranges are a manifest edit rather than a second comparator. It carries
+fixtures with literal verdicts for the same reason `examples/replay.rs` does — the expectations in
+both files were produced by the harness they guard, so a comparator that waves something through
+turns a miscount into the baseline everything later is measured against.
 
 **Converter changes are batched.** Regenerating the corpus is not free — logs fetched, `pyulog`
 installed, every log reconverted, replayed, and every moved expectation explained. Land changes

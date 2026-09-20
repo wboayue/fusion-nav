@@ -79,8 +79,52 @@ What each key means, and what it can and cannot say on these scenarios, is in th
   perfectly often enough that nothing else would notice. A log with no such header — a corpus
   log, a converted one — is taken on trust, because there is nothing in it to check.
 
-The per-scenario ceilings CI would gate these against are
-[#17](https://github.com/wboayue/fusion-nav/issues/17).
+### Ceilings, and what they gate
+
+`data/scenarios.txt` holds a measured ceiling per key per scenario, and `data/bench.sh` asserts
+them — the only gate here that reads accuracy rather than self-consistency, and the reason the
+simulator exists:
+
+```console
+$ data/bench.sh                                        # every scenario; runs in CI
+$ data/bench.sh mission static                         # only these
+$ data/expect.sh --self-test                           # the comparator's own fixtures
+```
+
+It generates every scenario first rather than reusing `target/sim/`, so no ceiling can be met by
+a flight produced before the change under test, and it runs the debug build: the nine scenarios
+are about ten seconds all told, against a minute to build the crate again under a second profile,
+and `score` is identical either way. `fetch.sh --check` uses `--release` for a reason that does
+not apply here — a two-hour log at 1.4M epochs.
+
+A breach names the pair and prints the whole `score` line, so a ceiling that moved for a good
+reason is re-measured by copying:
+
+```text
+  BREACH     mission: tilt=11.323, wanted tilt<=11.000
+    got pos_h=101.112 pos_v=14.025 vel=14.527 … tilt=11.323 yaw=36.041 …
+```
+
+Moving one is the same commitment as moving a manifest expectation: a sentence beside it saying
+what the data said. The usual direction is tighter, since every ceiling here was measured on a
+filter that propagates nothing. Some will have to loosen instead — `static`'s position ceilings
+are exactly zero today because the scenario does not move and neither does the estimate, and a
+real dead-reckoning filter drifts.
+
+The `seed` column pins which flight produced the numbers, checked against the header the
+generator wrote. It is the same guard as the truth-file header above, one level out: that one
+stops the wrong truth being scored against a log, this one stops the right truth being scored
+against ceilings that belong to another flight.
+
+**What a ceiling cannot say.** It pins what the filter did last run, so it fails a filter that got
+worse and passes one that got *more accurate and more overconfident at once* — which is the
+failure that matters, because `P` is not a diagnostic. It sets `S = H P Hᵀ + R` and so which
+measurements the gate rejects, it sets the gain, and `Validity` is derived from it. Testing that
+claim needs ANEES over N seeds against a chi-square bound, and a covariance that moves:
+[#89](https://github.com/wboayue/fusion-nav/issues/89), after
+[#35](https://github.com/wboayue/fusion-nav/issues/35). `nees_pos`, `nees_vel` and `nees_att` are
+already on the `score` line and already ratcheted here; what is missing is the bound, not the
+statistic.
 
 ### The log CI replays
 
@@ -99,9 +143,14 @@ tooling and no generated scenario, because both halves are committed.
 
 Committed rather than generated on demand because the generator is a host tool: it calls the
 platform's `sin` and `cos`, which are free to differ in the last bit between machines. In practice
-they do not — an x86-64 and an arm64 build of the simulator write identical scenarios here — but
-that is an observation, not the guarantee the filter has below, and the committed file is what CI
-compares against itself.
+they do not — an x86-64 and an arm64 build write identical scenarios on one machine, and the
+ceilings above, measured on macOS/arm64, hold on CI's Linux/x86-64 runner, which is a second libm
+as well as a second architecture. That second half is weaker than it looks: a ceiling is an
+inequality, so it says the scores did not get worse, not that the same bytes were generated. Both
+are observations rather than the guarantee the filter has below, and they are now load-bearing:
+`data/bench.sh` regenerates every scenario in CI, so a platform whose `sin` differs in the last
+bit would move a ceiling with no diff to point at. The committed `flight.csv` is the one file
+that sidesteps it, which is why the determinism job compares that and not a generated one.
 
 A given seed always gives byte-identical files on one machine, and each sensor draws from its own
 stream, so changing one sensor's rate or model does not shift another's noise.
