@@ -1,8 +1,9 @@
 # Equations
 
-> **Status: design only.** No implementation exists yet. The code references in
-> [Equation-to-code mapping](#equation-to-code-mapping) describe the intended layout, not
-> existing symbols.
+> **Status: the estimation mathematics is unimplemented.** `predict` propagates nothing and every
+> `fuse_*` accepts with a zero test ratio. What is built is the initial covariance (8), the
+> barometric reference `α₀` of (30), and the geodetic origin (43)–(44); the
+> [equation-to-code mapping](#equation-to-code-mapping) marks the functions that do not exist yet.
 
 This document is the normative mathematical description of `fusion-nav`. Equations are numbered
 so that the implementation can cite them directly; see
@@ -76,9 +77,11 @@ subscript.
 ### Gravity
 
 $`g = [0, 0, \gamma]^\mathsf{T}`$ with $`\gamma`$ the local gravity magnitude. The default is the
-WGS-84 standard value 9.80665 m s⁻², but $`\gamma`$ varies by roughly 0.5 % between the equator
-and the poles and falls by about 3 µm s⁻² per metre of altitude. It is a configuration
-parameter, not a literal.
+WGS-84 standard value 9.80665 m s⁻², and `config::GRAVITY` is that constant today. But
+$`\gamma`$ varies by roughly 0.5 % between the equator and the poles and falls by about 3 µm s⁻²
+per metre of altitude, and the filter holds a geodetic origin, so its latitude is in hand: this
+belongs in [differentiator 7](GOALS.md#7-configuration-derived-not-demanded)'s table as a value
+to derive rather than in `Config` as one to demand.
 
 ## State definitions
 
@@ -531,8 +534,9 @@ gate at all.
 accepted and the number of consecutive rejections, and reports an aggregate status alongside the
 state estimate. It does **not** reset itself: recovery policy belongs to the application, which
 is the only layer that knows whether to reset the affected states, degrade the flight mode, or
-alert the operator. PX4, for comparison, resets its states to the measurement after 7 s of
-horizontal fusion timeout and 5 s for height.
+alert the operator. PX4, for comparison, resets its states to the measurement after 7 s
+of horizontal inertial dead reckoning or 5 s of failed height fusion (`reset_timeout_max` and
+`hgt_fusion_timeout_max`, `src/modules/ekf2/EKF/common.h:515-517` at PX4 `c4e4ef98e9`).
 
 The design obligation is that the degraded condition cannot be missed, not that the filter hides
 it by recovering silently.
@@ -627,8 +631,10 @@ r^e_0 = r^e(z_g) - (C_e^n)^\mathsf{T}\,\hat{p}
 ```
 
 where $`C_e^n`$ is itself the origin's, so the equation is solved by iteration: start at the fix,
-and take each pass's axes from the previous guess. The error shrinks by $`|\hat{p}| / R`$ a pass;
-three passes from 10 km leave 40 µm. The first fix then carries no information about position,
+and take each pass's axes from the previous guess. The error shrinks by $`|\hat{p}| / R`$ a pass —
+from 10 km, three passes leave 40 µm — and `LocalOrigin::placing` runs five, then checks that the
+fix lands on the estimate rather than assuming it did, because near a pole the passes need not
+converge and an origin putting the fix at the estimate need not exist at all. The first fix then carries no information about position,
 which is correct: before it, the filter's absolute position was unknown, not wrong. It is spent
 placing the origin and is not fused as well, which would count it twice.
 

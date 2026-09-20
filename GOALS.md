@@ -30,7 +30,7 @@ to progress through.
 
 | crate | what it is | state | status |
 | ----- | ---------- | ----- | ------ |
-| [`eskf`](https://crates.io/crates/eskf) | closest direct competitor | 18 (includes a gravity state) | v0.2.0 published March 2021, ~36 downloads in the last 90 days, nalgebra 0.25. Repository has commits through December 2024 (gravity state removed) that were never released. `no_std` supported but, per its own docs, with few optimizations attempted. No magnetometer fusion, no innovation gating. |
+| [`eskf`](https://crates.io/crates/eskf) | closest direct competitor | 18 (includes a gravity state) | v0.2.0 published March 2021, a few dozen downloads a quarter (33 in the 90 days to September 2026), nalgebra 0.25 against a current 0.35. Repository has commits through December 2024 (gravity state removed) that were never released. `no_std` supported but, per its own docs, with few optimizations attempted. No magnetometer fusion, no innovation gating. |
 | [`strapdown-rs`](https://github.com/jbrodovsky/strapdown-rs) / `strapdown-core` | research and teaching toolbox, GNSS-degradation simulator, datasets | 15-state ESKF, UKF and EKF selectable | Active (0.5.0, April 2026). `std`-oriented, desktop target. States it is "not intended to be a full-featured INS solution". |
 | [`ekf2`](https://docs.rs/ekf2) | FFI wrapper over PX4's C++ EKF2 | 24 | v0.1.0 published 30 August 2026. `no_std` but heap-allocated via `allocator-api2`, requires a C++ toolchain, roughly half documented. |
 | `adskalman`, `kfilter`, `minikalman`, `yakf` | generic Kalman filter math | n/a | No navigation model, no frame or sensor semantics. |
@@ -63,8 +63,8 @@ Four reasons this is a new crate rather than a pull request.
   controller's specific sensor set and fuses magnetometer and barometer, which `eskf` does not.
 * **Different guarantees.** Innovation gating, bounded execution time, and published timing on
   real hardware are not features that bolt onto an existing filter; they constrain its structure.
-* **Maintenance reality.** No release since March 2021, ~36 downloads in the last 90 days, and a
-  `nalgebra` dependency nine minor versions behind. Work landed in the repository in late 2024
+* **Maintenance reality.** No release since March 2021, a few dozen downloads a quarter, and a
+  `nalgebra` dependency ten minor versions behind. Work landed in the repository in late 2024
   and still has not shipped. Contributing means depending on a release cadence that has not
   existed for five years.
 * **API break.** Adding gating, typed frames, and fixed-size `f32` matrices changes essentially
@@ -173,6 +173,7 @@ a `Config` the user reads and commits.
 | gate thresholds | chi-square quantile for a chosen percentile and dimension | a constructor, not a number |
 | `Timeouts` | observed per-source update intervals | offline recommendation only |
 | GNSS `R` | the receiver, floored | per measurement — **done** |
+| local gravity `γ` | the origin's latitude, by the WGS-84 gravity formula | candidate; a constant today (#66) |
 | magnetic declination | a magnetic model, given the GNSS origin and date | optional, for its flash cost |
 
 And what stays with the user, because no amount of data yields it:
@@ -185,8 +186,10 @@ And what stays with the user, because no amount of data yields it:
 * **Policy**: what a `DeadReckoning` status should do to the vehicle.
 * **The static window itself.** The filter can validate stillness; it cannot arrange it.
 
-Status: one value derived today, `α₀`. This is a commitment, not a present fact, and it is the
-differentiator most likely to be judged on whether the offline tool actually gets written.
+Status: two rows of that table are done — `α₀`, measured from the window, and GNSS `R`, which the
+receiver supplies and the caller floors. Everything needing the offline tool is a commitment
+rather than a present fact, and this is the differentiator most likely to be judged on whether
+that tool gets written.
 
 ### Per-quantity validity, not one ladder
 
@@ -202,7 +205,7 @@ that starts in motion reports `Aligning` throughout, and its 888 aiding transiti
 behind it.
 
 **Decided:** keep `Status` as the one-glance summary and add `Validity` alongside it on the state,
-six flags derived from the covariance against a new `Config::accuracy`. Horizontal and vertical
+six flags derived from the covariance against `Config::accuracy`. Horizontal and vertical
 are separate because sources are. Validity also requires that the quantity was ever established,
 since a coarse start's untouched prior is tight and meaningless — position and velocity until the
 first fix, and heading until a magnetometer is fused, which stillness never supplies.
@@ -272,7 +275,9 @@ The options, in the order they are worth doing:
    window, `initialize_coarse` needs no window at all, and `Status::Aligning` is reported until
    `Eskf::is_aligned` says attitude uncertainty has come down to what a static start would have
    given. Promotion is read from the covariance rather than run off a timer, and the bar reuses
-   `Initialization`'s own sigmas, so there is no new knob.
+   `Initialization`'s own sigmas, so there is no new knob. Heading is the exception no covariance
+   can settle: stillness never observes yaw, so a vehicle with no magnetometer stays `Aligning`
+   however tight the prior — which is what options 5 and 6 are for.
 3. **Gate policy while aligning.** Less of a special case than it first appears. The innovation
    covariance `S = H P Hᵀ + R` already grows with `P`, so an honestly inflated coarse `P₀` makes
    the normalized test ratio self-scaling: [gate lockout](EQUATIONS.md#gate-lockout) is what an
@@ -387,8 +392,9 @@ consecutive rejections, and the dimensionless test ratio — and report an aggre
 accessor that an integration can neglect to call. Expose `reset_position_to` and
 `reset_velocity_to` so the condition is actionable.
 
-The filter does not reset itself. PX4 does, after 7 s horizontal and 5 s height fusion timeouts,
-and that is the right choice for a complete autopilot that owns the vehicle's failsafe policy.
+The filter does not reset itself. PX4 does, after 7 s of horizontal dead reckoning or 5 s of
+failed height fusion (`src/modules/ekf2/EKF/common.h:515-517`), and that is the right choice for a
+complete autopilot that owns the vehicle's failsafe policy.
 `fusion-nav` is a library: it does not know whether the correct response is a state reset, a mode
 degrade, or an operator alert, and silently snapping position is a step input to a controller
 that did not ask for one.
