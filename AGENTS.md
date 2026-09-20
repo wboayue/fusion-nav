@@ -34,6 +34,11 @@ the two open design questions and the derived-configuration table are commitment
 commitment with no issue against it is the gap — differentiator 1, the one GOALS calls most
 defensible, had zero representation in the backlog until #41 and #42.
 
+Differentiators are cited **by number** here, in issue bodies and in `data/manifest.txt`, so
+`GOALS.md` numbers them 1–4, 6, 7: 5 was ecosystem coherence, dropped in #63, and the gap stays.
+Never renumber them. A renumber silently repoints every citation, including closed issues that
+cannot be corrected.
+
 **Sequencing hazard:** #31's stages are stacked branches, while the API-review issues (#21, #22,
 #25) change signatures underneath them. Land an API change before the stage that builds on it, not
 after.
