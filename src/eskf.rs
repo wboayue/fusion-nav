@@ -5,8 +5,7 @@ use crate::frames::{Body, Ned};
 use crate::geodetic::{Geodetic, LocalOrigin};
 use crate::health::{Diagnostics, Fusion, Propagation, SourceHealth, Status, Validity};
 use crate::init::{
-    self, Alignment, Coarse, InitError, StaticSample, baro_reference, peak_motion,
-    sample_is_finite, state_is_finite,
+    self, Alignment, Coarse, InitError, StaticSample, baro_reference, peak_motion, state_is_finite,
 };
 use crate::propagate::ImuSample;
 use crate::state::{Covariance, ErrorState, STATES, State};
@@ -186,7 +185,7 @@ impl Eskf {
             imu,
             ..StaticSample::default()
         };
-        if !sample_is_finite(&sample) {
+        if !sample.is_finite() {
             return Err(InitError::NotFinite);
         }
         let (peak_gyro, peak_accel_deviation) = peak_motion(&[sample]);
@@ -341,18 +340,20 @@ impl Eskf {
     ///
     /// A `dt` that is zero, negative, or NaN is refused before the timers move at all.
     ///
+    /// A sample carrying a NaN or an infinity is refused too, as
+    /// [`Propagation::NotFinite`]: propagating it would put the NaN in the quaternion and
+    /// then in the covariance, where nothing reports it and it never leaves. The timers
+    /// advance, since the `dt` was fine and only the sample was not.
+    ///
     /// **Stub.** Advances the fusion timers and propagates nothing.
     pub fn predict(&mut self, imu: ImuSample, dt: Seconds) -> Propagation {
-        let _ = imu;
         if !self.initialized {
             return Propagation::NotInitialized;
         }
         // Rejected ahead of the bookkeeping: a negative `dt` would wind the timers back
         // and a NaN would poison them.
         if !dt.is_usable_step() {
-            let outcome = Propagation::InvalidStep { dt };
-            self.diagnostics.propagation.record(outcome);
-            return outcome;
+            return self.refuse_step(Propagation::InvalidStep { dt });
         }
 
         // Past here the time genuinely passed, so the health bookkeeping is real even
@@ -361,11 +362,29 @@ impl Eskf {
 
         let limit = self.config.max_predict_dt;
         if dt > limit {
-            let outcome = Propagation::StepTooLong { dt, limit };
-            self.diagnostics.propagation.record(outcome);
-            return outcome;
+            return self.refuse_step(Propagation::StepTooLong { dt, limit });
+        }
+
+        // Tested after the gap rather than before it, so that the gap is still measured:
+        // `longest_refused` is the only record of how far the interval ran, and it
+        // describes the timing whatever the sample holds. A sensor producing NaN produces
+        // it again on the next step, where the count picks it up.
+        if !imu.is_finite() {
+            return self.refuse_step(Propagation::NotFinite);
         }
         Propagation::Propagated
+    }
+
+    /// Record a refused step and hand the outcome back, as [`refuse`] does for a
+    /// measurement.
+    ///
+    /// Same reason: one place maps an outcome to what
+    /// [`PropagationHealth`](crate::PropagationHealth) counts, so a guard added to
+    /// [`predict`](Self::predict) cannot forget to count it. Whether the timers moved is
+    /// the guard's business, not this one's.
+    fn refuse_step(&mut self, outcome: Propagation) -> Propagation {
+        self.diagnostics.propagation.record(outcome);
+        outcome
     }
 
     /// Fuse a position fix already expressed in NED meters about the filter's origin.
@@ -881,6 +900,7 @@ fn stub_accept(source: &mut SourceHealth) -> Fusion {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::GRAVITY;
     use crate::geodetic::LocalOrigin;
     use crate::health::Refusal;
     use crate::init::tests::still;
@@ -990,6 +1010,69 @@ mod tests {
             1.304,
             "a refused step still happened in real time"
         );
+    }
+
+    #[test]
+    fn a_non_finite_sample_is_refused_but_the_time_still_passes() {
+        let level = Acceleration::body(0.0, 0.0, -GRAVITY);
+        let still = AngularRate::body(0.0, 0.0, 0.0);
+        for (name, imu) in [
+            (
+                "NaN gyro",
+                ImuSample {
+                    gyro: AngularRate::body(f32::NAN, 0.0, 0.0),
+                    accel: level,
+                },
+            ),
+            (
+                "NaN accel",
+                ImuSample {
+                    gyro: still,
+                    accel: Acceleration::body(0.0, f32::NAN, -GRAVITY),
+                },
+            ),
+            (
+                "infinite accel",
+                ImuSample {
+                    gyro: still,
+                    accel: Acceleration::body(0.0, 0.0, f32::INFINITY),
+                },
+            ),
+        ] {
+            let mut filter = aided();
+            let before = filter.state();
+            assert_eq!(filter.predict(imu, DT), Propagation::NotFinite, "{name}");
+            assert_eq!(filter.state(), before, "{name} reached the state");
+            assert_eq!(
+                elapsed(&filter),
+                DT.as_secs(),
+                "{name}: a refused step still happened in real time"
+            );
+            assert_eq!(
+                filter.diagnostics().propagation.refused_not_finite,
+                1,
+                "{name} went uncounted"
+            );
+        }
+    }
+
+    #[test]
+    fn a_long_step_carrying_a_non_finite_sample_still_measures_the_gap() {
+        // Both refusals apply; the gap is reported because nothing else records how far
+        // the interval ran, while the sensor fault recurs on the next step.
+        let mut filter = aided();
+        let dt = Seconds::from_secs(1.304);
+        let imu = ImuSample {
+            gyro: AngularRate::body(f32::NAN, 0.0, 0.0),
+            accel: Acceleration::body(0.0, 0.0, -GRAVITY),
+        };
+        assert!(matches!(
+            filter.predict(imu, dt),
+            Propagation::StepTooLong { .. }
+        ));
+        let propagation = filter.diagnostics().propagation;
+        assert_eq!(propagation.longest_refused, Some(dt));
+        assert_eq!(propagation.refused_not_finite, 0);
     }
 
     #[test]

@@ -209,7 +209,8 @@ Call `predict(imu, dt)` on every IMU sample. The result is `#[must_use]`:
 | ------------- | ------- |
 | `Propagated` | state advanced over the full `dt` |
 | `StepTooLong { dt, limit }` | `dt` exceeded `Config::max_predict_dt`; state unchanged, but health timers advanced because the time really passed |
-| `InvalidStep { dt }` | zero, negative, or NaN; nothing moved |
+| `InvalidStep { dt }` | `dt` zero, negative, or NaN; nothing moved |
+| `NotFinite` | the sample carried a NaN or an infinity; state unchanged, health timers advanced as above |
 | `NotInitialized` | no state to propagate |
 
 ### Measurements

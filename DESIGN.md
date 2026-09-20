@@ -97,6 +97,12 @@ long gap, so `predict` refuses a step beyond the limit instead of producing a nu
 like an estimate. The health timers advance through the refusal, because the time passed whether
 or not the state moved.
 
+A sample carrying a NaN or an infinity is refused the same way, timers included, as
+`Propagation::NotFinite`. It has to be refused at this boundary because nothing downstream can
+report it: a non-finite rate reaches the quaternion through (15), which composes it unchecked,
+and then the covariance, where one NaN stays for the rest of the flight. The variant documents
+what the two production estimators do here, and which of them checks.
+
 The covariance is propagated alongside the nominal state using the linearized error-state
 dynamics.
 
