@@ -74,8 +74,29 @@ fn drive() {
     );
     let position = Position::ned(black_box(1.0), black_box(2.0), black_box(3.0));
     let velocity = Velocity::ned(black_box(4.0), black_box(-5.0), black_box(6.0));
-    let position_noise = PositionNoise::horizontal_vertical(black_box(1.5), black_box(3.0));
-    let velocity_noise = VelocityNoise::from_speed_accuracy(black_box(0.3));
+    // `clamped` on both types, with the bounds opaque too: it is the one noise
+    // constructor that compares and selects, and `f32::clamp` would have panicked here.
+    let position_noise = PositionNoise::clamped(
+        black_box(1.5),
+        black_box(3.0),
+        black_box(0.5),
+        black_box(100.0),
+    );
+    let velocity_noise = VelocityNoise::clamped(
+        black_box(0.3),
+        black_box(0.45),
+        black_box(0.5),
+        black_box(50.0),
+    );
+    let _ = black_box(PositionNoise::horizontal_vertical(
+        black_box(1.5),
+        black_box(3.0),
+    ));
+    let _ = black_box(VelocityNoise::horizontal_vertical(
+        black_box(0.3),
+        black_box(1000.0),
+    ));
+    let _ = black_box(VelocityNoise::from_speed_accuracy(black_box(0.3)));
 
     let _ = black_box(filter.alignment_of(black_box(&window), dt));
     let _ = black_box(filter.initialize(black_box(&window), dt));

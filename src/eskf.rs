@@ -402,19 +402,17 @@ impl Eskf {
     /// After a coarse start the first fix is adopted rather than fused; see
     /// [`Fusion::Reset`].
     ///
-    /// `noise` is the receiver's own accuracy where it reports one —
-    /// [`PositionNoise::horizontal_vertical`](crate::PositionNoise::horizontal_vertical)
-    /// takes `eph` and `epv` as reported — but **floor it first**. An accuracy estimate is
-    /// the receiver's view of its own geometry and residuals, and under multipath it
-    /// stays small while the fix is metres wrong. Neither production autopilot trusts it
-    /// raw: PX4 fuses `max(eph, EKF2_GPS_P_NOISE)` and ArduPilot
-    /// `constrain(eph, EK3_POSNE_M_NSE, 100 m)`, both from a 0.5 m floor, and PX4
-    /// additionally caps it at `EKF2_NOAID_NOISE` (10 m) while GNSS is the only
-    /// horizontal aiding source.
+    /// `noise` is the receiver's own accuracy where it reports one, bounded before it
+    /// arrives: [`PositionNoise::clamped`](crate::PositionNoise::clamped) takes `eph` and
+    /// `epv` and holds each between a floor and a cap, for the reasons recorded there. A
+    /// two-dimensional fix instead goes through
+    /// [`PositionNoise::horizontal_vertical`](crate::PositionNoise::horizontal_vertical),
+    /// which leaves the vertical σ where the caller put it: `clamped` caps both axes, so
+    /// it would turn a declined height back into a measurement.
     ///
-    /// The filter applies no floor of its own, because `R` describes the measurement and
+    /// The filter applies no bound of its own, because `R` describes the measurement and
     /// belongs with it rather than in [`Config`]. A caller handing over a raw `eph` is
-    /// therefore trusting the receiver further than either autopilot does.
+    /// therefore trusting the receiver further than either production autopilot does.
     ///
     /// **Stub.** Records an acceptance with a zero test ratio; corrects nothing.
     pub fn fuse_gnss_position(
@@ -512,11 +510,13 @@ impl Eskf {
     /// After a coarse start the first solution is adopted rather than fused; see
     /// [`Fusion::Reset`].
     ///
-    /// `noise` is the receiver's speed accuracy, `sacc`
-    /// ([`VelocityNoise::from_speed_accuracy`](crate::VelocityNoise::from_speed_accuracy)),
-    /// and wants the same floor as [`fuse_gnss_position`](Self::fuse_gnss_position): PX4 fuses
-    /// `max(sacc, EKF2_GPS_V_NOISE)` and ArduPilot
-    /// `constrain(sacc, EK3_VELNE_M_NSE, 50 m/s)`, both from a 0.5 m/s floor.
+    /// `noise` is the receiver's speed accuracy, `sacc`, bounded the way
+    /// [`fuse_gnss_position`](Self::fuse_gnss_position)'s is:
+    /// [`VelocityNoise::clamped`](crate::VelocityNoise::clamped). Where the solution
+    /// carries no usable vertical velocity, or the receiver reports the axes separately,
+    /// [`VelocityNoise::horizontal_vertical`](crate::VelocityNoise::horizontal_vertical)
+    /// is the constructor to reach for: all three axes are fused or none, and a per-axis
+    /// σ is what says which of them the receiver actually measured.
     ///
     /// **Stub.** Records an acceptance with a zero test ratio; corrects nothing.
     pub fn fuse_gnss_velocity(
@@ -550,6 +550,13 @@ impl Eskf {
     /// [`set_baro_reference`](Self::set_baro_reference) named. Without one the measurement
     /// is refused rather than referred to an invented origin — which is what a start in
     /// motion, or a window with no barometer in it, leaves behind.
+    ///
+    /// `noise` being per call is what lets it carry a condition neither platform's
+    /// parameter can: ArduPilot multiplies the barometer variance by 4 in ground effect
+    /// (`gndEffectBaroScaler`, `AP_NavEKF3.h:511`, applied at
+    /// `AP_NavEKF3_PosVelFusion.cpp:1419`), and PX4 runs a deadzone around the same
+    /// condition. An application here inflates σ on the calls it applies to, and says in
+    /// its own code when that is.
     ///
     /// **Stub.** Records an acceptance with a zero test ratio; corrects nothing.
     pub fn fuse_baro_altitude(&mut self, altitude: Altitude, noise: AltitudeNoise) -> Fusion {

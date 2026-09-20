@@ -41,11 +41,29 @@ from pathlib import Path
 WGS84_A = 6_378_137.0
 WGS84_E2 = 6.694_379_990_141e-3
 
-# PX4 does not publish a barometer or magnetic-heading variance, so they are
-# supplied here. Placeholders in the same sense as Config's defaults: plausible,
-# not validated.
-DEFAULT_BARO_VARIANCE = 4.0  # m^2
-DEFAULT_MAG_VARIANCE = 0.05  # rad^2
+# PX4 publishes no barometer or magnetic-heading variance, so the converter
+# supplies both. Neither production estimator ever receives one from a driver
+# either -- both read a parameter -- which is what makes a constant here honest
+# rather than a shortcut. Read at PX4-Autopilot c4e4ef98 (v1.18.0-beta1) and
+# ardupilot 368dc0c4.
+#
+# Barometer, sigma = 2.0 m: what both platforms use for the common vehicle. PX4
+# ekf2_baro_noise{2.0f} (EKF/common.h:346), squared at
+# EKF/aid_sources/barometer/baro_height_control.cpp:62; ArduPilot _baroAltNoise,
+# squared at AP_NavEKF3_PosVelFusion.cpp:1416, whose default is vehicle-dependent
+# (AP_NavEKF3.cpp:20-151) -- 2.0 m for copter, Rover and the fallback, 3.0 m for
+# Plane, 0.01 m for Sub. The multirotor number, not a universal one.
+#
+# Heading, sigma = 0.3 rad: PX4's ekf2_head_noise{3.0e-1f} (EKF/common.h:403),
+# used at EKF/aid_sources/magnetometer/mag_control.cpp:603. ArduPilot sits looser
+# again, YAW_M_NSE 0.5 rad (AP_NavEKF3.cpp:472), used unfloored on the compass
+# path -- case yawFusionMethod::MAGNETOMETER: R_YAW = sq(frontend->_yawNoise) at
+# AP_NavEKF3_MagFusion.cpp:975-978. PX4's is the tighter of the two and the
+# corpus is PX4 logs, so it is the one taken: a heading claimed better than
+# either production filter achieves would make the gate optimistic once gating
+# is real.
+DEFAULT_BARO_VARIANCE = 4.0  # m^2, sigma = 2.0 m
+DEFAULT_MAG_VARIANCE = 0.09  # rad^2, sigma = 0.3 rad
 
 # A *_timestamp_relative of INT32_MAX means "no sample in this message".
 INVALID_RELATIVE = 2_147_483_647
