@@ -219,6 +219,13 @@ impl Eskf {
     /// coarse attitude with a confident covariance is the one way to misuse this, and it
     /// produces a filter that gates out the measurements that would have corrected it.
     ///
+    /// `state.attitude` names its own convention, through whichever
+    /// [`Attitude`](crate::Attitude) constructor built it — PX4 and ArduPilot quaternions
+    /// through [`body_to_ned`](crate::Attitude::body_to_ned), a ROS one through
+    /// [`flu_to_enu`](crate::Attitude::flu_to_enu), which is where the conventions and
+    /// what a wrong one costs are written down. It is the one error on this path no check
+    /// downstream can reach.
+    ///
     /// `state.status` is ignored: status is derived from aiding, never asserted.
     /// [`baro_reference`](Self::baro_reference) is left alone, so re-initializing in
     /// flight keeps the reference the flight began with; a filter that never had one

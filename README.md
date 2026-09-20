@@ -130,6 +130,7 @@ navigation (NED)        body (FRD)
 * Down is positive, so gravity has a **positive** z component in the navigation frame and a level,
   stationary accelerometer reads negative z.
 * Attitude is a unit quaternion rotating body to navigation, Hamilton convention, scalar first.
+  `Attitude`'s constructors name the convention they take; see [seeding an attitude](#seeding-an-attitude).
 * Positions and velocities are in the navigation frame; IMU measurements in the body frame.
 
 Frames are in the types, and constructors name them: `Position::ned(n, e, d)`,
@@ -183,7 +184,7 @@ deviation to tilt.
 | ----------- | --- |
 | `initialize(window, dt)` | the usual case; `Alignment::Static` if the window was genuinely still, `Alignment::Coarse` with what it measured otherwise |
 | `initialize_coarse(imu)` | no window at all — one sample of gravity, and the filter runs |
-| `initialize_from(state, covariance)` | an estimate the application already holds: a companion AHRS such as `fusion-ahrs`, the last flight's saved state |
+| `initialize_from(state, covariance)` | an estimate the application already holds: a companion AHRS such as `fusion-ahrs`, the last flight's saved state. [Seeding an attitude](#seeding-an-attitude) is where its convention gets named |
 
 `alignment_of(window, dt)` reports what `initialize` would make of a window without touching the
 filter, for an application that would rather wait for stillness than start coarsely.
@@ -204,6 +205,24 @@ fused normally.
 
 Stillness is still worth arranging where available: initialization quality dominates
 early-flight performance. See [initialization](EQUATIONS.md#initialization).
+
+### Seeding an attitude
+
+A quaternion carries no frames, so `Attitude` has no `From<UnitQuaternion>` and every constructor
+names the convention it takes. Nothing else in initialization is like this: a seed is the one input
+with no residual to expose a wrong one.
+
+| the source publishes | constructor |
+| -------------------- | ----------- |
+| body FRD to NED — PX4 `vehicle_attitude.q`, ArduPilot `get_quat_body_to_ned`, `fusion-ahrs` on `Convention::Ned` | `Attitude::body_to_ned(q)`, which converts nothing |
+| NED to body FRD, the stored inverse | `Attitude::ned_to_body(q)` |
+| body FLU to ENU — ROS REP 103 | `Attitude::flu_to_enu(q)` |
+| body FLU to NWU — Madgwick-family, `fusion-ahrs` on its default | `Attitude::flu_to_nwu(q)` |
+
+Where both frames differ the conversion is two-sided, `q_ned←frd = r_nav ⊗ q ⊗ r_body⁻¹`; rotating
+only the navigation frame reports the same heading with the vehicle upside down, which a level
+bench check agrees with. The constructors' rustdoc carries the conventions, their sources, and what
+a wrong one costs.
 
 ## Running the filter
 

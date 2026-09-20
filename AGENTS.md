@@ -43,8 +43,10 @@ Never renumber them. A renumber silently repoints every citation, including clos
 cannot be corrected.
 
 **Sequencing hazard:** #31's stages are stacked branches, while the signature-changing issues
-(#21, #22, #25, #61) change the API underneath them. Land an API change before the stage that
-builds on it, not after — #61 before whichever stage seeds an attitude. #59's signature is done:
+(#21, #22, #25) change the API underneath them. Land an API change before the stage that
+builds on it, not after. #61 is done: a quaternion reaches `Attitude` only through a constructor
+naming its convention (`body_to_ned`, `ned_to_body`, `flu_to_enu`, `flu_to_nwu`), so the `q̂₀` #33
+computes is committed through the final shape. #59's signature is done:
 `StaticSample` carries GNSS velocity and `Coarse::NotStationary` reports `ā_n`, so #33 builds on
 the final shape; what is left of #59 is equation (5′), which needs the attitude #33 computes.
 

@@ -73,6 +73,46 @@
 //! # Ok::<(), fusion_nav::InitError>(())
 //! ```
 //!
+//! # Seeding from an attitude the application already holds
+//!
+//! A quaternion carries no frames, so [`Attitude`] takes one only through a constructor
+//! naming the convention it arrived in. Both production autopilots publish the convention
+//! this crate fixes, so seeding from either converts nothing; a ROS or Madgwick-family
+//! source converts here, at the edge, rather than in the caller's head.
+//!
+//! ```
+//! use fusion_nav::prelude::*;
+//! use nalgebra::UnitQuaternion;
+//!
+//! let mut filter = Eskf::new(Config::default());
+//!
+//! // What a companion AHRS published: 2.9° nose up, heading 63°.
+//! let q = UnitQuaternion::from_euler_angles(0.0, 0.05, 1.1);
+//!
+//! // PX4's `vehicle_attitude.q` and ArduPilot's `get_quat_body_to_ned` are body FRD to
+//! // NED already, which is this crate's convention too. A ROS source (body FLU to ENU)
+//! // is `Attitude::flu_to_enu(q)`, and `fusion-ahrs` on its NWU default is
+//! // `Attitude::flu_to_nwu(q)`.
+//! let state = State {
+//!     attitude: Attitude::body_to_ned(q),
+//!     ..State::default()
+//! };
+//!
+//! // The seed's quality is the caller's to state, and the covariance is how: these are
+//! // the AHRS's own sigmas, not the static-window figures in `Initialization`.
+//! let covariance = Covariance::from_sigmas([
+//!     5.0, 5.0, 5.0, // position, meters
+//!     0.5, 0.5, 0.5, // velocity, meters per second
+//!     0.035, 0.035, 0.087, // tilt, tilt, heading — radians
+//!     0.1, 0.1, 0.1, // accelerometer bias
+//!     0.01, 0.01, 0.01, // gyroscope bias
+//! ]);
+//!
+//! assert_eq!(filter.initialize_from(state, covariance)?, Alignment::Seeded);
+//! assert!((filter.state().attitude.euler_angles().2 - 1.1).abs() < 1.0e-6);
+//! # Ok::<(), fusion_nav::InitError>(())
+//! ```
+//!
 //! Frames are type parameters, so a `Position<Enu>` where NED is expected is a compile
 //! error rather than a flight anomaly. Units are named by every constructor.
 #![no_std]

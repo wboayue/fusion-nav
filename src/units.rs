@@ -21,10 +21,11 @@
 //! quantity and keep working, and the filter's internals get `nalgebra`'s fixed-size
 //! matrix algebra without a second vector type to convert through.
 
+use core::f32::consts::FRAC_1_SQRT_2;
 use core::fmt;
 use core::marker::PhantomData;
 
-use nalgebra::{UnitQuaternion, Vector3};
+use nalgebra::{Quaternion, UnitQuaternion, Vector3};
 
 use crate::frames::{Body, Enu, Frame, Ned};
 
@@ -32,6 +33,16 @@ use crate::frames::{Body, Enu, Frame, Ned};
 ///
 /// Equation (7). Hamilton convention, scalar first, and normalization is maintained by
 /// [`UnitQuaternion`] rather than by the filter remembering to renormalize.
+///
+/// Every constructor names the convention it takes, and there is no
+/// `From<UnitQuaternion<f32>>`, for the reason the module docs give for keeping
+/// `From<[f32; 3]>` off the framed vectors: `.into()` would claim body-to-NED for a
+/// quaternion that is a stored inverse or an ENU one. A seed is where that costs most,
+/// because it is the one input with no residual to expose it: the filter runs on an
+/// attitude wrong by a frame, reports [`Status::Healthy`](crate::Status::Healthy) if the
+/// seed covariance was confident, and nothing gates. How wrong depends on the attitude —
+/// the level case is a half turn, which is why a level bench check is the one that cannot
+/// find it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Attitude(UnitQuaternion<f32>);
 
@@ -41,9 +52,63 @@ impl Attitude {
         Self(UnitQuaternion::identity())
     }
 
-    /// Wrap a quaternion rotating body to NED.
-    pub const fn from_quaternion(q: UnitQuaternion<f32>) -> Self {
+    /// Wrap a quaternion that already rotates body FRD to NED. Equation (7).
+    ///
+    /// The seed path from either production autopilot, and it converts nothing: PX4's
+    /// `vehicle_attitude.q` is the "rotation from the FRD body frame to the NED earth
+    /// frame", Hamilton and scalar-first (`msg/versioned/VehicleAttitude.msg:2,10`), and
+    /// ArduPilot publishes `AP_AHRS::get_quat_body_to_ned`
+    /// (`libraries/AP_AHRS/AP_AHRS.h:672`).
+    /// [`flu_to_nwu`](Self::flu_to_nwu) maps `fusion-ahrs`'s three conventions onto these
+    /// constructors, `Convention::Ned` included.
+    ///
+    /// Read at PX4-Autopilot `c4e4ef98` (v1.18.0-beta1) and ardupilot `368dc0c4`.
+    pub const fn body_to_ned(q: UnitQuaternion<f32>) -> Self {
         Self(q)
+    }
+
+    /// Invert a quaternion that rotates NED to body FRD.
+    ///
+    /// Storing the inverse — the direction-cosine matrix that takes a navigation vector
+    /// into the body frame — is a common convention, and it is the mistake no other check
+    /// reaches. An inverted attitude is finite, is a unit quaternion, and is identity
+    /// wherever the true one is, so it survives every gate and every static test; it
+    /// differs only in the sign of every rotation the vehicle actually has.
+    pub fn ned_to_body(q: UnitQuaternion<f32>) -> Self {
+        Self(q.inverse())
+    }
+
+    /// Convert a quaternion that rotates body FLU to ENU, the ROS REP 103 pair.
+    ///
+    /// Two-sided, because both frames differ: `q_{NED←FRD} = r_nav ⊗ q ⊗ r_body⁻¹`, where
+    /// `r_nav` is `q_{NED←ENU}` and `r_body` is `q_{FRD←FLU}`. Rotating only the
+    /// navigation frame is the half-applied form, and it is not obviously wrong: it
+    /// reports the same heading as this one and the vehicle upside down, so a level bench
+    /// check that reads a compass agrees with it.
+    pub fn flu_to_enu(q: UnitQuaternion<f32>) -> Self {
+        let r_nav = ned_from_enu();
+        let r_body = frd_from_flu();
+        Self(r_nav * q * r_body.inverse())
+    }
+
+    /// Convert a quaternion that rotates body FLU to NWU, as Madgwick-family filters
+    /// report it.
+    ///
+    /// [`fusion-ahrs`](https://crates.io/crates/fusion-ahrs) is the one to hand: its
+    /// quaternion rotates the sensor frame into the earth frame, its default
+    /// `Convention::Nwu` puts north, west, up on the earth axes, and a level sensor then
+    /// reads gravity on `+z`, which is an FLU body. `Convention::Enu` is
+    /// [`flu_to_enu`](Self::flu_to_enu) and `Convention::Ned` is
+    /// [`body_to_ned`](Self::body_to_ned).
+    ///
+    /// Two-sided for the reason [`flu_to_enu`](Self::flu_to_enu) is. Both halves are the
+    /// same half turn here, so the conversion is a conjugation and a vehicle that is only
+    /// rolled comes through unchanged — a second attitude that cannot tell a conversion
+    /// from no conversion at all.
+    pub fn flu_to_nwu(q: UnitQuaternion<f32>) -> Self {
+        let r_nav = ned_from_nwu();
+        let r_body = frd_from_flu();
+        Self(r_nav * q * r_body.inverse())
     }
 
     /// The underlying quaternion, body to NED.
@@ -64,10 +129,35 @@ impl Default for Attitude {
     }
 }
 
-impl From<UnitQuaternion<f32>> for Attitude {
-    fn from(q: UnitQuaternion<f32>) -> Self {
-        Self(q)
-    }
+/// `q_{NED←ENU}`: the half turn about the north-east bisector, `(1, 1, 0)/√2`.
+///
+/// The signed permutation [`Position::to_ned`] applies to a vector, `(n, e, d) =
+/// (y, x, -z)`, written as a rotation. Swapping two axes alone would be a reflection;
+/// negating the third is what leaves determinant `+1` and a rotation to compose with.
+fn ned_from_enu() -> UnitQuaternion<f32> {
+    // w = cos(π/2) = 0, vector = sin(π/2)·axis = the axis itself. Unit by construction,
+    // so taken unchecked rather than normalized through a division by 1 ± ε.
+    UnitQuaternion::new_unchecked(Quaternion::new(0.0, FRAC_1_SQRT_2, FRAC_1_SQRT_2, 0.0))
+}
+
+/// `q_{NED←NWU}`: the half turn about north, which negates west and up to give east and
+/// down.
+fn ned_from_nwu() -> UnitQuaternion<f32> {
+    half_turn_about_first_axis()
+}
+
+/// `q_{FRD←FLU}`: the half turn about forward, the rotation form of
+/// [`AngularRate::flu`]'s `(f, r, d) = (f, -l, -u)`.
+fn frd_from_flu() -> UnitQuaternion<f32> {
+    half_turn_about_first_axis()
+}
+
+/// A half turn about the first axis: the second and third are negated, the first is kept.
+///
+/// Written once because NWU-to-NED and FLU-to-FRD are the same rotation on different
+/// frames, and named twice above so that a call site says which of the two it is.
+fn half_turn_about_first_axis() -> UnitQuaternion<f32> {
+    UnitQuaternion::new_unchecked(Quaternion::new(0.0, 1.0, 0.0, 0.0))
 }
 
 macro_rules! scalar {
@@ -653,7 +743,121 @@ impl VelocityNoise<Ned> {
 
 #[cfg(test)]
 mod tests {
+    use nalgebra::{Matrix3, Rotation3};
+
     use super::*;
+
+    /// Two rotations agreeing to within a tolerance, compared as rotations: a quaternion
+    /// and its negation are the same attitude, and the conversions below produce whichever
+    /// sign the multiplication lands on.
+    fn assert_same_rotation(left: UnitQuaternion<f32>, right: UnitQuaternion<f32>) {
+        assert!(
+            left.angle_to(&right) < 1.0e-6,
+            "{left} and {right} differ by {} rad",
+            left.angle_to(&right)
+        );
+    }
+
+    /// One physical attitude — nose east, rolled 90° right — written out as the body axes
+    /// each convention would express it in, in the order (NED from FRD, ENU from FLU, NWU
+    /// from FLU). The columns of a body-to-navigation rotation are the body axes in the
+    /// navigation frame, so each triad is that matrix.
+    ///
+    /// Deliberately neither level nor axis-aligned in yaw: its quaternion is
+    /// `(½, ½, ½, ½)`, every component nonzero, so a conversion that rotates only the
+    /// navigation frame lands somewhere else. At level attitude it would not.
+    fn nose_east_rolled_right() -> [UnitQuaternion<f32>; 3] {
+        // Nose east, rolled right through 90°: the body down axis points north and the
+        // body right axis points at the ground.
+        let ned_from_frd = Matrix3::from_columns(&[
+            Vector3::new(0.0, 1.0, 0.0), // forward is east
+            Vector3::new(0.0, 0.0, 1.0), // right is down
+            Vector3::new(1.0, 0.0, 0.0), // down is north
+        ]);
+        let enu_from_flu = Matrix3::from_columns(&[
+            Vector3::new(1.0, 0.0, 0.0),  // forward is east
+            Vector3::new(0.0, 0.0, 1.0),  // left is up
+            Vector3::new(0.0, -1.0, 0.0), // up is south
+        ]);
+        let nwu_from_flu = Matrix3::from_columns(&[
+            Vector3::new(0.0, -1.0, 0.0), // forward is east, which is -west
+            Vector3::new(0.0, 0.0, 1.0),  // left is up
+            Vector3::new(-1.0, 0.0, 0.0), // up is south
+        ]);
+        [ned_from_frd, enu_from_flu, nwu_from_flu]
+            .map(|m| UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix_unchecked(m)))
+    }
+
+    #[test]
+    fn every_convention_maps_one_attitude_to_the_same_body_to_ned_quaternion() {
+        let [ned_from_frd, enu_from_flu, nwu_from_flu] = nose_east_rolled_right();
+
+        assert_same_rotation(
+            Attitude::body_to_ned(ned_from_frd).quaternion(),
+            ned_from_frd,
+        );
+        assert_same_rotation(
+            Attitude::flu_to_enu(enu_from_flu).quaternion(),
+            ned_from_frd,
+        );
+        assert_same_rotation(
+            Attitude::flu_to_nwu(nwu_from_flu).quaternion(),
+            ned_from_frd,
+        );
+    }
+
+    #[test]
+    fn a_navigation_only_conversion_keeps_the_heading_and_turns_the_vehicle_over() {
+        let [ned_from_frd, enu_from_flu, _] = nose_east_rolled_right();
+
+        // What rotating only the navigation frame computes: an attitude a whole rotation
+        // away from the truth, which this attitude shows and a level one does not.
+        let half_applied = ned_from_enu() * enu_from_flu;
+        assert!(half_applied.angle_to(&ned_from_frd) > 1.0);
+
+        // Level, pointing east. The half-applied form differs by a half turn about body
+        // forward — the vehicle inverted — and reports the same heading, which is the one
+        // number a bench check reads.
+        let level = UnitQuaternion::identity();
+        let (half_roll, _, half_yaw) = (ned_from_enu() * level).euler_angles();
+        let (roll, _, yaw) = Attitude::flu_to_enu(level).euler_angles();
+        assert!((half_yaw - yaw).abs() < 1.0e-6);
+        assert!((half_roll.abs() - core::f32::consts::PI).abs() < 1.0e-6);
+        assert!(roll.abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn an_identity_in_each_convention_is_the_attitude_that_convention_calls_level() {
+        let (roll, pitch, yaw) = Attitude::flu_to_enu(UnitQuaternion::identity()).euler_angles();
+        // ENU pairs east with body forward, so its identity is a vehicle pointing east.
+        assert!(roll.abs() < 1.0e-6 && pitch.abs() < 1.0e-6);
+        assert!((yaw - core::f32::consts::FRAC_PI_2).abs() < 1.0e-6);
+
+        // NWU pairs north with body forward, so its identity is ours.
+        assert_same_rotation(
+            Attitude::flu_to_nwu(UnitQuaternion::identity()).quaternion(),
+            Attitude::level().quaternion(),
+        );
+
+        // And NWU's conversion is a conjugation by a half turn about that shared first
+        // axis, so a vehicle that is only rolled comes through with its own quaternion.
+        let rolled = UnitQuaternion::from_euler_angles(0.4, 0.0, 0.0);
+        assert_same_rotation(Attitude::flu_to_nwu(rolled).quaternion(), rolled);
+    }
+
+    #[test]
+    fn a_stored_inverse_is_inverted_rather_than_wrapped() {
+        let [ned_from_frd, ..] = nose_east_rolled_right();
+        let frd_from_ned = ned_from_frd.inverse();
+
+        assert_same_rotation(
+            Attitude::ned_to_body(frd_from_ned).quaternion(),
+            ned_from_frd,
+        );
+        // The error the inversion exists to prevent: still a unit quaternion, still
+        // finite, and a whole rotation away from the truth.
+        assert!(frd_from_ned.angle_to(&ned_from_frd) > 1.0);
+    }
 
     #[test]
     fn enu_converts_to_ned_by_permutation() {

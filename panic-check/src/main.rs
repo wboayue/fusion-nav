@@ -181,9 +181,14 @@ fn surface(state: State, diagnostics: Diagnostics, covariance: &Covariance) {
     let _ = black_box(state.attitude.quaternion());
     let _ = black_box(state.attitude.euler_angles());
     let _ = black_box(Attitude::level());
-    let _ = black_box(Attitude::from_quaternion(black_box(
+    let _ = black_box(Attitude::body_to_ned(black_box(
         state.attitude.quaternion(),
     )));
+    let _ = black_box(Attitude::ned_to_body(black_box(
+        state.attitude.quaternion(),
+    )));
+    let _ = black_box(Attitude::flu_to_enu(black_box(state.attitude.quaternion())));
+    let _ = black_box(Attitude::flu_to_nwu(black_box(state.attitude.quaternion())));
 
     let _ = black_box(state.position.x());
     let _ = black_box(state.position.y());
