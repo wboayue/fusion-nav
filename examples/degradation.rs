@@ -222,5 +222,8 @@ fn stationary_sample() -> StaticSample {
         // reference, so the 60 m fused later reads as 8 m above the origin rather than
         // as an absolute altitude. Without it `fuse_baro_altitude` refuses.
         baro: Some(Altitude::from_meters(52.0)),
+        // A vehicle on the ground has nothing to difference; `velocity` is what a
+        // window taken in motion carries. See `StaticSample::velocity`.
+        ..StaticSample::default()
     }
 }

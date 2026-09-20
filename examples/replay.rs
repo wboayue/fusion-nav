@@ -177,6 +177,11 @@ struct Replay {
     /// what fixes the reference the filter's altitudes are relative to, and a log whose
     /// barometer starts after initialization leaves it unset for the whole replay.
     last_baro: Option<Altitude>,
+    /// GNSS velocity awaiting the next IMU epoch, attached to exactly one static sample
+    /// and not held across the epochs that follow, as `last_mag` and `last_baro` are.
+    /// `StaticSample::velocity` says why: those are averaged and this is differenced, so
+    /// a repeated reading would date the difference from the wrong epoch.
+    pending_velocity: Option<Velocity<Ned>>,
     /// Timestamp of the previous IMU row, so `dt` comes from the log rather than from an
     /// assumed rate.
     previous_imu: Option<f64>,
@@ -211,6 +216,7 @@ impl Replay {
             window_samples: 0,
             last_mag: None,
             last_baro: None,
+            pending_velocity: None,
             previous_imu: None,
             first_imu: None,
             ratios: [None; 4],
@@ -254,8 +260,12 @@ impl Replay {
                 self.observe(GNSS_POS, outcome);
             }
             "gnss_vel" => {
+                let velocity = Velocity::ned(r.value(0)?, r.value(1)?, r.value(2)?);
+                // Before initialization the fusion below is refused, and this is the one
+                // thing in the row that a window taken in motion can still use.
+                self.pending_velocity = Some(velocity);
                 let outcome = self.filter.fuse_gnss_velocity(
-                    Velocity::ned(r.value(0)?, r.value(1)?, r.value(2)?),
+                    velocity,
                     VelocityNoise::from_variance(r.variance(0)?, r.variance(1)?, r.variance(2)?),
                 );
                 self.observe(GNSS_VEL, outcome);
@@ -289,11 +299,13 @@ impl Replay {
     fn accumulate(&mut self, t: f64, imu: ImuSample) -> Result<(), Box<dyn Error>> {
         self.first_imu.get_or_insert(t);
         self.probe_rate(t);
-        self.push_to_window(StaticSample {
+        let sample = StaticSample {
             imu,
             mag: self.last_mag,
             baro: self.last_baro,
-        });
+            velocity: self.pending_velocity.take(),
+        };
+        self.push_to_window(sample);
 
         // One interval is needed before the window can be sized at all.
         let Some(interval) = self.interval else {
@@ -432,6 +444,16 @@ impl Replay {
             .sum()
     }
 
+    /// What the vehicle's own acceleration was over the initialization window, as the
+    /// filter measured it from the GNSS velocities the window carried. `None` from a
+    /// start the filter did not classify as moving, which does not report one.
+    fn inertial_accel(&self) -> Option<Acceleration<Ned>> {
+        match self.alignment {
+            Some(Alignment::Coarse(Coarse::NotStationary { inertial_accel, .. })) => inertial_accel,
+            _ => None,
+        }
+    }
+
     fn write_row(&self, t: f64, state: State, out: &mut impl Write) -> io::Result<()> {
         write!(out, "{t:.4},{:?}", state.status)?;
         for (_, value) in ESTIMATE {
@@ -488,11 +510,26 @@ impl Replay {
                         peak_gyro,
                         peak_accel_deviation,
                         span,
+                        inertial_accel,
                     })) => format!(
-                        "COARSE: peak gyro {:.3} rad/s over {:.2} s, peak |a|-g {:.3} m/s^2",
+                        "COARSE: peak gyro {:.3} rad/s over {:.2} s, peak |a|-g {:.3} m/s^2\n  {}",
                         peak_gyro.as_rad_per_s(),
                         span.as_secs(),
                         peak_accel_deviation.as_m_per_s2(),
+                        match inertial_accel {
+                            Some(accel) => format!(
+                                "GNSS puts the vehicle's own acceleration at {:.3} m/s^2 \
+                                 ({:.2}, {:.2}, {:.2} NED), which in-motion levelling would \
+                                 subtract",
+                                accel.vector().norm(),
+                                accel.x(),
+                                accel.y(),
+                                accel.z(),
+                            ),
+                            None => "no two GNSS velocities in the window, so none of the \
+                                     specific force is accounted for"
+                                .to_string(),
+                        },
                     ),
                     Some(Alignment::Coarse(Coarse::WindowTooShort { .. })) => {
                         "COARSE: window too short".to_string()
@@ -580,7 +617,7 @@ impl Replay {
     fn report_summary(&self) {
         let state = self.filter.state();
         println!(
-            "\nsummary rate={:.0} window={} align={} alpha0={} heading={} resets={} \
+            "\nsummary rate={:.0} window={} align={} an={} alpha0={} heading={} resets={} \
              refused={} invalid={} epochs={} transitions={} status={:?}",
             self.interval.map_or(0.0, |interval| 1.0 / interval),
             self.window_samples,
@@ -589,6 +626,17 @@ impl Replay {
                 Some(Alignment::Coarse(..)) => "coarse",
                 Some(Alignment::Seeded) => "seeded",
                 None => "none",
+            },
+            // `ā_n` of (5′): only a moving start reports one, and only when its window
+            // carried two dated GNSS velocities. `none` therefore covers both "the start
+            // was static" and "the window had no GNSS in it", which is why it is pinned
+            // rather than derived — on the one log that starts in motion it is the only
+            // key that would notice the velocity disappearing out of the window, and
+            // in-motion levelling has nothing to correct with when it does.
+            if self.inertial_accel().is_some() {
+                "measured"
+            } else {
+                "none"
             },
             // Only a static start establishes the barometric reference, so a coarse log
             // fuses no altitude at all unless the application names one. Pinned here

@@ -144,8 +144,8 @@ The filter never reads a clock. `dt` is an argument everywhere, including initia
 ## Initialization
 
 The preferred start is a quasi-static window: the vehicle still, gravity the only specific force.
-Each `StaticSample` is an `ImuSample` plus an optional magnetometer and barometer reading. From
-the window the filter takes:
+Each `StaticSample` is an `ImuSample` plus an optional magnetometer reading, barometer reading
+and GNSS velocity. From the window the filter takes:
 
 * **roll and pitch** from the averaged accelerometer
 * **heading** from the magnetometer if the window carries one, levelled by that roll and
@@ -172,6 +172,12 @@ uncertainty inflated to match the motion actually measured, and `Status::Alignin
 and heading are within `Config::accuracy`. A filter that will not start is worth less than one
 that starts and says how much to trust it — refusing would rule out moving decks, hand launches,
 and restarts at altitude.
+
+`StaticSample::velocity` is what a moving window has that a still one does not need. Two GNSS
+velocities in the window give `ā_n`, the vehicle's own acceleration, which is the part of the
+specific force that is not gravity — and `Coarse::NotStationary` reports it beside the motion it
+measured. Levelling with it, equation (5′), is not built: a coarse start still charges the whole
+deviation to tilt.
 
 | entry point | for |
 | ----------- | --- |

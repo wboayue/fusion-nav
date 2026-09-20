@@ -2,8 +2,9 @@
 
 > **Status: the estimation mathematics is unimplemented.** `predict` propagates nothing and every
 > `fuse_*` accepts with a zero test ratio. What is built is the initial covariance (8), the
-> barometric reference `α₀` of (30), the geodetic origin (43)–(44), and — unit-tested but not
-> yet called from any filter path — the shared primitives and the symmetry enforcement of (42); the
+> barometric reference `α₀` of (30), the window's own acceleration `ā_n` of (5′) — measured and
+> reported, though nothing levels with it yet — the geodetic origin (43)–(44), and — unit-tested
+> but not yet called from any filter path — the shared primitives and the symmetry enforcement of (42); the
 > [equation-to-code mapping](#equation-to-code-mapping) marks the functions that do not exist yet.
 
 This document is the normative mathematical description of `fusion-nav`. Equations are numbered
@@ -137,6 +138,48 @@ Roll and pitch follow from the accelerometer. With $`f = a_m`$ averaged over the
 
 The signs follow from the down-positive convention: a level, stationary accelerometer reads
 $`f = [0, 0, -\gamma]^\mathsf{T}`$.
+
+### Levelling a window taken in motion
+
+Stationarity is what lets (5) read $`f`$ as gravity alone, and a vehicle that is accelerating
+breaks it. Equation (11) read backwards says by how much: $`R^\mathsf{T}(a_n - g) = f`$, so the
+vector to level is the averaged specific force with the vehicle's own acceleration taken out of
+it,
+
+**(5′)**
+
+```math
+\bar{f}' = \bar{f} - R^\mathsf{T} \bar{a}_n, \qquad
+\bar{a}_n = \frac{v_n(t_1) - v_n(t_0)}{t_1 - t_0}
+```
+
+with $`v_n`$ the GNSS velocity at the first and the last sample of the window carrying one. At
+rest $`\bar a_n = 0`$ and (5′) is (5). Applying (5) to $`\bar f'`$ rather than to $`\bar f`$ is
+the whole of in-motion levelling
+([GOALS.md, alignment option 4](GOALS.md#alignment-beyond-the-static-window)).
+
+Two properties keep it a *coarse* alignment, and neither improves with care:
+
+* $`\bar a_n`$ is a difference of two noisy velocities over the span between them. A receiver
+  reporting $`\sigma_v`$ = 0.28 m s⁻¹ at 1 Hz, differenced over 1 s, puts 0.39 m s⁻² of noise into
+  a term whose whole purpose is to be subtracted from 9.8 — so the corrected tilt inherits an
+  error the static case does not have, and the result must not promote to `Alignment::Static`.
+  The window mean is taken from the endpoints for this reason: the mean of a derivative is its
+  endpoint difference, and differencing the samples in between would add their noise back.
+* $`R^\mathsf{T}`$ is part of what is being solved for. The correction splits by axis, which
+  decides how much of it is available: the third column of $`R^\mathsf{T}`$ is the body-frame
+  down direction, so the **vertical** part of $`\bar a_n`$ needs only the tilt and can be taken by
+  fixed-point iteration from the uncorrected (5) — one pass is worth
+  $`\lVert\bar a_n\rVert / \gamma`$, and a fixed count rather than a convergence test, for the
+  reason `geodetic.rs` fixes its own. The **horizontal** part needs the yaw as well, so it is
+  available only where (6) supplies one, iterating (5) and (6) together. A bare vehicle
+  accelerating horizontally with no heading source is the case option 4 does not reach on its own;
+  that is what [option 5](GOALS.md#alignment-beyond-the-static-window) is for.
+
+Solving instead for the rotation that carries $`\bar f`$ onto the known navigation vector
+$`\bar a_n - g`$ would need no iteration and would observe part of the yaw, but it degenerates as
+$`\bar a_n \to 0`$ — the regime most launches sit in — and it couples heading into a step whose
+job is tilt.
 
 Yaw follows from the magnetometer, levelled by the roll and pitch just computed. With
 $`R_0 = R_y(\theta_0) R_x(\phi_0)`$ and $`m_b`$ the averaged magnetometer reading:
@@ -663,6 +706,7 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | --------- | ------- | ------ | -------- |
 | (1)–(4) | state definitions | `state.rs` | `State`, `ErrorState` |
 | (5)–(8) | static initialization | `init.rs` | `classify`, `attitude_sigmas`, `initial_covariance`; unbuilt: `level_from_accel`, `heading_from_mag` |
+| (5′) `ā_n` | in-motion levelling | `init.rs` | `inertial_acceleration`; the correction itself is unbuilt, and waits on `level_from_accel` |
 | (30) `α₀` | barometric reference | `init.rs` | `baro_reference` |
 | (9)–(11) | bias correction, gravity | `propagate.rs` | `ImuSample`; unbuilt: `corrected_imu` |
 | (12)–(15) | nominal propagation | `propagate.rs` | `propagate_nominal` |

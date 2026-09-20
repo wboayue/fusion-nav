@@ -194,6 +194,9 @@ impl Eskf {
             peak_accel_deviation,
             // One sample is not an average, so no rotation smears it.
             span: Seconds::ZERO,
+            // And one sample spans no time, so there is nothing to difference a velocity
+            // over: a caller with GNSS in hand has a window, not this entry point.
+            inertial_accel: None,
         });
         self.apply_alignment(alignment);
         // The barometric reference is left alone: one sample does not establish one, and
