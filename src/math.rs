@@ -7,22 +7,17 @@
 //! (42)'s other half, the diagonal variance floor, is not here. It only means something
 //! once a covariance shrinks, so it lands with the update that first shrinks one.
 
-// The callers are equations (15), (16)–(19), (22), (35), (39) and (41), none of which are
-// written yet. `expect` rather than `allow` so the line fails the build when the last
-// caller lands instead of quietly outliving its reason.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the propagation and observation equations are unwritten"
-    )
-)]
+//! No filter path calls any of this yet, so each function carries its own
+//! `expect(dead_code)` naming the equation that will. `expect` rather than `allow`, and one
+//! per function rather than one for the module, so that each stage's first caller fails the
+//! build until it deletes the line: a module-wide allowance stays satisfied while any one
+//! function is still unwired, and would cover a later unused item by accident.
 
 use core::f32::consts::{PI, TAU};
 
 use nalgebra::{ComplexField, Matrix3, Quaternion, UnitQuaternion, Vector3};
 
-use crate::state::CovarianceMatrix;
+use crate::state::{CovarianceMatrix, STATES};
 
 /// The skew-symmetric matrix `[u]ₓ` of the operators table, so that `[u]ₓ v = u × v`.
 ///
@@ -30,6 +25,7 @@ use crate::state::CovarianceMatrix;
 /// the sign convention is what a reader checks this against, and it should be on the page
 /// next to the equations that use it.
 #[rustfmt::skip]
+#[cfg_attr(not(test), expect(dead_code, reason = "(16)-(19) and (41) are unwritten"))]
 pub(crate) fn skew(u: Vector3<f32>) -> Matrix3<f32> {
     Matrix3::new(
          0.0, -u.z,  u.y,
@@ -51,6 +47,14 @@ pub(crate) fn skew(u: Vector3<f32>) -> Matrix3<f32> {
 ///
 /// The result is unit by the Pythagorean identity, so it is taken unchecked; normalizing
 /// would divide by 1 ± ε. (15) renormalizes after composition, where the error does grow.
+///
+/// `φ` must be finite, and callers owe that check. Unchecked construction is what makes a
+/// non-finite `φ` dangerous rather than merely wrong: `‖φ‖` is then NaN, the small-angle
+/// test is false, and the result is a `UnitQuaternion` that is not a unit quaternion — every
+/// rotation after it is NaN with nothing reporting so. The refusal cannot live here, since
+/// the return type has no channel to refuse through; it belongs where there is a typed
+/// outcome, and `predict` today validates `dt` but not the sample it is handed.
+#[cfg_attr(not(test), expect(dead_code, reason = "(15) and (39) are unwritten"))]
 pub(crate) fn exp_quat(phi: Vector3<f32>) -> UnitQuaternion<f32> {
     let angle = phi.norm();
     let half = 0.5 * angle;
@@ -85,7 +89,10 @@ const SMALL_ANGLE: f32 = 1.0e-3;
 /// which subtracts nearby quantities and so can land outside the interval it computes: at
 /// `-3π` that form returns 3.1415930, one ulp above `π`. Here `%` is exact (IEEE `fmod`
 /// rounds nothing), and each correction subtracts quantities within a factor of two of
-/// each other, which is exact as well. So the range is a guarantee, not a tolerance.
+/// each other, which is exact as well. So for a finite angle the range is a guarantee, not
+/// a tolerance. A non-finite angle stays non-finite: `±∞ % 2π` is NaN, and NaN fails both
+/// comparisons, so the guarantee is on the caller's finiteness and not on this function.
+#[cfg_attr(not(test), expect(dead_code, reason = "(35) is unwritten"))]
 pub(crate) fn wrap_pi(angle: f32) -> f32 {
     let remainder = angle % TAU; // exact, and in (-2π, 2π)
     if remainder > PI {
@@ -99,11 +106,29 @@ pub(crate) fn wrap_pi(angle: f32) -> f32 {
 
 /// Equation (42): `P ← ½(P + Pᵀ)`, which (42) asks for after every covariance operation.
 ///
-/// Written as the equation rather than as a loop over the upper triangle. The two forms
-/// agree bit for bit — `a + a` and a multiplication by ½ are both exact in binary floating
-/// point — so an already-symmetric `P` is unchanged and calling this costs no accuracy.
+/// Swept over the upper triangle in place rather than written as the equation reads,
+/// `*p = (*p + p.transpose()) * 0.5`, which materializes two 15×15 temporaries. At
+/// `opt-level = 3` the equation form's stack frame measures 1884 bytes on
+/// `thumbv6m-none-eabi` and 1820 on `thumbv7em-none-eabihf`, against 108 and 0 for the
+/// sweep. (42) runs after every covariance operation, so that frame sits under `predict`
+/// beneath the temporaries propagation needs of its own, and 1884 bytes is a quarter of
+/// the RAM on an 8 KB Cortex-M0 part.
+///
+/// The two forms agree bit for bit — `a + a` and a multiplication by ½ are both exact in
+/// binary floating point — so an already-symmetric `P` is unchanged either way and the
+/// cheaper one costs no accuracy.
+#[cfg_attr(not(test), expect(dead_code, reason = "(22) and (27) are unwritten"))]
 pub(crate) fn enforce_symmetry(p: &mut CovarianceMatrix) {
-    *p = (*p + p.transpose()) * 0.5;
+    // Both indices stay below `STATES`, which is the dimension of `P`, so neither the read
+    // nor the write can be out of range: `nalgebra` indexing panics, and nothing in `src/`
+    // may.
+    for i in 0..STATES {
+        for j in (i + 1)..STATES {
+            let mean = 0.5 * (p[(i, j)] + p[(j, i)]);
+            p[(i, j)] = mean;
+            p[(j, i)] = mean;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -227,6 +252,33 @@ mod tests {
                 "wrap_pi({angle}) = {wrapped} is outside (-pi, pi]"
             );
         }
+    }
+
+    #[test]
+    fn wrap_lands_inside_the_interval_at_every_magnitude() {
+        // The full f32 exponent range, four mantissas each, both signs: the range is
+        // claimed as a guarantee, so it is checked over more than the angles (35) sends.
+        for exponent in 0..255u32 {
+            for mantissa in [0, 1, 0x2a_aaaa, 0x7f_ffff] {
+                let magnitude = f32::from_bits((exponent << 23) | mantissa);
+                for angle in [magnitude, -magnitude] {
+                    let wrapped = wrap_pi(angle);
+                    assert!(
+                        wrapped > -PI && wrapped <= PI,
+                        "wrap_pi({angle:e}) = {wrapped} is outside (-pi, pi]"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn wrap_carries_a_non_finite_angle_through_rather_than_inventing_one() {
+        // The interval is a guarantee about finite input, and the caller owns finiteness.
+        // Pinned so the caveat in the doc comment has a test under it.
+        assert!(wrap_pi(f32::NAN).is_nan());
+        assert!(wrap_pi(f32::INFINITY).is_nan());
+        assert!(wrap_pi(f32::NEG_INFINITY).is_nan());
     }
 
     #[test]
