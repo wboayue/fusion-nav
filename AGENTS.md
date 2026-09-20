@@ -45,12 +45,13 @@ Never renumber them. A renumber silently repoints every citation, including clos
 cannot be corrected.
 
 **Sequencing hazard:** #31's stages are stacked branches, while the signature-changing issues
-(#21, #22, #25) change the API underneath them. Land an API change before the stage that
-builds on it, not after. #61 is done: a quaternion reaches `Attitude` only through a constructor
-naming its convention (`body_to_ned`, `ned_to_body`, `flu_to_enu`, `flu_to_nwu`), so the `q̂₀` #33
-computes is committed through the final shape. #59's signature is done:
-`StaticSample` carries GNSS velocity and `Coarse::NotStationary` reports `ā_n`, so #33 builds on
-the final shape; what is left of #59 is equation (5′), which needs the attitude #33 computes.
+(#21, #25) change the API underneath them. Land an API change before the stage that
+builds on it, not after. #58 joins them at stage 5, which is the first code to read `Config::gates`.
+The rule has held so far: #61 landed before stage 2, so a quaternion reaches `Attitude` only through
+a constructor naming its convention (`body_to_ned`, `ned_to_body`, `flu_to_enu`, `flu_to_nwu`) and
+the `q̂₀` of (5)–(7) is committed through the final shape; #59's signature landed with it, so
+`StaticSample` carries GNSS velocity and `Coarse::NotStationary` reports `ā_n`. What is left of #59
+is equation (5′), and the attitude it needs to rotate `ā_n` into body axes now exists.
 
 ## Goal: a reference to learn from
 
