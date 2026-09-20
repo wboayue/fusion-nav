@@ -143,9 +143,14 @@ tooling and no generated scenario, because both halves are committed.
 
 Committed rather than generated on demand because the generator is a host tool: it calls the
 platform's `sin` and `cos`, which are free to differ in the last bit between machines. In practice
-they do not — an x86-64 and an arm64 build of the simulator write identical scenarios here — but
-that is an observation, not the guarantee the filter has below, and the committed file is what CI
-compares against itself.
+they do not — an x86-64 and an arm64 build write identical scenarios on one machine, and the
+ceilings above, measured on macOS/arm64, hold on CI's Linux/x86-64 runner, which is a second libm
+as well as a second architecture. That second half is weaker than it looks: a ceiling is an
+inequality, so it says the scores did not get worse, not that the same bytes were generated. Both
+are observations rather than the guarantee the filter has below, and they are now load-bearing:
+`data/bench.sh` regenerates every scenario in CI, so a platform whose `sin` differs in the last
+bit would move a ceiling with no diff to point at. The committed `flight.csv` is the one file
+that sidesteps it, which is why the determinism job compares that and not a generated one.
 
 A given seed always gives byte-identical files on one machine, and each sensor draws from its own
 stream, so changing one sensor's rate or model does not shift another's noise.
