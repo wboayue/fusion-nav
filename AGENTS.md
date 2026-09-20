@@ -198,8 +198,10 @@ still applies: a scenario exists because it covers something no other one does, 
 the `covers` field of the table in that file, which is the single place the list lives. Its noise
 tables are deliberately not `Config`'s; matching them would score the filter against its own
 assumptions. `data/flight.csv` is the `flight` scenario's committed output, with
-`data/flight.truth.csv` beside it — regenerate it with the command above, never hand-edit it, and
-expect the cross-architecture hash to move when it changes.
+`data/flight.truth.csv` beside it — regenerate it with the command above, never hand-edit it. Do
+not expect the determinism hash to notice: regenerating it rewrote all 1766 rows and
+`target/replay.csv` did not move a byte, because the filter is a stub and every estimate column
+is constant. The log's contents start mattering to that hash when propagation lands.
 
 **Converter changes are batched.** Regenerating the corpus is not free — logs fetched, `pyulog`
 installed, every log reconverted, replayed, and every moved expectation explained. Land changes
@@ -347,7 +349,7 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
 
 ### Adding a measurement source costs more than a `fuse_*`
 
-Every source touches the same six places, and three of them are public:
+Every source touches the same eight places, and three of them are public:
 
 - `Diagnostics` gains a field and `sources()`'s return type changes length
   (`src/health.rs:473-500`) — `#[non_exhaustive]` covers the new field, but not the array length,
@@ -359,6 +361,10 @@ Every source touches the same six places, and three of them are public:
 - A `summary` key in `examples/replay.rs`, pinned per log in `data/manifest.txt`, plus a corpus log
   that uniquely covers the source — or an honest note that none does.
 - The README fusion table, the `lib.rs` doctest, and `EQUATIONS.md`'s mapping table.
+- `tools/ulog2replay.py`, which has to find the source in a ULog and name its variance columns.
+- `examples/simulate.rs`, which has to model it — an error table, a `sample`, a row — and the
+  column legend its generated headers carry. Nothing connects these two to the replay format at
+  compile time, which is why they are on this list rather than left to be discovered.
 
 ### Reports are `#[non_exhaustive]`, outcomes are not
 

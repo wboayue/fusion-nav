@@ -17,10 +17,10 @@ $ cargo run --example simulate -- mission              # one of them
 $ cargo run --example replay -- target/sim/mission.csv target/sim/mission.replay.csv
 ```
 
-Each scenario says what it uniquely covers — the same rule `manifest.txt` holds a corpus log to —
-and says it in one place, the table in `examples/simulate.rs`, which the run above prints and both
-generated files carry in their header. Its sensor noise is deliberately **not**
-`ImuNoise::default()`: a filter scored against its own assumptions is being handed the answer key.
+What each scenario covers is in the table in `examples/simulate.rs` — printed by the run above and
+carried in both generated files' headers — rather than restated here. Its sensor noise is
+deliberately **not** `ImuNoise::default()`: a filter scored against its own assumptions is being
+handed the answer key.
 
 Nothing reads the truth files yet. Scoring against them — RMSE, NEES, and the per-scenario
 ceilings CI would gate on — is [#16](https://github.com/wboayue/fusion-nav/issues/16) and

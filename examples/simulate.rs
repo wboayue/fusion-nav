@@ -53,14 +53,17 @@
 //! seeded per scenario and split per sensor, so nothing depends on iteration order, on the clock,
 //! or on how many rows another sensor asked for.
 //!
-//! That is a promise about repeated runs, not about hosts. Unlike the filter, whose
-//! transcendentals come from the `libm` crate and are bit-identical everywhere
-//! (`data/README.md`), this is a host tool calling the platform's `sin` and `cos`, which are free
-//! to differ in the last bit between machines — and six-decimal output only hides that most of
-//! the time. Nothing is owed here: an x86-64 and an arm64 build of this file produce all eight
-//! scenarios byte for byte the same on the machine it was written on, but the guarantee the
-//! filter has is absent, so `data/flight.csv` is generated once and committed rather than
-//! regenerated per host.
+//! That is a promise about repeated runs, not about hosts: this is a host tool calling the
+//! platform's `sin` and `cos`, and it inherits none of the cross-architecture guarantee the
+//! filter has. `data/README.md` owns that boundary, and it is why `data/flight.csv` is committed
+//! rather than regenerated.
+//!
+//! # What no scenario covers
+//!
+//! An IMU gap. Every scenario emits a sample at every epoch, so nothing here reaches
+//! `Propagation::StepTooLong`; the corpus log `f16771dd` is still the only thing that does, and
+//! it has no truth. Closing that needs a decision first — what a filter should be *scored* on
+//! across a hole it refused to propagate — which belongs to #16 rather than here.
 
 use std::env;
 use std::error::Error;
@@ -149,10 +152,17 @@ impl Noise {
     }
 
     fn vector(&mut self, sigma: f64) -> [f64; 3] {
+        self.vector_with([sigma; 3])
+    }
+
+    /// Per-axis σ, for a sensor whose axes are not equally good — GNSS height being the standing
+    /// example. Hand-rolling the loop at that one call site instead is how its draw order stops
+    /// matching every other sensor's.
+    fn vector_with(&mut self, sigma: [f64; 3]) -> [f64; 3] {
         [
-            sigma * self.sample(),
-            sigma * self.sample(),
-            sigma * self.sample(),
+            sigma[0] * self.sample(),
+            sigma[1] * self.sample(),
+            sigma[2] * self.sample(),
         ]
     }
 }
@@ -573,36 +583,38 @@ impl Gnss {
     ///
     /// A stale fix describes where the vehicle *was*, under the timestamp it arrived — which is
     /// the whole of the latency model, and why it needs the trajectory rather than the current
-    /// truth. Before the log starts there is nothing to describe, so the first fixes are dropped
-    /// rather than extrapolated from a flight that had not begun.
+    /// truth.
     fn fix(&mut self, t: f64, flight: &Trajectory) -> Option<Fix> {
+        // Draw first, decide second. A window that suppresses a fix must not also skip its noise,
+        // or every fix after the window is drawn from a stream the baseline never reaches:
+        // `gnss_outage` is paired against `mission` sample for sample, and skipping the gap's 100
+        // draws put the remaining 825 fixes on different numbers. The receiver is still running;
+        // what a gap removes is the row.
+        let sigma = [
+            self.errors.sigma_horizontal,
+            self.errors.sigma_horizontal,
+            self.errors.sigma_vertical,
+        ];
+        let position_noise = self.position.vector_with(sigma);
+        let velocity_noise = self.velocity.vector(self.errors.sigma_velocity);
+
         if !self.errors.available.contains(t) {
             return None;
         }
         if self.errors.outage.is_some_and(|outage| outage.contains(t)) {
             return None;
         }
+        // Before the log starts there is nothing for a stale fix to describe, so the first few
+        // are dropped rather than extrapolated from a flight that had not begun.
         let described = t - self.errors.latency;
         if described < 0.0 {
             return None;
         }
 
         let was = flight.at(described);
-        let sigma = [
-            self.errors.sigma_horizontal,
-            self.errors.sigma_horizontal,
-            self.errors.sigma_vertical,
-        ];
-        let mut position = was.position;
-        for (axis, sigma) in position.iter_mut().zip(sigma) {
-            *axis += sigma * self.position.sample();
-        }
         Some(Fix {
-            position,
-            velocity: add(
-                was.velocity,
-                self.velocity.vector(self.errors.sigma_velocity),
-            ),
+            position: add(was.position, position_noise),
+            velocity: add(was.velocity, velocity_noise),
             position_variance: sigma.map(|sigma| sigma * sigma),
             velocity_variance: [self.errors.sigma_velocity.powi(2); 3],
         })
@@ -657,12 +669,13 @@ impl Baro {
     /// against a reference that may no longer be where it was, which the filter carries no state
     /// to notice.
     fn sample(&mut self, t: f64, truth: &Truth) -> Option<Altitude> {
+        // Drawn before the availability window is consulted, for the reason [`Gnss::fix`] gives.
+        let noise = self.errors.sigma * self.noise.sample();
         if !self.errors.available.contains(t) {
             return None;
         }
         Some(Altitude {
-            meters: self.errors.reference + self.errors.drift * t - truth.position[2]
-                + self.errors.sigma * self.noise.sample(),
+            meters: self.errors.reference + self.errors.drift * t - truth.position[2] + noise,
             variance: self.errors.sigma.powi(2),
         })
     }
@@ -714,6 +727,8 @@ impl Mag {
     }
 
     fn sample(&mut self, t: f64, truth: &Truth) -> Option<Field> {
+        // Drawn before the availability window is consulted, for the reason [`Gnss::fix`] gives.
+        let noise = self.noise.vector(self.errors.sigma_field);
         if !self.errors.available.contains(t) {
             return None;
         }
@@ -725,7 +740,7 @@ impl Mag {
         Some(Field {
             body: add(
                 resolve_in_body(body_to_nav(truth.euler), magnetic_field(turned)),
-                self.noise.vector(self.errors.sigma_field),
+                noise,
             ),
             heading_variance: self.heading_variance(),
         })
@@ -918,15 +933,25 @@ fn short_hop() -> Trajectory {
 
 /// The scenario table.
 ///
-/// Four of them — `gnss_outage`, `baro_drift`, `gnss_latency`, `mag_disturbance` — fly the same
-/// [`circuit`] and change exactly one thing, so a difference in their scores is the fault under
-/// test and not the flight.
+/// Five of them — `harsh_imu`, `gnss_outage`, `baro_drift`, `gnss_latency`, `mag_disturbance` —
+/// are one-variable departures from `mission`, and the pairing is by construction rather than by
+/// assertion: same trajectory, same duration, and **the same seed**. Streams are split per
+/// sensor, so a departure that leaves a sensor alone reproduces the baseline's draws for it bit
+/// for bit, and `diff mission.csv <departure>.csv` shows the fault and nothing else. Differing
+/// seeds would have left every sensor differing everywhere, which is the attribution this whole
+/// arrangement exists to buy.
+///
+/// The three that are not departures — `static`, `moving_start`, `flight` — carry their own
+/// seeds, so a statistic aggregated across the set still has independent draws to work with.
 fn scenarios() -> Vec<Scenario> {
+    /// The seed the baseline and its departures share. See above: this is the pairing.
+    const PAIRED: u64 = 2;
+
     let base = Scenario {
         name: "",
         covers: "",
-        seed: 0,
-        duration: 120.0,
+        seed: PAIRED,
+        duration: 185.0,
         // 200 Hz: fast enough that first-order propagation is not the thing being measured, slow
         // enough that a scenario is a few megabytes.
         imu_rate: 200.0,
@@ -949,25 +974,30 @@ fn scenarios() -> Vec<Scenario> {
             trajectory: at_rest(),
             ..base
         },
-        // The baseline every other flying scenario is a one-variable departure from.
+        // The baseline every departure below is measured against.
         Scenario {
             name: "mission",
             covers: "5 s static, then a 180 s circuit with turns and climbs: the baseline",
-            seed: 2,
-            duration: 185.0,
+            ..base
+        },
+        // The only scenario whose sensors are not the nominal table, so a statistic across the
+        // set is not reading one IMU seven times. Its aiding is untouched, which is what makes
+        // the IMU the single variable — and what keeps `gnss_outage` below a single variable too.
+        Scenario {
+            name: "harsh_imu",
+            covers: "the baseline flown on a badly isolated IMU: ten times the white noise and \
+                     twenty times the bias walk of every other scenario",
+            imu: HARSH_IMU,
             ..base
         },
         // Dead reckoning: 20 s with no fixes at all, over the fastest part of the circuit, and
-        // the one scenario where the gap is what the position has to live on. `HARSH_IMU` rather
-        // than a second variable, because the question is whether the covariance grown across a
-        // gap covers the error actually accumulated, and the nominal IMU makes so little error in
-        // 20 s that a conservative `Q` covers it without being asked.
+        // the one scenario where the gap is what the position has to live on. On the nominal IMU
+        // deliberately — pairing it against `mission` says what the gap cost, and pairing
+        // `harsh_imu` against `mission` says what the sensor cost. Combining them in one file
+        // would measure neither.
         Scenario {
             name: "gnss_outage",
-            covers: "20 s without GNSS on a badly isolated IMU: dead-reckoning growth against \
-                     the reported sigma",
-            seed: 3,
-            imu: HARSH_IMU,
+            covers: "20 s without GNSS: dead-reckoning growth against the reported sigma",
             gnss: GnssErrors {
                 outage: Some(Window {
                     start: 60.0,
@@ -991,14 +1021,13 @@ fn scenarios() -> Vec<Scenario> {
             ..base
         },
         // What GOALS.md's "barometric reference as a constant" costs: the reference walks 2 cm/s
-        // away from the one initialization fixed, 2.4 m over the log, and the filter has no state
+        // away from the one initialization fixed, 3.7 m over the log, and the filter has no state
         // that can tell that from a climb. Both production estimators track this; the number this
         // scenario produces is the evidence for revisiting the decision.
         Scenario {
             name: "baro_drift",
-            covers: "the same circuit with the barometric reference drifting 0.02 m/s: what a \
+            covers: "the baseline with the barometric reference drifting 0.02 m/s: what a \
                      constant alpha0 costs in vertical position",
-            seed: 5,
             baro: BaroErrors {
                 drift: 0.02,
                 ..BARO
@@ -1011,9 +1040,8 @@ fn scenarios() -> Vec<Scenario> {
         // what a delayed fusion horizon would remove.
         Scenario {
             name: "gnss_latency",
-            covers: "the same circuit with fixes 150 ms stale: the cost of fusing GNSS against \
-                     the current state",
-            seed: 6,
+            covers: "the baseline with fixes 150 ms stale: the cost of fusing GNSS against the \
+                     current state",
             gnss: GnssErrors {
                 latency: 0.15,
                 ..GNSS
@@ -1027,7 +1055,6 @@ fn scenarios() -> Vec<Scenario> {
             name: "mag_disturbance",
             covers: "10 s of a 30 degree magnetic heading error: whether the heading gate rejects \
                      it, and what it costs if it does not",
-            seed: 7,
             mag: MagErrors {
                 disturbance: Some(Disturbance {
                     window: Window {
@@ -1125,9 +1152,9 @@ fn run() -> Result<(), Box<dyn Error>> {
 fn generate(scenario: &Scenario, out_dir: &Path) -> Result<Report, Box<dyn Error>> {
     let log_path = out_dir.join(format!("{}.csv", scenario.name));
     let truth_path = out_dir.join(format!("{}.truth.csv", scenario.name));
-    let mut log = BufWriter::new(File::create(&log_path)?);
+    let mut log = Log::new(BufWriter::new(File::create(&log_path)?));
     let mut truth = BufWriter::new(File::create(&truth_path)?);
-    write_log_header(&mut log, scenario)?;
+    write_log_header(&mut log.out, scenario)?;
     write_truth_header(&mut truth, scenario)?;
 
     let dt = 1.0 / scenario.imu_rate;
@@ -1147,57 +1174,33 @@ fn generate(scenario: &Scenario, out_dir: &Path) -> Result<Report, Box<dyn Error
         let state = scenario.trajectory.at(t);
 
         let reading = imu.sample(&state);
-        write_row(
-            &mut log,
-            t,
-            "imu",
-            &[reading.gyro, reading.accel].concat(),
-            &[],
-        )?;
+        let [gx, gy, gz] = reading.gyro;
+        let [ax, ay, az] = reading.accel;
+        log.row(t, "imu", &[gx, gy, gz, ax, ay, az], &[])?;
         write_truth_row(&mut truth, t, &state, &reading)?;
         report.epoch(t, &state, &reading);
 
         if epoch % gnss_every == 0
             && let Some(fix) = gnss.fix(t, &scenario.trajectory)
         {
-            write_row(
-                &mut log,
-                t,
-                "gnss_pos",
-                &fix.position,
-                &fix.position_variance,
-            )?;
-            write_row(
-                &mut log,
-                t,
-                "gnss_vel",
-                &fix.velocity,
-                &fix.velocity_variance,
-            )?;
-            report.aiding(2);
+            log.row(t, "gnss_pos", &fix.position, &fix.position_variance)?;
+            log.row(t, "gnss_vel", &fix.velocity, &fix.velocity_variance)?;
         }
         if epoch % baro_every == 0
             && let Some(altitude) = baro.sample(t, &state)
         {
-            write_row(
-                &mut log,
-                t,
-                "baro",
-                &[altitude.meters],
-                &[altitude.variance],
-            )?;
-            report.aiding(1);
+            log.row(t, "baro", &[altitude.meters], &[altitude.variance])?;
         }
         if epoch % mag_every == 0
             && let Some(field) = mag.sample(t, &state)
         {
-            write_row(&mut log, t, "mag", &field.body, &[field.heading_variance])?;
-            report.aiding(1);
+            log.row(t, "mag", &field.body, &[field.heading_variance])?;
         }
     }
 
-    log.flush()?;
+    log.out.flush()?;
     truth.flush()?;
+    report.rows = log.rows;
     Ok(report)
 }
 
@@ -1236,6 +1239,7 @@ struct Report {
     log: PathBuf,
     truth: PathBuf,
     epochs: usize,
+    /// Rows the log holds, read back from [`Log`] once it is written rather than tallied here.
     rows: usize,
     /// Running sum of specific force over the first [`OPENING`] seconds, and its count. At rest
     /// and level the mean is `[0, 0, −g]` plus the accelerometer bias, which is the check that
@@ -1263,7 +1267,6 @@ impl Report {
     }
 
     fn epoch(&mut self, t: f64, truth: &Truth, reading: &ImuReading) {
-        self.rows += 1;
         self.peak_speed = self.peak_speed.max(norm(truth.velocity));
         if t < OPENING {
             self.opening_force = add(self.opening_force, reading.accel);
@@ -1273,10 +1276,6 @@ impl Report {
                 .opening_deviation
                 .max((norm(reading.accel) - GRAVITY).abs());
         }
-    }
-
-    fn aiding(&mut self, rows: usize) {
-        self.rows += rows;
     }
 
     fn print(&self, scenario: &Scenario) {
@@ -1302,29 +1301,41 @@ impl Report {
 // Writing
 // ---------------------------------------------------------------------------------------------
 
-/// One measurement row: six value columns then three variance columns, blank where the source
-/// does not use them.
-fn write_row(
-    out: &mut impl Write,
-    t: f64,
-    source: &str,
-    values: &[f64],
-    variances: &[f64],
-) -> io::Result<()> {
-    write!(out, "{t:.4},{source}")?;
-    for column in 0..6 {
-        match values.get(column) {
-            Some(value) => write!(out, ",{value:.6}")?,
-            None => write!(out, ",")?,
-        }
+/// The log file, and the count of what has been written to it.
+///
+/// The count lives with the writer because it is a fact about the file. A caller tallying rows
+/// of its own is one edit away from disagreeing with what is on disk, and nothing downstream
+/// would notice: the number only ever reaches a console line.
+struct Log<W: Write> {
+    out: W,
+    rows: usize,
+}
+
+impl<W: Write> Log<W> {
+    fn new(out: W) -> Self {
+        Self { out, rows: 0 }
     }
-    for column in 0..3 {
-        match variances.get(column) {
-            Some(variance) => write!(out, ",{variance:.6}")?,
-            None => write!(out, ",")?,
+
+    /// One measurement row: six value columns then three variance columns, blank where the
+    /// source does not use them.
+    fn row(&mut self, t: f64, source: &str, values: &[f64], variances: &[f64]) -> io::Result<()> {
+        write!(self.out, "{t:.4},{source}")?;
+        for column in 0..6 {
+            match values.get(column) {
+                Some(value) => write!(self.out, ",{value:.6}")?,
+                None => write!(self.out, ",")?,
+            }
         }
+        for column in 0..3 {
+            match variances.get(column) {
+                Some(variance) => write!(self.out, ",{variance:.6}")?,
+                None => write!(self.out, ",")?,
+            }
+        }
+        writeln!(self.out)?;
+        self.rows += 1;
+        Ok(())
     }
-    writeln!(out)
 }
 
 fn write_truth_row(

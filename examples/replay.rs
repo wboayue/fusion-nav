@@ -128,6 +128,9 @@ fn run() -> Result<(), Box<dyn Error>> {
     let input = args.next().map_or_else(default_input, PathBuf::from);
     let output = args.next().map_or_else(default_output, PathBuf::from);
 
+    // `examples/simulate.rs` writes its magnetic field for this same declination, and says what
+    // divergence costs: a heading fused from a generated log would carry the difference as a
+    // bias in every score, with nothing failing to say so.
     let config = Config {
         magnetic_declination: Radians::from_radians(-0.06),
         ..Config::default()
