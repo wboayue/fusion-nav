@@ -516,19 +516,112 @@ noise3!(
     variance = "meters squared per second squared"
 );
 
+/// One σ held between two bounds, for the `clamped` constructors below.
+///
+/// Written with comparisons rather than [`f32::clamp`], which panics when `min > max`,
+/// and rather than [`f32::max`], which returns the bound when the σ is NaN and would
+/// turn a measurement [`Fusion::NotFinite`](crate::Fusion::NotFinite) exists to refuse
+/// into a plausible-looking number. Every comparison against NaN is false, so a NaN σ
+/// falls through unchanged and is refused where every other non-finite noise is.
+///
+/// Bounds the wrong way round saturate to `max` rather than refusing: `clamped` is on the
+/// per-measurement path, and a filter that cannot panic has no better answer available.
+fn clamp_sigma(sigma: f32, min: f32, max: f32) -> f32 {
+    let floored = if sigma < min { min } else { sigma };
+    if floored > max { max } else { floored }
+}
+
 impl PositionNoise<Ned> {
     /// From a receiver's horizontal and vertical accuracy, `eph` and `epv` — standard
     /// deviations in meters, as u-blox (`hAcc`, `vAcc`), MAVLink and PX4 report them.
+    ///
+    /// Also how a two-dimensional fix is expressed: give the vertical axis a σ large
+    /// enough that its Kalman gain is negligible against the height uncertainty the
+    /// filter already holds, and say in the calling code which it is. A kilometre is
+    /// comfortably that for any vehicle this filter runs on, and is a number a reader
+    /// recognises as deliberate where `1e6` reads as arbitrary.
     pub fn horizontal_vertical(horizontal: f32, vertical: f32) -> Self {
         Self::from_sigma(horizontal, horizontal, vertical)
+    }
+
+    /// The same, with each σ held between `min_sigma` and `max_sigma` in meters.
+    ///
+    /// A receiver's accuracy estimate is its view of its own geometry and residuals, and
+    /// under multipath it stays small while the fix is metres wrong — so both production
+    /// estimators bound it on both sides rather than trusting it. ArduPilot writes the
+    /// two-sided form directly, `constrain_ftype(gpsPosAccuracy, _gpsHorizPosNoise, 100)`
+    /// at `AP_NavEKF3_PosVelFusion.cpp:807`. PX4 floors at `ekf2_gps_p_noise`
+    /// (`EKF/aid_sources/gnss/gps_control.cpp:358`) and caps at `ekf2_noaid_noise`, 10 m,
+    /// but only while GNSS is the sole horizontal aid (`:363-364`) — the cap is about
+    /// what the filter can afford to lean on, not about the fix.
+    ///
+    /// Keeping both bounds here rather than in [`Config`](crate::Config) keeps them
+    /// travelling with the measurement they describe, which is the same reason `R` is a
+    /// per-call argument at all.
+    ///
+    /// Read at PX4-Autopilot `c4e4ef98` (v1.18.0-beta1) and ardupilot `368dc0c4`.
+    pub fn clamped(horizontal: f32, vertical: f32, min_sigma: f32, max_sigma: f32) -> Self {
+        let horizontal = clamp_sigma(horizontal, min_sigma, max_sigma);
+        Self::from_sigma(
+            horizontal,
+            horizontal,
+            clamp_sigma(vertical, min_sigma, max_sigma),
+        )
     }
 }
 
 impl VelocityNoise<Ned> {
     /// From a receiver's speed accuracy, `sAcc` — one standard deviation in meters per
     /// second, applied to every axis.
+    ///
+    /// Isotropic, because that is what the receiver said: `sAcc` is a single scalar
+    /// (u-blox `sAcc`, PX4 `s_variance_m_s`, ArduPilot `speed_accuracy`) and it carries no
+    /// claim about the vertical axis being worse. Both production estimators nonetheless
+    /// loosen vertical before fusing — PX4 by exactly 1.5,
+    /// `Vector3f vel_obs_var(vel_var, vel_var, vel_var * sq(1.5f))`
+    /// (`EKF/aid_sources/gnss/gps_control.cpp:321`), the ratio it names elsewhere as "a
+    /// typical ratio of vacc/hacc" (`gnss_height_control.cpp:62`); ArduPilot by flooring
+    /// the axes differently, `_gpsHorizVelNoise` 0.3 m/s against `_gpsVertVelNoise` 0.5
+    /// on copter (`AP_NavEKF3_PosVelFusion.cpp:821-822`, `AP_NavEKF3.cpp:23-24`).
+    ///
+    /// That is a policy about receivers rather than a property of this fix, so it stays
+    /// with the caller, who writes it as
+    /// [`horizontal_vertical`](Self::horizontal_vertical)`(sacc, 1.5 * sacc)` for PX4's
+    /// shape. `R` describing the measurement is what lets a caller with a better number —
+    /// a receiver reporting `vAcc` separately, a dual-frequency fix — supply it.
+    ///
+    /// Read at PX4-Autopilot `c4e4ef98` (v1.18.0-beta1) and ardupilot `368dc0c4`.
     pub fn from_speed_accuracy(speed: f32) -> Self {
         Self::from_sigma(speed, speed, speed)
+    }
+
+    /// From separate horizontal and vertical speed accuracies, standard deviations in
+    /// meters per second.
+    ///
+    /// The shape both production estimators fuse in; see
+    /// [`from_speed_accuracy`](Self::from_speed_accuracy) for the ratios they use and why
+    /// applying one is the caller's call.
+    ///
+    /// Also how a solution with no usable vertical velocity is expressed — the case both
+    /// platforms gate on a flag, PX4 `vel_ned_valid` (`msg/SensorGps.msg:59`) and
+    /// ArduPilot `have_vertical_velocity` (`AP_GPS.h:214`). Give the down axis a σ large
+    /// enough that its Kalman gain is negligible against the vertical velocity
+    /// uncertainty the filter holds; 1000 m/s is unambiguously that and reads as
+    /// deliberate.
+    pub fn horizontal_vertical(horizontal: f32, vertical: f32) -> Self {
+        Self::from_sigma(horizontal, horizontal, vertical)
+    }
+
+    /// From a receiver's speed accuracy, held between `min_sigma` and `max_sigma` in
+    /// meters per second.
+    ///
+    /// Bounded on both sides for the reason [`PositionNoise::clamped`] is: ArduPilot
+    /// writes `constrain_ftype(gpsSpdAccuracy, _gpsHorizVelNoise, 50)`
+    /// (`AP_NavEKF3_PosVelFusion.cpp:821`), and PX4 floors at `ekf2_gps_v_noise`, 0.5 m/s
+    /// (`EKF/aid_sources/gnss/gps_control.cpp:320`).
+    pub fn clamped(speed: f32, min_sigma: f32, max_sigma: f32) -> Self {
+        let sigma = clamp_sigma(speed, min_sigma, max_sigma);
+        Self::from_sigma(sigma, sigma, sigma)
     }
 }
 
@@ -579,6 +672,49 @@ mod tests {
             AltitudeNoise::from_sigma(2.0),
             AltitudeNoise::from_variance(4.0)
         );
+    }
+
+    #[test]
+    fn clamping_bounds_a_sigma_on_both_sides() {
+        // Inside the bounds, the receiver's own number survives untouched.
+        assert_eq!(
+            PositionNoise::clamped(1.5, 3.0, 0.5, 100.0),
+            PositionNoise::horizontal_vertical(1.5, 3.0)
+        );
+        // An optimistic fix is floored, an implausible one capped, per axis.
+        assert_eq!(
+            PositionNoise::clamped(0.01, 250.0, 0.5, 100.0),
+            PositionNoise::horizontal_vertical(0.5, 100.0)
+        );
+        assert_eq!(
+            VelocityNoise::clamped(0.02, 0.5, 50.0).variance(),
+            Vector3::repeat(0.25)
+        );
+    }
+
+    #[test]
+    fn a_clamped_nan_stays_nan_rather_than_becoming_a_bound() {
+        // `f32::max` would return the bound here, and the fix would be fused with an
+        // invented accuracy instead of refused as Fusion::NotFinite.
+        let noise = PositionNoise::clamped(f32::NAN, 3.0, 0.5, 100.0);
+        assert!(noise.variance()[0].is_nan());
+        assert!(!noise.is_finite());
+    }
+
+    #[test]
+    fn bounds_the_wrong_way_round_saturate_rather_than_panicking() {
+        assert_eq!(
+            VelocityNoise::clamped(1.0, 10.0, 5.0).variance(),
+            Vector3::repeat(25.0)
+        );
+    }
+
+    #[test]
+    fn a_dropped_vertical_axis_is_a_large_sigma_on_that_axis_alone() {
+        let noise = VelocityNoise::horizontal_vertical(0.3, 1000.0);
+        assert_eq!(noise.variance()[0], 0.09);
+        assert_eq!(noise.variance()[2], 1.0e6);
+        assert!(noise.is_positive());
     }
 
     #[test]

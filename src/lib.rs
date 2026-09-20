@@ -40,12 +40,21 @@
 //!
 //! // GNSS in latitude and longitude. The filter holds the navigation origin: the first
 //! // fix places it, under the estimate, so every later fix converts about the same point.
+//! // `clamped` bounds the receiver's own `eph` and `epv` the way both autopilots do.
 //! let outcome = filter.fuse_gnss_geodetic(
 //!     Geodetic::from_degrees(47.397_742, 8.545_594, 488.0),
-//!     PositionNoise::horizontal_vertical(1.5, 3.0),
+//!     PositionNoise::clamped(1.5, 3.0, 0.5, 100.0),
 //! );
 //! assert!(outcome.is_accepted());
 //! assert!(filter.origin().is_some());
+//!
+//! // A solution whose vertical velocity the receiver did not measure: the down axis
+//! // carries a σ large enough that its gain is negligible, rather than a claim.
+//! let outcome = filter.fuse_gnss_velocity(
+//!     Velocity::ned(0.0, 0.0, 0.0),
+//!     VelocityNoise::horizontal_vertical(0.3, 1000.0),
+//! );
+//! assert!(outcome.is_accepted());
 //!
 //! // Nothing in that window carried a magnetometer either, so nothing observed the
 //! // rotation about gravity: heading is not valid, and `Aligning` says the attitude has

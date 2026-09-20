@@ -87,12 +87,12 @@ loop {
     // step leaves the state where it was.
     if !filter.predict(imu, dt).is_propagated() { /* log the gap */ }
 
-    // Measurement updates whenever a sensor delivers, each with its own noise. Floor a
-    // receiver's accuracy at 0.5 m as PX4 and ArduPilot do, and fuse only a real fix —
+    // Measurement updates whenever a sensor delivers, each with its own noise. Bound a
+    // receiver's accuracy the way PX4 and ArduPilot do, and fuse only a real fix —
     // the first one places the navigation origin.
     let fix = Geodetic::from_degrees_e7(pvt.lat, pvt.lon, pvt.height_mm);
     let (eph, epv) = (pvt.h_acc_mm as f32 * 1e-3, pvt.v_acc_mm as f32 * 1e-3);
-    let noise = PositionNoise::horizontal_vertical(eph.max(0.5), epv.max(0.5));
+    let noise = PositionNoise::clamped(eph, epv, 0.5, 100.0);
     if !filter.fuse_gnss_geodetic(fix, noise).is_accepted() {
         /* diagnostics() has the detail */
     }
@@ -232,9 +232,13 @@ Call `predict(imu, dt)` on every IMU sample. The result is `#[must_use]`:
 The noise is an argument, not configuration, because the accuracy of a fix is a property of that
 fix. Build it the way the source reports it: `PositionNoise::horizontal_vertical(eph, epv)` and
 `VelocityNoise::from_speed_accuracy(sacc)` take a receiver's standard deviations, `from_variance`
-takes a covariance diagonal as ROS carries it. Floor a receiver's figures first: PX4 and ArduPilot
-both clamp from 0.5 m rather than fusing raw values. The magnetometer must already be
-calibrated for hard and soft iron.
+takes a covariance diagonal as ROS carries it. Bound a receiver's figures first —
+`PositionNoise::clamped(eph, epv, 0.5, 100.0)` and `VelocityNoise::clamped(sacc, 0.5, 50.0)` —
+since neither production autopilot fuses one raw, both clamping on the low side against an
+optimistic fix and on the high side against an implausible one. Where a receiver reports the
+vertical axis separately, or reports no usable vertical velocity at all,
+`VelocityNoise::horizontal_vertical` says which axis is which instead of averaging the claim over
+all three. The magnetometer must already be calibrated for hard and soft iron.
 
 Every measurement passes through an innovation gate first. The result carries the test ratio, so
 a rejection is diagnosable. Reading it is optional: `diagnostics()` keeps the ratio, the counts
