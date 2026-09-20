@@ -130,6 +130,15 @@ example, or any default it asserts. Converters stay out of the test path on purp
 the checked-in synthetic `data/flight.csv` only. Never add a pyulog or ROS dependency to the
 Rust test path.
 
+CI also replays `flight.csv` on an x86-64 and an aarch64 runner and compares a sha256 of the
+output. It pins nothing about the *content* — only that the content does not depend on the host,
+which is what makes #32's before/after diff of `target/replay.csv` mean anything: a diff is the
+change, not the laptop. `data/README.md` owns the verdict and its boundaries (a rustc or `libm`
+upgrade may legitimately move the hash; the fixed-precision CSV hides a last-bit difference).
+Keep the filter's transcendentals on the `libm` crate — enabling `nalgebra`'s `std` feature would
+swap them for a platform libm, which is free to differ in the last bit on `sin` or `atan2`, and
+the property is gone.
+
 Each manifest entry exists because it covers something nothing else does (SD-card dropouts
 driving `StepTooLong`, burst logging that forced a median rate estimator, a 2 h log guarding the
 f64 timestamp parse, old field spellings). Adding or dropping a log means saying which behavior
