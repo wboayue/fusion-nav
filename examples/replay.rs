@@ -130,7 +130,11 @@ const SIGMAS: [(ErrorState, &str); 15] = [
     (ErrorState::GyroBiasZ, "sigma_bg_z"),
 ];
 
-/// Last test ratio per source, in `Diagnostics` order. The constants below index it.
+/// Source names as the input spells them, in `Diagnostics` order, so a fusion row names the
+/// row it came from. The constants below index this and `RATIOS` alike.
+const SOURCES: [&str; 4] = ["gnss_pos", "gnss_vel", "baro", "mag"];
+
+/// Last test ratio per source, in `Diagnostics` order.
 const RATIOS: [&str; 4] = ["r_gnss_pos", "r_gnss_vel", "r_baro", "r_mag"];
 const GNSS_POS: usize = 0;
 const GNSS_VEL: usize = 1;
@@ -164,7 +168,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut epoch_out = BufWriter::new(File::create(&output)?);
     let mut fusion_out = BufWriter::new(File::create(&fusions)?);
     write_header(&mut epoch_out)?;
-    write_fusion_header(&mut fusion_out, &config)?;
+    write_fusion_header(&mut fusion_out, config.gates)?;
 
     let mut replay = Replay::new(config);
     {
@@ -502,7 +506,7 @@ impl Replay {
         writeln!(
             out.fusions,
             "{t:.4},{},,,,,,,{},{}",
-            RATIOS[source].trim_start_matches("r_"),
+            SOURCES[source],
             match outcome.test_ratio() {
                 Some(ratio) => format!("{ratio:.4}"),
                 None => String::new(),
@@ -511,14 +515,19 @@ impl Replay {
         )
     }
 
-    /// Measurements the gate turned down, over every source.
-    fn rejections(&self) -> u32 {
+    /// Sum one `SourceHealth` count over every source.
+    fn total(&self, count: fn(&SourceHealth) -> u32) -> u32 {
         self.filter
             .diagnostics()
             .sources()
             .iter()
-            .map(|(_, health)| health.rejected)
+            .map(|(_, health)| count(health))
             .sum()
+    }
+
+    /// Measurements the gate turned down, over every source.
+    fn rejections(&self) -> u32 {
+        self.total(|health| health.rejected)
     }
 
     /// Keep the first moment the attitude read valid, and only the first.
@@ -558,23 +567,13 @@ impl Replay {
     /// flight. A log that never initializes has nothing else to report, and this is that
     /// count instead.
     fn discarded(&self) -> u32 {
-        self.filter
-            .diagnostics()
-            .sources()
-            .iter()
-            .map(|(_, health)| health.refused)
-            .sum()
+        self.total(|health| health.refused)
     }
 
     /// Measurements adopted outright because a coarse start left nothing to fuse them
     /// against. At most one per source.
     fn resets(&self) -> u32 {
-        self.filter
-            .diagnostics()
-            .sources()
-            .iter()
-            .map(|(_, health)| health.adopted)
-            .sum()
+        self.total(|health| health.adopted)
     }
 
     /// What the vehicle's own acceleration was over the initialization window, as the
@@ -966,8 +965,7 @@ fn verdict(outcome: Fusion) -> &'static str {
 /// if `γ` is known. Recording the gates here rather than expecting a reader to look them up
 /// keeps the file self-describing: a `Config` change moves the number in the file that the
 /// ratios were produced under.
-fn write_fusion_header(out: &mut impl Write, config: &Config) -> io::Result<()> {
-    let gates = config.gates;
+fn write_fusion_header(out: &mut impl Write, gates: Gates) -> io::Result<()> {
     writeln!(
         out,
         "# one row per fuse_* call. gates gnss_pos={} gnss_vel={} baro={} mag={}",
@@ -1688,7 +1686,7 @@ mod tests {
             },
             ..Config::default()
         };
-        write_fusion_header(&mut out, &config).expect("header");
+        write_fusion_header(&mut out, config.gates).expect("header");
         let text = String::from_utf8(out).expect("utf-8");
         assert!(text.contains("baro=2.71"), "the gate in force: {text}");
         assert_eq!(
@@ -1700,7 +1698,7 @@ mod tests {
     #[test]
     fn the_fusion_header_names_one_column_per_field_in_a_row() {
         let mut out = Vec::new();
-        write_fusion_header(&mut out, &Config::default()).expect("header");
+        write_fusion_header(&mut out, Gates::default()).expect("header");
         let text = String::from_utf8(out).expect("utf-8");
         let header = text.lines().last().expect("a header");
         let row = fusion_rows(&still_start().gnss_pos(2.0, 0.0, 0.0, 0.0))
