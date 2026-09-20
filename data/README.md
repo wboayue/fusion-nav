@@ -79,8 +79,52 @@ What each key means, and what it can and cannot say on these scenarios, is in th
   perfectly often enough that nothing else would notice. A log with no such header — a corpus
   log, a converted one — is taken on trust, because there is nothing in it to check.
 
-The per-scenario ceilings CI would gate these against are
-[#17](https://github.com/wboayue/fusion-nav/issues/17).
+### Ceilings, and what they gate
+
+`data/scenarios.txt` holds a measured ceiling per key per scenario, and `data/bench.sh` asserts
+them — the only gate here that reads accuracy rather than self-consistency, and the reason the
+simulator exists:
+
+```console
+$ data/bench.sh                                        # every scenario; runs in CI
+$ data/bench.sh mission static                         # only these
+$ data/expect.sh --self-test                           # the comparator's own fixtures
+```
+
+It generates every scenario first rather than reusing `target/sim/`, so no ceiling can be met by
+a flight produced before the change under test, and it runs the debug build: the nine scenarios
+are about ten seconds all told, against a minute to build the crate again under a second profile,
+and `score` is identical either way. `fetch.sh --check` uses `--release` for a reason that does
+not apply here — a two-hour log at 1.4M epochs.
+
+A breach names the pair and prints the whole `score` line, so a ceiling that moved for a good
+reason is re-measured by copying:
+
+```text
+  BREACH     mission: tilt=11.323, wanted tilt<=11.000
+    got pos_h=101.112 pos_v=14.025 vel=14.527 … tilt=11.323 yaw=36.041 …
+```
+
+Moving one is the same commitment as moving a manifest expectation: a sentence beside it saying
+what the data said. The usual direction is tighter, since every ceiling here was measured on a
+filter that propagates nothing. Some will have to loosen instead — `static`'s position ceilings
+are exactly zero today because the scenario does not move and neither does the estimate, and a
+real dead-reckoning filter drifts.
+
+The `seed` column pins which flight produced the numbers, checked against the header the
+generator wrote. It is the same guard as the truth-file header above, one level out: that one
+stops the wrong truth being scored against a log, this one stops the right truth being scored
+against ceilings that belong to another flight.
+
+**What a ceiling cannot say.** It pins what the filter did last run, so it fails a filter that got
+worse and passes one that got *more accurate and more overconfident at once* — which is the
+failure that matters, because `P` is not a diagnostic. It sets `S = H P Hᵀ + R` and so which
+measurements the gate rejects, it sets the gain, and `Validity` is derived from it. Testing that
+claim needs ANEES over N seeds against a chi-square bound, and a covariance that moves:
+[#89](https://github.com/wboayue/fusion-nav/issues/89), after
+[#35](https://github.com/wboayue/fusion-nav/issues/35). `nees_pos`, `nees_vel` and `nees_att` are
+already on the `score` line and already ratcheted here; what is missing is the bound, not the
+statistic.
 
 ### The log CI replays
 

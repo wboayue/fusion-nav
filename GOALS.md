@@ -142,6 +142,13 @@ Reporting gate decisions as a normalized test ratio rather than a raw normalized
 squared is part of this: it is the same quantity PX4 logs, so replaying a flight log and
 comparing rejection behaviour against EKF2 is a like-for-like check.
 
+Two gates, and they answer different questions. `data/manifest.txt` pins what real logs do, which
+is self-consistency, because no PX4 log carries truth. `data/scenarios.txt` pins accuracy against
+the simulator's analytic truth, and `data/bench.sh` asserts it in CI with no network and no PX4
+tooling. Neither yet tests the covariance's own distributional promise — a ceiling passes a filter
+that grew more accurate and more overconfident at once — which is ANEES over N seeds, #89, once
+#35 gives it a covariance that moves.
+
 Trust in an estimator comes from reproducible numbers, not from documentation.
 
 ### 7. Configuration derived, not demanded
@@ -538,7 +545,8 @@ reality.
 
 Simulation comes first, and is the only source already in the repository: `examples/simulate.rs`
 writes seeded flights with analytic truth (`data/README.md`), so an equation stage is scorable the
-day it lands rather than after a download. It does not displace the four below — synthetic data
+day it lands rather than after a download, and `data/bench.sh` holds each scenario to a measured
+ceiling in CI. It does not displace the four below — synthetic data
 cannot falsify a sensor model, which is exactly what INSANE and the PX4 corpus are for — and what
 it measures is only as good as the error models in its own tables.
 
