@@ -41,7 +41,6 @@ state a perfect filter would report at each IMU epoch.
 ```console
 $ cargo run --example simulate                         # every scenario -> target/sim/
 $ cargo run --example simulate -- mission              # one of them
-$ cargo run --example replay -- target/sim/mission.csv target/sim/mission.replay.csv
 ```
 
 What each scenario covers is in the table in `examples/simulate.rs` — printed by the run above and
@@ -49,8 +48,33 @@ carried in both generated files' headers — rather than restated here. Its sens
 deliberately **not** `ImuNoise::default()`: a filter scored against its own assumptions is being
 handed the answer key.
 
-Nothing reads the truth files yet. Scoring against them — RMSE, NEES, and the per-scenario
-ceilings CI would gate on — is [#16](https://github.com/wboayue/fusion-nav/issues/16) and
+### Scoring against truth
+
+Hand the replay harness a truth file as a third argument and it prints a `score` line beside
+`summary`, in the same `key=value` shape:
+
+```console
+$ cargo run --example replay -- \
+    target/sim/mission.csv target/sim/mission.replay.csv target/sim/mission.truth.csv
+```
+
+```text
+score pos_h=101.112 pos_v=14.025 vel=14.527 pos_h_max=125.000 tilt=11.323 yaw=36.041 …
+```
+
+What each key means, and what it can and cannot say on these scenarios, is in the module docs of
+`examples/replay.rs`, which owns the definitions. Three things about *using* it belong here:
+
+- **No truth file, no `score` line** — not a line of zeros. Every log in the PX4 corpus below has
+  no truth, and `pos_h=0.000` on one of them would claim a perfect filter where the honest answer
+  is that nothing knows. `manifest.txt` is untouched by scoring, and `fetch.sh --check` reads
+  `summary` exactly as before.
+- **Convergence is on `summary`, not here.** `aligned_at=` needs no truth and the corpus pins it;
+  one statistic, one implementation.
+- **Five scenarios are one-variable departures from `mission` on `mission`'s seed**, so the figure
+  that attributes a fault is `score(departure) − score(mission)`, not either alone.
+
+The per-scenario ceilings CI would gate these against are
 [#17](https://github.com/wboayue/fusion-nav/issues/17).
 
 ### The log CI replays
@@ -61,8 +85,12 @@ log CI replays. Regenerate it in place, never edit it:
 ```console
 $ cargo run --example simulate -- flight data          # data/flight.csv + data/flight.truth.csv
 $ cargo run --example replay                           # data/flight.csv -> target/replay.csv
-$ cargo run --example replay -- <input.csv> <output.csv>
+$ cargo run --example replay -- <input.csv> <output.csv> [truth.csv]
+$ cargo run --example replay -- data/flight.csv target/replay.csv data/flight.truth.csv
 ```
+
+That last one is the shortest accuracy check in the repository: it needs no network, no PX4
+tooling and no generated scenario, because both halves are committed.
 
 Committed rather than generated on demand because the generator is a host tool: it calls the
 platform's `sin` and `cos`, which are free to differ in the last bit between machines. In practice

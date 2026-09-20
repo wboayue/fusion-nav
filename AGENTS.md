@@ -114,7 +114,8 @@ cargo +1.89 build --lib           # MSRV
 cargo run --example basic         # minimal integration loop
 cargo run --example degradation   # timeouts, status transitions, application-driven recovery
 cargo run --example replay        # replays data/flight.csv -> target/replay.csv (CI smoke test)
-cargo run --example replay -- <input.csv> <output.csv>
+cargo run --example replay -- <input.csv> <output.csv> [truth.csv]   # truth adds a `score` line
+cargo run --example replay -- data/flight.csv target/replay.csv data/flight.truth.csv
 
 cargo run --example simulate      # seeded flights with truth -> target/sim/<scenario>{,.truth}.csv
 cargo run --example simulate -- flight data   # regenerate the committed data/flight.csv
@@ -308,7 +309,12 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
   one row per IMU epoch, and one row per `fuse_*` call in `<out>.fusion.csv` with the gates in
   its header. `ν` and `S` are columns without values until the update of (23)–(28) publishes
   them — the harness must not compute them itself, which is "one statistic, one implementation"
-  applied to the filter rather than to Python.
+  applied to the filter rather than to Python. A third argument is a truth CSV, and adds a
+  `score` line beside `summary`: RMSE, NEES, `in3s`, `false_valid`. No truth file means no
+  `score` line rather than a line of zeros, so the corpus and `manifest.txt` are untouched by
+  it. Every key reads one error vector, built in `error_state` and nowhere else; `false_valid`
+  reads the filter's own `Validity` rather than re-deriving it, which is what makes it a test
+  of the claim instead of a copy of it.
 - `examples/simulate.rs` — the scenario table, and the only source of truth to score against.
   An example rather than a workspace member on purpose: `panic-check` is a crate out of
   necessity (its own target, profile and link step), while this one imports nothing, needs no
@@ -393,6 +399,12 @@ Every source touches the same eight places, and three of them are public:
 - `examples/simulate.rs`, which has to model it — an error table, a `sample`, a row — and the
   column legend its generated headers carry. Nothing connects these two to the replay format at
   compile time, which is why they are on this list rather than left to be discovered.
+
+The *truth* format is the one coupling of this kind that is guarded: `write_truth_header` in
+`examples/simulate.rs` and `TRUTH_COLUMNS` in `examples/replay.rs` are still two lists, but the
+scorer checks the header against its own and refuses the file, so a column renamed or reordered
+stops the run instead of scoring one quantity against another. A new *state* — not a new source —
+is what moves those columns.
 
 ### Reports are `#[non_exhaustive]`, outcomes are not
 

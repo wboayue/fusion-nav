@@ -114,7 +114,14 @@ $ cargo run --example replay        # a recorded flight in, the estimate out, as
 ```
 
 `replay` also runs real PX4 logs, and `cargo run --example simulate` generates seeded flights with
-analytic ground truth to score against; see [data/README.md](data/README.md).
+analytic ground truth. Hand `replay` that truth as a third argument and it scores itself against
+it — RMSE, NEES, and how often it called an estimate usable while the error said otherwise:
+
+```console
+$ cargo run --example replay -- data/flight.csv target/replay.csv data/flight.truth.csv
+```
+
+See [data/README.md](data/README.md).
 
 ## Conventions
 
