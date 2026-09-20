@@ -227,6 +227,10 @@ Single crate, `no_std`, `forbid(unsafe_code)`, `deny(missing_docs)`, allocation-
   The `initialize*` methods on `Eskf` call these and commit the result. Tests for the pure
   functions live here; tests of what the filter does with them stay in `eskf.rs`.
 - `src/propagate.rs` — `ImuSample` today; equations (9)–(22) land here.
+- `src/math.rs` — the primitives the equations share: `skew`, `exp_quat`, `wrap_pi`,
+  `enforce_symmetry` (42). Pure, stateless, and unit-tested against their definitions; no filter
+  path calls them yet, which a module-level `expect(dead_code)` says and the last caller to land
+  must delete.
 - `src/state.rs` — `State` (nominal, 16 values), `Covariance`/`CovarianceMatrix` (15×15), and
   `ErrorState`, whose discriminants define the covariance ordering `[δp δv δθ δβa δβg]`.
 - `src/units.rs` — typed scalars/vectors. Types carry the claims that cause bugs — frame,

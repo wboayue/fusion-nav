@@ -2,7 +2,8 @@
 
 > **Status: the estimation mathematics is unimplemented.** `predict` propagates nothing and every
 > `fuse_*` accepts with a zero test ratio. What is built is the initial covariance (8), the
-> barometric reference `α₀` of (30), and the geodetic origin (43)–(44); the
+> barometric reference `α₀` of (30), the geodetic origin (43)–(44), and — unit-tested but not
+> yet called from any filter path — the shared primitives and the symmetry enforcement of (42); the
 > [equation-to-code mapping](#equation-to-code-mapping) marks the functions that do not exist yet.
 
 This document is the normative mathematical description of `fusion-nav`. Equations are numbered
