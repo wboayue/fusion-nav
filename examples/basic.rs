@@ -1,8 +1,8 @@
 //! The smallest useful integration: initialize, propagate at IMU rate, fuse what arrives.
 //!
-//! Nothing here estimates anything — `predict` propagates nothing and every `fuse_*`
-//! accepts unconditionally. What it shows is the shape of the loop a flight controller
-//! would write.
+//! Nothing here estimates anything after initialization — the filter levels and takes a
+//! heading from the window, then `predict` propagates nothing and every `fuse_*` accepts
+//! unconditionally. What it shows is the shape of the loop a flight controller would write.
 //!
 //! Run with `cargo run --example basic`. For dropouts, gate outcomes, and diagnostics,
 //! see `degradation.rs`.

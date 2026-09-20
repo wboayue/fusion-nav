@@ -2,10 +2,11 @@
 //!
 //! # Status: API sketch
 //!
-//! **No estimation mathematics is implemented.** [`Eskf`] has the intended signatures and
-//! keeps its own health bookkeeping, but `predict` propagates nothing and every `fuse_*`
-//! accepts unconditionally with a zero test ratio. This crate currently exists to let the
-//! shape of the API be written against and argued with.
+//! **Almost no estimation mathematics is implemented.** [`Eskf`] has the intended signatures
+//! and keeps its own health bookkeeping. Initialization is real — equations (5)–(8), so the
+//! filter starts at the attitude and biases the window yields — but `predict` propagates
+//! nothing and every `fuse_*` accepts unconditionally with a zero test ratio. This crate
+//! currently exists to let the shape of the API be written against and argued with.
 //!
 //! See `README.md` for usage, `DESIGN.md` for the architecture, `EQUATIONS.md` for the
 //! mathematics each method cites, and `GOALS.md` for positioning.

@@ -1,9 +1,9 @@
 //! Replay a recorded flight from CSV and write the estimate back out as CSV.
 //!
-//! Nothing here estimates anything — `predict` propagates nothing and every `fuse_*`
-//! accepts unconditionally, so every estimate column comes out constant and every test
-//! ratio comes out zero. What this establishes is the replay harness and the normalized
-//! log format `GOALS.md` commits to. What it exercises, that `basic.rs` and
+//! Nothing here estimates anything after initialization — `predict` propagates nothing and
+//! every `fuse_*` accepts unconditionally, so every estimate column holds whatever the
+//! window put there and every test ratio comes out zero. What this establishes is the replay
+//! harness and the normalized log format `GOALS.md` commits to. What it exercises, that `basic.rs` and
 //! `degradation.rs` cannot, is irregular `dt` taken from timestamps, per-sample variance,
 //! a source that appears partway through the log, and an initialization window found in
 //! the data rather than asserted.
@@ -255,6 +255,11 @@ struct Replay {
     /// on the window, which is not the same as `mag_at_init`: a coarse start carrying a
     /// magnetometer has observed nothing it could level a heading with.
     heading_at_init: bool,
+    /// The attitude equations (5)–(7) committed, captured at that moment rather than read
+    /// off the filter at the end. The stub propagates nothing, so the two agree today and
+    /// would keep agreeing until (12)–(15) land — at which point this key would silently
+    /// become an end-of-log attitude, which is the trap `heading=` already documents.
+    attitude_at_init: Option<Attitude>,
     epochs: u32,
     /// Rows written to the fusion file: every `fuse_*` call the log made, whatever its
     /// outcome.
@@ -288,6 +293,7 @@ impl Replay {
             mag_at_init: false,
             aligned_at: None,
             heading_at_init: false,
+            attitude_at_init: None,
             epochs: 0,
             fusions: 0,
             longest_step_at: None,
@@ -399,6 +405,7 @@ impl Replay {
         let state = self.filter.state();
         self.note_alignment(t, state.validity);
         self.heading_at_init = state.validity.heading;
+        self.attitude_at_init = Some(state.attitude);
         self.status = state.status;
         self.transitions.push((t, self.status));
         Ok(())
@@ -586,6 +593,21 @@ impl Replay {
         }
     }
 
+    /// The attitude initialization committed, as roll, pitch and yaw in degrees, rounded
+    /// to what the `summary` line prints. Zero everywhere if the log never initialized.
+    ///
+    /// Rounded here rather than by the format string so that an angle rounding to zero
+    /// from below prints `0.00` and not `-0.00`: the same angle either way, and the
+    /// manifest matches these as substrings, so the sign alone would read as a moved
+    /// expectation. IEEE addition makes `-0.0 + 0.0` positive zero, which is the whole of
+    /// the correction.
+    fn angles_at_init(&self) -> (f32, f32, f32) {
+        let attitude = self.attitude_at_init.unwrap_or_default();
+        let (roll, pitch, yaw) = attitude.euler_angles();
+        let rounded = |angle: f32| (angle.to_degrees() * 100.0).round() / 100.0 + 0.0;
+        (rounded(roll), rounded(pitch), rounded(yaw))
+    }
+
     fn write_row(&self, t: f64, state: State, out: &mut Sinks) -> io::Result<()> {
         let out = &mut out.epochs;
         write!(out, "{t:.4},{:?}", state.status)?;
@@ -770,8 +792,10 @@ impl Replay {
     /// expectation it was supposed to be checking.
     fn summary(&self) -> String {
         let state = self.filter.state();
+        let (roll0, pitch0, yaw0) = self.angles_at_init();
         format!(
-            "summary rate={:.0} window={} align={} an={} alpha0={} heading={} resets={} \
+            "summary rate={:.0} window={} align={} an={} alpha0={} heading={} \
+             roll0={:.2} pitch0={:.2} yaw0={:.2} resets={} \
              aligned_at={} rejected={} discarded={} refused={} invalid={} epochs={} \
              transitions={} status={:?}",
             self.interval.map_or(0.0, |interval| 1.0 / interval),
@@ -813,6 +837,13 @@ impl Replay {
             } else {
                 "invalid"
             },
+            // The attitude of (5)-(7), in degrees: the only keys on this line that would
+            // notice a sign inverted in the down-positive convention, a levelling dropped
+            // out of (6), or a declination that stopped reaching the filter. Nothing else
+            // here looks at attitude at all.
+            roll0,
+            pitch0,
+            yaw0,
             self.resets(),
             // When the filter first called its own attitude usable, which is what would
             // settle `Accuracy`'s attitude defaults off the corpus the way replay settled

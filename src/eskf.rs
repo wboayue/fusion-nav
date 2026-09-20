@@ -17,9 +17,9 @@ use crate::units::{
 /// A 15-state error-state Kalman filter.
 ///
 /// **Stub.** Every method below has its intended signature and does its own bookkeeping,
-/// but none of the estimation mathematics is implemented: the state never moves and the
-/// covariance stays where [`initialize`](Self::initialize) put it. This type exists to
-/// let the API shape be written against before the equations land.
+/// but only initialization's mathematics is implemented: the state never moves from where
+/// [`initialize`](Self::initialize) put it, and neither does the covariance. This type
+/// exists to let the API shape be written against before the rest of the equations land.
 #[derive(Clone, Debug)]
 pub struct Eskf {
     config: Config,
@@ -113,9 +113,6 @@ impl Eskf {
     /// [`min_duration`](crate::Initialization::min_duration) can be checked against a real
     /// span of time. As everywhere else, the filter never reads a clock.
     ///
-    /// **Stub.** Classifies the window, derives the barometric reference and the initial
-    /// covariance, and sets the filter initialized; computes no attitude.
-    ///
     /// # Errors
     ///
     /// [`InitError::NoSamples`] for an empty window, [`InitError::InvalidStep`] for a
@@ -127,11 +124,15 @@ impl Eskf {
         dt: Seconds,
     ) -> Result<Alignment, InitError> {
         let alignment = self.alignment_of(window, dt)?;
-        self.apply_alignment(alignment);
-        // Measured from the window rather than read off `alignment`: the test is whether
-        // the vehicle was at rest, which a window too short to align from can still pass.
+        // One answer to "was the vehicle on the ground", read by both the gyroscope bias
+        // of (7) and the barometric reference of (30). Measured from the window rather
+        // than read off `alignment`, because a window too short to align an attitude from
+        // can still be a window of a parked vehicle.
         let (peak_gyro, peak_accel_deviation) = peak_motion(window);
-        if init::at_rest(peak_gyro, peak_accel_deviation, &self.config.init) {
+        let at_rest = init::at_rest(peak_gyro, peak_accel_deviation, &self.config.init);
+        let state = init::nominal_state(window, self.config.magnetic_declination, at_rest);
+        self.apply_alignment(alignment, state);
+        if at_rest {
             self.baro_reference = baro_reference(window);
         }
         // Stillness observes tilt and gyroscope bias; it does not observe yaw. A window
@@ -174,21 +175,24 @@ impl Eskf {
     /// attitude from somewhere — a companion AHRS, the last flight — since a real estimate
     /// beats one sample of gravity.
     ///
-    /// **Stub.** Sets the covariance and initializes; computes no attitude.
+    /// The sample carries no magnetometer, so heading starts at zero and stays
+    /// unestablished whatever the vehicle was doing: this entry point levels, and
+    /// nothing more.
     ///
     /// # Errors
     ///
     /// [`InitError::NotFinite`] if the sample carries a value that is not a number.
     pub fn initialize_coarse(&mut self, imu: ImuSample) -> Result<Alignment, InitError> {
-        // Treated as a window of one, so the same finiteness and motion measures apply.
-        let sample = StaticSample {
+        // Treated as a window of one, so the same finiteness, motion and averaging
+        // measures apply — an average of one sample being that sample.
+        let window = [StaticSample {
             imu,
             ..StaticSample::default()
-        };
-        if !sample.is_finite() {
+        }];
+        if !window[0].is_finite() {
             return Err(InitError::NotFinite);
         }
-        let (peak_gyro, peak_accel_deviation) = peak_motion(&[sample]);
+        let (peak_gyro, peak_accel_deviation) = peak_motion(&window);
         let alignment = Alignment::Coarse(Coarse::NotStationary {
             peak_gyro,
             peak_accel_deviation,
@@ -198,7 +202,13 @@ impl Eskf {
             // over: a caller with GNSS in hand has a window, not this entry point.
             inertial_accel: None,
         });
-        self.apply_alignment(alignment);
+        // The same rule `initialize` applies: the gyroscope bias is worth taking only
+        // where the sample says the vehicle was on the ground, and one reading of a
+        // stationary gyroscope is a noisier bias than a window's average but a better
+        // one than zero.
+        let at_rest = init::at_rest(peak_gyro, peak_accel_deviation, &self.config.init);
+        let state = init::nominal_state(&window, self.config.magnetic_declination, at_rest);
+        self.apply_alignment(alignment, state);
         // The barometric reference is left alone: one sample does not establish one, and
         // a restart at altitude should keep the reference the flight began with.
         Ok(alignment)
@@ -815,20 +825,20 @@ impl Eskf {
         true
     }
 
-    /// Commit an alignment: reset state, covariance and health for a fresh start whose
-    /// attitude uncertainty matches how good the alignment was. The barometric reference
-    /// is the caller's to set, because only it knows whether this start establishes a new
-    /// one.
+    /// Commit an alignment: take the nominal state equation (7) built, and reset the
+    /// covariance and health for a fresh start whose attitude uncertainty matches how good
+    /// the alignment was. The barometric reference is the caller's to set, because only it
+    /// knows whether this start establishes a new one.
     ///
     /// A static start clears the origin. It declares position zero to be where the
     /// vehicle is now, and an origin held from before says zero is somewhere else; the
     /// next geodetic fix places a new one. A coarse start keeps it, because its position
     /// is unestablished and the first fix is adopted about the origin the flight already
     /// has.
-    fn apply_alignment(&mut self, alignment: Alignment) {
+    fn apply_alignment(&mut self, alignment: Alignment, state: State) {
         let (sigma_tilt, sigma_yaw) = init::attitude_sigmas(&self.config.init, alignment);
         self.covariance = init::initial_covariance(&self.config.init, sigma_tilt, sigma_yaw);
-        self.state = State::default();
+        self.state = state;
         self.diagnostics = Diagnostics::default();
         self.unestablished = Unestablished::after(alignment);
         if alignment.is_static() {
@@ -920,9 +930,9 @@ mod tests {
     use crate::config::GRAVITY;
     use crate::geodetic::LocalOrigin;
     use crate::health::Refusal;
-    use crate::init::tests::still;
+    use crate::init::tests::{gravity_at, still};
     use crate::state::ErrorState;
-    use crate::units::{Acceleration, AngularRate};
+    use crate::units::{Acceleration, AngularRate, Radians};
 
     const DT: Seconds = Seconds::from_secs(0.01);
 
@@ -1457,6 +1467,102 @@ mod tests {
         assert!(
             (tilt - 0.8 * 0.8).abs() < 1e-4,
             "the covariance carries the widened tilt, got sigma^2 {tilt}"
+        );
+    }
+
+    /// A still window of a vehicle parked at this attitude, reading nothing but gravity.
+    fn window_tilted(roll: f32, pitch: f32) -> [StaticSample; 8] {
+        [StaticSample {
+            imu: ImuSample {
+                accel: gravity_at(roll, pitch, 0.0),
+                ..still().imu
+            },
+            ..still()
+        }; 8]
+    }
+
+    #[test]
+    fn a_static_window_commits_the_attitude_it_levelled() {
+        // Equations (5)–(7) are `init`'s to test; this is that the filter starts at the
+        // attitude they computed rather than level.
+        let mut filter = Eskf::new(Config::default());
+        assert_eq!(
+            filter
+                .initialize(&window_tilted(0.25, -0.1), Seconds::from_secs(0.25))
+                .expect("a parked vehicle reads exactly g, however it is standing"),
+            Alignment::Static
+        );
+
+        let (roll, pitch, yaw) = filter.state().attitude.euler_angles();
+        assert!(
+            (roll - 0.25).abs() < 1e-5 && (pitch + 0.1).abs() < 1e-5,
+            "levelled to ({roll}, {pitch})"
+        );
+        assert_eq!(yaw, 0.0, "no magnetometer observed the rotation about it");
+    }
+
+    #[test]
+    fn the_configured_declination_reaches_the_heading_it_commits() {
+        // The wiring no test in `init` can see. A level vehicle reading a field with no
+        // east component is pointing at magnetic north, so its true heading is the
+        // declination and nothing else.
+        let mut filter = Eskf::new(Config {
+            magnetic_declination: Radians::from_radians(-0.06),
+            ..Config::default()
+        });
+        let _ = filter
+            .initialize(&window_with_mag(), Seconds::from_secs(0.25))
+            .expect("a 2 s window of stillness");
+
+        let (_, _, yaw) = filter.state().attitude.euler_angles();
+        assert!((yaw + 0.06).abs() < 1e-6, "heading committed as {yaw}");
+    }
+
+    #[test]
+    fn a_still_window_commits_its_gyroscope_bias_and_a_moving_one_does_not() {
+        let offset = AngularRate::body(0.01, -0.02, 0.003);
+        let mut window = [still(); 8];
+        for sample in &mut window {
+            sample.imu.gyro = offset;
+        }
+
+        let mut filter = Eskf::new(Config::default());
+        assert_eq!(
+            filter
+                .initialize(&window, Seconds::from_secs(0.25))
+                .expect("0.022 rad/s is well inside the tolerance"),
+            Alignment::Static
+        );
+        assert!(
+            (filter.state().gyro_bias.vector() - offset.vector()).norm() < 1e-7,
+            "{:?}",
+            filter.state().gyro_bias
+        );
+
+        // Over the stationarity tolerance, so the same average is the vehicle turning
+        // rather than the sensor lying, and taking it would subtract a turn rate from
+        // every later measurement as though it were a sensor error.
+        window[3].imu.gyro = AngularRate::body(0.0, 0.4, 0.0);
+        let _ = filter
+            .initialize(&window, Seconds::from_secs(0.25))
+            .expect("moving, not unusable");
+        assert_eq!(filter.state().gyro_bias, AngularRate::zero());
+    }
+
+    #[test]
+    fn one_sample_is_levelled_like_a_window_of_one() {
+        let mut filter = Eskf::new(Config::default());
+        let _ = filter
+            .initialize_coarse(ImuSample {
+                accel: gravity_at(0.0, 0.35, 0.0),
+                ..still().imu
+            })
+            .expect("a finite sample");
+
+        let (roll, pitch, _) = filter.state().attitude.euler_angles();
+        assert!(
+            roll.abs() < 1e-6 && (pitch - 0.35).abs() < 1e-5,
+            "levelled to ({roll}, {pitch})"
         );
     }
 

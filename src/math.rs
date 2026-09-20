@@ -7,11 +7,12 @@
 //! (42)'s other half, the diagonal variance floor, is not here. It only means something
 //! once a covariance shrinks, so it lands with the update that first shrinks one.
 
-//! No filter path calls any of this yet, so each function carries its own
-//! `expect(dead_code)` naming the equation that will. `expect` rather than `allow`, and one
-//! per function rather than one for the module, so that each stage's first caller fails the
-//! build until it deletes the line: a module-wide allowance stays satisfied while any one
-//! function is still unwired, and would cover a later unused item by accident.
+//! Each function still waiting for its equation carries its own `expect(dead_code)` naming
+//! the one that will call it. `expect` rather than `allow`, and one per function rather than
+//! one for the module, so that each stage's first caller fails the build until it deletes
+//! the line: a module-wide allowance stays satisfied while any one function is still
+//! unwired, and would cover a later unused item by accident. [`wrap_pi`] has lost its,
+//! to (6).
 
 use core::f32::consts::{PI, TAU};
 
@@ -82,7 +83,7 @@ pub(crate) fn exp_quat(phi: Vector3<f32>) -> UnitQuaternion<f32> {
 /// The rotation angle below which [`exp_quat`] takes the series form of its scale factor.
 const SMALL_ANGLE: f32 = 1.0e-3;
 
-/// `wrap(·)` of the operators table: an angle reduced to `(-π, π]`. Used by (35).
+/// `wrap(·)` of the operators table: an angle reduced to `(-π, π]`. Used by (6) and (35).
 ///
 /// The interval is half-open, so `wrap_pi(-π)` is `+π` and `wrap_pi(π)` is `π`. Which end
 /// is closed is arbitrary; that exactly one of them is, is not, and it makes the function
@@ -95,7 +96,6 @@ const SMALL_ANGLE: f32 = 1.0e-3;
 /// each other, which is exact as well. So for a finite angle the range is a guarantee, not
 /// a tolerance. A non-finite angle stays non-finite: `±∞ % 2π` is NaN, and NaN fails both
 /// comparisons, so the guarantee is on the caller's finiteness and not on this function.
-#[cfg_attr(not(test), expect(dead_code, reason = "(35) is unwritten"))]
 pub(crate) fn wrap_pi(angle: f32) -> f32 {
     let remainder = angle % TAU; // exact, and in (-2π, 2π)
     if remainder > PI {
