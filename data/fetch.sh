@@ -7,6 +7,7 @@
 #   data/fetch.sh --add URL [NAME]   download once, record its checksum, append to manifest
 #   data/fetch.sh --check            convert and replay each log, assert its expectations
 #   data/fetch.sh --list             show the manifest
+#   data/fetch.sh --venv             create .venv with the pyulog version the converter pins
 #
 # Logs are large and their redistribution terms are usually unstated, so they are
 # fetched rather than committed. The manifest pins a sha256 per file so a corpus is
@@ -27,10 +28,11 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 manifest="$root/data/manifest.txt"
 dest="$root/data/logs"
 # The converter needs pyulog, which CI never installs (GOALS.md, "Harness constraint").
-# `uv venv && uv pip install pyulog` puts it in .venv, which is gitignored and picked up
-# here without an activated shell; PYTHON= overrides for any other interpreter that has it.
+# `--venv` puts it in .venv, which is gitignored and picked up here without an activated
+# shell; PYTHON= overrides for any other interpreter that has it.
 # Which version matters, not just that it is installed: this path and `uv run` have to agree
-# or the two stop producing the same CSV. --check asserts it below.
+# or the two stop producing the same CSV. --venv installs the pin and --check asserts it,
+# both reading it from tools/ulog2replay.py so that no second copy exists to drift.
 if [ -n "${PYTHON:-}" ]; then
     python=$PYTHON
 elif [ -x "$root/.venv/bin/python" ]; then
@@ -146,6 +148,16 @@ fetch_one() {
 
 show_one() { printf '  %s  %s\n            %s\n' "${1:0:12}…" "$2" "$3"; }
 
+# The pyulog version `tools/ulog2replay.py` declares in its PEP 723 header. That header is
+# the pin -- `uv run` resolves it -- so reading it here keeps one copy rather than two that
+# drift, and keeps the version out of every set of instructions that would name it.
+pyulog_pin() {
+    local pin
+    pin=$(sed -n 's/^# dependencies = \["pyulog==\([^"]*\)"\].*/\1/p' "$root/tools/ulog2replay.py")
+    [ -n "$pin" ] || die "no pyulog pin in tools/ulog2replay.py; expected a PEP 723 \`dependencies = [\"pyulog==X.Y.Z\"]\` line"
+    echo "$pin"
+}
+
 cmd=${1:---fetch}
 case "$cmd" in
 --fetch)
@@ -159,13 +171,16 @@ case "$cmd" in
 --check)
     [ -f "$manifest" ] || die "no manifest at $manifest"
     command -v "$python" >/dev/null || die "$python not found; set PYTHON="
-    # `tools/ulog2replay.py` owns the version; parsing it here keeps one pin rather than two
-    # that drift. Suggesting `uv run` as the remedy would be no remedy at all: check_one
-    # converts with $python, so uv never enters this path.
-    pin=$(sed -n 's/^# dependencies = \["pyulog==\([^"]*\)"\].*/\1/p' "$root/tools/ulog2replay.py")
-    [ -n "$pin" ] || die "no pyulog pin in tools/ulog2replay.py; expected a PEP 723 \`dependencies = [\"pyulog==X.Y.Z\"]\` line"
-    have=$("$python" -c 'import importlib.metadata as m; print(m.version("pyulog"))' 2>/dev/null) ||
-        die "pyulog not available to $python. \`uv venv && uv pip install pyulog==$pin\` from the repository root, or set PYTHON= to an interpreter that has it"
+    # Suggesting `uv run` as the remedy would be no remedy at all: check_one converts with
+    # $python, so uv never enters this path.
+    pin=$(pyulog_pin)
+    # Imports as well as reports a version. Metadata alone answers a different question:
+    # a present dist-info over a package that cannot import -- a missing numpy, a
+    # half-removed install, an ABI mismatch after a Python upgrade -- would pass here and
+    # then fail inside check_one, which discards converter stderr and would print only
+    # `CONVERT FAILED` once per log with no cause.
+    have=$("$python" -c 'import pyulog, importlib.metadata as m; print(m.version("pyulog"))' 2>/dev/null) ||
+        die "pyulog not importable by $python. \`data/fetch.sh --venv\` from the repository root, or set PYTHON= to an interpreter that has it"
     [ "$have" = "$pin" ] ||
         die "$python has pyulog $have, but tools/ulog2replay.py pins $pin. \`uv run\` would use $pin, so the two paths would not produce the same CSV. \`uv pip install pyulog==$pin\`, or move the pin if $have is the version you mean to adopt"
     echo "checking the corpus end to end"
@@ -184,6 +199,13 @@ case "$cmd" in
 --list)
     [ -f "$manifest" ] || die "no manifest at $manifest"
     each_entry show_one
+    ;;
+
+--venv)
+    command -v uv >/dev/null || die "uv not found; see https://docs.astral.sh/uv/"
+    pin=$(pyulog_pin)
+    echo "installing pyulog==$pin into .venv"
+    (cd "$root" && uv venv && uv pip install "pyulog==$pin")
     ;;
 
 --add)

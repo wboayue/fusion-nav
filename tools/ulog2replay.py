@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import re
 import sys
 from pathlib import Path
 
@@ -348,15 +349,38 @@ def dropouts(ulog):
     return note
 
 
+def pinned_pyulog():
+    """The version the PEP 723 header above declares, or None if it cannot be read.
+
+    Read back out of this file rather than repeated as a constant. The header is the
+    pin -- `uv run` resolves it and `data/fetch.sh` parses the same line -- and a
+    second copy is what would go stale, which is the whole failure this function is
+    here to avoid printing.
+    """
+    try:
+        text = Path(__file__).read_text()
+    except OSError:
+        return None
+    match = re.search(r'^# dependencies = \["pyulog==([^"]+)"\]', text, re.M)
+    return match.group(1) if match else None
+
+
 def convert(path, baro_variance, mag_variance):
     try:
         from pyulog import ULog
     except ImportError:
+        pin = pinned_pyulog()
+        remedy = (
+            f"Or install that same version here: uv venv && uv pip install pyulog=={pin}"
+            if pin
+            else "The pinned version could not be read back out of this file's PEP 723 "
+            "header, so it is no longer where `data/fetch.sh` looks for it either."
+        )
         raise ConversionError(
             "pyulog is not available to this interpreter. Run this script through uv,\n"
-            "which resolves the version pinned in the header above:\n"
+            "which resolves the pinned version with no virtualenv to keep current:\n"
             "  uv run tools/ulog2replay.py ...\n"
-            "Or install that same version here: uv venv && uv pip install pyulog==<pin>"
+            f"{remedy}"
         ) from None
 
     ulog = ULog(str(path))

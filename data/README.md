@@ -61,7 +61,8 @@ only a moving start reports — and whether it fixed a barometric reference), `h
 log ended, which would only restate `transitions=`), `resets=`, `refused=` and `invalid=` (adopted
 measurements, and steps refused as too long or as not a step at all), and `epochs=`,
 `transitions=` and `status=`. It needs `pyulog`, so it is a local tool rather than a CI job:
-`uv venv && uv pip install pyulog` once, and `fetch.sh` finds the gitignored `.venv` on its own.
+`data/fetch.sh --venv` once, which installs the version the converter pins, and `fetch.sh`
+finds the gitignored `.venv` on its own.
 The converter declares its own dependency inline (PEP 723), so `uv run tools/ulog2replay.py`
 needs no virtualenv at all.
 
