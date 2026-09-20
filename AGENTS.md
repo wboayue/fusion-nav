@@ -32,7 +32,7 @@ upstream revision rather than paraphrasing PX4 or ArduPilot, state what it depen
 blocks, name the replay/manifest impact, and say what the data must say before the issue can close.
 Each carries an area label (`equations`, `validation`, `api`, `perf`, `docs`, `tooling`, `ci`) and
 one of three milestones — *API frozen*, *Equations implemented and scored*, *Measured and
-published*. Trackers carry neither, since they span all three.
+published*. Trackers carry the area label but no milestone, since they span all three.
 
 **When looking for gaps, audit `GOALS.md` rather than the issue list.** The six differentiators,
 the two open design questions and the derived-configuration table are commitments, and a
