@@ -331,6 +331,26 @@ Every source touches the same six places, and three of them are public:
   that uniquely covers the source — or an honest note that none does.
 - The README fusion table, the `lib.rs` doctest, and `EQUATIONS.md`'s mapping table.
 
+### Reports are `#[non_exhaustive]`, outcomes are not
+
+`Diagnostics`, `SourceHealth` and `PropagationHealth` carry the attribute; `Propagation`,
+`Fusion`, `Status`, `Refusal`, `Validity`, `Alignment` and `InitError` do not. The split is by
+what the type is for, not by how likely it is to change.
+
+A report grows, and is read: `SourceHealth` gained `refused`, `last_refusal` and `adopted` in
+#69, `PropagationHealth` gained `refused_not_finite` in #73, and every new source adds a
+`Diagnostics` field. A reader loses nothing to a new field; only a caller *constructing* one
+breaks, which is what the attribute refuses.
+
+An outcome is matched, and a wildcard arm is the integrator bug the typed outcomes exist to
+prevent — an application that silently ignores a refusal the filter grew flies on a stale state
+and reports nothing. So adding a variant stays a breaking change on purpose, raised by the
+compiler at every call site. Land it in the freeze window above rather than after the stage that
+builds on it.
+
+Neither attribute substitutes for settling the API: `#[non_exhaustive]` does nothing for the
+length of `sources()`'s array.
+
 ### Three kinds of noise number, easily confused
 
 - **`R`, measurement noise** — a per-call argument to every `fuse_*`, never stored in `Config`,
