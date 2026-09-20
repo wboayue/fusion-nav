@@ -11,6 +11,30 @@ harness. Anything stubbed says so in its doc comment with a `**Stub.**` paragrap
 marker accurate when landing real math, and keep the same caveat in `README.md`, `DESIGN.md`,
 `src/lib.rs`, and the example module docs, which all repeat it.
 
+## Backlog
+
+Two tracking issues own ordering and hold rules the individual issues do not repeat. Read the one
+covering the area before starting work in it.
+
+- **#31** — implementing `EQUATIONS.md`, staged as #32–#40. Carries the stage table, the
+  dependency reasoning (why the simulator and `rejected=` come *before* the math), and standing
+  rules that apply to every stage.
+- **#10** — replay validation. Consistency on the corpus, which has no truth; accuracy on
+  simulation and INSANE, which do. The two measure different things and are not collapsed.
+
+Issues here are worth the length they run to. The convention: cite `file:line` at a pinned
+upstream revision rather than paraphrasing PX4 or ArduPilot, state what it depends on and what it
+blocks, name the replay/manifest impact, and say what the data must say before the issue can close.
+
+**When looking for gaps, audit `GOALS.md` rather than the issue list.** The six differentiators,
+the two open design questions and the derived-configuration table are commitments, and a
+commitment with no issue against it is the gap — differentiator 1, the one GOALS calls most
+defensible, had zero representation in the backlog until #41 and #42.
+
+**Sequencing hazard:** #31's stages are stacked branches, while the API-review issues (#21, #22,
+#25) change signatures underneath them. Land an API change before the stage that builds on it, not
+after.
+
 ## Goal: a reference to learn from
 
 Clarity and readability are goals, not side effects. This crate should work as a reference
@@ -76,6 +100,18 @@ catches the coarse log's 35575 barometer rows going from fused to `NoReference`,
 noticed; `heading=` is the validity verdict on the initialization window, which catches a yaw
 reported valid that no magnetometer ever observed — taken at the end of the log it would only
 restate `transitions=`). Renaming or removing a key breaks every entry at once.
+
+**Converter changes are batched.** Regenerating the corpus is not free — logs fetched, `pyulog`
+installed, every log reconverted, replayed, and every moved expectation explained. Land changes
+that move `tools/ulog2replay.py` output together, with one `--check` run and one manifest diff
+naming, per moved expectation, which change moved it. Three separate diffs each obscure the last.
+
+**One statistic, one implementation.** The Rust replay harness is the only thing that *computes* a
+statistic; it emits per-fusion rows and scalar keys on the `summary` and `score` lines. The Python
+tools read those and aggregate, plot, or compare against the EKF2 reference — they never recompute
+a number the harness already defines. A quantity that could be produced by both paths belongs to
+the harness, because that is the one CI runs. Cross-log and against-reference metrics are defined
+once, in Python.
 
 ## How defaults get decided
 
@@ -176,6 +212,11 @@ Single crate, `no_std`, `forbid(unsafe_code)`, `deny(missing_docs)`, allocation-
   adopted (`Fusion::Reset`, once per quantity), because those were never established and there
   is no estimate to step away from. Never for recovery, never for a quantity that was once
   known.
+- **Nothing in `src/` panics.** No `unwrap`, `expect`, `panic!` or `unreachable!` outside
+  `#[cfg(test)]`. On `thumbv6m` a panic is a `udf` and the vehicle is a brick, which is why bad
+  input is reported through a typed outcome rather than asserted on. The matrix arithmetic the
+  equations bring is where this gets broken — `try_inverse` returns an `Option` and `nalgebra`
+  indexing panics out of range. Refuse or saturate; never unwrap.
 - Frames and units are fixed at the boundary: NED navigation frame, FRD body, Hamilton
   quaternion scalar-first, down-positive gravity. Not configurable.
 
