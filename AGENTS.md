@@ -9,7 +9,10 @@ This file provides guidance to coding agents working with code in this repositor
 the health bookkeeping (timers, `Status`, `Diagnostics`), the typed API surface, and the replay
 harness. Anything stubbed says so in its doc comment with a `**Stub.**` paragraph — keep that
 marker accurate when landing real math, and keep the same caveat in `README.md`, `DESIGN.md`,
-`src/lib.rs`, and the example module docs, which all repeat it.
+`EQUATIONS.md`, `src/lib.rs`, and the example module docs, which all repeat it. `EQUATIONS.md`'s
+is the one to watch: it sits above a mapping table that separately marks functions as unbuilt, so
+the two can contradict each other, and did — the banner claimed no implementation existed while
+the table below it listed the geodetic origin and the initial covariance as built.
 
 ## Backlog
 
@@ -130,7 +133,11 @@ Rust test path.
 Each manifest entry exists because it covers something nothing else does (SD-card dropouts
 driving `StepTooLong`, burst logging that forced a median rate estimator, a 2 h log guarding the
 f64 timestamp parse, old field spellings). Adding or dropping a log means saying which behavior
-it uniquely covers. Changing a `Config` default or the `summary` line requires updating the
+it uniquely covers — and invalidates every sentence that quantifies the corpus. "Four of the five
+logs", "the worst ordinary interval is 65 ms", "rates from 50 Hz to 400 Hz": these sit in doc
+comments and `GOALS.md`, nothing pins them, and by the time anyone re-derived them two were wrong
+and one described a corpus of a different size. Grep for `five logs`, `corpus` and `manifest.txt`,
+and re-derive from `data/logs/*.csv`, before committing a new entry. Changing a `Config` default or the `summary` line requires updating the
 affected expectations.
 
 Expectations are matched pair by pair as substrings, so **adding** a key to the `summary` line is
@@ -182,6 +189,13 @@ ArduPilot `AP_NavEKF3_core.cpp` (`InitialiseFilterBootstrap`). Baro reference: P
 PX4 `filter_control_status_u` in `common.h` plus `msg/versioned/VehicleLocalPosition.msg`,
 ArduPilot `libraries/AP_NavEKF/AP_Nav_Common.h`. Published figures drift — PX4's barometer noise
 default is 2.0 m in current source, not the 3.5 m widely quoted.
+
+Cite `file:line` at the sha you read; `~/projects/PX4-Autopilot` and `~/projects/ardupilot` are
+current checkouts, and a bare path rots as the tree moves. Cite it in **one** place — the document
+that owns the claim — and have the others point there. PX4's reset timeouts were stated in three
+files with two different descriptions of the condition before anyone checked the source: they are
+`reset_timeout_max` (7 s of horizontal inertial dead reckoning) and `hgt_fusion_timeout_max` (5 s
+of failed height fusion) at `src/modules/ekf2/EKF/common.h:515-517`, and `README.md` owns them.
 
 Comparing against them is a design tool, not just a fact check. `Validity` and
 `predicted_validity` exist because a comparison showed both estimators answer *which output can I
@@ -326,7 +340,10 @@ equation numbers in the doc comment (existing stubs already do), and updates the
 layout changes. `README.md` is the user guide (why an ESKF, how to initialize, run, and read
 health); architecture and implementation detail go in `DESIGN.md`, replay/corpus usage in
 `data/README.md`. `GOALS.md` records positioning, the six differentiators, and decisions already
-made — check it before changing scope; the non-goals list is deliberate.
+made — check it before changing scope; the non-goals list is deliberate. Its landscape carries a
+survey date, so write competitor facts in a shape that survives re-checking: "a few dozen
+downloads a quarter" keeps, "~36 in the last 90 days" was already 33 when someone looked, and
+"nine minor versions behind" became ten when `nalgebra` shipped.
 
 The README is not compiled — `lib.rs` does not `include_str!` it — so its snippets rot silently;
 its old API block went missing `Status::Aligning`, `Fusion::Reset`, and `Fusion::NoReference`
