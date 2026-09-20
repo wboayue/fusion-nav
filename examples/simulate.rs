@@ -4,8 +4,8 @@
 //! generator and no truth, the PX4 corpus has no truth, and `--reference` gives EKF2's own
 //! position and velocity rather than the vehicle's. This writes both halves of a benchmark: a log
 //! the replay harness reads, and the trajectory it was generated from, so equations (9)–(42) can
-//! be scored against truth as they land (GOALS.md differentiator 6). Scoring itself is #16; this
-//! only produces the data.
+//! be scored against truth as they land (GOALS.md differentiator 6). Scoring is `examples/replay.rs`
+//! given a truth file as its third argument; this only produces the data.
 //!
 //! # Truth is analytic, not integrated
 //!
@@ -62,8 +62,10 @@
 //!
 //! An IMU gap. Every scenario emits a sample at every epoch, so nothing here reaches
 //! `Propagation::StepTooLong`; the corpus log `f16771dd` is still the only thing that does, and
-//! it has no truth. Closing that needs a decision first — what a filter should be *scored* on
-//! across a hole it refused to propagate — which belongs to #16 rather than here.
+//! it has no truth. What a filter should be *scored* on across a hole it refused to propagate is
+//! now settled — `examples/replay.rs` scores those epochs like any other, because the epoch row is
+//! written either way and the stale state is what the filter published — so a scenario that drops
+//! IMU rows is buildable whenever one is wanted.
 
 use std::env;
 use std::error::Error;
