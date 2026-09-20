@@ -29,6 +29,8 @@ dest="$root/data/logs"
 # The converter needs pyulog, which CI never installs (GOALS.md, "Harness constraint").
 # `uv venv && uv pip install pyulog` puts it in .venv, which is gitignored and picked up
 # here without an activated shell; PYTHON= overrides for any other interpreter that has it.
+# Which version matters, not just that it is installed: this path and `uv run` have to agree
+# or the two stop producing the same CSV. --check asserts it below.
 if [ -n "${PYTHON:-}" ]; then
     python=$PYTHON
 elif [ -x "$root/.venv/bin/python" ]; then
@@ -157,8 +159,15 @@ case "$cmd" in
 --check)
     [ -f "$manifest" ] || die "no manifest at $manifest"
     command -v "$python" >/dev/null || die "$python not found; set PYTHON="
-    "$python" -c 'import pyulog' 2>/dev/null ||
-        die "pyulog not available to $python. \`uv venv && uv pip install pyulog\` from the repository root, or run the converter directly with \`uv run tools/ulog2replay.py\`, or set PYTHON= to an interpreter that has it"
+    # `tools/ulog2replay.py` owns the version; parsing it here keeps one pin rather than two
+    # that drift. Suggesting `uv run` as the remedy would be no remedy at all: check_one
+    # converts with $python, so uv never enters this path.
+    pin=$(sed -n 's/^# dependencies = \["pyulog==\([^"]*\)"\].*/\1/p' "$root/tools/ulog2replay.py")
+    [ -n "$pin" ] || die "no pyulog pin in tools/ulog2replay.py; expected a PEP 723 \`dependencies = [\"pyulog==X.Y.Z\"]\` line"
+    have=$("$python" -c 'import importlib.metadata as m; print(m.version("pyulog"))' 2>/dev/null) ||
+        die "pyulog not available to $python. \`uv venv && uv pip install pyulog==$pin\` from the repository root, or set PYTHON= to an interpreter that has it"
+    [ "$have" = "$pin" ] ||
+        die "$python has pyulog $have, but tools/ulog2replay.py pins $pin. \`uv run\` would use $pin, so the two paths would not produce the same CSV. \`uv pip install pyulog==$pin\`, or move the pin if $have is the version you mean to adopt"
     echo "checking the corpus end to end"
     failed=0
     each_entry check_one || failed=1

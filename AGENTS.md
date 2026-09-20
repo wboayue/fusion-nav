@@ -121,6 +121,7 @@ pins each by sha256 *and* by expectations (`rate=`, `window=`, `refused=`, `tran
 
 ```bash
 uv venv && uv pip install pyulog  # once, for --check; .venv is gitignored and found automatically
+                                  # --check asserts this matches the pin in tools/ulog2replay.py
 data/fetch.sh                     # fetch + verify the manifest
 data/fetch.sh --verify            # checksums only, no network
 data/fetch.sh --check             # convert each .ulg and replay it, assert expectations
@@ -132,8 +133,16 @@ uv run tools/ulog2replay.py log.ulg -o log.csv [--reference]   # ULog -> replay 
 declares `pyulog` inline (PEP 723), so `uv run tools/ulog2replay.py` resolves it with no
 virtualenv to create or keep current — a tool run a few times a year is the one whose setup
 instructions rot. `data/fetch.sh` cannot use `uv run` (it invokes a single interpreter), so it
-takes `.venv/bin/python` when that exists and honours `PYTHON=` otherwise. Both paths produce
-byte-identical CSVs. Nothing here is on the Rust test path.
+takes `.venv/bin/python` when that exists and honours `PYTHON=` otherwise. Nothing here is on the
+Rust test path.
+
+Both paths produce byte-identical CSVs **for the same pyulog**, which is why the inline
+dependency is pinned to an exact version and `--check` refuses to run against an interpreter
+holding a different one. Unpinned, `uv run` would take whatever pyulog is current while `.venv`
+kept whatever was installed, and a change in its dropout merging or field exposure would move the
+`summary` expectations with no diff anywhere in the repository — the one way corpus output can
+move without a commit to point at. The pin lives in `tools/ulog2replay.py` and nowhere else;
+`fetch.sh` parses it, so moving it is one edit and the version appears in no prose.
 
 `--check` is a **local** tool, run before a release or after touching the converter, replay
 example, or any default it asserts. Converters stay out of the test path on purpose (GOALS.md,

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.9"
-# dependencies = ["pyulog"]
+# dependencies = ["pyulog==1.2.4"]
 # ///
 """Convert a PX4 ULog flight log into the fusion-nav replay CSV format.
 
@@ -335,8 +335,10 @@ def convert(path, baro_variance, mag_variance):
         from pyulog import ULog
     except ImportError:
         raise ConversionError(
-            "pyulog is not installed. `pip install pyulog`, or use a virtualenv:\n"
-            "  python3 -m venv .venv && .venv/bin/pip install pyulog"
+            "pyulog is not available to this interpreter. Run this script through uv,\n"
+            "which resolves the version pinned in the header above:\n"
+            "  uv run tools/ulog2replay.py ...\n"
+            "Or install that same version here: uv venv && uv pip install pyulog==<pin>"
         ) from None
 
     ulog = ULog(str(path))
