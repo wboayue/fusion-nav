@@ -106,13 +106,14 @@ honest answer to "why Rust".
 `[f32; 4]` cannot carry the frame it is expressed in, so the commitment is not that a family of
 crates agrees on one convention — it is that this crate converts at its own edge and names the
 convention it expects, in the type where that is possible and in the doc comment where it is not.
-The two conventions that matter most already agree with it: PX4's `vehicle_attitude.q` is the
-"rotation from the FRD body frame to the NED earth frame", Hamilton and scalar-first
-(`msg/versioned/VehicleAttitude.msg:2,10`), and ArduPilot publishes `get_quat_body_to_ned`
-(`libraries/AP_AHRS/AP_AHRS.h:672`) — both the same as
-[the convention fixed here](EQUATIONS.md#states-and-measurements), so seeding from either is a
-one-liner. ENU and FLU input already converts explicitly (`Position::enu(..).to_ned()`,
-`AngularRate::flu`); NWU does not yet.
+The two conventions that matter most already agree with it, and `Attitude::body_to_ned` is where
+that is stated and cited: seeding from PX4's `vehicle_attitude.q` or ArduPilot's
+`get_quat_body_to_ned` converts nothing, because both publish
+[the convention fixed here](EQUATIONS.md#states-and-measurements). Everything else converts
+explicitly and names both frames while doing it — `Position::enu(..).to_ned()`,
+`AngularRate::flu`, `Attitude::flu_to_enu` for a ROS attitude and `Attitude::flu_to_nwu` for a
+Madgwick-family one. A quaternion takes no `From` impl at all, since `.into()` would claim
+body-to-NED for whatever arrived.
 
 ### 3. Readable mathematics
 
