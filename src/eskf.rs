@@ -350,7 +350,9 @@ impl Eskf {
         // Rejected ahead of the bookkeeping: a negative `dt` would wind the timers back
         // and a NaN would poison them.
         if !dt.is_usable_step() {
-            return Propagation::InvalidStep { dt };
+            let outcome = Propagation::InvalidStep { dt };
+            self.diagnostics.propagation.record(outcome);
+            return outcome;
         }
 
         // Past here the time genuinely passed, so the health bookkeeping is real even
@@ -359,7 +361,9 @@ impl Eskf {
 
         let limit = self.config.max_predict_dt;
         if dt > limit {
-            return Propagation::StepTooLong { dt, limit };
+            let outcome = Propagation::StepTooLong { dt, limit };
+            self.diagnostics.propagation.record(outcome);
+            return outcome;
         }
         Propagation::Propagated
     }
@@ -397,18 +401,18 @@ impl Eskf {
         noise: PositionNoise<Ned>,
     ) -> Fusion {
         if !self.initialized {
-            return Fusion::NotInitialized;
+            return refuse(&mut self.diagnostics.gnss_position, Fusion::NotInitialized);
         }
         if !position.is_finite() || !noise.is_finite() {
-            return Fusion::NotFinite;
+            return refuse(&mut self.diagnostics.gnss_position, Fusion::NotFinite);
         }
         if !noise.is_positive() {
-            return Fusion::InvalidNoise;
+            return refuse(&mut self.diagnostics.gnss_position, Fusion::InvalidNoise);
         }
         if self.unestablished.position {
             let adopted = self.reset_position_to(position, noise);
             debug_assert!(adopted, "the fix cleared the same checks just above");
-            self.diagnostics.gnss_position.record_accepted(0.0);
+            self.diagnostics.gnss_position.record_adopted();
             return Fusion::Reset;
         }
         let _ = (position, noise);
@@ -446,13 +450,13 @@ impl Eskf {
     /// refused with [`Fusion::NoReference`], and the next usable fix places it instead.
     pub fn fuse_gnss_geodetic(&mut self, fix: Geodetic, noise: PositionNoise<Ned>) -> Fusion {
         if !self.initialized {
-            return Fusion::NotInitialized;
+            return refuse(&mut self.diagnostics.gnss_position, Fusion::NotInitialized);
         }
         if !fix.is_finite() || !noise.is_finite() {
-            return Fusion::NotFinite;
+            return refuse(&mut self.diagnostics.gnss_position, Fusion::NotFinite);
         }
         if !noise.is_positive() {
-            return Fusion::InvalidNoise;
+            return refuse(&mut self.diagnostics.gnss_position, Fusion::InvalidNoise);
         }
         if let Some(origin) = self.origin {
             return self.fuse_gnss_position(origin.to_ned(fix), noise);
@@ -460,7 +464,7 @@ impl Eskf {
 
         if self.unestablished.position {
             let Some(origin) = LocalOrigin::new(fix) else {
-                return Fusion::NoReference;
+                return refuse(&mut self.diagnostics.gnss_position, Fusion::NoReference);
             };
             self.origin = Some(origin);
             return self.fuse_gnss_position(Position::zero(), noise);
@@ -469,7 +473,7 @@ impl Eskf {
         // Equation (44): the origin under the estimate, and the fix's error as the
         // position's.
         let Some(origin) = LocalOrigin::placing(fix, self.state.position) else {
-            return Fusion::NoReference;
+            return refuse(&mut self.diagnostics.gnss_position, Fusion::NoReference);
         };
         self.origin = Some(origin);
         let placed = self.reset_position_to(self.state.position, noise);
@@ -499,18 +503,18 @@ impl Eskf {
         noise: VelocityNoise<Ned>,
     ) -> Fusion {
         if !self.initialized {
-            return Fusion::NotInitialized;
+            return refuse(&mut self.diagnostics.gnss_velocity, Fusion::NotInitialized);
         }
         if !velocity.is_finite() || !noise.is_finite() {
-            return Fusion::NotFinite;
+            return refuse(&mut self.diagnostics.gnss_velocity, Fusion::NotFinite);
         }
         if !noise.is_positive() {
-            return Fusion::InvalidNoise;
+            return refuse(&mut self.diagnostics.gnss_velocity, Fusion::InvalidNoise);
         }
         if self.unestablished.velocity {
             let adopted = self.reset_velocity_to(velocity, noise);
             debug_assert!(adopted, "the solution cleared the same checks just above");
-            self.diagnostics.gnss_velocity.record_accepted(0.0);
+            self.diagnostics.gnss_velocity.record_adopted();
             return Fusion::Reset;
         }
         let _ = (velocity, noise);
@@ -528,16 +532,16 @@ impl Eskf {
     /// **Stub.** Records an acceptance with a zero test ratio; corrects nothing.
     pub fn fuse_baro_altitude(&mut self, altitude: Altitude, noise: AltitudeNoise) -> Fusion {
         if !self.initialized {
-            return Fusion::NotInitialized;
+            return refuse(&mut self.diagnostics.baro_altitude, Fusion::NotInitialized);
         }
         if !altitude.as_meters().is_finite() || !noise.is_finite() {
-            return Fusion::NotFinite;
+            return refuse(&mut self.diagnostics.baro_altitude, Fusion::NotFinite);
         }
         if !noise.is_positive() {
-            return Fusion::InvalidNoise;
+            return refuse(&mut self.diagnostics.baro_altitude, Fusion::InvalidNoise);
         }
         if self.baro_reference.is_none() {
-            return Fusion::NoReference;
+            return refuse(&mut self.diagnostics.baro_altitude, Fusion::NoReference);
         }
         let _ = (altitude, noise);
         stub_accept(&mut self.diagnostics.baro_altitude)
@@ -566,13 +570,13 @@ impl Eskf {
     /// validity flag moves, the yaw it describes does not.
     pub fn fuse_mag_heading(&mut self, field: MagField<Body>, noise: HeadingNoise) -> Fusion {
         if !self.initialized {
-            return Fusion::NotInitialized;
+            return refuse(&mut self.diagnostics.mag_heading, Fusion::NotInitialized);
         }
         if !field.is_finite() || !noise.is_finite() {
-            return Fusion::NotFinite;
+            return refuse(&mut self.diagnostics.mag_heading, Fusion::NotFinite);
         }
         if !noise.is_positive() {
-            return Fusion::InvalidNoise;
+            return refuse(&mut self.diagnostics.mag_heading, Fusion::InvalidNoise);
         }
         let _ = (field, noise);
         let outcome = stub_accept(&mut self.diagnostics.mag_heading);
@@ -854,6 +858,19 @@ impl Unestablished {
     }
 }
 
+/// Record a refusal against the source that produced it, and hand the outcome back to the
+/// caller.
+///
+/// One place maps an outcome to what `Diagnostics` stores, so a `fuse_*` that grows another
+/// guard cannot forget to count it. A refusal moves no timer; see
+/// [`SourceHealth::record_refused`].
+fn refuse(source: &mut SourceHealth, outcome: Fusion) -> Fusion {
+    if let Some(refusal) = outcome.refusal() {
+        source.record_refused(refusal);
+    }
+    outcome
+}
+
 /// What every `fuse_*` stub does in place of an update: record an acceptance with a zero
 /// test ratio.
 fn stub_accept(source: &mut SourceHealth) -> Fusion {
@@ -865,6 +882,7 @@ fn stub_accept(source: &mut SourceHealth) -> Fusion {
 mod tests {
     use super::*;
     use crate::geodetic::LocalOrigin;
+    use crate::health::Refusal;
     use crate::init::tests::still;
     use crate::state::ErrorState;
     use crate::units::{Acceleration, AngularRate};
@@ -971,6 +989,107 @@ mod tests {
             elapsed(&filter),
             1.304,
             "a refused step still happened in real time"
+        );
+    }
+
+    #[test]
+    fn a_refused_measurement_is_visible_in_diagnostics_not_only_in_the_return_value() {
+        // The failure this guards: a miswired sensor feeding NaN reads as `never accepted`,
+        // exactly like one that was never connected, unless the refusal is counted.
+        let mut filter = initialized();
+        let nan = Velocity::ned(f32::NAN, 0.0, 0.0);
+        let noise = VelocityNoise::from_speed_accuracy(0.3);
+
+        assert_eq!(filter.fuse_gnss_velocity(nan, noise), Fusion::NotFinite);
+        assert_eq!(
+            filter.fuse_gnss_velocity(
+                Velocity::ned(1.0, 0.0, 0.0),
+                VelocityNoise::from_variance(0.0, 1.0, 1.0)
+            ),
+            Fusion::InvalidNoise
+        );
+
+        let health = filter.diagnostics().gnss_velocity;
+        assert_eq!(health.refused, 2);
+        assert_eq!(health.last_refusal, Some(Refusal::InvalidNoise));
+        assert_eq!(health.accepted, 0);
+        assert_eq!(health.rejected, 0, "neither reached the gate");
+        assert_eq!(
+            health.time_since_accepted, None,
+            "a refusal is not aiding, so no timer starts"
+        );
+        assert!(!health.has_been_used());
+    }
+
+    #[test]
+    fn a_refusal_names_which_kind_it_was() {
+        let mut filter = initialized();
+        assert_eq!(
+            filter.fuse_baro_altitude(Altitude::from_meters(60.0), AltitudeNoise::from_sigma(2.0)),
+            Fusion::NoReference
+        );
+        assert_eq!(
+            filter.diagnostics().baro_altitude.last_refusal,
+            Some(Refusal::NoReference),
+            "a missing reference is a different problem from a bad number"
+        );
+
+        let mut fresh = Eskf::new(Config::default());
+        assert_eq!(
+            fresh.fuse_baro_altitude(Altitude::from_meters(60.0), AltitudeNoise::from_sigma(2.0)),
+            Fusion::NotInitialized
+        );
+        assert_eq!(
+            fresh.diagnostics().baro_altitude.last_refusal,
+            Some(Refusal::NotInitialized)
+        );
+    }
+
+    #[test]
+    fn an_adopted_measurement_is_counted_apart_from_an_ordinary_acceptance() {
+        let mut filter = coarse();
+        let noise = PositionNoise::horizontal_vertical(1.5, 1.5);
+        assert_eq!(
+            filter.fuse_gnss_position(Position::ned(120.0, -40.0, -75.0), noise),
+            Fusion::Reset
+        );
+        // The second fix has an estimate to be judged against, so it is fused, not adopted.
+        assert!(
+            filter
+                .fuse_gnss_position(Position::ned(121.0, -40.0, -75.0), noise)
+                .is_accepted()
+        );
+
+        let health = filter.diagnostics().gnss_position;
+        assert_eq!(health.adopted, 1, "adoption happens once per quantity");
+        assert_eq!(health.accepted, 2, "and counts as an acceptance besides");
+    }
+
+    #[test]
+    fn propagation_refusals_are_counted_and_the_worst_gap_kept() {
+        let mut filter = aided();
+        for bad in [0.0, f32::NAN] {
+            assert!(
+                !filter
+                    .predict(ImuSample::default(), Seconds::from_secs(bad))
+                    .is_propagated()
+            );
+        }
+        for gap in [0.34, 1.304, 0.5] {
+            assert!(
+                !filter
+                    .predict(ImuSample::default(), Seconds::from_secs(gap))
+                    .is_propagated()
+            );
+        }
+
+        let propagation = filter.diagnostics().propagation;
+        assert_eq!(propagation.refused_invalid, 2);
+        assert_eq!(propagation.refused_too_long, 3);
+        assert_eq!(
+            propagation.longest_refused.map(Seconds::as_secs),
+            Some(1.304),
+            "the worst gap, not the last"
         );
     }
 

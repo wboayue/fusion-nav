@@ -191,18 +191,10 @@ struct Replay {
     /// magnetometer has observed nothing it could level a heading with.
     heading_at_init: bool,
     epochs: u32,
-    rejections: u32,
-    /// Measurements the filter adopted outright because a coarse start left it nothing to
-    /// fuse them against. At most one per source, and only after a coarse start.
-    resets: u32,
-    /// Steps the filter refused as longer than `Config::max_predict_dt`, and the worst.
-    /// Real logs contain them: an SD card that misses messages leaves a hole the replay
-    /// sees as one long step.
-    refused_steps: u32,
-    longest_step: (f64, f32),
-    /// Steps refused as zero, negative or NaN. Sorting by timestamp rules out negatives,
-    /// so in practice this counts duplicate IMU timestamps.
-    invalid_steps: u32,
+    /// When the worst refused step happened. The count and the size of the gap come from
+    /// `diagnostics()`; the filter reads no clock, so the log timestamp is the harness's to
+    /// keep.
+    longest_step_at: Option<f64>,
     status: Status,
     transitions: Vec<(f64, Status)>,
 }
@@ -227,11 +219,7 @@ impl Replay {
             mag_at_init: false,
             heading_at_init: false,
             epochs: 0,
-            rejections: 0,
-            resets: 0,
-            refused_steps: 0,
-            longest_step: (0.0, 0.0),
-            invalid_steps: 0,
+            longest_step_at: None,
             status: Status::default(),
             transitions: Vec::new(),
         }
@@ -397,15 +385,10 @@ impl Replay {
             let outcome = self
                 .filter
                 .predict(imu, Seconds::from_secs((t - previous) as f32));
-            match outcome {
-                Propagation::StepTooLong { dt, .. } => {
-                    self.refused_steps += 1;
-                    if dt.as_secs() > self.longest_step.1 {
-                        self.longest_step = (t, dt.as_secs());
-                    }
-                }
-                Propagation::InvalidStep { .. } => self.invalid_steps += 1,
-                Propagation::Propagated | Propagation::NotInitialized => {}
+            if let Propagation::StepTooLong { dt, .. } = outcome
+                && self.filter.diagnostics().propagation.longest_refused == Some(dt)
+            {
+                self.longest_step_at = Some(t);
             }
         }
         let state = self.filter.state();
@@ -417,14 +400,32 @@ impl Replay {
         self.write_row(t, state, out)
     }
 
+    /// Carry the test ratio into the output row. Counting is the filter's job — `AGENTS.md`,
+    /// one statistic, one implementation — so everything else this row did is read back out
+    /// of `diagnostics()` at the end.
     fn observe(&mut self, source: usize, outcome: Fusion) {
         self.ratios[source] = outcome.test_ratio();
-        if matches!(outcome, Fusion::Rejected { .. }) {
-            self.rejections += 1;
-        }
-        if outcome.is_reset() {
-            self.resets += 1;
-        }
+    }
+
+    /// Measurements the gate turned down, over every source.
+    fn rejections(&self) -> u32 {
+        self.filter
+            .diagnostics()
+            .sources()
+            .iter()
+            .map(|(_, health)| health.rejected)
+            .sum()
+    }
+
+    /// Measurements adopted outright because a coarse start left nothing to fuse them
+    /// against. At most one per source.
+    fn resets(&self) -> u32 {
+        self.filter
+            .diagnostics()
+            .sources()
+            .iter()
+            .map(|(_, health)| health.adopted)
+            .sum()
     }
 
     fn write_row(&self, t: f64, state: State, out: &mut impl Write) -> io::Result<()> {
@@ -512,32 +513,35 @@ impl Replay {
 
     /// Epochs written, measurements rejected or adopted, and steps refused.
     fn report_steps(&self) {
+        let propagation = self.filter.diagnostics().propagation;
         println!(
             "\n{} epochs written, {} measurements rejected",
-            self.epochs, self.rejections
+            self.epochs,
+            self.rejections()
         );
-        if self.resets > 0 {
+        if self.resets() > 0 {
             println!(
                 "{} adopted outright: a coarse start had no position or velocity to fuse \
                  them against",
-                self.resets
+                self.resets()
             );
         }
-        if self.invalid_steps > 0 {
+        if propagation.refused_invalid > 0 {
             println!(
                 "{} steps refused as zero, negative or NaN — with rows sorted by \
                  timestamp, in practice duplicates",
-                self.invalid_steps
+                propagation.refused_invalid
             );
         }
-        if self.refused_steps > 0 {
-            let (at, dt) = self.longest_step;
+        if let Some(worst) = propagation.longest_refused {
+            let at = self.longest_step_at.unwrap_or(f64::NAN);
             println!(
-                "{} propagation steps refused as longer than {} s, worst {dt:.3} s at \
+                "{} propagation steps refused as longer than {} s, worst {:.3} s at \
                  {at:.2} s\n  a gap is usually the logger missing messages, not the IMU \
                  stopping",
-                self.refused_steps,
+                propagation.refused_too_long,
                 self.filter.config().max_predict_dt.as_secs(),
+                worst.as_secs(),
             );
         }
     }
@@ -592,9 +596,9 @@ impl Replay {
             } else {
                 "invalid"
             },
-            self.resets,
-            self.refused_steps,
-            self.invalid_steps,
+            self.resets(),
+            self.filter.diagnostics().propagation.refused_too_long,
+            self.filter.diagnostics().propagation.refused_invalid,
             self.epochs,
             self.transitions.len(),
             state.status,
@@ -647,6 +651,11 @@ impl Replay {
                     health.rejected
                 ),
                 None => println!("  {name:<13} never accepted"),
+            }
+            // What separates a miswired sensor from one that was never connected: both read
+            // `never accepted`, and only this says the filter was turned down and why.
+            if let Some(refusal) = health.last_refusal {
+                println!("  {:<13} {} refused, last {refusal:?}", "", health.refused);
             }
         }
     }
