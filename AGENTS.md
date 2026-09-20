@@ -39,9 +39,9 @@ Differentiators are cited **by number** here, in issue bodies and in `data/manif
 Never renumber them. A renumber silently repoints every citation, including closed issues that
 cannot be corrected.
 
-**Sequencing hazard:** #31's stages are stacked branches, while the API-review issues (#21, #22,
-#25) change signatures underneath them. Land an API change before the stage that builds on it, not
-after.
+**Sequencing hazard:** #31's stages are stacked branches, while the signature-changing issues
+(#21, #22, #25, #59, #61) change the API underneath them. Land an API change before the stage that
+builds on it, not after — #59 before #33, #61 before whichever stage seeds an attitude.
 
 ## Goal: a reference to learn from
 
