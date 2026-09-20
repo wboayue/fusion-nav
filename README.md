@@ -209,9 +209,8 @@ early-flight performance. See [initialization](EQUATIONS.md#initialization).
 ### Seeding an attitude
 
 A quaternion carries no frames, so `Attitude` has no `From<UnitQuaternion>` and every constructor
-names the convention it takes. Nothing else in initialization is like this: a seeded attitude has
-no residual to expose it, so one wrong by a half turn runs, converges, and reports whatever the
-seed covariance claimed.
+names the convention it takes. Nothing else in initialization is like this: a seed is the one input
+with no residual to expose a wrong one.
 
 | the source publishes | constructor |
 | -------------------- | ----------- |
@@ -222,7 +221,8 @@ seed covariance claimed.
 
 Where both frames differ the conversion is two-sided, `q_ned←frd = r_nav ⊗ q ⊗ r_body⁻¹`; rotating
 only the navigation frame reports the same heading with the vehicle upside down, which a level
-bench check agrees with. The constructors' rustdoc carries the conventions and their sources.
+bench check agrees with. The constructors' rustdoc carries the conventions, their sources, and what
+a wrong one costs.
 
 ## Running the filter
 

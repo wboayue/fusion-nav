@@ -37,11 +37,12 @@ use crate::frames::{Body, Enu, Frame, Ned};
 /// Every constructor names the convention it takes, and there is no
 /// `From<UnitQuaternion<f32>>`, for the reason the module docs give for keeping
 /// `From<[f32; 3]>` off the framed vectors: `.into()` would claim body-to-NED for a
-/// quaternion that is a stored inverse or an ENU one. A seed is the input where that
-/// costs most, because it is the one with no residual to expose it — the filter runs on
-/// an attitude wrong by a whole rotation, reports
-/// [`Status::Healthy`](crate::Status::Healthy) if the seed covariance was confident, and
-/// nothing gates.
+/// quaternion that is a stored inverse or an ENU one. A seed is where that costs most,
+/// because it is the one input with no residual to expose it: the filter runs on an
+/// attitude wrong by a frame, reports [`Status::Healthy`](crate::Status::Healthy) if the
+/// seed covariance was confident, and nothing gates. How wrong depends on the attitude —
+/// the level case is a half turn, which is why a level bench check is the one that cannot
+/// find it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Attitude(UnitQuaternion<f32>);
 
@@ -57,9 +58,9 @@ impl Attitude {
     /// `vehicle_attitude.q` is the "rotation from the FRD body frame to the NED earth
     /// frame", Hamilton and scalar-first (`msg/versioned/VehicleAttitude.msg:2,10`), and
     /// ArduPilot publishes `AP_AHRS::get_quat_body_to_ned`
-    /// (`libraries/AP_AHRS/AP_AHRS.h:672`). Same for a
-    /// [`fusion-ahrs`](https://crates.io/crates/fusion-ahrs) set to `Convention::Ned`,
-    /// which pairs NED with an FRD sensor frame.
+    /// (`libraries/AP_AHRS/AP_AHRS.h:672`).
+    /// [`flu_to_nwu`](Self::flu_to_nwu) maps `fusion-ahrs`'s three conventions onto these
+    /// constructors, `Convention::Ned` included.
     ///
     /// Read at PX4-Autopilot `c4e4ef98` (v1.18.0-beta1) and ardupilot `368dc0c4`.
     pub const fn body_to_ned(q: UnitQuaternion<f32>) -> Self {
@@ -781,7 +782,7 @@ mod tests {
         let nwu_from_flu = Matrix3::from_columns(&[
             Vector3::new(0.0, -1.0, 0.0), // forward is east, which is -west
             Vector3::new(0.0, 0.0, 1.0),  // left is up
-            Vector3::new(-1.0, 0.0, 0.0), // up is away from north
+            Vector3::new(-1.0, 0.0, 0.0), // up is south
         ]);
         [ned_from_frd, enu_from_flu, nwu_from_flu]
             .map(|m| UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix_unchecked(m)))
