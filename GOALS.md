@@ -291,7 +291,18 @@ The options, in the order they are worth doing:
 4. **In-motion leveling.** Differentiate GNSS velocity for navigation-frame acceleration,
    subtract it from measured specific force, and recover gravity's direction while moving.
    Removes the stillness requirement for tilt outright. No new states; noisy under aggressive
-   manoeuvring.
+   manoeuvring. **Half done** — the window carries GNSS velocity, `StaticSample::velocity`, and
+   a moving window measures `ā_n` and reports it on `Coarse::NotStationary`. Equation (5′)
+   subtracts nothing yet: the correction needs an attitude to rotate `ā_n` into body axes, and
+   (5)–(7) do not compute one.
+
+   Whether finishing it is worth anything the corpus cannot say. Its one moving start
+   (`2c42096b`) measures `ā_n` = 0.14 m s⁻², against the 0.39 m s⁻² of noise that differencing a
+   1 Hz receiver over 1 s produces — the vehicle is vibrating on the spot, not translating, so
+   (5′) would subtract noise. On the same window the specific force peaks 5.46 m s⁻² off gravity
+   while the *averaged* specific force is 0.93° off plumb, which says the tilt prior loses far
+   more by charging a peak against an average than option 4 could recover there. Judging it needs
+   a log that actually accelerates: #15's simulator, or INSANE.
 5. **Yaw from course over ground.** While moving, velocity direction is heading, nearly free.
    Works for fixed-wing and ground vehicles, not for a multirotor that crabs and hovers.
 6. **An EKF-GSF yaw estimator.** A bank of small filters over yaw hypotheses weighted by GNSS
@@ -305,7 +316,10 @@ Two API decisions shape the rest, and are worth settling early:
   window is what is optional, not the classification — `initialize` with a window, or
   `initialize_coarse` without one, and both answer with an `Alignment`. That is differentiator 7
   applied to alignment: the data already says what the launch was, so do not make the integrator
-  classify it. **Settled.**
+  classify it. **Settled**, and it is what decides where option 4's GNSS velocity goes: onto
+  `StaticSample`, alongside the magnetometer and the barometer, rather than into a fourth entry
+  point taking a moving window. A separate entry point would be the mode argument by another
+  name, and the caller would have to know which launch it was having.
 * **`Aligning` is not `Degraded`.** Degraded means aided and drifting; aligning means the
   attitude itself has not converged. Conflating them would mislead a controller in precisely the
   phase where the distinction matters most. **Settled**, with `Aligning` the more severe of the

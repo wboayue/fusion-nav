@@ -6,10 +6,13 @@
 //! functions here and then commit the result to the filter.
 
 use crate::config::{GRAVITY, Initialization};
-use crate::frames::Body;
+use crate::frames::{Body, Ned};
 use crate::propagate::ImuSample;
 use crate::state::{Covariance, State};
-use crate::units::{Altitude, MagField, MetersPerSecond2, Radians, RadiansPerSecond, Seconds};
+use crate::units::{
+    Acceleration, Altitude, MagField, MetersPerSecond2, Radians, RadiansPerSecond, Seconds,
+    Velocity,
+};
 
 /// One sample from the quasi-static initialization window.
 ///
@@ -29,6 +32,10 @@ use crate::units::{Altitude, MagField, MetersPerSecond2, Radians, RadiansPerSeco
 /// The barometer is optional in the same way, but less forgivingly: its reference is a
 /// constant rather than a state, so a window carrying none leaves nothing for a later
 /// altitude to be relative to and barometric fusion is refused for the whole flight.
+///
+/// GNSS velocity is the one field a window taken **in motion** can use, and the only
+/// reason this type is not simply an IMU sample plus what stillness needs: see
+/// [`velocity`](Self::velocity).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct StaticSample {
     /// IMU measurement.
@@ -46,6 +53,24 @@ pub struct StaticSample {
     /// [`Fusion::NoReference`](crate::Fusion::NoReference). `α₀` is a constant rather
     /// than a state, so it is established here or not at all.
     pub baro: Option<Altitude>,
+    /// GNSS velocity in the navigation frame, if the vehicle has a receiver.
+    ///
+    /// Differenced across the window for `ā_n`, the vehicle's own acceleration
+    /// (equation (5′)). At rest that term is zero and equation (5) reads tilt straight
+    /// off the accelerometer; in motion the accelerometer reads specific force, and
+    /// `ā_n` is what separates the two. It is the whole of what a moving window has that
+    /// a still one does not need.
+    ///
+    /// Attach it to the epoch it arrived on rather than holding it across the IMU epochs
+    /// that follow, as `mag` and `baro` may be held: those are averaged, and an average
+    /// survives a repeated value, while a difference is dated by the samples carrying it
+    /// and a held reading dates from before the epoch it sits on. Holding costs up to one
+    /// GNSS interval of span, in either direction.
+    ///
+    /// **Stub.** Measured and reported on
+    /// [`Coarse::NotStationary`](Coarse::NotStationary); nothing levels with it yet,
+    /// which needs the attitude of equations (5)–(7).
+    pub velocity: Option<Velocity<Ned>>,
 }
 
 impl StaticSample {
@@ -54,6 +79,7 @@ impl StaticSample {
         self.imu.is_finite()
             && self.mag.is_none_or(|field| field.is_finite())
             && self.baro.is_none_or(|b| b.as_meters().is_finite())
+            && self.velocity.is_none_or(|v| v.is_finite())
     }
 }
 
@@ -113,6 +139,19 @@ pub enum Coarse {
         /// vehicle turned while its gravity vector was being averaged, which is the
         /// other way a moving window spoils tilt.
         span: Seconds,
+        /// Mean navigation-frame acceleration over the window, `ā_n` of equation (5′),
+        /// differenced from [`StaticSample::velocity`]. `None` when no two samples
+        /// carried one.
+        ///
+        /// What separates a vehicle that is accelerating from an accelerometer that is
+        /// lying: `peak_accel_deviation` measures specific force that is not gravity,
+        /// and this is the part of it GNSS can account for. A launch off a moving deck
+        /// reads both, and only one of them spoils tilt.
+        ///
+        /// **Stub.** Reported, not yet subtracted: the correction of (5′) needs the
+        /// attitude of (5)–(7) to rotate `ā_n` into body axes, so today it narrows
+        /// nothing — [`attitude_sigmas`] still charges the whole deviation to tilt.
+        inertial_accel: Option<Acceleration<Ned>>,
     },
 }
 
@@ -203,6 +242,7 @@ pub(crate) fn classify(
             peak_gyro,
             peak_accel_deviation,
             span: provided,
+            inertial_accel: inertial_acceleration(window, dt),
         }));
     }
     Ok(Alignment::Static)
@@ -220,10 +260,14 @@ pub(crate) fn attitude_sigmas(init: &Initialization, alignment: Alignment) -> (R
         Alignment::Coarse(Coarse::WindowTooShort { .. }) => {
             (init.sigma_tilt, UNKNOWN_HEADING_SIGMA)
         }
+        // `inertial_accel` is measured but not spent: charging the whole deviation to
+        // tilt is right until (5′) actually subtracts it, since the tilt error a
+        // correction would remove is still in the answer.
         Alignment::Coarse(Coarse::NotStationary {
             peak_gyro,
             peak_accel_deviation,
             span,
+            inertial_accel: _,
         }) => {
             // Two ways a moving window spoils tilt, and the worse one governs.
             // Specific force that is not gravity tilts the answer directly,
@@ -287,6 +331,11 @@ const UNKNOWN_HEADING_SIGMA: Radians = Radians::from_radians(1.813_799_4);
 /// window of a vehicle sitting on the ground. `classify` reports the short one as
 /// [`Coarse::WindowTooShort`] before it ever measures motion, so window length is not a
 /// stand-in for this test in either direction.
+///
+/// GNSS velocity does not enter, however well it explains the specific force. The two
+/// things that hang on this answer — [`Alignment::Static`] and the barometric reference —
+/// both mean *the vehicle was on the ground*, and a deck accelerating under it is not
+/// that however precisely the acceleration is known.
 pub(crate) fn at_rest(
     peak_gyro: RadiansPerSecond,
     peak_accel_deviation: MetersPerSecond2,
@@ -310,6 +359,39 @@ pub(crate) fn peak_motion(window: &[StaticSample]) -> (RadiansPerSecond, MetersP
         RadiansPerSecond::from_rad_per_s(peak_gyro),
         MetersPerSecond2::from_m_per_s2(peak_deviation),
     )
+}
+
+/// Mean navigation-frame acceleration over the window: `ā_n` of equation (5′), the term
+/// in-motion levelling subtracts from the averaged specific force. `None` unless two
+/// samples separated in time carry a velocity.
+///
+/// Endpoints only; the velocities in between are not differenced at all. The mean of a
+/// derivative *is* its endpoint difference over the span, and the mean is what is wanted,
+/// because (5) levels the averaged specific force and the term to subtract is therefore
+/// the averaged acceleration. Differencing consecutive samples and averaging those gives
+/// the same number with the intermediate noise added back — which matters here, since
+/// this is the noisiest part of in-motion levelling: a receiver's velocity error divided
+/// by a span, and a 1 Hz receiver over a 2 s window divides it by very little.
+///
+/// The span is counted in samples, so it is only as honest as the dating of the window;
+/// see [`StaticSample::velocity`].
+pub(crate) fn inertial_acceleration(
+    window: &[StaticSample],
+    dt: Seconds,
+) -> Option<Acceleration<Ned>> {
+    let mut first: Option<(usize, Velocity<Ned>)> = None;
+    let mut last: Option<(usize, Velocity<Ned>)> = None;
+    for (index, sample) in window.iter().enumerate() {
+        if let Some(velocity) = sample.velocity {
+            first.get_or_insert((index, velocity));
+            last = Some((index, velocity));
+        }
+    }
+    let ((first_index, first), (last_index, last)) = (first?, last?);
+    let span = (last_index - first_index) as f32 * dt.as_secs();
+    // One velocity, or several on the same sample, spans no time. A difference over zero
+    // seconds is an infinity, not an acceleration, and this is the only division here.
+    (span > 0.0).then(|| Acceleration::from_vector((last.vector() - first.vector()) / span))
 }
 
 /// Whether every number in a seed state is finite. A quaternion is unit by construction,
@@ -344,7 +426,7 @@ pub(crate) fn baro_reference(window: &[StaticSample]) -> Option<Altitude> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::units::{Acceleration, AngularRate};
+    use crate::units::AngularRate;
 
     /// A sample from a vehicle genuinely sitting still: no rotation, gravity the only
     /// specific force. `StaticSample::default()` is not this — its zero acceleration is
@@ -463,5 +545,82 @@ pub(crate) mod tests {
         window[0].baro = Some(Altitude::from_meters(10.0));
         window[7].baro = Some(Altitude::from_meters(20.0));
         assert_eq!(baro_reference(&window), Some(Altitude::from_meters(15.0)));
+    }
+
+    /// A window whose GNSS reports the vehicle gaining 4 m/s of north velocity over the
+    /// four samples — one second at `DT` — that separate the two fixes.
+    fn accelerating_window() -> [StaticSample; 8] {
+        let mut window = [still(); 8];
+        window[1].velocity = Some(Velocity::ned(1.0, 0.0, 0.0));
+        window[5].velocity = Some(Velocity::ned(5.0, 0.0, 0.0));
+        window
+    }
+
+    #[test]
+    fn the_window_acceleration_is_the_endpoint_difference_over_the_span() {
+        let measured = inertial_acceleration(&accelerating_window(), DT)
+            .expect("two samples a second apart carry a velocity");
+        assert_eq!(measured, Acceleration::ned(4.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn velocity_between_the_endpoints_does_not_reach_the_mean() {
+        // The mean of a derivative is its endpoint difference, so a noisy fix in the
+        // middle of the window is not averaged in — it is not read at all.
+        let mut window = accelerating_window();
+        window[3].velocity = Some(Velocity::ned(-40.0, 12.0, 7.0));
+        assert_eq!(
+            inertial_acceleration(&window, DT),
+            Some(Acceleration::ned(4.0, 0.0, 0.0))
+        );
+    }
+
+    #[test]
+    fn a_window_with_no_two_dated_velocities_reports_no_acceleration() {
+        // Nothing to difference, and a difference over zero seconds is an infinity
+        // rather than an acceleration.
+        assert_eq!(inertial_acceleration(&[still(); 8], DT), None);
+        let mut one = [still(); 8];
+        one[4].velocity = Some(Velocity::ned(9.0, 0.0, 0.0));
+        assert_eq!(inertial_acceleration(&one, DT), None);
+    }
+
+    #[test]
+    fn a_moving_window_reports_the_acceleration_gnss_accounts_for() {
+        let mut window = accelerating_window();
+        // Over the 0.262 rad/s default, so the window classifies as moving.
+        window[3].imu.gyro = AngularRate::body(0.0, 0.4, 0.0);
+        let alignment = classify_default(&window, DT).expect("moving, not unusable");
+        let Alignment::Coarse(Coarse::NotStationary { inertial_accel, .. }) = alignment else {
+            panic!("0.4 rad/s is over the default: {alignment:?}");
+        };
+        assert_eq!(inertial_accel, Some(Acceleration::ned(4.0, 0.0, 0.0)));
+    }
+
+    #[test]
+    fn a_vehicle_gnss_explains_entirely_is_still_not_at_rest() {
+        // A launch off a deck accelerating north at a steady 8 m/s^2, level and not
+        // turning: |f| is sqrt(8^2 + g^2), 2.85 m/s^2 off gravity, and GNSS accounts for
+        // every bit of it. The window is still not one taken on the ground, which is
+        // what `Alignment::Static` and the barometric reference both mean.
+        let mut window = [still(); 8];
+        for sample in &mut window {
+            sample.imu.accel = Acceleration::body(8.0, 0.0, -GRAVITY);
+        }
+        window[1].velocity = Some(Velocity::ned(1.0, 0.0, 0.0));
+        window[5].velocity = Some(Velocity::ned(9.0, 0.0, 0.0));
+
+        let alignment = classify_default(&window, DT).expect("moving, not unusable");
+        let Alignment::Coarse(Coarse::NotStationary { inertial_accel, .. }) = alignment else {
+            panic!("2.85 m/s^2 is over the 1.961 default: {alignment:?}");
+        };
+        assert_eq!(inertial_accel, Some(Acceleration::ned(8.0, 0.0, 0.0)));
+    }
+
+    #[test]
+    fn a_velocity_that_is_not_a_number_is_refused_with_the_rest() {
+        let mut window = accelerating_window();
+        window[5].velocity = Some(Velocity::ned(f32::NAN, 0.0, 0.0));
+        assert_eq!(classify_default(&window, DT), Err(InitError::NotFinite));
     }
 }

@@ -51,8 +51,22 @@ fn drive() {
             black_box(0.0),
             black_box(0.44),
         )),
+        velocity: None,
     };
-    let window = [sample; 8];
+    let mut window = [sample; 8];
+    // Two dated GNSS velocities, so the window's mean acceleration is differenced and
+    // divided by a span — the only division initialization does, and the one place a
+    // zero span would reach `core::panicking` if it were an index or an unwrap.
+    window[1].velocity = Some(Velocity::ned(
+        black_box(1.0),
+        black_box(0.0),
+        black_box(0.0),
+    ));
+    window[5].velocity = Some(Velocity::ned(
+        black_box(9.0),
+        black_box(0.0),
+        black_box(0.0),
+    ));
     let fix = Geodetic::from_degrees(
         black_box(47.397_742),
         black_box(8.545_594),

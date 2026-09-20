@@ -104,7 +104,7 @@ pub use state::{CovarianceMatrix, STATES};
 ///         accel: Acceleration::body(0.0, 0.0, -GRAVITY),
 ///     },
 ///     baro: Some(Altitude::from_meters(112.0)),
-///     mag: None,
+///     ..StaticSample::default()
 /// };
 /// filter.initialize(&[still; 800], dt)?;
 /// assert_eq!(filter.predict(still.imu, dt), Propagation::Propagated);

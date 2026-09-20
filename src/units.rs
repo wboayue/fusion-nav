@@ -355,7 +355,13 @@ framed!(
 );
 
 framed!(
-    /// Specific force, or an accelerometer bias, in meters per second squared.
+    /// Specific force, an accelerometer bias, or a navigation-frame acceleration, in
+    /// meters per second squared.
+    ///
+    /// The frame says which. `Acceleration<Body>` is what an accelerometer reads —
+    /// specific force, which includes the reaction to gravity and is why a level,
+    /// stationary sensor reads `-γ` on its down axis. `Acceleration<Ned>` is how the
+    /// vehicle is actually accelerating, gravity excluded. Equation (11) relates them.
     Acceleration,
     unit = "meters per second squared"
 );
@@ -407,6 +413,7 @@ macro_rules! navigation {
 
 navigation!(Position);
 navigation!(Velocity);
+navigation!(Acceleration);
 
 /// Constructors that name the body frame, and the FLU conversion into it.
 ///

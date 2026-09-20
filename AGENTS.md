@@ -43,8 +43,10 @@ Never renumber them. A renumber silently repoints every citation, including clos
 cannot be corrected.
 
 **Sequencing hazard:** #31's stages are stacked branches, while the signature-changing issues
-(#21, #22, #25, #59, #61) change the API underneath them. Land an API change before the stage
-that builds on it, not after — #59 before #33, #61 before whichever stage seeds an attitude.
+(#21, #22, #25, #61) change the API underneath them. Land an API change before the stage that
+builds on it, not after — #61 before whichever stage seeds an attitude. #59's signature is done:
+`StaticSample` carries GNSS velocity and `Coarse::NotStationary` reports `ā_n`, so #33 builds on
+the final shape; what is left of #59 is equation (5′), which needs the attitude #33 computes.
 
 ## Goal: a reference to learn from
 
@@ -232,7 +234,8 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
   and coarse in-motion alignment plus a `Status::Aligning` phase is designed there but unbuilt —
   read that section before touching initialization.
 - `src/init.rs` — initialization's types (`StaticSample`, `Alignment`, `Coarse`, `InitError`)
-  and pure functions (`classify`, `attitude_sigmas`, `initial_covariance`, `baro_reference`).
+  and pure functions (`classify`, `attitude_sigmas`, `initial_covariance`, `baro_reference`,
+  `inertial_acceleration`).
   The `initialize*` methods on `Eskf` call these and commit the result. Tests for the pure
   functions live here; tests of what the filter does with them stay in `eskf.rs`.
 - `src/propagate.rs` — `ImuSample` today; equations (9)–(22) land here.
