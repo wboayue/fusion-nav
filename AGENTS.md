@@ -43,9 +43,8 @@ Never renumber them. A renumber silently repoints every citation, including clos
 cannot be corrected.
 
 **Sequencing hazard:** #31's stages are stacked branches, while the signature-changing issues
-(#21, #22, #25, #59, #61, #71) change the API underneath them. Land an API change before the stage
-that builds on it, not after — #59 before #33, #71 before #34, #61 before whichever stage seeds an
-attitude.
+(#21, #22, #25, #59, #61) change the API underneath them. Land an API change before the stage
+that builds on it, not after — #59 before #33, #61 before whichever stage seeds an attitude.
 
 ## Goal: a reference to learn from
 
