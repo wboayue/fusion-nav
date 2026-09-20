@@ -104,6 +104,13 @@ noticed; `heading=` is the validity verdict on the initialization window, which 
 reported valid that no magnetometer ever observed — taken at the end of the log it would only
 restate `transitions=`). Renaming or removing a key breaks every entry at once.
 
+**Two corpora, two licences, two manifests.** The PX4 logs are CC BY 4.0 and could be redistributed;
+they are fetched rather than committed for size, not for terms. INSANE is BSD-2 with a
+non-commercial rider, so it cannot be bundled into an MIT crate at all and needs its own manifest
+rather than riding the default fetch (GOALS.md, Validation). Adding a data source means saying
+which behavior it uniquely covers **and** under what licence — and for a restricted one, that
+measured scalars are publishable while converted CSVs and plots stay out of the repository.
+
 **Converter changes are batched.** Regenerating the corpus is not free — logs fetched, `pyulog`
 installed, every log reconverted, replayed, and every moved expectation explained. Land changes
 that move `tools/ulog2replay.py` output together, with one `--check` run and one manifest diff
