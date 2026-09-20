@@ -203,8 +203,9 @@ pub enum Refusal {
 
 /// The outcome of one propagation step.
 ///
-/// Returned by [`Eskf::predict`](crate::Eskf::predict), which refuses a step longer than
-/// [`Config::max_predict_dt`](crate::Config::max_predict_dt) rather than attempting it.
+/// Returned by [`Eskf::predict`](crate::Eskf::predict), which refuses a step it cannot
+/// take — a `dt` longer than [`Config::max_predict_dt`](crate::Config::max_predict_dt),
+/// or a sample that is not a number — rather than attempting it.
 #[must_use = "a refused propagation leaves the state stale unless the outcome is inspected"]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Propagation {
@@ -233,6 +234,28 @@ pub enum Propagation {
         /// The `dt` offered.
         dt: Seconds,
     },
+    /// A number in the [`ImuSample`](crate::ImuSample) is NaN or infinite. The state and
+    /// covariance are unchanged.
+    ///
+    /// The timers advanced, as under [`StepTooLong`](Self::StepTooLong) and for the same
+    /// reason: the `dt` was usable, so the time really did pass and the aiding really is
+    /// that much staler. Only the sample was unusable. Holding them back instead would
+    /// stop every source timing out, and an IMU emitting NaN would leave [`Status`]
+    /// reporting [`Healthy`](Status::Healthy) on aiding that had long since stopped
+    /// arriving.
+    ///
+    /// Refused rather than propagated because a non-finite sample cannot be noticed
+    /// afterwards: it reaches `Exp(φ)` of equation (15), whose small-angle test is false
+    /// for NaN, so the composition yields a `UnitQuaternion` that is not a unit
+    /// quaternion, and it reaches velocity and position through (12)–(14) and `F` through
+    /// (16)–(19). One NaN in `P` never leaves.
+    ///
+    /// ArduPilot refuses non-finite measurements at intake the same way
+    /// (`libraries/AP_NavEKF3/AP_NavEKF3_Measurements.cpp:116-119`, at `368dc0c4`). PX4
+    /// does not: `EstimatorInterface::setIMUData` constrains the integration period and
+    /// never tests `delta_ang` or `delta_vel`
+    /// (`src/modules/ekf2/EKF/estimator_interface.cpp:82-110`, at `c4e4ef98`).
+    NotFinite,
     /// No initialization has succeeded; see [`Fusion::NotInitialized`]. Nothing was
     /// propagated and no timer advanced.
     NotInitialized,
@@ -437,6 +460,14 @@ pub struct PropagationHealth {
     pub refused_too_long: u32,
     /// Steps refused as zero, negative, or not a number.
     pub refused_invalid: u32,
+    /// Steps refused because the [`ImuSample`](crate::ImuSample) carried a NaN or an
+    /// infinity.
+    ///
+    /// Counted apart from [`refused_invalid`](Self::refused_invalid) because the two name
+    /// different faults: that one is the caller's timing, this one is the sensor. A count
+    /// climbing here is a miswired or failed IMU, and there is no other record of it —
+    /// the state simply stops advancing while the aiding timers run on.
+    pub refused_not_finite: u32,
     /// The longest `dt` refused as too long, or `None` if none has been.
     ///
     /// How far past the limit the worst gap ran, which separates a scheduler that overran by a
@@ -458,6 +489,9 @@ impl PropagationHealth {
             }
             Propagation::InvalidStep { .. } => {
                 self.refused_invalid = self.refused_invalid.saturating_add(1);
+            }
+            Propagation::NotFinite => {
+                self.refused_not_finite = self.refused_not_finite.saturating_add(1);
             }
             Propagation::Propagated | Propagation::NotInitialized => {}
         }

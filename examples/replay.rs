@@ -537,6 +537,16 @@ impl Replay {
                 propagation.refused_invalid
             );
         }
+        // No log in the corpus carries a non-finite IMU row, so this line is silent on all
+        // of them; it is here for the next converted log, where a NaN reaching `predict`
+        // is a converter bug and otherwise looks like the filter quietly not advancing.
+        if propagation.refused_not_finite > 0 {
+            println!(
+                "{} steps refused as carrying a NaN or an infinity — the IMU or the \
+                 conversion, not the timing",
+                propagation.refused_not_finite
+            );
+        }
         if let Some(worst) = propagation.longest_refused {
             let at = self.longest_step_at.unwrap_or(f64::NAN);
             println!(

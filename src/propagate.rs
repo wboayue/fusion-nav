@@ -16,3 +16,14 @@ pub struct ImuSample {
     /// Specific force, body frame. A level, stationary vehicle reads `(0, 0, -g)`.
     pub accel: Acceleration<Body>,
 }
+
+impl ImuSample {
+    /// Whether every number in the sample is finite.
+    ///
+    /// Written once and called from both places a sample enters the filter, so that
+    /// [`Eskf::initialize`](crate::Eskf::initialize) and
+    /// [`Eskf::predict`](crate::Eskf::predict) refuse the same sample.
+    pub(crate) fn is_finite(self) -> bool {
+        self.gyro.is_finite() && self.accel.is_finite()
+    }
+}

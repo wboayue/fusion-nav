@@ -305,8 +305,7 @@ pub(crate) fn peak_motion(window: &[StaticSample]) -> (RadiansPerSecond, MetersP
 
 /// Whether every number in a window sample is finite.
 pub(crate) fn sample_is_finite(sample: &StaticSample) -> bool {
-    sample.imu.gyro.is_finite()
-        && sample.imu.accel.is_finite()
+    sample.imu.is_finite()
         && sample.mag.is_none_or(|field| field.is_finite())
         && sample.baro.is_none_or(|b| b.as_meters().is_finite())
 }

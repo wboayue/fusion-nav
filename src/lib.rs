@@ -107,7 +107,15 @@ pub use state::{CovarianceMatrix, STATES};
 ///     mag: None,
 /// };
 /// filter.initialize(&[still; 800], dt)?;
-/// let _ = filter.predict(ImuSample::default(), dt);
+/// assert_eq!(filter.predict(still.imu, dt), Propagation::Propagated);
+///
+/// // An IMU that has stopped producing numbers is refused rather than propagated: a
+/// // non-finite sample reaches the quaternion and then the covariance, and never leaves.
+/// let broken = ImuSample {
+///     gyro: AngularRate::body(f32::NAN, 0.0, 0.0),
+///     accel: still.imu.accel,
+/// };
+/// assert_eq!(filter.predict(broken, dt), Propagation::NotFinite);
 ///
 /// let outcome = filter.fuse_baro_altitude(
 ///     Altitude::from_meters(60.0),
