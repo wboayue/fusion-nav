@@ -194,6 +194,16 @@ struct Replay {
     initialized_at: Option<f64>,
     alignment: Option<Alignment>,
     mag_at_init: bool,
+    /// When `Validity::attitude` first read true, in log time.
+    ///
+    /// `Accuracy::tilt` equals `Initialization::sigma_tilt` and `Accuracy::heading` equals
+    /// `Initialization::sigma_yaw`, compared with `<=`, so a static start passes by exactly
+    /// zero margin (`src/config.rs`). Widening those two is a measurement rather than a
+    /// guess, and this is the measurement: how long a real log takes before the filter
+    /// claims its attitude is usable. It says when the filter *claims* to have converged,
+    /// not whether the attitude was good then — that needs truth, which the corpus has not
+    /// got.
+    aligned_at: Option<f64>,
     /// `Validity::heading` the moment initialization committed — the filter's own verdict
     /// on the window, which is not the same as `mag_at_init`: a coarse start carrying a
     /// magnetometer has observed nothing it could level a heading with.
@@ -226,6 +236,7 @@ impl Replay {
             initialized_at: None,
             alignment: None,
             mag_at_init: false,
+            aligned_at: None,
             heading_at_init: false,
             epochs: 0,
             longest_step_at: None,
@@ -335,6 +346,7 @@ impl Replay {
         // heading, and none at all leaves yaw a prior until a heading is fused.
         self.mag_at_init = window.iter().any(|s| s.mag.is_some());
         let state = self.filter.state();
+        self.note_alignment(t, state.validity);
         self.heading_at_init = state.validity.heading;
         self.status = state.status;
         self.transitions.push((t, self.status));
@@ -411,6 +423,7 @@ impl Replay {
             }
         }
         let state = self.filter.state();
+        self.note_alignment(t, state.validity);
         if state.status != self.status {
             self.status = state.status;
             self.transitions.push((t, state.status));
@@ -434,6 +447,30 @@ impl Replay {
             .iter()
             .map(|(_, health)| health.rejected)
             .sum()
+    }
+
+    /// Keep the first moment the attitude read valid, and only the first.
+    ///
+    /// Taken at the commit as well as at every epoch: a window that carried a magnetometer
+    /// leaves the filter aligned the instant it closes, and that is zero seconds rather
+    /// than one `dt`.
+    fn note_alignment(&mut self, t: f64, validity: Validity) {
+        if self.aligned_at.is_none() && validity.attitude() {
+            self.aligned_at = Some(t);
+        }
+    }
+
+    /// Seconds from the end of the initialization window to the first valid attitude, or
+    /// `never`.
+    ///
+    /// `never` stays a word rather than a large number. A vehicle carrying no magnetometer
+    /// never aligns by construction — stillness observes tilt and never yaw — and that is
+    /// a correct answer, not a slow one.
+    fn aligned_after(&self) -> String {
+        match (self.initialized_at, self.aligned_at) {
+            (Some(window_closed), Some(aligned)) => format!("{:.2}", aligned - window_closed),
+            _ => "never".to_string(),
+        }
     }
 
     /// Measurements the filter could not judge at all, over every source.
@@ -662,8 +699,8 @@ impl Replay {
         let state = self.filter.state();
         format!(
             "summary rate={:.0} window={} align={} an={} alpha0={} heading={} resets={} \
-             rejected={} discarded={} refused={} invalid={} epochs={} transitions={} \
-             status={:?}",
+             aligned_at={} rejected={} discarded={} refused={} invalid={} epochs={} \
+             transitions={} status={:?}",
             self.interval.map_or(0.0, |interval| 1.0 / interval),
             self.window_samples,
             match self.alignment {
@@ -704,6 +741,11 @@ impl Replay {
                 "invalid"
             },
             self.resets(),
+            // When the filter first called its own attitude usable, which is what would
+            // settle `Accuracy`'s attitude defaults off the corpus the way replay settled
+            // `Timeouts::degraded_after`. It measures the stub until covariance
+            // propagation lands, and is pinned meanwhile.
+            self.aligned_after(),
             // The gate's verdict, which nothing on this line reported before: `refused=`
             // and `invalid=` are propagation steps, not measurements, and a change that
             // started turning down every fix in the corpus would have passed `--check`
@@ -1228,6 +1270,53 @@ mod tests {
         let summary = replay(&log).summary();
         assert_eq!(key(&summary, "align"), "coarse");
         assert_eq!(key(&summary, "an"), "none");
+    }
+
+    // ---- convergence ----
+
+    #[test]
+    fn a_window_carrying_a_magnetometer_is_aligned_when_it_closes() {
+        // Zero seconds, not one `dt`: the window observed both tilt and heading, so the
+        // filter is aligned the instant it commits.
+        let log = Log::new().mag(0.0).run(0.0, 100, DT, STILL);
+        assert_eq!(key(&replay(&log).summary(), "aligned_at"), "0.00");
+    }
+
+    #[test]
+    fn a_heading_nobody_observed_aligns_when_one_is_fused() {
+        // Stillness observes tilt and never yaw, so this window leaves `heading=invalid`
+        // and the attitude waits for a magnetometer — 0.52 s later here.
+        let mut log = still_start();
+        for i in 0..100 {
+            let t = 2.0 + i as f64 * DT;
+            if i == 25 {
+                log = log.mag(t);
+            }
+            log = log.imu(t, STILL);
+        }
+        let summary = replay(&log).summary();
+        assert_eq!(key(&summary, "heading"), "invalid", "as the window left it");
+        assert_eq!(
+            key(&summary, "aligned_at"),
+            "0.52",
+            "2.50 s, less the 1.98 s the window closed at: {summary}"
+        );
+    }
+
+    #[test]
+    fn a_vehicle_with_no_magnetometer_never_aligns() {
+        // A correct answer rather than a slow one, which is why it stays a word: no
+        // covariance shrinks yaw, so no number would ever arrive.
+        let log = still_start().run(2.0, 100, DT, STILL);
+        assert_eq!(key(&replay(&log).summary(), "aligned_at"), "never");
+    }
+
+    #[test]
+    fn a_log_that_never_initializes_never_aligns() {
+        let log = Log::new().run(0.0, 2, DT, STILL);
+        let summary = replay(&log).summary();
+        assert_eq!(key(&summary, "align"), "none");
+        assert_eq!(key(&summary, "aligned_at"), "never");
     }
 
     // ---- the counters ----
