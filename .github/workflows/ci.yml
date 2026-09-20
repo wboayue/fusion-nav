@@ -60,3 +60,55 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.89
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --lib
+
+  # Replay is the regression guard for every later stage: #32 asserts a stage wired nothing
+  # in by diffing `target/replay.csv` byte for byte, and that diff only means anything if the
+  # bytes depend on the input and not on the host. Both runners produce the same file because
+  # the filter's transcendentals come from the `libm` crate (pure Rust, via nalgebra with
+  # `default-features = false`), Rust contracts no FMAs, and everything else is IEEE-exact —
+  # so a difference here is a real one. `data/README.md` records what a mismatch means.
+  determinism:
+    name: replay determinism (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x86_64
+          - os: macos-latest # an aarch64 runner: no emulation, no cross-compilation
+            arch: aarch64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Twice on one host before comparing hosts, so a cross-architecture mismatch cannot be
+      # blamed on a replay that is not repeatable in the first place.
+      - run: |
+          cargo run --example replay -- data/flight.csv target/replay-1.csv
+          cargo run --example replay -- data/flight.csv target/replay-2.csv
+          cmp target/replay-1.csv target/replay-2.csv
+          shasum -a 256 target/replay-1.csv | cut -d ' ' -f 1 | tee replay.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: replay-hash-${{ matrix.arch }}
+          path: replay.sha256
+
+  determinism-compare:
+    name: replay determinism (compare)
+    needs: determinism
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: replay-hash-*
+          path: hashes
+      - run: |
+          x86=$(cat hashes/replay-hash-x86_64/replay.sha256)
+          arm=$(cat hashes/replay-hash-aarch64/replay.sha256)
+          echo "x86_64  $x86"
+          echo "aarch64 $arm"
+          if [ "$x86" != "$arm" ]; then
+            echo "::error::replay output depends on the host architecture; see data/README.md"
+            exit 1
+          fi
