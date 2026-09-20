@@ -112,7 +112,8 @@ $ cargo run --example degradation   # dropouts, diagnostics, an application-driv
 $ cargo run --example replay        # a recorded flight in, the estimate out, as CSV
 ```
 
-`replay` also runs real PX4 logs; see [data/README.md](data/README.md).
+`replay` also runs real PX4 logs, and `cargo run --example simulate` generates seeded flights with
+analytic ground truth to score against; see [data/README.md](data/README.md).
 
 ## Conventions
 

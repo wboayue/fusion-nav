@@ -4,15 +4,47 @@
 CSV — the normalized log format the [validation harness](../GOALS.md#harness-constraint) is built
 on. The format itself is documented in `examples/replay.rs`.
 
-## Synthetic log
+## Simulated flights
 
-`flight.csv` is a small synthetic log checked in so the example runs with no network. It is the
-only log CI replays.
+`examples/simulate.rs` generates flights with **analytic ground truth**, which neither of the
+corpora below has: the PX4 logs carry no truth and `--reference` only gives EKF2's own answer. It
+writes two files per scenario — `<name>.csv` in the replay format, and `<name>.truth.csv`, the
+state a perfect filter would report at each IMU epoch.
 
 ```console
+$ cargo run --example simulate                         # every scenario -> target/sim/
+$ cargo run --example simulate -- mission              # one of them
+$ cargo run --example replay -- target/sim/mission.csv target/sim/mission.replay.csv
+```
+
+What each scenario covers is in the table in `examples/simulate.rs` — printed by the run above and
+carried in both generated files' headers — rather than restated here. Its sensor noise is
+deliberately **not** `ImuNoise::default()`: a filter scored against its own assumptions is being
+handed the answer key.
+
+Nothing reads the truth files yet. Scoring against them — RMSE, NEES, and the per-scenario
+ceilings CI would gate on — is [#16](https://github.com/wboayue/fusion-nav/issues/16) and
+[#17](https://github.com/wboayue/fusion-nav/issues/17).
+
+### The log CI replays
+
+`flight.csv` is the `flight` scenario's output, committed with its truth beside it, and the only
+log CI replays. Regenerate it in place, never edit it:
+
+```console
+$ cargo run --example simulate -- flight data          # data/flight.csv + data/flight.truth.csv
 $ cargo run --example replay                           # data/flight.csv -> target/replay.csv
 $ cargo run --example replay -- <input.csv> <output.csv>
 ```
+
+Committed rather than generated on demand because the generator is a host tool: it calls the
+platform's `sin` and `cos`, which are free to differ in the last bit between machines. In practice
+they do not — an x86-64 and an arm64 build of the simulator write identical scenarios here — but
+that is an observation, not the guarantee the filter has below, and the committed file is what CI
+compares against itself.
+
+A given seed always gives byte-identical files on one machine, and each sensor draws from its own
+stream, so changing one sensor's rate or model does not shift another's noise.
 
 ## Determinism
 

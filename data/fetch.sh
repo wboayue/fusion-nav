@@ -14,8 +14,9 @@
 # reproducible without the repo carrying it: someone runs --add once and commits the
 # manifest line, everyone else gets a verified copy.
 #
-# data/flight.csv is not managed here. It is synthetic, small, and checked in so that
-# `cargo run --example replay` works with no network.
+# data/flight.csv is not managed here. It is small, checked in so that
+# `cargo run --example replay` works with no network, and generated rather than downloaded:
+# `cargo run --example simulate -- flight data` rewrites it and its truth file.
 #
 # --check is a local tool, not a CI job. It needs pyulog, and putting the converter in
 # the test path is exactly what GOALS.md's harness constraint rules out: CI replays the
