@@ -11,8 +11,8 @@
 //! that the optimizer constant-folds the calls away and the scan passes by proving
 //! nothing; with it, the compiler must emit each call against operands it cannot see.
 //!
-//! `run.sh` checks that this file names every `pub fn` on `Eskf` and `LocalOrigin`, so a
-//! new entry point cannot join the API without joining the gate.
+//! `run.sh` checks that this file names every `pub fn` in `src/`, so a new entry point
+//! cannot join the API without joining the gate.
 
 #![no_std]
 #![no_main]
@@ -129,4 +129,79 @@ fn drive() {
     let _ = black_box(fix.latitude_rad());
     let _ = black_box(fix.longitude_rad());
     let _ = black_box(fix.height());
+
+    surface(
+        black_box(filter.state()),
+        black_box(filter.diagnostics()),
+        black_box(filter.covariance()),
+    );
+}
+
+/// The rest of the public surface: accessors, constructors and the outcome enums.
+///
+/// Each is small enough to look obviously safe, which is the reason to link it rather than
+/// the reason to skip it — `Covariance::get` indexes the same `nalgebra` matrix that
+/// `Index` bounds-checks, and `Attitude::euler_angles` is two `atan2` calls and an `asin`.
+fn surface(state: State, diagnostics: Diagnostics, covariance: &Covariance) {
+    let _ = black_box(state.attitude.quaternion());
+    let _ = black_box(state.attitude.euler_angles());
+    let _ = black_box(Attitude::level());
+    let _ = black_box(Attitude::from_quaternion(black_box(
+        state.attitude.quaternion(),
+    )));
+
+    let _ = black_box(state.position.x());
+    let _ = black_box(state.position.y());
+    let _ = black_box(state.position.z());
+    let _ = black_box(state.velocity.vector());
+    let _ = black_box(state.gyro_bias.to_array());
+    let _ = black_box(Position::<Ned>::zero());
+    let _ = black_box(Position::enu(black_box(1.0), black_box(2.0), black_box(3.0)).to_ned());
+    let _ = black_box(AngularRate::flu(
+        black_box(0.1),
+        black_box(0.2),
+        black_box(0.3),
+    ));
+    let _ = black_box(AngularRate::body_deg_per_s(
+        black_box(1.0),
+        black_box(2.0),
+        black_box(3.0),
+    ));
+    let _ = black_box(Velocity::<Ned>::from_vector(black_box(
+        state.velocity.vector(),
+    )));
+    let _ = black_box(VelocityNoise::<Ned>::from_variance(
+        black_box(0.1),
+        black_box(0.2),
+        black_box(0.3),
+    ));
+    let _ = black_box(AltitudeNoise::from_variance(black_box(4.0)).variance());
+    let _ = black_box(Radians::from_degrees(black_box(30.0)));
+
+    let _ = black_box(Covariance::from_matrix(black_box(*covariance.as_matrix())));
+    let _ = black_box(covariance.as_matrix());
+    let _ = black_box(covariance.get(ErrorState::PositionNorth, ErrorState::VelocityDown));
+    let _ = black_box(covariance.variance(ErrorState::GyroBiasZ));
+    let _ = black_box(ErrorState::GyroBiasZ.index());
+    let _ = black_box(Covariance::zero());
+
+    let _ = black_box(state.validity.all());
+    let _ = black_box(state.validity.attitude());
+    let _ = black_box(state.validity.navigation());
+    let _ = black_box(state.status);
+
+    for (name, source) in black_box(diagnostics.sources()) {
+        let _ = black_box(name);
+        let _ = black_box(source.has_been_used());
+        let _ = black_box(source.accepted_within(Seconds::from_secs(black_box(1.0))));
+    }
+    let _ = black_box(diagnostics.propagation);
+
+    let outcome = black_box(Fusion::InvalidNoise);
+    let _ = black_box(outcome.is_accepted());
+    let _ = black_box(outcome.is_reset());
+    let _ = black_box(outcome.refusal());
+    let _ = black_box(outcome.test_ratio());
+    let _ = black_box(Propagation::Propagated.is_propagated());
+    let _ = black_box(Alignment::Static.is_static());
 }

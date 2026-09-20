@@ -336,14 +336,20 @@ the vehicle is a brick, which is why bad input comes back as `Propagation::Inval
 
 It is a real link rather than a scan of the source, so it proves reachability rather than
 absence of a keyword. `panic-check/src/main.rs` calls every entry point through
-`core::hint::black_box`, and the script refuses to run if a `pub fn` on `Eskf`, `Geodetic` or
-`LocalOrigin` is missing from it — a new entry point joins the gate or CI stops. A failure names
-the function that can panic, not just the symbol it reached.
+`core::hint::black_box`, and the script refuses to run if any `pub fn` in `src/` is missing from
+it — a new entry point joins the gate or CI stops. A failure names the function that can panic,
+not just the symbol it reached.
 
-Gated at `opt-level = 3` and `"s"`. At `"z"` and `1`, LLVM stops proving that `nalgebra`'s
-statically sized `Matrix3 * Vector3` indexes in bounds and leaves the check in as dead code:
-that is the optimizer giving up, not a path this crate can take, and gating it would put CI at
-the mercy of someone else's codegen.
+Two boundaries, both real:
+
+* **`debug-assertions = false`**, the release default. Three `debug_assert!`s in `src/eskf.rs`
+  restate a condition the lines above them just checked, and with assertions on they are panics
+  like any other — the gate fails, by design. They are a test-time check on the crate's own
+  reasoning, not a runtime guard, which is why they are `debug_assert!` and not `if`.
+* **`opt-level = 3` or `"s"`.** At `"z"` and `1`, LLVM stops proving that `nalgebra`'s statically
+  sized `Matrix3 * Vector3` indexes in bounds and leaves the check in as dead code, reached from
+  `LocalOrigin::to_ned`. That is the optimizer giving up, not a path this crate can take, and
+  gating it would put CI at the mercy of someone else's codegen.
 
 The crate is also `#![forbid(unsafe_code)]`, `no_std`, and allocation-free.
 

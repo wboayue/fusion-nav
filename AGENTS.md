@@ -310,9 +310,10 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
   indexing panics out of range. Refuse or saturate; never unwrap. `panic-check/run.sh` gates it
   in CI by linking the public API for both thumb targets and failing on a surviving
   `core::panicking` reference, which catches the indexing nobody wrote down as well as the
-  `unwrap` somebody did. It also refuses to run if `panic-check/src/main.rs` is missing a
-  `pub fn` from `eskf.rs` or `geodetic.rs`, so a new entry point has to be linked into it.
-  `README.md` owns what the gate covers, including why `opt-level = "z"` is not gated.
+  `unwrap` somebody did. It also refuses to run if `panic-check/src/main.rs` is missing any
+  `pub fn` in `src/`, so a new entry point has to be linked into it — matched on the name, so
+  one call per name is enough and a rename is what breaks it. `README.md` owns the two
+  boundaries: `debug-assertions = false`, and `opt-level = 3` or `"s"`.
 - Frames and units are fixed at the boundary: NED navigation frame, FRD body, Hamilton
   quaternion scalar-first, down-positive gravity. Not configurable.
 

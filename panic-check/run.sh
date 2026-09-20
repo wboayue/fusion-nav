@@ -33,18 +33,27 @@ LEVELS=(3 s)
 
 HOST=$(rustc -vV | sed -n 's/^host: //p')
 TOOLS="$(rustc --print sysroot)/lib/rustlib/$HOST/bin"
-if [[ ! -x "$TOOLS/llvm-nm" ]]; then
-  echo "error: llvm-nm not found in $TOOLS -- run 'rustup component add llvm-tools'" >&2
-  exit 1
-fi
+for tool in llvm-nm llvm-objdump; do
+  if [[ ! -x "$TOOLS/$tool" ]]; then
+    echo "error: $tool not found in $TOOLS — run 'rustup component add llvm-tools'" >&2
+    exit 1
+  fi
+done
 
-# The gate proves nothing about an entry point nobody calls, so the driver has to keep up
-# with the API. These two modules are the ones that do arithmetic; the rest of the public
-# surface reaches the linker through them.
+# Exported so the ELF's path is knowable rather than assumed: `build.target-dir` in a
+# `.cargo/config.toml` would otherwise move the output somewhere this script does not look,
+# and a scan that reads no file reports every target clean.
+TARGET_DIR="${CARGO_TARGET_DIR:-$(cd .. && pwd)/target}"
+export CARGO_TARGET_DIR="$TARGET_DIR"
+
+# The gate proves nothing about a function nobody calls, so the driver has to keep up with
+# the API: every `pub fn` in `src/`, at any indent, in any module. Matched on the name and
+# an opening paren, with a boundary in front — a plain substring lets `fuse_mag_heading(`
+# stand in for a new `heading(`, which is the collision this check exists to catch.
 missing=()
-for name in $(grep -hoE '^    pub (const )?fn [a-z_0-9]+' ../src/eskf.rs ../src/geodetic.rs |
+for name in $(grep -hoE '^[[:space:]]*pub (const )?fn [a-z_0-9]+' ../src/*.rs |
   awk '{ print $NF }' | sort -u); do
-  grep -qF "$name(" src/main.rs || missing+=("$name")
+  grep -qE "[^A-Za-z0-9_]$name\(" src/main.rs || missing+=("$name")
 done
 if ((${#missing[@]})); then
   echo "error: src/main.rs links none of these public entry points:" >&2
@@ -56,9 +65,16 @@ fi
 status=0
 for target in "${TARGETS[@]}"; do
   for level in "${LEVELS[@]}"; do
+    elf="$TARGET_DIR/$target/release/panic-check"
+    # Removed first so a stale binary cannot be scanned in place of the one this loop meant
+    # to build, and so the check below cannot pass on the last run's output.
+    rm -f "$elf"
     CARGO_PROFILE_RELEASE_OPT_LEVEL=$level \
       cargo build --quiet --release --package panic-check --target "$target"
-    elf="../target/$target/release/panic-check"
+    if [[ ! -f "$elf" ]]; then
+      echo "error: cargo built no ELF at $elf" >&2
+      exit 1
+    fi
 
     # `rust_begin_unwind` is the panic handler's export name, checked as well in case LTO
     # ever folds `panic_fmt` into its caller and leaves no `core::panicking` symbol.
@@ -73,7 +89,7 @@ for target in "${TARGETS[@]}"; do
     "$TOOLS/llvm-objdump" --disassemble --demangle --no-show-raw-insn "$elf" |
       awk '/^[0-9a-f]+ <.*>:$/ { fn = $2 } /<core::panicking|<rust_begin_unwind/ { print fn }' |
       grep -vE 'core::panicking|rust_begin_unwind' | sort -u |
-      sed -e 's/^</       /' -e 's/>:$//' -e 's/::h[0-9a-f]*$//' >&2
+      sed -e 's/^</       /' -e 's/>:$//' -e 's/::h[0-9a-f]*$//' >&2 || true
     status=1
   done
 done
