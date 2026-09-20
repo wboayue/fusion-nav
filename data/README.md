@@ -90,8 +90,10 @@ The keys are `rate=` and `window=` (the IMU rate and the samples it takes to cov
 `min_duration`), `align=`, `an=` and `alpha0=` (what initialization achieved, whether a moving
 window measured the vehicle's own acceleration from GNSS velocity — `ā_n` of equation (5′), which
 only a moving start reports — and whether it fixed a barometric reference), `heading=` (`Validity::heading` **as initialization left it** — not as the
-log ended, which would only restate `transitions=`), `resets=`, `refused=` and `invalid=` (adopted
-measurements, and steps refused as too long or as not a step at all), and `epochs=`,
+log ended, which would only restate `transitions=`), `resets=` (measurements adopted outright),
+`rejected=` and `discarded=` (the gate's verdict, and everything that never reached it — a
+variance of zero or less, a NaN, an altitude with no reference), `refused=` and `invalid=` (steps
+refused as too long or as not a step at all — propagation, not measurements), and `epochs=`,
 `transitions=` and `status=`. It needs `pyulog`, so it is a local tool rather than a CI job:
 `data/fetch.sh --venv` once, which installs the version the converter pins, and `fetch.sh`
 finds the gitignored `.venv` on its own.

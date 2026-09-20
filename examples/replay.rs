@@ -436,6 +436,27 @@ impl Replay {
             .sum()
     }
 
+    /// Measurements the filter could not judge at all, over every source.
+    ///
+    /// The gate's verdict is [`Replay::rejections`]; this is everything that never reached
+    /// it — a variance of zero or less, a NaN in the measurement, an altitude with no
+    /// reference to be relative to. Each one is aiding that silently is not there, which
+    /// is what `alpha0=` was added to notice for one source and one variant.
+    ///
+    /// `Diagnostics` resets when a window commits, so on a log that initializes this
+    /// counts only what happened afterwards: the measurements refused before then were
+    /// refused for having arrived early, which is the caller's startup order and not the
+    /// flight. A log that never initializes has nothing else to report, and this is that
+    /// count instead.
+    fn discarded(&self) -> u32 {
+        self.filter
+            .diagnostics()
+            .sources()
+            .iter()
+            .map(|(_, health)| health.refused)
+            .sum()
+    }
+
     /// Measurements adopted outright because a coarse start left nothing to fuse them
     /// against. At most one per source.
     fn resets(&self) -> u32 {
@@ -563,6 +584,16 @@ impl Replay {
             self.epochs,
             self.rejections()
         );
+        if self.discarded() > 0 {
+            // Which source, and why, is in `report_sources` — `SourceHealth` keeps a count
+            // and the last refusal rather than a tally per variant, so per source is the
+            // breakdown that exists.
+            println!(
+                "{} never reached the gate at all: a variance of zero or less, a NaN, or \
+                 an altitude with no reference — per source below",
+                self.discarded()
+            );
+        }
         if self.resets() > 0 {
             println!(
                 "{} adopted outright: a coarse start had no position or velocity to fuse \
@@ -631,7 +662,8 @@ impl Replay {
         let state = self.filter.state();
         format!(
             "summary rate={:.0} window={} align={} an={} alpha0={} heading={} resets={} \
-             refused={} invalid={} epochs={} transitions={} status={:?}",
+             rejected={} discarded={} refused={} invalid={} epochs={} transitions={} \
+             status={:?}",
             self.interval.map_or(0.0, |interval| 1.0 / interval),
             self.window_samples,
             match self.alignment {
@@ -672,6 +704,14 @@ impl Replay {
                 "invalid"
             },
             self.resets(),
+            // The gate's verdict, which nothing on this line reported before: `refused=`
+            // and `invalid=` are propagation steps, not measurements, and a change that
+            // started turning down every fix in the corpus would have passed `--check`
+            // unmoved. It reads zero until the χ² gate of (37) is real, and is pinned
+            // from now so that the first non-zero is a diff and not a discovery.
+            self.rejections(),
+            // Everything that never reached the gate. See `Replay::discarded`.
+            self.discarded(),
             self.filter.diagnostics().propagation.refused_too_long,
             self.filter.diagnostics().propagation.refused_invalid,
             self.epochs,
@@ -1191,6 +1231,61 @@ mod tests {
     }
 
     // ---- the counters ----
+
+    /// The three variants that reached no gate. Each is aiding that is silently not there:
+    /// `alpha0=` was added because 35575 barometer rows went from fused to `NoReference`
+    /// and nothing on this line noticed.
+    #[test]
+    fn everything_that_never_reached_the_gate_is_discarded() {
+        for (row, what) in [
+            (
+                "2.000000,baro,42,,,,,,4,,",
+                "no reference to be relative to",
+            ),
+            (
+                "2.000000,gnss_pos,0,0,0,,,,0,2.25,5.625",
+                "a variance of zero",
+            ),
+            (
+                "2.000000,gnss_pos,nan,0,0,,,,2.25,2.25,5.625",
+                "a NaN in the measurement",
+            ),
+        ] {
+            let summary = replay(&still_start().raw(row)).summary();
+            assert_eq!(key(&summary, "discarded"), "1", "{what}: {summary}");
+            assert_eq!(
+                key(&summary, "rejected"),
+                "0",
+                "{what} is not a gate verdict: {summary}"
+            );
+        }
+    }
+
+    #[test]
+    fn aiding_offered_before_initialization_is_not_discarded() {
+        // `Diagnostics` resets when the window commits, and this is what that buys: the
+        // count afterwards is a statement about the flight, not about how early the
+        // harness started offering rows.
+        let mut log = Log::new();
+        for i in 0..100 {
+            let t = i as f64 * DT;
+            log = log.gnss_pos(t, 0.0, 0.0, 0.0).imu(t, STILL);
+        }
+        let summary = replay(&log).summary();
+        assert_eq!(key(&summary, "align"), "static");
+        assert_eq!(
+            key(&summary, "discarded"),
+            "0",
+            "100 fixes were refused as early, and none of them is a fault: {summary}"
+        );
+    }
+
+    #[test]
+    fn a_gate_that_turns_nothing_down_reports_zero_rejected() {
+        // Pinned while it is a constant, so that the first non-zero is a diff rather than
+        // a discovery. Nothing rejects until the χ² gate of (37) is real.
+        assert_eq!(key(&replay(&still_start()).summary(), "rejected"), "0");
+    }
 
     #[test]
     fn epochs_count_every_imu_row_after_initialization() {
