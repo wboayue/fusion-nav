@@ -58,6 +58,36 @@ implementation someone can learn an ESKF from by reading it — GOALS.md differe
 - When performance and readability conflict, keep the readable version unless a measured cost
   says otherwise, and record the measurement where the trade was made.
 
+### What a doc comment owes the reader
+
+Doc comments are the reference half of "reference implementation": `EQUATIONS.md` holds the
+mathematics, the comment holds why *this* code and not the obvious alternative. Length is earned
+per question answered, never per importance.
+
+- **Summary line first, and standing alone.** One indicative sentence naming what the item does
+  ("Fuse magnetic heading from a calibrated three-axis magnetometer"), then the equation numbers.
+  Rustdoc prints that line by itself in the index, so it cannot lean on the paragraph below it.
+- **Then one paragraph per question a reader would actually ask.** Three earn their space: *why
+  this and not the obvious alternative* (`Fusion::Reset` takes the zero-information limit exactly
+  rather than approaching it with an invented variance), *what breaks otherwise* (`InvalidNoise`:
+  a negative variance written into `P` reads back as an excellent estimate), *where the number
+  came from* (`degraded_after`: 76 status flaps in 124 s). A paragraph that is none of the three,
+  or that the signature already answers, is cut.
+- **Cite instead of restating.** An equation number, a `file:line` at a pinned PX4/ArduPilot
+  revision, a GOALS.md differentiator by number, a measured figure. A citation is what lets a
+  short sentence be checked; paraphrase is what makes a long one rot.
+- **Derivations stay in `EQUATIONS.md`.** The comment says which equation, and where the code
+  departs from it — saturation, ordering, refusal. Never re-derives. This is the crate's main
+  concision lever: the reader who wants the algebra has somewhere to go.
+- **Write for a reader with the equations open and no git history.** No "previously", "now also",
+  "changed to"; present tense about present code. History belongs in the commit message.
+- **Inline `//` justifies the line beneath it** — an ordering constraint, a tolerance, the
+  subtraction that needed f64 — in one or two sentences. Narration of what the next line does is
+  deleted; anything longer is a doc comment or a `DESIGN.md` paragraph.
+- **A stale *why* is worse than none**, because it reads as evidence. Evidence in a comment (a
+  corpus count, a PX4 default, a `**Stub.**` marker) moves in the commit that moves the thing it
+  describes.
+
 ## Commands
 
 ```bash
