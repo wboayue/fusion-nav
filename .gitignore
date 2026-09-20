@@ -22,3 +22,6 @@ target
 
 # Python bytecode from tools/
 __pycache__/
+
+# uv virtualenv for the Python tools in tools/
+.venv/

@@ -26,7 +26,7 @@
 # active; https://review.px4.io/dbinfo is the same database as JSON, with a
 # download_url per entry. Then:
 #
-#   tools/ulog2replay.py data/logs/<log-id>.ulg -o data/logs/<log-id>.csv --reference
+#   uv run tools/ulog2replay.py data/logs/<log-id>.ulg -o data/logs/<log-id>.csv --reference
 #   cargo run --example replay -- data/logs/<log-id>.csv
 #
 # Everyone else afterwards runs `data/fetch.sh`, which verifies against the
