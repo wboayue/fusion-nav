@@ -293,6 +293,11 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
 - `src/health.rs` — `Propagation` (`#[must_use]`), `Fusion` (not, deliberately — see its doc
   comment), `SourceHealth`, `Status`.
 - `examples/replay.rs` — the normalized CSV format and the offline harness.
+- `examples/simulate.rs` — the scenario table, and the only source of truth to score against.
+  An example rather than a workspace member on purpose: `panic-check` is a crate out of
+  necessity (its own target, profile and link step), while this one imports nothing, needs no
+  dependency and costs 16 KB of the packaged crate. The first dependency scoring wants, or a
+  second binary that would share its trajectory code, is when to move it — see #16 and #17.
 - `panic-check/` — a second, unpublished crate: a bare-metal binary calling the whole public
   API, plus `run.sh`, which links it and reads the panic paths back out of the ELF. A workspace
   member so that one `Cargo.lock` covers both, but not a *default* member, so `cargo test`,
