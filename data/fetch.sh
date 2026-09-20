@@ -26,7 +26,16 @@ set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 manifest="$root/data/manifest.txt"
 dest="$root/data/logs"
-python=${PYTHON:-python3}
+# The converter needs pyulog, which CI never installs (GOALS.md, "Harness constraint").
+# `uv venv && uv pip install pyulog` puts it in .venv, which is gitignored and picked up
+# here without an activated shell; PYTHON= overrides for any other interpreter that has it.
+if [ -n "${PYTHON:-}" ]; then
+    python=$PYTHON
+elif [ -x "$root/.venv/bin/python" ]; then
+    python=$root/.venv/bin/python
+else
+    python=python3
+fi
 
 sha256() {
     if command -v sha256sum >/dev/null 2>&1; then
@@ -149,7 +158,7 @@ case "$cmd" in
     [ -f "$manifest" ] || die "no manifest at $manifest"
     command -v "$python" >/dev/null || die "$python not found; set PYTHON="
     "$python" -c 'import pyulog' 2>/dev/null ||
-        die "pyulog not installed. \`$python -m pip install pyulog\`, or set PYTHON= to an interpreter that has it"
+        die "pyulog not available to $python. \`uv venv && uv pip install pyulog\` from the repository root, or run the converter directly with \`uv run tools/ulog2replay.py\`, or set PYTHON= to an interpreter that has it"
     echo "checking the corpus end to end"
     failed=0
     each_entry check_one || failed=1

@@ -118,12 +118,20 @@ pins each by sha256 *and* by expectations (`rate=`, `window=`, `refused=`, `tran
 `status=`) matched against the `summary` line `examples/replay.rs` prints.
 
 ```bash
+uv venv && uv pip install pyulog  # once, for --check; .venv is gitignored and found automatically
 data/fetch.sh                     # fetch + verify the manifest
 data/fetch.sh --verify            # checksums only, no network
-data/fetch.sh --check             # convert each .ulg and replay it, assert expectations (needs pyulog)
+data/fetch.sh --check             # convert each .ulg and replay it, assert expectations
 data/fetch.sh --add <url> [name]  # download once, append a manifest line to commit
-tools/ulog2replay.py log.ulg -o log.csv [--reference]   # ULog -> replay CSV
+uv run tools/ulog2replay.py log.ulg -o log.csv [--reference]   # ULog -> replay CSV
 ```
+
+**`uv` is the package manager and the runner for everything under `tools/`.** The converter
+declares `pyulog` inline (PEP 723), so `uv run tools/ulog2replay.py` resolves it with no
+virtualenv to create or keep current — a tool run a few times a year is the one whose setup
+instructions rot. `data/fetch.sh` cannot use `uv run` (it invokes a single interpreter), so it
+takes `.venv/bin/python` when that exists and honours `PYTHON=` otherwise. Both paths produce
+byte-identical CSVs. Nothing here is on the Rust test path.
 
 `--check` is a **local** tool, run before a release or after touching the converter, replay
 example, or any default it asserts. Converters stay out of the test path on purpose (GOALS.md,

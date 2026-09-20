@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.9"
+# dependencies = ["pyulog"]
+# ///
 """Convert a PX4 ULog flight log into the fusion-nav replay CSV format.
 
-    tools/ulog2replay.py data/logs/flight.ulg -o data/logs/flight.csv
+    uv run tools/ulog2replay.py data/logs/flight.ulg -o data/logs/flight.csv
 
 The output feeds `cargo run --example replay -- <csv>`. See `examples/replay.rs`
 for the schema.
@@ -21,7 +25,9 @@ Topic and field names have changed repeatedly across PX4 releases, so each sourc
 lists candidates newest first and the converter records what it actually used in
 the output header. Verified against v1.16 and against a v1.5-era log.
 
-Requires pyulog:  pip install pyulog
+Depends on pyulog, declared inline above (PEP 723) so that `uv run` resolves it
+without a virtualenv to create or keep current. A tool run a few times a year is
+exactly the one whose setup instructions rot; this way there are none.
 """
 
 from __future__ import annotations

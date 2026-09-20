@@ -45,7 +45,7 @@ committed: `logs/` is gitignored, and `manifest.txt` pins each log by sha256.
 ```console
 $ data/fetch.sh                 # fetch + verify the manifest
 $ data/fetch.sh --verify        # checksums only, no network
-$ tools/ulog2replay.py data/logs/<log-id>.ulg -o data/logs/<log-id>.csv --reference
+$ uv run tools/ulog2replay.py data/logs/<log-id>.ulg -o data/logs/<log-id>.csv --reference
 $ cargo run --example replay -- data/logs/<log-id>.csv
 ```
 
@@ -59,7 +59,10 @@ The keys are `rate=` and `window=` (the IMU rate and the samples it takes to cov
 barometric reference), `heading=` (`Validity::heading` **as initialization left it** — not as the
 log ended, which would only restate `transitions=`), `resets=`, `refused=` and `invalid=` (adopted
 measurements, and steps refused as too long or as not a step at all), and `epochs=`,
-`transitions=` and `status=`. It needs `pyulog`, so it is a local tool rather than a CI job.
+`transitions=` and `status=`. It needs `pyulog`, so it is a local tool rather than a CI job:
+`uv venv && uv pip install pyulog` once, and `fetch.sh` finds the gitignored `.venv` on its own.
+The converter declares its own dependency inline (PEP 723), so `uv run tools/ulog2replay.py`
+needs no virtualenv at all.
 
 `data/fetch.sh --add <url> [name]` downloads a log once and appends a manifest line to commit; the
 files stay out of the repo, the checksums do not. Each entry should cover something no other log
