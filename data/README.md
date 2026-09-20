@@ -64,6 +64,12 @@ measurements, and steps refused as too long or as not a step at all), and `epoch
 The converter declares its own dependency inline (PEP 723), so `uv run tools/ulog2replay.py`
 needs no virtualenv at all.
 
+That dependency is pinned to an exact version, and `--check` stops if the interpreter it is about
+to convert with holds a different one. The two paths only produce the same CSV for the same
+pyulog, and a converter that changed underneath the corpus would move the expectations below with
+nothing in the repository to blame. `tools/ulog2replay.py` holds the pin; `fetch.sh` reads it from
+there.
+
 `data/fetch.sh --add <url> [name]` downloads a log once and appends a manifest line to commit; the
 files stay out of the repo, the checksums do not. Each entry should cover something no other log
 does.
