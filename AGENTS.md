@@ -287,7 +287,8 @@ Single crate, `no_std`, `forbid(unsafe_code)`, `deny(missing_docs)`, allocation-
 Every source touches the same six places, and three of them are public:
 
 - `Diagnostics` gains a field and `sources()`'s return type changes length
-  (`src/health.rs:335-355`) — breaking after a release, so settle the source set before publishing.
+  (`src/health.rs:473-500`) — `#[non_exhaustive]` covers the new field, but not the array length,
+  so settle the source set before publishing.
 - `Gates` gains a threshold, with its degrees of freedom stated.
 - `Timeouts` is **global**, not per-source (`src/config.rs:84-95`): there is no per-source entry to
   add, and giving a source its own threshold is a design change. See #56.

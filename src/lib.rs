@@ -133,7 +133,10 @@ pub mod prelude {
     pub use crate::eskf::Eskf;
     pub use crate::frames::{Body, Enu, Ned};
     pub use crate::geodetic::{Geodetic, LocalOrigin};
-    pub use crate::health::{Diagnostics, Fusion, Propagation, SourceHealth, Status, Validity};
+    pub use crate::health::{
+        Diagnostics, Fusion, Propagation, PropagationHealth, Refusal, SourceHealth, Status,
+        Validity,
+    };
     pub use crate::init::{Alignment, Coarse, InitError, StaticSample};
     pub use crate::propagate::ImuSample;
     pub use crate::state::{Covariance, ErrorState, State};

@@ -407,9 +407,11 @@ would cost ergonomics that integrators route around anyway.
 was the evidence: it discarded three of five outcomes with `let _ =` two lines under a comment
 advertising the lint. Acceptance and rejection are already on the second channel — `Diagnostics`
 keeps the test ratio, the counts and the timer per source — so the lint bought nothing there.
-What it did cover is the refusals that move no timer and the one-shot `Fusion::Reset`, none of
-which `Diagnostics` records; those want counters of their own (#67), which is the condition on
-this decision and has to land before the first release, since `Diagnostics` is public.
+What it did cover is the refusals that move no timer and the one-shot `Fusion::Reset`, so those
+gained counters of their own in #67 — `SourceHealth::refused`, `last_refusal` and `adopted`, plus
+`PropagationHealth` for the steps `predict` turns away — and the decision stands on them. The
+corpus made the case immediately: the coarse log's barometer reads `never accepted`, exactly like
+a vehicle carrying no barometer, and now reports 35575 refusals with `NoReference` beside it.
 `Propagation` and the `reset_*` outcomes keep the lint, having no second channel at all.
 
 See [gate lockout](EQUATIONS.md#gate-lockout) and

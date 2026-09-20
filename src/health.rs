@@ -56,12 +56,12 @@ pub enum Status {
 /// ratio, the running counts and the timer for every source, so a loop that reads
 /// [`Eskf::state`](crate::Eskf::state) each cycle loses nothing by discarding this value.
 ///
-/// The other five variants have no second route. [`NotFinite`](Self::NotFinite) and
-/// [`InvalidNoise`](Self::InvalidNoise) deliberately move no timer, so a sensor feeding the
-/// filter NaN all flight is indistinguishable from one that was never connected;
-/// [`NoReference`](Self::NoReference) and [`NotInitialized`](Self::NotInitialized) are
-/// recorded nowhere; and [`Reset`](Self::Reset) is a state step that happens once and leaves
-/// no trace. Inspect the outcome where those matter, until `Diagnostics` counts them (#67).
+/// The refusals keep their own counters there rather than a lint here:
+/// [`SourceHealth::refused`] and [`SourceHealth::last_refusal`] say how often a source was
+/// turned away and why, and [`SourceHealth::adopted`] separates a [`Reset`](Self::Reset) from
+/// the ordinary acceptance it otherwise looks like. A refusal still moves no timer — it is not
+/// aiding, and pretending otherwise would let a stream of NaN hold off
+/// [`Status::DeadReckoning`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Fusion {
     /// The measurement passed the gate and was fused.
@@ -151,6 +151,20 @@ impl Fusion {
         matches!(self, Self::Reset)
     }
 
+    /// Why the measurement was turned away, or `None` if it reached the gate.
+    ///
+    /// [`Reset`](Self::Reset) is not a refusal: the measurement was taken, just adopted rather
+    /// than fused.
+    pub const fn refusal(self) -> Option<Refusal> {
+        match self {
+            Self::NotInitialized => Some(Refusal::NotInitialized),
+            Self::NoReference => Some(Refusal::NoReference),
+            Self::NotFinite => Some(Refusal::NotFinite),
+            Self::InvalidNoise => Some(Refusal::InvalidNoise),
+            Self::Accepted { .. } | Self::Rejected { .. } | Self::Reset => None,
+        }
+    }
+
     /// The test ratio, where the gate ran at all.
     pub const fn test_ratio(self) -> Option<f32> {
         match self {
@@ -163,6 +177,28 @@ impl Fusion {
             | Self::InvalidNoise => None,
         }
     }
+}
+
+/// Why a measurement was turned away before the gate ran.
+///
+/// The four cases [`Fusion`] reports that are not a verdict on the measurement's *value*: the
+/// filter could not form an innovation to judge it against, or the numbers offered were not
+/// ones any sensor could produce. Kept on [`SourceHealth::last_refusal`] so that a count of
+/// refusals says which kind, which is the difference between a miswired sensor and a missing
+/// reference.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// The filter had not been initialized. See [`Fusion::NotInitialized`].
+    NotInitialized,
+    /// Nothing to measure against: no barometric reference, or no origin the fix could place.
+    /// See [`Fusion::NoReference`].
+    NoReference,
+    /// A number in the measurement or its noise was NaN or infinite. See
+    /// [`Fusion::NotFinite`].
+    NotFinite,
+    /// A variance in the measurement noise was zero or negative. See
+    /// [`Fusion::InvalidNoise`].
+    InvalidNoise,
 }
 
 /// The outcome of one propagation step.
@@ -285,9 +321,20 @@ impl Validity {
 }
 
 /// Health of one observation source.
+///
+/// `#[non_exhaustive]`: read the fields, do not construct one. The set grows as the filter
+/// learns to report more, and every addition would otherwise break every caller.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[non_exhaustive]
 pub struct SourceHealth {
-    /// Test ratio of the most recent measurement, or `None` if none has been offered.
+    /// Test ratio of the most recent measurement **that reached the gate**, or `None` if none
+    /// has.
+    ///
+    /// A refusal leaves it alone: there was no innovation to normalize, so the alternative is
+    /// inventing a ratio or discarding the last real one. It can therefore read healthy while
+    /// [`refused`](Self::refused) climbs — a receiver that starts reporting `eph = 0` freezes
+    /// this at its last good value — so a consumer plotting it reads
+    /// [`last_refusal`](Self::last_refusal) beside it.
     pub test_ratio: Option<f32>,
     /// Time since a measurement from this source was last accepted, or `None` if none
     /// ever has been. Advances with the `dt` passed to
@@ -299,6 +346,23 @@ pub struct SourceHealth {
     pub accepted: u32,
     /// Measurements rejected over the filter's life.
     pub rejected: u32,
+    /// Measurements turned away before the gate ran, over the filter's life.
+    ///
+    /// Distinct from [`rejected`](Self::rejected), which is the gate's verdict on a
+    /// measurement it could judge. A refusal means it could not be judged at all, and a
+    /// source with a rising count here is misconfigured or miswired rather than noisy: a
+    /// source that only ever refuses reads as `never accepted`, exactly like one that was
+    /// never connected.
+    pub refused: u32,
+    /// Why the most recent refusal happened, or `None` if none has.
+    pub last_refusal: Option<Refusal>,
+    /// Measurements adopted outright rather than fused, over the filter's life.
+    ///
+    /// At most one, and only after a coarse start; see [`Fusion::Reset`]. Also counted in
+    /// [`accepted`](Self::accepted), because the measurement was taken and the timer restarted
+    /// — this is what tells the two apart, since an adoption steps the state and an ordinary
+    /// acceptance does not.
+    pub adopted: u32,
 }
 
 impl SourceHealth {
@@ -330,6 +394,13 @@ impl SourceHealth {
         self.accepted = self.accepted.saturating_add(1);
     }
 
+    /// Record a measurement adopted outright. An acceptance for every other purpose, so the
+    /// timer restarts with it; see [`Fusion::Reset`].
+    pub(crate) fn record_adopted(&mut self) {
+        self.record_accepted(0.0);
+        self.adopted = self.adopted.saturating_add(1);
+    }
+
     /// Record a measurement the gate refused. The fusion clock keeps running, which is
     /// what lets a source that is only ever rejected time out.
     #[allow(dead_code, reason = "used once gating is implemented")]
@@ -338,12 +409,74 @@ impl SourceHealth {
         self.consecutive_rejections = self.consecutive_rejections.saturating_add(1);
         self.rejected = self.rejected.saturating_add(1);
     }
+
+    /// Record a measurement turned away before the gate.
+    ///
+    /// No timer moves and no test ratio is recorded: nothing was measured against the state,
+    /// so the source is no fresher than it was. That is what keeps a stream of NaN from
+    /// holding off [`Status::DeadReckoning`].
+    pub(crate) fn record_refused(&mut self, refusal: Refusal) {
+        self.refused = self.refused.saturating_add(1);
+        self.last_refusal = Some(refusal);
+    }
 }
 
-/// Per-source health, off the hot path.
+/// What propagation refused, and the worst of it.
+///
+/// Not per source — [`Eskf::predict`](crate::Eskf::predict) is the one path that is not a
+/// sensor — and the only record that a step was ever turned away. The state stops advancing
+/// while `Status` goes on reporting on the aiding, so without this a filter running on refused
+/// steps looks healthy.
+///
+/// `#[non_exhaustive]`; see [`SourceHealth`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct PropagationHealth {
+    /// Steps refused as longer than
+    /// [`Config::max_predict_dt`](crate::Config::max_predict_dt).
+    pub refused_too_long: u32,
+    /// Steps refused as zero, negative, or not a number.
+    pub refused_invalid: u32,
+    /// The longest `dt` refused as too long, or `None` if none has been.
+    ///
+    /// How far past the limit the worst gap ran, which separates a scheduler that overran by a
+    /// millisecond from a logger that dropped a second of data. The filter reads no clock, so
+    /// it holds the size of the gap and not when it happened; a caller that needs the moment
+    /// timestamps it from [`Propagation::StepTooLong`].
+    pub longest_refused: Option<Seconds>,
+}
+
+impl PropagationHealth {
+    /// Record what one step did, if it was refused.
+    pub(crate) fn record(&mut self, outcome: Propagation) {
+        match outcome {
+            Propagation::StepTooLong { dt, .. } => {
+                self.refused_too_long = self.refused_too_long.saturating_add(1);
+                if self.longest_refused.is_none_or(|worst| dt > worst) {
+                    self.longest_refused = Some(dt);
+                }
+            }
+            Propagation::InvalidStep { .. } => {
+                self.refused_invalid = self.refused_invalid.saturating_add(1);
+            }
+            Propagation::Propagated | Propagation::NotInitialized => {}
+        }
+    }
+}
+
+/// Per-source health and what propagation refused, off the hot path.
 ///
 /// Returned by [`Eskf::diagnostics`](crate::Eskf::diagnostics).
+///
+/// Every count here describes the filter's life since it last initialized, not since it was
+/// constructed: committing a window resets these. Measurements offered before then are refused
+/// with [`Fusion::NotInitialized`] and counted, and that count goes with the reset — which is
+/// what makes a refusal count afterwards a statement about the flight rather than about the
+/// caller's startup order.
+///
+/// `#[non_exhaustive]`; see [`SourceHealth`].
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[non_exhaustive]
 pub struct Diagnostics {
     /// GNSS position updates.
     pub gnss_position: SourceHealth,
@@ -353,6 +486,9 @@ pub struct Diagnostics {
     pub baro_altitude: SourceHealth,
     /// Magnetic heading updates.
     pub mag_heading: SourceHealth,
+    /// What [`Eskf::predict`](crate::Eskf::predict) refused. Not a source, so not in
+    /// [`sources`](Self::sources).
+    pub propagation: PropagationHealth,
 }
 
 impl Diagnostics {

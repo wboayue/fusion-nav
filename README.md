@@ -230,9 +230,10 @@ both clamp from 0.5 m rather than fusing raw values. The magnetometer must alrea
 calibrated for hard and soft iron.
 
 Every measurement passes through an innovation gate first. The result carries the test ratio, so
-a rejection is diagnosable. Reading it is optional where the gate is the only concern —
-`diagnostics()` keeps the ratio, the counts and the timer per source — but the refusals below
-reach no other channel:
+a rejection is diagnosable. Reading it is optional: `diagnostics()` keeps the ratio, the counts
+and the timer per source, and counts the refusals below with the reason for the latest one, so
+nothing here is lost by discarding the return value. Read it where the response is per call —
+a `Reset` steps the state, and a refusal says the measurement never reached the gate:
 
 | `Fusion` | meaning |
 | -------- | ------- |
@@ -305,8 +306,11 @@ false however much GNSS is accepted.
 
 * `is_aligned()` — whether attitude has converged, on the same bar `Status::Aligning` uses: read
   from the covariance against `Config::accuracy`, so promotion is measured rather than timed.
-* `diagnostics()` — per source: test ratio, time since last acceptance, consecutive rejections.
-  For logging and tuning; not on the hot path.
+* `diagnostics()` — per source: test ratio, time since last acceptance, consecutive rejections,
+  and how many measurements were refused before the gate and why. A source that only ever refuses
+  reads as "never accepted", like one that was never connected, and the refusal count is what
+  tells them apart. Also carries what `predict` refused, which is not per source. For logging and
+  tuning; not on the hot path.
 * `covariance()` — the 15 × 15 covariance, indexed by name: `p.variance(ErrorState::AttitudeZ)`.
 * `baro_reference()` — the `α₀` initialization fixed, if any.
 
