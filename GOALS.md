@@ -433,8 +433,23 @@ a barometer, a laser range finder, UWB, and motor telemetry — eighteen sensors
 truth is centimeter and sub-degree outdoors from dual RTK, millimeter indoors from motion
 capture, with fiducial markers bridging the two. Recorded on a 3 kg quadcopter across a motion
 capture facility, a university campus, a model airfield, and Mars-analog desert terrain. Raw
-unprocessed measurements with post-processing tools. Confirm the data license on the site; the
-paper's license does not cover it.
+unprocessed measurements with post-processing tools.
+
+The data is licensed BSD-2-Clause **with commercial use excluded** — a rider that is not part of
+BSD-2 and makes the license non-free despite the name. Two consequences, and the second is the
+one that shapes the work. Redistribution is permitted, with the copyright notice, conditions and
+disclaimer retained: that much is ordinary BSD-2, and the opposite of what the name "non-free"
+suggests. But this crate is MIT, so bundling non-commercial data into it would hand every adopter
+a restriction the crate does not otherwise carry. INSANE is therefore **fetched and never
+committed**, pinned by checksum like the PX4 corpus and kept in a separate manifest with its terms
+stated at the point of download — the CC BY 4.0 logs below can be redistributed and this cannot,
+so the two must not share a default fetch.
+
+Measured results are ours to publish: an RMSE or NEES figure is a fact about this filter, not a
+copy of their data. Converted CSVs and trajectory plots are closer to derivative works and stay
+out of the repository. And validating this crate against INSANE for a commercial product is
+plausibly the commercial use the rider excludes, so an adopter doing that needs their own
+arrangement with Klagenfurt; the benchmark here is for the crate and its readers.
 
 **[PX4 Flight Review](https://review.px4.io/)** public logs are the regression and robustness
 corpus. Thousands of real flights in ULog format containing exactly what a flight controller
