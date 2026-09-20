@@ -596,6 +596,10 @@ impl Replay {
     /// The attitude initialization committed, as roll, pitch and yaw in degrees, rounded
     /// to what the `summary` line prints. Zero everywhere if the log never initialized.
     ///
+    /// `roll0`, `pitch0` and `yaw0` are the only keys on that line that look at attitude,
+    /// so they are what would notice a sign inverted in the down-positive convention, the
+    /// levelling dropped out of (6), or a declination that stopped reaching the filter.
+    ///
     /// Rounded here rather than by the format string so that an angle rounding to zero
     /// from below prints `0.00` and not `-0.00`: the same angle either way, and the
     /// manifest matches these as substrings, so the sign alone would read as a moved
@@ -795,7 +799,7 @@ impl Replay {
         let (roll0, pitch0, yaw0) = self.angles_at_init();
         format!(
             "summary rate={:.0} window={} align={} an={} alpha0={} heading={} \
-             roll0={:.2} pitch0={:.2} yaw0={:.2} resets={} \
+             roll0={roll0:.2} pitch0={pitch0:.2} yaw0={yaw0:.2} resets={} \
              aligned_at={} rejected={} discarded={} refused={} invalid={} epochs={} \
              transitions={} status={:?}",
             self.interval.map_or(0.0, |interval| 1.0 / interval),
@@ -837,13 +841,6 @@ impl Replay {
             } else {
                 "invalid"
             },
-            // The attitude of (5)-(7), in degrees: the only keys on this line that would
-            // notice a sign inverted in the down-positive convention, a levelling dropped
-            // out of (6), or a declination that stopped reaching the filter. Nothing else
-            // here looks at attitude at all.
-            roll0,
-            pitch0,
-            yaw0,
             self.resets(),
             // When the filter first called its own attitude usable, which is what would
             // settle `Accuracy`'s attitude defaults off the corpus the way replay settled
