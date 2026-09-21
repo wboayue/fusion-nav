@@ -16,18 +16,13 @@ Embedded-first inertial navigation using a 15-state Error-State Kalman Filter (E
 barometric altitude, and magnetometer observations. It is `no_std`, allocation-free, and aimed at
 flight controllers, UAVs, and other embedded navigation.
 
-```mermaid
-flowchart TD
-    imu["IMU"] --> prop["State propagation"]
-    prop --> eskf
-
-    gnss["GNSS"] -->|"position / velocity"| eskf
-    baro["Baro"] -->|"altitude"| eskf
-    mag["Mag"] -->|"heading"| eskf
-
-    eskf["fusion-nav<br/>15-state ESKF"] --> state
-
-    state["Navigation state<br/>attitude<br/>position NED<br/>velocity NED<br/>accelerometer bias<br/>gyroscope bias"]
+```text
+   IMU ──► state propagation ──┐
+                               │      ┌──────────────────┐     attitude
+  GNSS ──► position, velocity ─┤      │    fusion-nav    │     position NED
+  Baro ──► altitude ───────────┼────► │  15-state ESKF   │ ──► velocity NED
+   Mag ──► heading ────────────┘      └──────────────────┘     accelerometer bias
+                                                               gyroscope bias
 ```
 
 ## Why an ESKF?
@@ -39,32 +34,17 @@ but slow, noisy, and sometimes absent. A barometer gives height only; a magnetom
 only and is easily disturbed.
 
 The errors are also coupled. A small attitude error projects gravity into the wrong axis, and
-that becomes acceleration, velocity, and position error:
-
-```mermaid
-flowchart TD
-    att["attitude error"] --> grav["gravity projection error"]
-    grav --> acc["acceleration error"]
-    acc --> vel["velocity error"]
-    vel --> pos["position error"]
-```
+that becomes acceleration error, then velocity error, then position error.
 
 A Kalman filter that carries all of these quantities together models that coupling through its
 covariance, so a GNSS position fix corrects not only position but the attitude and IMU biases that
 caused it to drift. The error-state form keeps attitude as a quaternion and estimates only a small
 3-D correction to it, which avoids treating the quaternion's four components as independent. See
-[DESIGN.md](DESIGN.md#error-state-kalman-filter).
+[DESIGN.md](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#error-state-kalman-filter).
 
 ### When you do not need one
 
 `fusion-nav` complements the lighter Fusion filters:
-
-```mermaid
-flowchart LR
-    ahrs["fusion-ahrs"] --> ahrs_out["attitude"]
-    alt["fusion-ahrs<br/>+ fusion-altitude"] --> alt_out["attitude<br/>altitude<br/>vertical velocity"]
-    nav["fusion-nav"] --> nav_out["attitude<br/>3D position<br/>3D velocity<br/>accelerometer bias<br/>gyroscope bias"]
-```
 
 * **attitude only** — `fusion-ahrs`, substantially simpler and cheaper.
 * **attitude, altitude, vertical velocity** (stabilization, altitude hold) — `fusion-ahrs` with
@@ -72,12 +52,14 @@ flowchart LR
 * **3D position or velocity** — `fusion-nav`. It owns its attitude rather than consuming one from
   `fusion-ahrs`, because attitude uncertainty is coupled to velocity and position uncertainty.
 
-[GOALS.md](GOALS.md) compares `fusion-nav` against other Rust crates and PX4 / ArduPilot.
+[GOALS.md](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md) compares `fusion-nav` against other Rust crates and PX4 / ArduPilot.
 
 ## Quick start
 
-```rust
+```rust,no_run
 use fusion_nav::prelude::*;
+# let (static_window, imu) = ([StaticSample::default(); 800], ImuSample::default());
+# let (lat_e7, lon_e7, height_mm, h_acc_mm, v_acc_mm) = (473_977_420, 85_455_940, 488_000, 1_500, 3_000);
 
 let mut filter = Eskf::new(Config::default());
 let dt = Seconds::from_secs(0.0025); // 400 Hz IMU
@@ -95,9 +77,9 @@ loop {
 
     // Measurement updates whenever a sensor delivers, each with its own noise. Bound a
     // receiver's accuracy the way PX4 and ArduPilot do, and fuse only a real fix —
-    // the first one places the navigation origin.
-    let fix = Geodetic::from_degrees_e7(pvt.lat, pvt.lon, pvt.height_mm);
-    let (eph, epv) = (pvt.h_acc_mm as f32 * 1e-3, pvt.v_acc_mm as f32 * 1e-3);
+    // the first one places the navigation origin. The names are a u-blox PVT's.
+    let fix = Geodetic::from_degrees_e7(lat_e7, lon_e7, height_mm);
+    let (eph, epv) = (h_acc_mm as f32 * 1e-3, v_acc_mm as f32 * 1e-3);
     let noise = PositionNoise::clamped(eph, epv, 0.5, 100.0);
     if !filter.fuse_gnss_geodetic(fix, noise).is_accepted() {
         /* diagnostics() has the detail */
@@ -107,6 +89,7 @@ loop {
     let s = filter.state();
     if s.validity.horizontal_position { /* use s.position */ }
 }
+# Ok::<(), InitError>(())
 ```
 
 `fusion_nav::prelude` carries the whole integration surface. Three runnable programs show it in
@@ -126,7 +109,7 @@ it — RMSE, NEES, and how often it called an estimate usable while the error sa
 $ cargo run --example replay -- data/flight.csv target/replay.csv data/flight.truth.csv
 ```
 
-See [data/README.md](data/README.md).
+See [data/README.md](https://github.com/wboayue/fusion-nav/blob/main/data/README.md).
 
 ## Conventions
 
@@ -222,7 +205,7 @@ velocity for the gate to judge a fix against. This happens once per quantity; ev
 fused normally.
 
 Stillness is still worth arranging where available: initialization quality dominates
-early-flight performance. See [initialization](EQUATIONS.md#initialization).
+early-flight performance. See [initialization](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#initialization).
 
 ### Seeding an attitude
 
@@ -241,6 +224,37 @@ Where both frames differ the conversion is two-sided, `q_ned←frd = r_nav ⊗ q
 only the navigation frame reports the same heading with the vehicle upside down, which a level
 bench check agrees with. The constructors' rustdoc carries the conventions, their sources, and what
 a wrong one costs.
+
+```rust
+use fusion_nav::prelude::*;
+use nalgebra::UnitQuaternion;
+
+let mut filter = Eskf::new(Config::default());
+
+// What a companion AHRS published: 2.9° nose up, heading 63°.
+let q = UnitQuaternion::from_euler_angles(0.0, 0.05, 1.1);
+
+// PX4's `vehicle_attitude.q` and ArduPilot's `get_quat_body_to_ned` are body FRD to NED
+// already, which is this crate's convention too, so this constructor converts nothing.
+let state = State {
+    attitude: Attitude::body_to_ned(q),
+    ..State::default()
+};
+
+// The seed's quality is the caller's to state, and the covariance is how: these are the
+// AHRS's own sigmas, not the static-window figures in `Initialization`.
+let covariance = Covariance::from_sigmas([
+    5.0, 5.0, 5.0, // position, meters
+    0.5, 0.5, 0.5, // velocity, meters per second
+    0.035, 0.035, 0.087, // tilt, tilt, heading — radians
+    0.1, 0.1, 0.1, // accelerometer bias
+    0.01, 0.01, 0.01, // gyroscope bias
+]);
+
+assert_eq!(filter.initialize_from(state, covariance)?, Alignment::Seeded);
+assert!((filter.state().attitude.euler_angles().2 - 1.1).abs() < 1.0e-6);
+# Ok::<(), InitError>(())
+```
 
 ## Running the filter
 
@@ -373,7 +387,7 @@ and `reset_velocity_to(fix, noise)` exist so that `DeadReckoning` is actionable.
 noise onto the covariance diagonal with no gate in the way. PX4 resets after 7 s of horizontal
 dead reckoning or 5 s of failed height fusion (`reset_timeout_max` and `hgt_fusion_timeout_max`,
 `src/modules/ekf2/EKF/common.h:515-517` at PX4 `c4e4ef98e9`), which are reasonable starting points
-for an integrator's own policy. See [rejection handling](GOALS.md#rejection-handling-report-do-not-self-recover).
+for an integrator's own policy. See [rejection handling](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#rejection-handling-report-do-not-self-recover).
 
 ## The library cannot panic
 
@@ -410,10 +424,10 @@ Known and deliberate, stated here rather than discovered in flight.
 * **Measurement latency is not modelled.** GNSS solutions arrive typically 100–200 ms stale and
   are fused as though current; the error grows with speed. PX4 fuses at a delayed horizon and
   propagates forward from it (`src/modules/ekf2/EKF/output_predictor/output_predictor.cpp`). See
-  [measurement latency](GOALS.md#measurement-latency).
+  [measurement latency](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#measurement-latency).
 * **No barometer bias state.** Drift in the reference — weather, ground effect, warm-up — becomes
   vertical position error. See
-  [barometric reference as a constant](GOALS.md#barometric-reference-as-a-constant).
+  [barometric reference as a constant](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#barometric-reference-as-a-constant).
 * **No magnetic-field states.** Hard- and soft-iron calibration is the application's job; an
   uncalibrated magnetometer gives a heading bias the filter cannot detect.
 * **Heading needs a magnetometer.** It is the only heading source the filter has, so a vehicle
@@ -421,26 +435,26 @@ Known and deliberate, stated here rather than discovered in flight.
   of the estimate is. `Aligning` hides `Degraded`, so such a vehicle's source timeouts stop
   showing in `Status` too and have to be read from `diagnostics()`. Yaw from course over ground
   and a GSF yaw estimator are the answers, both unbuilt. See
-  [alignment beyond the static window](GOALS.md#alignment-beyond-the-static-window).
+  [alignment beyond the static window](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#alignment-beyond-the-static-window).
 * **In-motion alignment is coarse.** A moving start runs and reports `Aligning`, but full
   alignment of a bare vehicle in motion is not yet built; `initialize_from` covers a held
-  estimate. See [alignment beyond the static window](GOALS.md#alignment-beyond-the-static-window).
+  estimate. See [alignment beyond the static window](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#alignment-beyond-the-static-window).
 * **Local tangent plane.** Position is Cartesian NED about a fixed origin. The geodetic
-  conversion is exact at any range ([equation (43)](EQUATIONS.md#geodetic-origin)), but a plane
+  conversion is exact at any range ([equation (43)](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#geodetic-origin)), but a plane
   leaves a curved Earth: `d` from the origin it sits `d²/2R` above the surface, 8 cm at 1 km and
   7.8 m at 10 km, so `-p_D` far out is not height and the barometer model has to correct for it.
 * **No self-recovery**, by design — see above.
 
 Features deliberately deferred (wind, terrain, optical flow, airspeed, ...) are listed in
-[DESIGN.md](DESIGN.md#initial-scope).
+[DESIGN.md](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#initial-scope).
 
 ## Further reading
 
-* [DESIGN.md](DESIGN.md) — architecture, state definition, measurement models, gating, embedded
+* [DESIGN.md](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md) — architecture, state definition, measurement models, gating, embedded
   budget, scope
-* [EQUATIONS.md](EQUATIONS.md) — the mathematics, numbered, with an equation-to-code map
-* [GOALS.md](GOALS.md) — positioning, differentiators, decisions, open questions
-* [data/README.md](data/README.md) — the replay harness and PX4 log corpus
+* [EQUATIONS.md](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md) — the mathematics, numbered, with an equation-to-code map
+* [GOALS.md](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md) — positioning, differentiators, decisions, open questions
+* [data/README.md](https://github.com/wboayue/fusion-nav/blob/main/data/README.md) — the replay harness and PX4 log corpus
 
 ## License
 

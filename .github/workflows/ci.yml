@@ -15,7 +15,7 @@ env:
 
 jobs:
   check:
-    name: fmt + clippy
+    name: fmt + clippy + doc links
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,6 +25,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets --no-deps
+      # `tools/check-anchors.sh` owns what this checks and why; its fixtures run first for
+      # the reason `data/expect.sh --self-test` does below. The README's snippets are
+      # checked by `cargo test --doc`, through the `include_str!` in `src/lib.rs`.
+      - run: tools/check-anchors.sh --self-test
+      - run: tools/check-anchors.sh
 
   test:
     name: test
