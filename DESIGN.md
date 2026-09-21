@@ -253,6 +253,40 @@ These can be added as concrete use cases require them. The initial implementatio
 focuses on the core navigation problem rather than reproducing every feature of mature autopilot
 estimators such as PX4 EKF2.
 
+## Staging the implementation
+
+`EQUATIONS.md` is implemented in stages rather than in one pass, each one verifiable on its own
+before the next builds on it. Three constraints set that order, and none of them is the order the
+equations are numbered in.
+
+**Verification leads the mathematics.** The seeded simulator, the scoring against its truth and
+the ratcheted ceilings — `examples/simulate.rs`, the `score` line, `data/scenarios.txt` — landed
+before the equations they measure, so a stage has acceptance criteria on the day it lands rather
+than an audit afterwards. The other order is worse than slower: an equation eyeballed once becomes
+the baseline everything later is compared against. It paid immediately. When nominal propagation
+(9)–(15) landed, every ceiling in `data/scenarios.txt` moved, in both directions, and `harsh_imu`
+separated from `mission` for the first time — neither of which a reading of the diff would have
+shown.
+
+**A key is pinned before the behaviour it counts exists.** `data/manifest.txt` matches the
+`summary` line and nothing else, so a behaviour with no key on that line lands entirely unpinned.
+The gate's `rejected=` was therefore added while every `fuse_*` was still a stub returning a zero
+test ratio. A key whose value is trivially constant still fixes the corpus baseline that its first
+real value is read against, so defining a statistic before there are values to put in it is the
+normal order here rather than a workaround.
+
+**`-D warnings` decides what can land alone.** The generic update of (23)–(28) has no caller of
+its own — an observation model is what calls it — so a module holding it and nothing else fails
+the build. It ships with its first observation instead of as a stage of its own, and any primitive
+introduced ahead of its user has the same problem.
+
+**A covariance that moves invalidates a bar that was set against one that did not.** While `P` was
+constant, a `Config::accuracy` threshold equal to the `Initialization` prior it is compared against
+passed by exactly zero margin, and the first real `predict` took it away; `Accuracy`'s doc comment
+records what that read on the corpus. A mission bar and an alignment prior are two numbers with two
+justifications even where they are numerically equal, and stages that move `P` are where the
+difference stops being academic.
+
 ## Design Philosophy
 
 The mathematics should be visible in the code rather than hidden behind an abstraction layer, so
