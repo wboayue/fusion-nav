@@ -452,8 +452,11 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
   which alone would give 10.4 s and 657 s. They move `Validity` only — `Status` is answering on
   the aiding timers well before then, and the alignment latch keeps `Aligning` out of it.
 - **`Status` precedence is most-severe-first**: `DeadReckoning` > `Aligning` > `Degraded` >
-  `Healthy`. Aligning outranking Degraded is deliberate and is why the 2 h corpus log now shows
-  2 transitions rather than 888.
+  `Healthy`. Aligning outranking Degraded is deliberate, and what it costs is measured: the
+  masking lasts exactly as long as a start goes unresolved. The 2 h corpus log showed 2 transitions
+  rather than 888 while its coarse attitude prior was charged the window's worst sample, and reports
+  all 888 now that (8′) bounds that prior by the average (5)–(6) level and the start resolves 0.20 s
+  in.
 - **The filter gates but never self-recovers.** On sustained rejection it reports
   `DeadReckoning`; `reset_position_to` / `reset_velocity_to` exist for the application to
   decide. Do not add automatic resets — that is a documented decision in GOALS.md. The single
