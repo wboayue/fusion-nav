@@ -5,7 +5,7 @@ use crate::frames::{Body, Ned};
 use crate::geodetic::{Geodetic, LocalOrigin};
 use crate::health::{Diagnostics, Fusion, Propagation, SourceHealth, Status, Validity};
 use crate::init::{self, Alignment, Coarse, InitError, StaticSample, baro_reference, peak_motion};
-use crate::propagate::{ImuSample, corrected_imu, propagate_nominal};
+use crate::propagate::{ImuSample, propagate};
 use crate::state::{Covariance, ErrorState, STATES, State};
 use crate::units::{
     Altitude, AltitudeNoise, HeadingNoise, MagField, Position, PositionNoise, Seconds, Velocity,
@@ -259,7 +259,7 @@ impl Eskf {
         state: State,
         covariance: Covariance,
     ) -> Result<Alignment, InitError> {
-        if !state.is_finite() || !covariance.as_matrix().iter().all(|e| e.is_finite()) {
+        if !state.is_finite() || !covariance.is_finite() {
             return Err(InitError::NotFinite);
         }
         if (0..STATES).any(|i| covariance.as_matrix()[(i, i)] <= 0.0) {
@@ -364,14 +364,17 @@ impl Eskf {
     /// then in the covariance, where nothing reports it and it never leaves. The timers
     /// advance, since the `dt` was fine and only the sample was not.
     ///
-    /// A state that comes out of (11)–(14) non-finite is discarded rather than stored, as
-    /// [`Propagation::StateNotFinite`]. A finite sample is not enough to guarantee a finite
-    /// result: f32 has a finite range and `a_n Δt` can leave it.
+    /// A step that comes out of (11)–(14) or (22) non-finite is discarded rather than
+    /// stored, as [`Propagation::StateNotFinite`], and the state and the covariance are
+    /// discarded together: a finite sample is not enough to guarantee a finite result, since
+    /// f32 has a finite range and both `a_n Δt` and `F P Fᵀ` can leave it. Committing one
+    /// half would leave the filter reporting an estimate whose uncertainty describes a
+    /// different step.
     ///
-    /// **Stub.** The covariance does not propagate. The nominal state advances by dead
-    /// reckoning, (9)–(15), while its uncertainty stays where initialization put it, so
-    /// [`Status`] and [`Validity`] answer on a covariance that has not grown since the
-    /// window — equations (16)–(22) are what make them move.
+    /// The covariance only grows here. (22) adds `Q` and (20) spreads what is already there;
+    /// nothing in propagation takes uncertainty back out, which is the measurement update's
+    /// job. So an unaided filter's [`Validity`] flags go false in the order their variances
+    /// cross [`Config::accuracy`](crate::Config::accuracy), and [`Status`] follows.
     pub fn predict(&mut self, imu: ImuSample, dt: Seconds) -> Propagation {
         if !self.initialized {
             return Propagation::NotInitialized;
@@ -399,13 +402,15 @@ impl Eskf {
             return self.refuse_step(Propagation::NotFinite);
         }
 
-        // Propagated into a local first: (11)–(14) can overflow f32 on a finite sample, and
-        // a state written before it is checked is one the filter has already published.
-        let propagated = propagate_nominal(self.state, corrected_imu(imu, &self.state), dt);
+        // Propagated into a local first: (11)–(14) and (22) can both overflow f32 on a
+        // finite sample, and a state written before it is checked is one the filter has
+        // already published.
+        let propagated = propagate(self.state, self.covariance, imu, dt, &self.config.imu);
         if !propagated.is_finite() {
             return self.refuse_step(Propagation::StateNotFinite);
         }
-        self.state = propagated;
+        self.state = propagated.state;
+        self.covariance = propagated.covariance;
         Propagation::Propagated
     }
 
@@ -1002,6 +1007,49 @@ mod tests {
             .as_secs()
     }
 
+    /// The margin [`Accuracy`]'s defaults were chosen for, measured rather than derived: a
+    /// static start with a magnetometer in the window holds its tilt for 3.79 s of unaided
+    /// propagation and its heading for 35.4 s, at [`ImuNoise`](crate::ImuNoise)'s defaults.
+    ///
+    /// Not the `σ_g² t` the white-noise density alone would give — that is 10.4 s and 657 s.
+    /// The gyroscope-bias prior reaches attitude through (20)'s `−I Δt` and accumulates as
+    /// `σ_βg² t²`, which overtakes the white-noise term within two seconds and is what actually
+    /// sets both figures. A test rather than a comment because [`Accuracy`] cites the numbers:
+    /// change a bar or a density and this says by how much the margin moved.
+    #[test]
+    fn an_unaided_start_holds_its_attitude_for_the_margin_the_defaults_buy() {
+        let mut filter = Eskf::new(Config::default());
+        assert_eq!(
+            filter.initialize(&window_with_mag(), Seconds::from_secs(0.25)),
+            Ok(Alignment::Static)
+        );
+
+        let dt = Seconds::from_secs(0.005);
+        let holding_still = ImuSample {
+            accel: Acceleration::body(0.0, 0.0, -GRAVITY),
+            ..ImuSample::default()
+        };
+        let (mut tilt_held, mut heading_held) = (None, None);
+
+        for step in 1..8_000 {
+            assert_eq!(filter.predict(holding_still, dt), Propagation::Propagated);
+            let elapsed = step as f32 * dt.as_secs();
+            let validity = filter.validity();
+            if tilt_held.is_none() && !validity.tilt {
+                tilt_held = Some(elapsed);
+            }
+            if heading_held.is_none() && !validity.heading {
+                heading_held = Some(elapsed);
+                break;
+            }
+        }
+
+        let tilt = tilt_held.expect("tilt leaves the bar inside 40 s");
+        let heading = heading_held.expect("heading leaves the bar inside 40 s");
+        assert!((tilt - 3.79).abs() < 0.05, "tilt held {tilt} s");
+        assert!((heading - 35.4).abs() < 0.2, "heading held {heading} s");
+    }
+
     #[test]
     fn predict_before_initialize_is_refused() {
         let mut filter = Eskf::new(Config::default());
@@ -1019,6 +1067,66 @@ mod tests {
             Propagation::Propagated
         );
         assert_eq!(elapsed(&filter), DT.as_secs());
+    }
+
+    /// The `Eskf`-level check that (16)–(22) are wired at all: a step grows the uncertainty it
+    /// was initialized with. Before this stage a static start held `Initialization`'s sigmas
+    /// for the whole flight.
+    #[test]
+    fn a_step_grows_the_covariance() {
+        let mut filter = initialized();
+        let before = *filter.covariance();
+
+        assert_eq!(
+            filter.predict(ImuSample::default(), DT),
+            Propagation::Propagated
+        );
+
+        let after = filter.covariance();
+        for state in [
+            ErrorState::PositionNorth,
+            ErrorState::VelocityNorth,
+            ErrorState::AttitudeX,
+            ErrorState::GyroBiasX,
+        ] {
+            assert!(
+                after.variance(state) > before.variance(state),
+                "{state:?}: {} did not grow from {}",
+                after.variance(state),
+                before.variance(state),
+            );
+        }
+    }
+
+    /// A refused step commits neither half. The state and the covariance advance together or
+    /// not at all: a state stored beside the covariance of a different step reports an estimate
+    /// whose uncertainty describes something else, which is worse than the refusal it replaces.
+    ///
+    /// The seed is finite and its diagonal positive, so `initialize_from` accepts it, and one
+    /// step of `F P Fᵀ` then leaves f32's range — the covariance's version of the overflow
+    /// (11)–(14) already had.
+    #[test]
+    fn an_overflowing_covariance_commits_neither_half() {
+        let mut filter = Eskf::new(Config::default());
+        let seed = State {
+            velocity: Velocity::ned(1.0, 2.0, 3.0),
+            ..State::default()
+        };
+        let enormous = Covariance::from_matrix(
+            crate::state::CovarianceMatrix::from_diagonal_element(f32::MAX),
+        );
+        assert_eq!(
+            filter.initialize_from(seed, enormous),
+            Ok(Alignment::Seeded)
+        );
+
+        assert_eq!(
+            filter.predict(ImuSample::default(), DT),
+            Propagation::StateNotFinite
+        );
+        assert_eq!(filter.state().velocity, seed.velocity);
+        assert_eq!(*filter.covariance(), enormous);
+        assert_eq!(filter.diagnostics().propagation.refused_state_not_finite, 1);
     }
 
     /// The `Eskf`-level check that (11) is wired at all: a sample reporting *no* specific
