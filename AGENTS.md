@@ -263,6 +263,16 @@ key — against fixtures whose answer is known by construction. Keep them fixtur
 there emits rows and never a count, a rate or a verdict, so the expected values stay literals
 beside their assertions.
 
+**A test of a guard is worth mutating.** Break the guard, run the test, and see it fail before
+believing it. A passing test proves nothing about a guard that was never exercised, and the
+failure mode is not hypothetical: `data/expect.sh`'s fixture for pathname expansion passed against
+code with the protection removed, because with one matching file both the line and the
+expectations expand the same way and the bug cancels itself out. Two files is what made it bite.
+The same pass caught a prefix match that read `pos_h_max` where `pos_h` was asked for, and a
+missing numeric check that let `nees_pos=none` read as zero and clear every ceiling. Each took one
+`sed` and one run. Where the mutation is not obvious, the fixture's comment says which one it
+survives — that is the sentence a later reader needs, not the assertion, which they can see.
+
 **One statistic, one implementation.** The Rust replay harness is the only thing that *computes* a
 statistic; it emits per-fusion rows and scalar keys on the `summary` and `score` lines. The Python
 tools read those and aggregate, plot, or compare against the EKF2 reference — they never recompute
