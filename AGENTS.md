@@ -32,11 +32,13 @@ covering the area before starting work in it.
 - **#10** — replay validation. Consistency on the corpus, which has no truth; accuracy on
   simulation and INSANE, which do. The two measure different things and are not collapsed.
 
-**The PR that lands a change updates the issues it falsifies, in the same PR.** A tracker is not a
+**A merge is not finished until the issues it falsified are updated.** A tracker is not a
 changelog: it carries ordering, what each stage leaves its successors, and the measured numbers a
 later decision gets argued from, so landed work makes some of it false rather than merely
-incomplete. The closing keyword is the easy half; the rest is the tracker covering the area and
-every issue whose *premise* moved. #97 is the measure of that cost — afterwards #31 and #10 still
+incomplete. The update immediately follows the merge rather than riding in the PR: an issue body
+is not code, it has no review to pass and no branch to rebase, and the figures it should quote are
+the ones the merged run printed. The closing keyword is the easy half; the rest is the tracker
+covering the area and every issue whose *premise* moved. #97 is the measure of that cost — afterwards #31 and #10 still
 called #77 and #85 the next work, #86 still claimed to block a number that had shipped on harness
 fixtures instead, #89 still said these scenarios could not fail overconfident while `moving_start`
 was reading `nees_pos=10.20` on a committed line, #59 still argued from a tilt prior that no longer
