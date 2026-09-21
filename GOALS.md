@@ -208,15 +208,17 @@ PX4 publishes `xy_valid`, `z_valid`, `v_xy_valid`, `v_z_valid` and `heading_good
 alongside the estimate.
 
 The single ladder cannot express what a coarse start produces: position as good as the receiver
-the moment a fix is adopted, while attitude is still converging. It also masks — the corpus log
-that starts in motion reports `Aligning` throughout, and its 888 aiding transitions disappear
-behind it.
+the moment a fix is adopted, while attitude is still converging. It also masks: `Aligning`
+outranks `Degraded`, so for as long as a start goes unresolved the aiding the filter is or is not
+getting never reaches `Status` at all, which cost the corpus log that starts in motion all 888 of
+its aiding transitions while its attitude prior was charged that window's worst sample (#77).
 
 **Decided:** keep `Status` as the one-glance summary and add `Validity` alongside it on the state,
 six flags derived from the covariance against `Config::accuracy`. Horizontal and vertical
 are separate because sources are. Validity also requires that the quantity was ever established,
-since a coarse start's untouched prior is tight and meaningless — position and velocity until the
-first fix, and heading until a magnetometer is fused, which stillness never supplies.
+since an untouched prior is tight and meaningless — position and velocity until the first fix
+after a start the window did not show at rest, and heading until a magnetometer is fused, which
+stillness never supplies.
 
 `Config::accuracy` is deliberately the exception to [differentiator 7](#7-configuration-derived-not-demanded):
 how accurate is good enough is a property of the mission, not of the hardware or the mathematics,
@@ -309,8 +311,10 @@ The options, in the order they are worth doing:
    (`2c42096b`) measures `ā_n` = 0.14 m s⁻², against the 0.39 m s⁻² of noise that differencing a
    1 Hz receiver over 1 s produces — the vehicle is vibrating on the spot, not translating, so
    (5′) would subtract noise. On the same window the specific force peaks 5.46 m s⁻² off gravity
-   while the *averaged* specific force is 0.93° off plumb, which says the tilt prior loses far
-   more by charging a peak against an average than option 4 could recover there. Judging it needs
+   while the *averaged* specific force it levels sits under a degree off plumb (`roll0=0.42
+   pitch0=-0.89` in `data/manifest.txt`, which is what pins it). The tilt prior lost far more by
+   charging that peak against that average than option 4 could have recovered here, and #77 has
+   since collected it. Judging option 4 itself needs
    a log that actually accelerates, which the simulator's `moving_start` now is — a banked,
    climbing turn from the first sample, with truth beside it. Reading a verdict off it needs the
    scoring of #16.
@@ -334,9 +338,11 @@ Two API decisions shape the rest, and are worth settling early:
 * **`Aligning` is not `Degraded`.** Degraded means aided and drifting; aligning means the
   attitude itself has not converged. Conflating them would mislead a controller in precisely the
   phase where the distinction matters most. **Settled**, with `Aligning` the more severe of the
-  two. The cost is visible in the corpus: the one log that starts in motion reports `Aligning`
-  throughout and its 888 aiding transitions are masked behind it, because nothing yet shrinks a
-  covariance and the filter therefore never finishes aligning.
+  two. The cost is real and the corpus has measured it: `Aligning` masked all 888 of the
+  in-motion log's aiding transitions for as long as its attitude prior stayed above `Accuracy`.
+  #77 brought that prior down to what the window supports, the start resolves 0.20 s in, and the
+  transitions are reported. Which is the shape of the trade — the masking lasts exactly as long
+  as a start takes to resolve, and that is a number the priors set.
 
   Leaving `Aligning` is **one-way**, and that is a second decision the corpus forced once `P`
   began to grow. Read live, the bar puts a filter back into `Aligning` whenever tilt uncertainty

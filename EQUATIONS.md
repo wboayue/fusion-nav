@@ -6,7 +6,8 @@
 > corrects them — every `fuse_*` accepts with a zero test ratio, (23)–(28) are unwritten, and
 > nothing in propagation takes uncertainty back out; the only things that narrow a block are the
 > resets of (41), which an application asks for. Also built: the attitude and biases of (5)–(7), the
-> initial covariance (8), the barometric reference `α₀` of (30), the window's own acceleration
+> initial covariance (8) and the bound (8′) a coarse window earns, the barometric reference `α₀` of
+> (30), the window's own acceleration
 > `ā_n` of (5′) — measured and reported though nothing levels with it yet — the geodetic origin
 > (43)–(44), the angle wrap of (35), and the symmetry enforcement of (42), now called after every
 > covariance step; the [equation-to-code mapping](#equation-to-code-mapping) marks the functions
@@ -234,6 +235,50 @@ P_0 = \mathrm{diag}\left( \sigma_{p,0}^2 I,\quad \sigma_{v,0}^2 I,\quad \mathrm{
 Yaw uncertainty $`\sigma_{\psi,0}`$ is set much larger than tilt uncertainty
 $`\sigma_{\text{tilt},0}`$: roll and pitch come from gravity and are well determined, whereas yaw
 comes from the magnetometer and inherits its calibration error.
+
+A window that is *not* a static interval keeps that shape and reads both figures off what it
+measured. (5)–(6) level **averages**, so what bounds the attitude they yield is how far those
+averages sit from what a still vehicle reads — not how far the worst sample in the window was:
+
+**(8′)**
+
+```math
+\sigma_{\text{tilt},0} = \max\left( \sigma_{\text{tilt}},\quad
+\frac{\bigl|\, \lVert \bar f \rVert - \gamma \,\bigr|}{\gamma},\quad
+\bigl\lVert (I - \hat d\, \hat d^\mathsf{T})\, \bar\omega_r\, T \bigr\rVert,\quad
+\angle\bigl( \bar f_1,\, \bar f_2 \bigr) \right)
+```
+
+```math
+\sigma_{\psi,0} = \min\left( \max\bigl( \sigma_\psi,\; \tan\delta \cdot \sigma_{\text{tilt},0},\; \bigl| \hat d \cdot \bar\omega_r\, T \bigr|,\; \lvert \psi_2 - \psi_1 \rvert \bigr),\; \frac{\pi}{\sqrt 3} \right),
+\qquad
+\tan\delta = \frac{\bigl| \bar m \cdot \hat d \bigr|}{\bigl\lVert (I - \hat d\, \hat d^\mathsf{T})\, \bar m \bigr\rVert}
+```
+
+with $`T`$ the window's span, $`\hat d = -\bar f / \lVert \bar f \rVert`$ the direction (5)
+levelled to, and the subscripts 1 and 2 the same averages taken over the first and the second
+**half** of the window — $`\psi_i`$ being the heading (6) yields from that half alone, so the
+declination cancels. The rotation charged is what (7) did *not* take,
+$`\bar\omega_r = \bar\omega - \hat\beta_{g,0}`$: a window at rest commits the whole average as
+gyroscope bias, and the same quantity cannot be both removed from the state and charged to the
+prior around it. Where (7) left the bias at zero, $`\bar\omega_r = \bar\omega`$.
+
+Past the configured floor and the specific force that is not gravity, the attitude is bounded by
+two witnesses to how far it moved while it was being averaged, and **both** are needed because
+each is blind to what the other sees. The gyroscope's net rotation splits about $`\hat d`$:
+across it spoils the tilt, since $`\dot{\hat g} = -\omega \times \hat g`$ has magnitude
+$`\lVert \omega_\perp \rVert`$, while about it turns the vehicle without moving that vector
+in body axes and spoils the heading instead. But a net rotation cancels for a vehicle that swings
+out and comes back, charging nothing where the attitude (5) commits is the middle of an arc
+already left. The disagreement between the window's two halves never cancels — and cannot see a
+*coordinated* turn, where the specific force stays put in body axes while the vehicle banks, so
+every average agrees and the tilt is wrong by the bank angle. Neither alone is a bound; the
+evidence for that is in `data/scenarios.txt`.
+
+$`\sigma_{\psi,0} = \pi/\sqrt 3`$, a heading uniform on the circle, where no magnetometer
+observed the window, where its field has no horizontal part, or where the bound above would claim
+more spread than a circle holds. The dip $`\delta`$ is read off the same averaged field (6) takes
+its heading from, and is the rate at which a tilt error turns that heading.
 
 ## Nominal state propagation
 
@@ -745,7 +790,8 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | equations | concept | module | function |
 | --------- | ------- | ------ | -------- |
 | (1)–(4) | state definitions | `state.rs` | `State`, `ErrorState` |
-| (5)–(8) | static initialization | `init.rs` | `level_from_accel`, `heading_from_mag`, `nominal_state`, `classify`, `attitude_sigmas`, `initial_covariance` |
+| (5)–(8) | static initialization | `init.rs` | `measure`, `level_from_accel`, `heading_from_mag`, `nominal_state`, `classify`, `attitude_sigmas`, `initial_covariance` |
+| (8′) | what a coarse window supports | `init.rs` | `coarse_sigmas`, `window_drift`, `heading_sensitivity` |
 | (5′) `ā_n` | in-motion levelling | `init.rs` | `inertial_acceleration`; the correction itself is unbuilt |
 | (30) `α₀` | barometric reference | `init.rs` | `baro_reference` |
 | (9)–(11) | bias correction, gravity | `propagate.rs` | `ImuSample`, `corrected_imu` |

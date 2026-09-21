@@ -4,7 +4,7 @@ use crate::config::Config;
 use crate::frames::{Body, Ned};
 use crate::geodetic::{Geodetic, LocalOrigin};
 use crate::health::{Diagnostics, Fusion, Propagation, SourceHealth, Status, Validity};
-use crate::init::{self, Alignment, Coarse, InitError, StaticSample, baro_reference, peak_motion};
+use crate::init::{self, Alignment, Coarse, InitError, Measured, StaticSample, baro_reference};
 use crate::propagate::{ImuSample, propagate};
 use crate::state::{Covariance, ErrorState, STATES, State};
 use crate::units::{
@@ -172,6 +172,12 @@ impl Eskf {
     /// moving deck, say — should say so through [`initialize_from`](Self::initialize_from)
     /// rather than let the first GNSS fix arrive as a large innovation.
     ///
+    /// Whether those priors count as *established* is the window's answer, not the
+    /// alignment's: a vehicle that held still through it was where the origin says and
+    /// was not moving, whether or not the window was long enough to align an attitude
+    /// from. A window taken in motion establishes neither, and the first fix is adopted
+    /// rather than fused — see [`Fusion::Reset`].
+    ///
     /// Heading is the one thing stillness cannot supply. Gravity pins roll and pitch;
     /// nothing pins the rotation about it, so a window carrying no magnetometer leaves
     /// yaw unobserved however long and however still it was, and
@@ -194,23 +200,17 @@ impl Eskf {
         window: &[StaticSample],
         dt: Seconds,
     ) -> Result<Alignment, InitError> {
-        let alignment = self.alignment_of(window, dt)?;
-        // One answer to "was the vehicle on the ground", read by both the gyroscope bias
-        // of (7) and the barometric reference of (30). Measured from the window rather
-        // than read off `alignment`, because a window too short to align an attitude from
-        // can still be a window of a parked vehicle.
-        let (peak_gyro, peak_accel_deviation) = peak_motion(window);
-        let at_rest = init::at_rest(peak_gyro, peak_accel_deviation, &self.config.init);
-        let state = init::nominal_state(window, self.config.magnetic_declination, at_rest);
-        self.apply_alignment(alignment, state);
+        let measured = init::measure(window, dt)?;
+        let alignment = init::classify(&measured, &self.config.init);
+        // One answer to "was the vehicle on the ground", read by the gyroscope bias of
+        // (7), the barometric reference of (30), and what this start establishes.
+        // Measured from the window rather than read off `alignment`, because a window too
+        // short to align an attitude from can still be a window of a parked vehicle.
+        let at_rest = init::at_rest(&measured, &self.config.init);
+        let state = init::nominal_state(&measured, self.config.magnetic_declination, at_rest);
+        self.apply_alignment(alignment, state, &measured, at_rest);
         if at_rest {
             self.baro_reference = baro_reference(window);
-        }
-        // Stillness observes tilt and gyroscope bias; it does not observe yaw. A window
-        // with no magnetometer anywhere in it leaves heading a prior rather than an
-        // estimate, and says so, whatever the alignment was.
-        if !window.iter().any(|sample| sample.mag.is_some()) {
-            self.unestablished.heading = true;
         }
         self.note_alignment();
         Ok(alignment)
@@ -232,7 +232,10 @@ impl Eskf {
         window: &[StaticSample],
         dt: Seconds,
     ) -> Result<Alignment, InitError> {
-        init::classify(window, dt, &self.config.init)
+        Ok(init::classify(
+            &init::measure(window, dt)?,
+            &self.config.init,
+        ))
     }
 
     /// Start from a single IMU sample, with no window at all.
@@ -264,23 +267,27 @@ impl Eskf {
         if !window[0].is_finite() {
             return Err(InitError::NotFinite);
         }
-        let (peak_gyro, peak_accel_deviation) = peak_motion(&window);
+        // A window of one, spanning no time: its own average, with no rotation to smear
+        // it and no second velocity to difference against — a caller with GNSS in hand
+        // has a window, not this entry point.
+        let measured = Measured::over(&window, Seconds::ZERO);
         let alignment = Alignment::Coarse(Coarse::NotStationary {
-            peak_gyro,
-            peak_accel_deviation,
-            // One sample is not an average, so no rotation smears it.
-            span: Seconds::ZERO,
-            // And one sample spans no time, so there is nothing to difference a velocity
-            // over: a caller with GNSS in hand has a window, not this entry point.
-            inertial_accel: None,
+            peak_gyro: measured.peak_gyro,
+            peak_accel_deviation: measured.peak_deviation,
+            span: measured.span,
+            inertial_accel: measured.inertial_accel,
         });
         // The same rule `initialize` applies: the gyroscope bias is worth taking only
         // where the sample says the vehicle was on the ground, and one reading of a
         // stationary gyroscope is a noisier bias than a window's average but a better
         // one than zero.
-        let at_rest = init::at_rest(peak_gyro, peak_accel_deviation, &self.config.init);
-        let state = init::nominal_state(&window, self.config.magnetic_declination, at_rest);
-        self.apply_alignment(alignment, state);
+        let at_rest = init::at_rest(&measured, &self.config.init);
+        let state = init::nominal_state(&measured, self.config.magnetic_declination, at_rest);
+        // That reading establishes nothing, which is why it is not passed on as one. A
+        // window shows rest by holding still over a span of time and this one spans none:
+        // an accelerometer reading `γ` for an instant is a hover as readily as a vehicle
+        // on the ground, and this entry point exists for the launches that are moving.
+        self.apply_alignment(alignment, state, &measured, false);
         // The barometric reference is left alone: one sample does not establish one, and
         // a restart at altitude should keep the reference the flight began with.
         self.note_alignment();
@@ -951,25 +958,34 @@ impl Eskf {
     /// the alignment was. The barometric reference is the caller's to set, because only it
     /// knows whether this start establishes a new one.
     ///
-    /// A static start clears the origin. It declares position zero to be where the
-    /// vehicle is now, and an origin held from before says zero is somewhere else; the
-    /// next geodetic fix places a new one. A coarse start keeps it, because its position
-    /// is unestablished and the first fix is adopted about the origin the flight already
-    /// has.
-    fn apply_alignment(&mut self, alignment: Alignment, state: State) {
-        let (sigma_tilt, sigma_yaw) = init::attitude_sigmas(&self.config.init, alignment);
+    /// A start the window showed at rest clears the origin, on the same evidence that
+    /// establishes its position: both are the claim *zero is here*, and an origin held
+    /// from before says zero is somewhere else. The next geodetic fix places a new one.
+    /// A start taken in motion keeps it, because its position is unestablished and the
+    /// first fix is adopted about the origin the flight already has. The two move
+    /// together or a still short window would report an established position of `(0,0,0)`
+    /// about an origin nothing put under it.
+    fn apply_alignment(
+        &mut self,
+        alignment: Alignment,
+        state: State,
+        measured: &Measured,
+        settled: bool,
+    ) {
+        // The bias of (7) as committed, so that what it absorbed is not charged a second
+        // time as motion the window could not vouch for; see `init::coarse_sigmas`.
+        let (sigma_tilt, sigma_yaw) =
+            init::attitude_sigmas(&self.config.init, alignment, measured, state.gyro_bias);
         self.covariance = init::initial_covariance(&self.config.init, sigma_tilt, sigma_yaw);
         self.state = state;
         self.diagnostics = Diagnostics::default();
-        self.unestablished = Unestablished::after(alignment);
-        if alignment.is_static() {
+        self.unestablished = Unestablished::after(settled, measured.field.is_some());
+        if settled {
             self.origin = None;
         }
         self.initialized = true;
-        // A fresh start is unaligned until its own covariance says otherwise, and the
-        // caller has bookkeeping left to do — a window with no magnetometer marks heading
-        // unestablished after this returns — so the latch is set by `note_alignment` at the
-        // end of each entry point rather than here.
+        // A fresh start is unaligned until its own covariance says otherwise, which
+        // `note_alignment` reads at the end of each entry point.
         self.aligned = false;
     }
 
@@ -1013,22 +1029,28 @@ impl Eskf {
 }
 
 impl Unestablished {
-    /// What an alignment leaves unestablished.
+    /// What a start leaves unestablished, read off what its window showed rather than off
+    /// which [`Alignment`] it earned.
     ///
-    /// A static start defines the origin as where the vehicle was and its velocity as
-    /// zero, and both are true by construction. A coarse start can say neither: the
-    /// vehicle was moving, through somewhere the filter cannot name. Those wait for the
-    /// first fix.
+    /// `settled` is [`init::at_rest`]'s verdict. A vehicle that held still through the
+    /// window is where the origin says it is and is not moving, which is the whole of
+    /// what a static start ever claimed about position and velocity — and a window too
+    /// short to align an attitude from claims it just as honestly, since
+    /// [`init::classify`] reports a short window as [`Coarse::WindowTooShort`] before it
+    /// ever measures motion. A window taken in motion establishes neither: the vehicle
+    /// passed through somewhere the filter cannot name. Those wait for the first fix.
     ///
-    /// Heading is unestablished after a coarse start even when a magnetometer was there,
-    /// because levelling its reading needs the tilt that start did not get; the still
-    /// window that carried none is [`Eskf::initialize`]'s to add.
-    const fn after(alignment: Alignment) -> Self {
-        let coarse = matches!(alignment, Alignment::Coarse(..));
+    /// Heading needs a magnetometer on top of stillness. Gravity pins tilt and nothing
+    /// pins the rotation about it, so a window carrying no field leaves yaw a prior
+    /// however long and however still it was —
+    /// [`Initialization::sigma_yaw`](crate::Initialization::sigma_yaw) is 0.35 rad
+    /// against an [`Accuracy::heading`](crate::Accuracy::heading) of 0.52, so the
+    /// covariance alone would report a yaw nobody measured as good.
+    const fn after(settled: bool, observed_field: bool) -> Self {
         Self {
-            position: coarse,
-            velocity: coarse,
-            heading: coarse,
+            position: !settled,
+            velocity: !settled,
+            heading: !(settled && observed_field),
         }
     }
 }
@@ -1059,7 +1081,7 @@ mod tests {
     use crate::config::GRAVITY;
     use crate::geodetic::LocalOrigin;
     use crate::health::Refusal;
-    use crate::init::tests::{gravity_at, still};
+    use crate::init::tests::{gravity_at, still, turning};
     use crate::state::ErrorState;
     use crate::units::{Acceleration, AngularRate, Radians};
 
@@ -1764,10 +1786,8 @@ mod tests {
         );
         assert!(!filter.is_aligned());
 
-        let mut window = [still(); 8];
-        window[3].imu.gyro = AngularRate::body(0.0, 0.0, 0.4);
         let _ = filter
-            .initialize(&window, Seconds::from_secs(0.25))
+            .initialize(&turning(0.0, 0.4, 0.0), Seconds::from_secs(0.25))
             .expect("moving, not unusable");
         let tilt = filter.covariance().variance(ErrorState::AttitudeX);
         assert!(
@@ -1891,8 +1911,11 @@ mod tests {
     /// A filter that started while moving: it knows neither where it is nor how fast.
     fn coarse() -> Eskf {
         let mut filter = Eskf::new(Config::default());
-        let mut window = [still(); 8];
-        window[3].imu.gyro = AngularRate::body(0.0, 0.4, 0.0);
+        let mut window = turning(0.0, 0.4, 0.0);
+        // No magnetometer, so heading stays a prior whatever the covariance says.
+        for sample in &mut window {
+            sample.mag = None;
+        }
         let alignment = filter
             .initialize(&window, Seconds::from_secs(0.25))
             .expect("moving, not unusable");
@@ -2117,14 +2140,14 @@ mod tests {
     }
 
     #[test]
-    fn a_coarse_start_needs_more_than_a_magnetometer_to_call_heading_valid() {
-        // Having observed the quantity is necessary, not sufficient: a coarse start
-        // widened yaw far past `Accuracy::heading`, and only fusion brings it back down.
+    fn a_moving_start_needs_more_than_a_magnetometer_to_call_heading_valid() {
+        // Having observed the quantity is necessary, not sufficient. This window's halves
+        // level 0.4 rad apart, and the dip scales that into 0.78 rad of yaw — half as
+        // much again as `Accuracy::heading`. Fusing a heading establishes it and the
+        // covariance still refuses it.
         let mut filter = Eskf::new(Config::default());
-        let mut window = window_with_mag();
-        window[3].imu.gyro = AngularRate::body(0.0, 0.4, 0.0);
         let alignment = filter
-            .initialize(&window, Seconds::from_secs(0.25))
+            .initialize(&turning(0.0, 0.4, 0.0), Seconds::from_secs(0.25))
             .expect("moving, not unusable");
         assert!(matches!(alignment, Alignment::Coarse(..)));
         assert!(!filter.validity().heading, "the window was moving");
@@ -2139,8 +2162,51 @@ mod tests {
         );
         assert!(
             !filter.validity().heading,
-            "the covariance still says yaw is somewhere on the circle"
+            "established now, and the covariance says the tilt it was levelled by is not \
+             worth a heading"
         );
+    }
+
+    #[test]
+    fn a_still_short_window_calls_its_heading_valid_at_once() {
+        // #85. The same field, the same stillness, and the only thing wrong with the
+        // window is its length — which `classify` reports before it measures motion, so
+        // the coarse verdict says nothing about whether the vehicle moved. It did not.
+        let mut filter = Eskf::new(Config::default());
+        let alignment = filter
+            .initialize(&window_with_mag(), Seconds::from_secs(0.1))
+            .expect("short, so coarse");
+        assert!(matches!(
+            alignment,
+            Alignment::Coarse(Coarse::WindowTooShort { .. })
+        ));
+        assert!(
+            filter.validity().heading,
+            "a still window observed a heading whatever its length"
+        );
+        assert!(filter.is_aligned(), "and nothing is left to resolve");
+    }
+
+    #[test]
+    fn a_still_short_window_establishes_where_it_sat() {
+        // The other half of #85, on the same evidence: a vehicle that held still was
+        // where the origin says and was not moving, so there is an estimate for the first
+        // fix to be gated against rather than adopted over.
+        let mut filter = Eskf::new(Config::default());
+        let _ = filter
+            .initialize(&window_with_mag(), Seconds::from_secs(0.1))
+            .expect("short, so coarse");
+        assert!(filter.validity().horizontal_position);
+        assert!(filter.validity().horizontal_velocity);
+        let outcome = filter.fuse_gnss_position(
+            Position::ned(0.2, -0.1, 0.0),
+            PositionNoise::horizontal_vertical(1.5, 1.5),
+        );
+        assert!(
+            !outcome.is_reset(),
+            "adoption is for a start that established nothing"
+        );
+        assert!(outcome.is_accepted());
     }
 
     #[test]
@@ -2224,9 +2290,13 @@ mod tests {
     #[test]
     fn a_vehicle_with_only_a_barometer_has_height_and_nothing_horizontal() {
         let mut filter = Eskf::new(Config::default());
+        // Moving, so that nothing but the barometer has established anything: a window
+        // taken at rest establishes its own position, short or not. A moving one
+        // establishes no barometric reference either, so the application names it.
         let _ = filter
-            .initialize(&window_with_baro([100.0; 8]), Seconds::from_secs(0.1))
-            .expect("short, so coarse");
+            .initialize(&moving_window_at(100.0), Seconds::from_secs(0.25))
+            .expect("moving, not unusable");
+        assert!(filter.set_baro_reference(Altitude::from_meters(100.0)));
         assert!(
             filter
                 .fuse_baro_altitude(Altitude::from_meters(100.0), AltitudeNoise::from_sigma(2.0))
@@ -2297,9 +2367,11 @@ mod tests {
         // would otherwise be adopted outright.
         let mut filter = initialized();
         assert!(filter.set_origin(zurich()));
+        let mut window = [still(); 8];
+        window[3].imu.gyro = AngularRate::body(0.0, 0.4, 0.0);
         let _ = filter
-            .initialize(&[still(); 8], Seconds::from_secs(0.1))
-            .expect("short, so coarse");
+            .initialize(&window, Seconds::from_secs(0.25))
+            .expect("moving, so position is unestablished");
         let noise = PositionNoise::horizontal_vertical(1.5, 1.5);
 
         let nonsense = Geodetic::from_degrees(f64::NAN, 8.5, 488.0);
@@ -2531,20 +2603,32 @@ mod tests {
     }
 
     #[test]
-    fn a_static_start_clears_the_origin_and_a_coarse_one_keeps_it() {
+    fn the_origin_follows_stillness_and_not_the_alignment() {
+        // Two halves of one claim, which have to move together: a window that held still
+        // says zero is here, and that is the whole of what lets it report an established
+        // position. A short one says it as honestly -- `classify` calls it coarse before
+        // it measures motion -- so keying the origin on the verdict would leave such a
+        // start reporting an established (0,0,0) about an origin nothing put under it.
         let mut filter = initialized();
         assert!(filter.set_origin(zurich()));
         let _ = filter
             .initialize(&[still(); 8], Seconds::from_secs(0.1))
             .expect("short, so coarse");
+        assert_eq!(filter.origin(), None, "still, so zero is here now");
+        assert!(filter.validity().horizontal_position);
+
+        assert!(filter.set_origin(zurich()));
+        let _ = filter
+            .initialize(&turning(0.0, 0.4, 0.0), Seconds::from_secs(0.25))
+            .expect("moving, not unusable");
         assert!(
             filter.origin().is_some(),
-            "a coarse restart keeps the flight's origin"
+            "a restart in motion keeps the flight's origin"
         );
-        let _ = filter
-            .initialize(&[still(); 8], Seconds::from_secs(0.25))
-            .expect("a 2 s window");
-        assert_eq!(filter.origin(), None, "zero is here now, wherever here is");
+        assert!(
+            !filter.validity().horizontal_position,
+            "and says nothing about where it is until a fix is adopted about that origin"
+        );
     }
 
     #[test]

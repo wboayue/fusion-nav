@@ -170,16 +170,21 @@ reference the flight began with rather than calling its own altitude the ground.
 returns `false` for a value that is not a number.
 
 A window that is short or moving is **not refused**. It gives a coarse start: attitude
-uncertainty inflated to match the motion actually measured, and `Status::Aligning` until tilt
-and heading are within `Config::accuracy`. A filter that will not start is worth less than one
+uncertainty bounded by what that window itself supports — equations (5)–(6) level its *averages*,
+so what widens the prior is how far those averages are from what a still vehicle reads, how far
+the vehicle turned while they were being taken, and how far the window's two halves disagree,
+rather than the worst sample in it — with `Status::Aligning` until tilt and heading are within
+`Config::accuracy`. A window that is only *short*, taken with
+the vehicle at rest, starts from the static figures and establishes what it saw: stillness is
+measured from the window, never read off the alignment. A filter that will not start is worth less than one
 that starts and says how much to trust it — refusing would rule out moving decks, hand launches,
 and restarts at altitude.
 
 `StaticSample::velocity` is what a moving window has that a still one does not need. Two GNSS
 velocities in the window give `ā_n`, the vehicle's own acceleration, which is the part of the
 specific force that is not gravity — and `Coarse::NotStationary` reports it beside the motion it
-measured. Levelling with it, equation (5′), is not built: a coarse start still charges the whole
-deviation to tilt.
+measured. Levelling with it, equation (5′), is not built: a coarse start bounds tilt by how far
+its *averaged* specific force is from gravity, and a real `ā_n` is part of what puts it there.
 
 | entry point | for |
 | ----------- | --- |
