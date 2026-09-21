@@ -108,11 +108,16 @@
 //!
 //! # What the score measures today
 //!
-//! **Stub.** (9)–(15) propagate and nothing corrects them, so every figure here is unaided
+//! **Stub.** (9)–(22) propagate and nothing corrects them, so every figure here is unaided
 //! dead reckoning: the tilt the window leaves behind leaks gravity into the horizontal
 //! channel, and two integrations turn it into position. That is the point — it is the
 //! baseline each stage of #31 is measured against, and the one the update of (23)–(28) has
 //! to beat.
+//!
+//! `nees_*` is now a ratio of two quantities that both move: the error above, and the `P` of
+//! (22) that grows underneath it. It is still not a test of the covariance — nothing here
+//! shrinks one, so consistency is only ever approached from the conservative side — but it is
+//! no longer a division by the initialization prior.
 //!
 //! Two boundaries on reading the consistency keys, both from the simulator rather than from
 //! the filter. `nees_*` and `in3s` cannot fail in the *overconfident* direction on these
@@ -332,13 +337,21 @@ struct Replay {
     /// When `Validity::attitude` first read true, in log time.
     ///
     /// `Accuracy::tilt` equals `Initialization::sigma_tilt` and `Accuracy::heading` equals
-    /// `Initialization::sigma_yaw`, compared with `<=`, so a static start passes by exactly
-    /// zero margin (`src/config.rs`). Widening those two is a measurement rather than a
-    /// guess, and this is the measurement: how long a real log takes before the filter
-    /// claims its attitude is usable. It says when the filter *claims* to have converged,
-    /// not whether the attitude was good then — that needs truth, which the corpus has not
-    /// got.
+    /// `Initialization::sigma_yaw`, compared with `<=`, so a static start passed by exactly
+    /// zero margin — and this is the measurement that widened them (`src/config.rs`). It says
+    /// when the filter *claims* to have converged, not whether the attitude was good then;
+    /// that needs truth, which the corpus has not got.
     aligned_at: Option<f64>,
+    /// The first epoch after alignment where `Validity::attitude` went false again, which is
+    /// the covariance growth of (16)–(22) arriving on real data.
+    ///
+    /// `aligned_at` cannot see it: `Status::Aligning` latches, deliberately
+    /// (`Eskf::is_aligned`), so nothing else on this line moves when an unaided filter's
+    /// attitude stops being usable — and on a corpus with no truth, growth is the only thing
+    /// stage 4 of #31 produces that a replay can check at all. It reads a few seconds today
+    /// on every log, because the tilt prior is 0.02 rad against a 0.052 bar and nothing
+    /// shrinks a covariance; the update of (23)–(28) is what should push it to `never`.
+    attitude_lost: Option<f64>,
     /// `Validity::heading` the moment initialization committed — the filter's own verdict
     /// on the window, which is not the same as `mag_at_init`: a coarse start carrying a
     /// magnetometer has observed nothing it could level a heading with.
@@ -384,6 +397,7 @@ impl Replay {
             alignment: None,
             mag_at_init: false,
             aligned_at: None,
+            attitude_lost: None,
             heading_at_init: false,
             attitude_at_init: None,
             epochs: 0,
@@ -651,6 +665,11 @@ impl Replay {
         if self.aligned_at.is_none() && validity.attitude() {
             self.aligned_at = Some(t);
         }
+        // Only after alignment, and only the first time: before it, "not valid" is the
+        // start the filter has not finished, which `aligned_at` already reports.
+        if self.aligned_at.is_some() && self.attitude_lost.is_none() && !validity.attitude() {
+            self.attitude_lost = Some(t);
+        }
     }
 
     /// Seconds from the end of the initialization window to the first valid attitude, or
@@ -662,6 +681,20 @@ impl Replay {
     fn aligned_after(&self) -> String {
         match (self.initialized_at, self.aligned_at) {
             (Some(window_closed), Some(aligned)) => format!("{:.2}", aligned - window_closed),
+            _ => "never".to_string(),
+        }
+    }
+
+    /// Seconds from the end of the initialization window to the first epoch whose attitude
+    /// stopped being valid, or `never`.
+    ///
+    /// `never` covers two different things, as `aligned_at`'s does: a filter that never
+    /// aligned has nothing to lose, and one whose attitude held for the whole log has lost
+    /// nothing. The pair reads unambiguously — `aligned_at=never attitude_lost=never` is the
+    /// first, any number in `aligned_at` with `attitude_lost=never` the second.
+    fn attitude_lost_after(&self) -> String {
+        match (self.initialized_at, self.attitude_lost) {
+            (Some(window_closed), Some(lost)) => format!("{:.2}", lost - window_closed),
             _ => "never".to_string(),
         }
     }
@@ -970,7 +1003,8 @@ impl Replay {
         format!(
             "summary rate={:.0} window={} align={} an={} alpha0={} heading={} \
              roll0={roll0:.2} pitch0={pitch0:.2} yaw0={yaw0:.2} resets={} \
-             aligned_at={} rejected={} discarded={} refused={} invalid={} epochs={} \
+             aligned_at={} attitude_lost={} rejected={} discarded={} refused={} \
+             invalid={} epochs={} \
              transitions={} status={:?}",
             self.interval.map_or(0.0, |interval| 1.0 / interval),
             self.window_samples,
@@ -1012,11 +1046,17 @@ impl Replay {
                 "invalid"
             },
             self.resets(),
-            // When the filter first called its own attitude usable, which is what would
-            // settle `Accuracy`'s attitude defaults off the corpus the way replay settled
-            // `Timeouts::degraded_after`. It measures the stub until covariance
-            // propagation lands, and is pinned meanwhile.
+            // When the filter first called its own attitude usable. It is what settled
+            // `Accuracy`'s attitude defaults off the corpus the way replay settled
+            // `Timeouts::degraded_after`: with the bars equal to the priors they were
+            // compared against, every static log read 0.00 and lost the claim one step
+            // later, which is the reading that produced the numbers those defaults now
+            // carry.
             self.aligned_after(),
+            // What the covariance growth of (16)–(22) does on a log with no truth. Pinned
+            // because it is the only key that moves when propagation's uncertainty model
+            // changes, and because the update of (23)–(28) should push it to `never`.
+            self.attitude_lost_after(),
             // The gate's verdict, which nothing on this line reported before: `refused=`
             // and `invalid=` are propagation steps, not measurements, and a change that
             // started turning down every fix in the corpus would have passed `--check`
@@ -2149,6 +2189,41 @@ mod tests {
         // covariance shrinks yaw, so no number would ever arrive.
         let log = still_start().run(2.0, 100, DT, STILL);
         assert_eq!(key(&replay(&log).summary(), "aligned_at"), "never");
+    }
+
+    #[test]
+    fn an_unaided_attitude_stops_being_valid_and_the_line_says_when() {
+        // The covariance growth of (16)–(22) on a log with no truth: a window that observed
+        // both tilt and heading aligns at 0.00 and the tilt variance then crosses
+        // `Accuracy::tilt` 3.79 s later, which is the figure `Accuracy`'s defaults cite. Six
+        // seconds of stillness at 50 Hz is enough to see it.
+        let log = Log::new().mag(0.0).run(0.0, 400, DT, STILL);
+        let summary = replay(&log).summary();
+        assert_eq!(key(&summary, "aligned_at"), "0.00");
+        assert_eq!(
+            key(&summary, "attitude_lost"),
+            "3.80",
+            "one epoch past 3.79 s at this rate: {summary}"
+        );
+    }
+
+    #[test]
+    fn a_log_too_short_to_lose_its_attitude_says_never() {
+        // The other `never`: aligned at 0.00 and still valid when the log ended, which is
+        // not the same answer as a filter that never aligned, and reads differently from it
+        // only because `aligned_at` carries a number.
+        let log = Log::new().mag(0.0).run(0.0, 100, DT, STILL);
+        let summary = replay(&log).summary();
+        assert_eq!(key(&summary, "aligned_at"), "0.00");
+        assert_eq!(key(&summary, "attitude_lost"), "never", "{summary}");
+    }
+
+    #[test]
+    fn a_filter_that_never_aligns_loses_nothing() {
+        let log = still_start().run(2.0, 100, DT, STILL);
+        let summary = replay(&log).summary();
+        assert_eq!(key(&summary, "aligned_at"), "never");
+        assert_eq!(key(&summary, "attitude_lost"), "never", "{summary}");
     }
 
     #[test]

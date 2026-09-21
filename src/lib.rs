@@ -5,11 +5,11 @@
 //! **The estimation mathematics is partly implemented.** [`Eskf`] has the intended signatures
 //! and keeps its own health bookkeeping. Initialization is real — equations (5)–(8), so the
 //! filter starts at the attitude and biases the window yields — and [`Eskf::predict`]
-//! propagates the nominal state, equations (9)–(15), so position, velocity and attitude move.
-//! Nothing corrects them: the covariance does not propagate, so the uncertainty reported is
-//! the one initialization set, and every `fuse_*` accepts unconditionally with a zero test
-//! ratio. This crate currently exists to let the shape of the API be written against and
-//! argued with.
+//! propagates the nominal state and its covariance, equations (9)–(22), so position, velocity
+//! and attitude move and the uncertainty around them grows. Nothing corrects them: every
+//! `fuse_*` accepts unconditionally with a zero test ratio, and nothing shrinks a covariance,
+//! so [`Status`] and [`Validity`] describe an unaided filter honestly and never recover. This
+//! crate currently exists to let the shape of the API be written against and argued with.
 //!
 //! See `README.md` for usage, `DESIGN.md` for the architecture, `EQUATIONS.md` for the
 //! mathematics each method cites, and `GOALS.md` for positioning.

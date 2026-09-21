@@ -39,6 +39,13 @@ pub enum Status {
     /// carrying no magnetometer at all therefore never leaves, and — since this hides
     /// [`Degraded`](Self::Degraded) — its source timeouts stop showing in `Status` and
     /// have to be read from [`Diagnostics`].
+    ///
+    /// Leaving is permanent, and that is a claim about this variant rather than about the
+    /// estimate: it reports a start that has not been resolved yet, not attitude quality
+    /// now. Quality now is [`Validity::tilt`](crate::Validity::tilt), which does fall back,
+    /// and which an unaided filter loses within seconds of propagating. See
+    /// [`Eskf::is_aligned`](crate::Eskf::is_aligned) for what re-entering this state cost on
+    /// the corpus.
     Aligning,
     /// Nothing is aiding the filter. Position and velocity error grows without bound.
     #[default]

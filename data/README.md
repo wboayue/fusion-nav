@@ -213,7 +213,9 @@ window measured the vehicle's own acceleration from GNSS velocity — `ā_n` of 
 only a moving start reports — and whether it fixed a barometric reference), `heading=` (`Validity::heading` **as initialization left it** — not as the
 log ended, which would only restate `transitions=`), `resets=` (measurements adopted outright),
 `aligned_at=` (seconds from the end of the window to the first valid attitude, or `never`),
-`rejected=` and `discarded=` (the gate's verdict, and everything that never reached it — a
+`attitude_lost=` (seconds to the first epoch where that validity went away again, which is where
+the covariance growth of (16)–(22) shows up on logs with no truth — `Status::Aligning` latches, so
+nothing else on the line moves when it happens), `rejected=` and `discarded=` (the gate's verdict, and everything that never reached it — a
 variance of zero or less, a NaN, an altitude with no reference), `refused=` and `invalid=` (steps
 refused as too long or as not a step at all — propagation, not measurements), and `epochs=`,
 `transitions=` and `status=`. It needs `pyulog`, so it is a local tool rather than a CI job:

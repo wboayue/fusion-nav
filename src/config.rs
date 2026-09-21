@@ -241,14 +241,13 @@ impl Default for Accuracy {
     /// working as intended: the most severe thing true of the estimate is what it reports.
     /// Supply your own numbers; that is what [`Accuracy`] is for.
     ///
-    /// Neither bar latches. Nothing in propagation shrinks a covariance, so the crossing is
-    /// one-way and [`Status`](crate::Status) moves to
-    /// [`Aligning`](crate::Status::Aligning) once rather than flapping — the corpus shows one
-    /// added transition per log, not a sequence. PX4 and ArduPilot both latch instead
-    /// (`tilt_align` and `tiltAlignComplete` are only ever tested while false), which is the
-    /// cheaper answer to a covariance that moves in both directions; when the update of
-    /// (23)–(28) makes ours do that, `aligned_at` is the measurement that says whether
-    /// latching is needed here too.
+    /// These bars are read live by [`Validity`](crate::Validity) and once by
+    /// [`Status`](crate::Status): crossing one takes an output out of service, and does not put
+    /// the filter back into [`Aligning`](crate::Status::Aligning). What that split is worth was
+    /// measured on the corpus, and it is on
+    /// [`Eskf::is_aligned`](crate::Eskf::is_aligned) — four `Healthy`/`Aligning` flaps in four
+    /// seconds on one log, from a yaw prior rotating into the tilt axes rather than from
+    /// anything degrading.
     fn default() -> Self {
         Self {
             tilt: Radians::from_radians(0.052),
