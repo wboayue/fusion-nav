@@ -15,10 +15,13 @@ use nalgebra::{ComplexField, Matrix3, RealField, Vector3};
 use crate::frames::Ned;
 use crate::units::Position;
 
-/// WGS84 semi-major axis, in meters.
+/// WGS84 semi-major axis, in meters: a defining parameter of the ellipsoid,
+/// NGA.STND.0036 v1.0.0 Table 3.1.
 const WGS84_A: f64 = 6_378_137.0;
 
-/// WGS84 first eccentricity squared.
+/// WGS84 first eccentricity squared, NGA.STND.0036 v1.0.0 Table 3.5. Written to the digits
+/// the standard prints rather than derived from the flattening: it asks that derived
+/// constants keep them, so that precision stays consistent between parameters.
 const WGS84_E2: f64 = 6.694_379_990_141e-3;
 
 /// A position on the WGS84 ellipsoid: latitude, longitude, and height.

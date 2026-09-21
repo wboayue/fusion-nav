@@ -32,8 +32,13 @@ navigation-frame vector.
 
 The navigation frame is down-positive, so gravity has a **positive** $`z`$ component.
 
-The attitude error is defined as a **local** (body-frame) perturbation. Every Jacobian below
-follows from that choice; switching to a global perturbation changes signs throughout.
+The attitude error is defined as a **local** (body-frame) perturbation, $`q = \hat{q} \otimes \delta q`$.
+Every Jacobian below follows from that choice. The global alternative
+$`q = \delta q \otimes \hat{q}`$ does not flip signs — it moves $`R`$: Solà (295) and (311) against
+his (238) and (270) give $`-[\,R a_b\,]_\times`$ for $`-R[\,a_b\,]_\times`$ in (17) and (20),
+$`I`$ for $`R\{\omega\Delta t\}^\mathsf{T}`$ in the attitude block, and $`-R\Delta t`$ for
+$`-I\Delta t`$ where the gyroscope bias enters. Solà numbers are v1's throughout; see
+[Correspondence with Solà](#correspondence-with-solà).
 
 ### States and measurements
 
@@ -355,16 +360,20 @@ Every block carries $`\Delta t`$, and the four $`\sigma`$ are **spectral densiti
 per-sample noise as $`\sigma / \sqrt{\Delta t}`$, so a density's contribution to variance over a
 step is $`\sigma^2 \Delta t`$ — for the white-noise blocks exactly as for the two random walks.
 
-PX4 and ArduPilot write the white-noise blocks with $`\Delta t^2`$ instead, because their
-parameters are the $`\sigma`$ of one sample's increment rather than densities: PX4
-`sq(dt) * accel_var` with `accel_var = sq(ekf2_acc_noise)`
+Solà writes the white-noise blocks with $`\Delta t^2`$ (262)–(265), and so do PX4 and ArduPilot,
+because the $`\sigma`$ each of them names is one sample's increment rather than a density: Solà
+states $`\sigma_{\tilde a}`$ in m s⁻² (452) and holds it constant across the step (427), (444);
+PX4 has `sq(dt) * accel_var` with `accel_var = sq(ekf2_acc_noise)`
 (`src/modules/ekf2/EKF/python/ekf_derivation/generated/predict_covariance.h:161-164`,
-`EKF/covariance.cpp:119-133`, at `c4e4ef98e9`), ArduPilot `dvxVar = sq(dt * _accNoise)`
-(`libraries/AP_NavEKF3/AP_NavEKF3_core.cpp:1177` at `368dc0c428`). That form ties $`Q`$ to the
-sample rate — the variance it adds over $`T`$ seconds is $`\sigma^2 \Delta t\, T`$, so the same
-airframe logged at 400 Hz is given eight times less process noise than at 50 Hz — and the logs
-in `data/manifest.txt` run from 50 Hz to 250 Hz against one `Config`. The $`\Delta t`$ form is
-rate-independent, and `propagate::process_noise` implements it.
+`EKF/covariance.cpp:119-133`, at `c4e4ef98e9`); ArduPilot has `dvxVar = sq(dt * _accNoise)`
+(`libraries/AP_NavEKF3/AP_NavEKF3_core.cpp:1177` at `368dc0c428`). The two forms are one
+equation, since $`\sigma_{\text{sample}} = \sigma / \sqrt{\Delta t}`$ carries
+$`\sigma_{\text{sample}}^2 \Delta t^2`$ into $`\sigma^2 \Delta t`$; what differs is which of the
+two is held fixed when the rate changes. Holding the per-sample $`\sigma`$ fixed ties $`Q`$ to
+the sample rate — the variance it adds over $`T`$ seconds is $`\sigma^2 \Delta t\, T`$, so the
+same airframe logged at 400 Hz is given eight times less process noise than at 50 Hz — and the
+logs in `data/manifest.txt` run from 50 Hz to 250 Hz against one `Config`. Holding the density
+fixed is rate-independent, and `propagate::process_noise` implements that.
 
 The velocity block of (21) is the rotated accelerometer noise $`R \Sigma_a R^\mathsf{T}`$. Writing
 it as $`\sigma_a^2 I`$ is exact only when the accelerometer noise is **isotropic**, since
@@ -767,8 +776,34 @@ simultaneous with the current state, which is not true of GNSS. See
 
 ## References
 
-* J. Solà, *Quaternion kinematics for the error-state Kalman filter*, [arXiv:1711.02508](https://arxiv.org/abs/1711.02508) — the primary source for the error-state formulation and the Jacobians above
-* P. D. Groves, *Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems*, 2nd ed.
-* J. A. Farrell, *Aided Navigation: GPS with High Rate Sensors*
-* F. L. Markley and J. L. Crassidis, *Fundamentals of Spacecraft Attitude Determination and Control*
+* J. Solà, *Quaternion kinematics for the error-state Kalman filter*, [arXiv:1711.02508](https://arxiv.org/abs/1711.02508) — the primary source for the error-state formulation and the Jacobians above; [Correspondence with Solà](#correspondence-with-solà) says which equation here is which of his
+* P. D. Groves, *Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems*, 2nd ed. — (2.112), the geodetic-to-ECEF conversion of (43), and the one citation here that needs a book. The ellipsoid constants it is evaluated with are cited in `src/geodetic.rs` to NGA.STND.0036, which is free and in [`reference/`](reference/README.md)
 * [PX4 EKF2](https://docs.px4.io/main/en/advanced_config/tuning_the_ecl_ekf) — reference for practical behavior, not for derivations
+
+### Correspondence with Solà
+
+A bare number in parentheses elsewhere in this document is an equation of *this* document; a
+number introduced by "Solà" is his, from arXiv v1, the only version arXiv holds, which
+[`reference/README.md`](reference/README.md) says how to fetch. This document follows his
+Section 5, the locally-defined angular error; Section 7 is the global alternative noted under
+[Frames](#frames).
+
+| here | Solà v1 | |
+| ---- | ------- | --- |
+| (2) | (266) | same ordering, without his gravity state |
+| (3), (4) | Table 3, §6.1.1 | $`q_t = q \otimes \delta q`$, and $`\delta q \to [1, \tfrac{1}{2}\delta\theta]`$ |
+| (12) | (237) | |
+| (13)–(15) | (260a)–(260c) | (260a) takes the pre-update velocity, as (13) does |
+| (16)–(19) | (238) | without $`\delta g`$, which this filter does not estimate |
+| (20) | (270) | block for block |
+| (21) | (262)–(265) | densities rather than per-sample $`\sigma`$; see [above](#covariance-propagation) |
+| (22) | (269) | |
+| (23)–(26) | (274), (275) | |
+| (27) | footnote 26 | Joseph form, which he recommends over his own (276) |
+| (39), (40) | (283) | |
+| (41) | (285)–(288) | including $`G = I`$ as the usual approximation |
+| $`\mathrm{Exp}(\phi)`$ | (101) | |
+
+The rest is not his. Initialization (5)–(8) follows the practice of PX4 and ArduPilot cited at
+(7); (43) is Groves (2.112); the observation models (28)–(36), the gating of (37)–(38) and the
+origin placement of (44) are derived here.
