@@ -58,7 +58,12 @@ selected() {
 }
 
 echo "generating scenarios"
-(cd "$root" && cargo run --quiet --example simulate >/dev/null) || die "simulate failed"
+# Kept rather than discarded: the generator names every log it wrote, and that list is what
+# the coverage check below is about. Reading target/sim instead would be reading a directory
+# that anyone can write a replay output into.
+simulated=$(cd "$root" && cargo run --quiet --example simulate) || die "simulate failed"
+generated=$(printf '%s\n' "$simulated" | sed -n 's|^  log   .*/\([^/]*\)\.csv$|\1|p')
+[ -n "$generated" ] || die "the simulator reported no logs; its output format moved"
 
 failed=0
 found=0
@@ -108,14 +113,15 @@ done < "$scenarios"
 # the run says "9 scenarios within their ceilings" while the tenth has no accuracy bound at
 # all. This is the repository's only accuracy gate; silence is not coverage. Skipped for a
 # selective run, which is deliberately partial.
+#
+# Against what the generator said it wrote, not against target/sim: that directory is an
+# output path like any other, and `cargo run --example replay -- ... target/sim/out.csv`
+# leaves a file there that is nobody's scenario. Globbing it reported the leftovers of an
+# unrelated command as ungated scenarios, which is a local-only failure -- a fresh CI
+# checkout has none -- and a gate that cries wolf on a developer's machine is one they learn
+# to run with a shrug.
 if [ "$wanted" = "  " ]; then
-    for log in "$out"/*.csv; do
-        base=$(basename "$log" .csv)
-        # A scenario name has no dot in it; everything else in target/sim is something the
-        # generator or the harness wrote beside one -- `.truth`, `.replay`, `.replay.fusion`.
-        # Matching on the absence of a dot rather than on that list means a new output file
-        # does not read as an ungated scenario.
-        case "$base" in *.*) continue ;; esac
+    for base in $generated; do
         case "$gated" in
             *" $base "*) ;;
             *)
