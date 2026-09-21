@@ -167,7 +167,7 @@ stream, so changing one sensor's rate or model does not shift another's noise.
 
 Replay output is bit-reproducible across architectures: the same input and the same toolchain give a
 byte-identical CSV on x86-64 and on aarch64. CI asserts it — the `replay determinism` jobs replay
-`flight.csv` twice on each of an x86-64 Linux runner and an aarch64 macOS one, then compare a sha256
+`flight.csv` twice on each of an x86-64 and an aarch64 Linux runner, then compare a sha256
 of the result across the two. So a diff in `target/replay.csv` is your change, not your laptop,
 which is what lets a stage of #31 be reviewed by asserting the file did not move.
 
