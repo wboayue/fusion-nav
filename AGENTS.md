@@ -115,6 +115,11 @@ cargo build --lib --target thumbv7em-none-eabihf   # also thumbv6m-none-eabi; bo
 panic-check/run.sh                # no reachable panic, both thumb targets; needs llvm-tools
 cargo +1.89 build --lib           # MSRV
 
+# Stack frame per function, which `propagate_covariance` and `enforce_symmetry` both cite a
+# measured figure from. Needs `rustup target add --toolchain nightly <target>` once.
+RUSTFLAGS=-Zemit-stack-sizes cargo +nightly build --lib --release --target thumbv6m-none-eabi
+llvm-readobj --stack-sizes target/thumbv6m-none-eabi/release/libfusion_nav.rlib | grep -A1 predict
+
 cargo run --example basic         # minimal integration loop
 cargo run --example degradation   # timeouts, status transitions, application-driven recovery
 cargo run --example replay        # replays data/flight.csv -> target/replay.csv (CI smoke test)
