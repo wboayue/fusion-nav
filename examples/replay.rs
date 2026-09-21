@@ -1035,8 +1035,8 @@ impl Replay {
             },
             // `Validity::heading` as initialization left it, not as the log ended.
             // Nothing pins the rotation about gravity except a magnetometer, and the
-            // covariance would report it good either way — `Initialization::sigma_yaw`
-            // and `Accuracy::heading` are the same number — so what is worth pinning is
+            // covariance would report it good either way — `Initialization::sigma_yaw` is
+            // 0.35 rad inside an `Accuracy::heading` of 0.52 — so what is worth pinning is
             // the verdict on the window. At the end of the log this says only that some
             // magnetic heading was fused at some point, which `transitions` already
             // notices.
@@ -2020,8 +2020,8 @@ mod tests {
 
     #[test]
     fn no_magnetometer_in_the_window_leaves_the_heading_invalid() {
-        // Stillness observes tilt and never yaw, and the covariance cannot say so:
-        // `Initialization::sigma_yaw` and `Accuracy::heading` are the same 0.35 rad.
+        // Stillness observes tilt and never yaw, and the covariance cannot say so: the
+        // 0.35 rad of `Initialization::sigma_yaw` clears `Accuracy::heading`'s 0.52 outright.
         assert_eq!(key(&replay(&still_start()).summary(), "heading"), "invalid");
     }
 

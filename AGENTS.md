@@ -8,9 +8,10 @@ This file provides guidance to coding agents working with code in this repositor
 equations (5)–(8), so the filter starts at the attitude and biases the window yields — and
 `predict` propagates the nominal state *and* its covariance, (9)–(22), so position, velocity and
 attitude move and the uncertainty around them grows. Nothing corrects them: every `fuse_*` accepts
-with a zero test ratio, (23)–(28) are unwritten, and nothing anywhere shrinks a covariance. So the
-estimate is IMU-only dead reckoning whose uncertainty only ever increases — which is what makes
-`Status` and `Validity` honest about it, and what `attitude_lost=` measures per log. What is real is
+with a zero test ratio, (23)–(28) are unwritten, and nothing in propagation takes uncertainty back
+out — only the application-driven resets do. So the estimate is IMU-only dead reckoning whose
+uncertainty grows monotonically between resets, which is what makes `Status` and `Validity` honest
+about it, and what `attitude_lost=` measures per log. What is real is
 the health bookkeeping (timers, `Status`, `Diagnostics`), the typed API surface, and the replay
 harness. Anything stubbed says so in its doc comment with a `**Stub.**` paragraph — keep that
 marker accurate when landing real math, and keep the same caveat in `README.md`, `DESIGN.md`,
@@ -438,15 +439,16 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
   mission accuracy is not derivable), plus "was this ever established" — the `Unestablished` flags
   a coarse start sets on position and velocity, and the one a window with no magnetometer sets on
   heading, since stillness observes tilt but never yaw. A prior is not an estimate, and
-  `sigma_yaw` equals `Accuracy::heading` exactly, so the covariance cannot tell them apart. `Eskf::predicted_validity` answers the arming question instead: valid now,
+  `sigma_yaw` (0.35 rad) sits inside `Accuracy::heading` (0.52), so the covariance reports a yaw
+  nobody measured as good. `Eskf::predicted_validity` answers the arming question instead: valid now,
   or a constraining source is being accepted. Both exist because PX4 and ArduPilot answer
   per-quantity validity and a single ladder cannot.
 - **An unaided filter loses its outputs on a schedule the defaults set**, and the schedule is
-  measured: at `ImuNoise`'s defaults a static start holds tilt for 3.79 s and heading for 35.4 s,
-  so it reports `Degraded` at 2.5 s, `Aligning` at 3.8 s (if it had not already aligned) and
-  `DeadReckoning` from 5 s. Those two figures are cited by `Accuracy`'s doc comment and pinned by
-  a test; the gyroscope-bias prior entering attitude through (20)'s `−I Δt` is what sets them,
-  not the white-noise density, which alone would give 10.4 s and 657 s.
+  measured: at `ImuNoise`'s defaults a static start holds tilt for 3.79 s and heading for 35.4 s.
+  Those two figures are cited by `Accuracy`'s doc comment and pinned by a test; the gyroscope-bias
+  prior entering attitude through (20)'s `−I Δt` is what sets them, not the white-noise density,
+  which alone would give 10.4 s and 657 s. They move `Validity` only — `Status` is answering on
+  the aiding timers well before then, and the alignment latch keeps `Aligning` out of it.
 - **`Status` precedence is most-severe-first**: `DeadReckoning` > `Aligning` > `Degraded` >
   `Healthy`. Aligning outranking Degraded is deliberate and is why the 2 h corpus log now shows
   2 transitions rather than 888.

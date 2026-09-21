@@ -7,9 +7,9 @@
 #
 # heading= is Validity::heading as initialization left it, not as the log
 # ended. Only a magnetometer observes the rotation about gravity, and the
-# covariance cannot say so on its own -- Initialization::sigma_yaw and
-# Accuracy::heading are the same 0.35 rad, so a yaw nobody measured passes the
-# bar exactly. Every log here carries a magnetometer in its window, so every
+# covariance cannot say so on its own -- Initialization::sigma_yaw is 0.35 rad
+# against an Accuracy::heading of 0.52, so a yaw nobody measured clears the bar
+# comfortably. Every log here carries a magnetometer in its window, so every
 # static one is valid; the key is what would notice if one stopped. Taking it
 # at the end of the log instead would say only that some heading was fused at
 # some point, which transitions= already notices.

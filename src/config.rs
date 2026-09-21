@@ -194,9 +194,9 @@ impl Default for Initialization {
 /// directly — these are the coarse per-quantity bar.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Accuracy {
-    /// Roll and pitch. Also the bar for alignment:
-    /// [`Status::Aligning`](crate::Status::Aligning) lasts until tilt and heading are
-    /// both within these.
+    /// Roll and pitch. Also the bar alignment is measured against:
+    /// [`Status::Aligning`](crate::Status::Aligning) ends when tilt and heading **first** come
+    /// within these, and does not return when they leave again.
     pub tilt: Radians,
     /// Heading.
     pub heading: Radians,
@@ -234,12 +234,15 @@ impl Default for Accuracy {
     /// (`an_unaided_start_holds_its_attitude_for_the_margin_the_defaults_buy`). Neither is the
     /// `σ_g² t` the white-noise density alone gives, which would be 10.4 s and 657 s — the
     /// gyroscope-bias prior enters attitude through equation (20)'s `−I Δt` and grows as
-    /// `σ_βg² t²`, overtaking the white-noise term inside two seconds. An unaided filter
-    /// therefore reports [`Degraded`](crate::Status::Degraded) at 2.5 s,
-    /// [`Aligning`](crate::Status::Aligning) at 3.8 s and
-    /// [`DeadReckoning`](crate::Status::DeadReckoning) from 5 s, which is the precedence
-    /// working as intended: the most severe thing true of the estimate is what it reports.
-    /// Supply your own numbers; that is what [`Accuracy`] is for.
+    /// `σ_βg² t²`, overtaking the white-noise term inside two seconds.
+    ///
+    /// What those two times move is [`Validity`](crate::Validity), and nothing else.
+    /// [`Status`](crate::Status) is already answering on the aiding timers by then — an unaided
+    /// filter reports [`DeadReckoning`](crate::Status::DeadReckoning) from
+    /// [`Timeouts::dead_reckoning_after`], or from its first step if no source was ever accepted
+    /// — and the latch below keeps [`Aligning`](crate::Status::Aligning) out of it. So these are
+    /// a claim about which outputs a controller may still use, which is the question
+    /// [`Accuracy`] exists to answer. Supply your own numbers.
     ///
     /// These bars are read live by [`Validity`](crate::Validity) and once by
     /// [`Status`](crate::Status): crossing one takes an output out of service, and does not put

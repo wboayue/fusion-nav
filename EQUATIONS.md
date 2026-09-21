@@ -4,7 +4,8 @@
 > growing covariance: (9)–(15) propagate the nominal state and (16)–(22) propagate `P`, so
 > `predict` moves position, velocity and attitude and says how little it knows about them. Nothing
 > corrects them — every `fuse_*` accepts with a zero test ratio, (23)–(28) are unwritten, and
-> nothing anywhere shrinks a covariance. Also built: the attitude and biases of (5)–(7), the
+> nothing in propagation takes uncertainty back out; the only things that narrow a block are the
+> resets of (41), which an application asks for. Also built: the attitude and biases of (5)–(7), the
 > initial covariance (8), the barometric reference `α₀` of (30), the window's own acceleration
 > `ā_n` of (5′) — measured and reported though nothing levels with it yet — the geodetic origin
 > (43)–(44), the angle wrap of (35), and the symmetry enforcement of (42), now called after every

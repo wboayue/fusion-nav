@@ -7,8 +7,10 @@ Embedded-first inertial navigation using a 15-state Error-State Kalman Filter (E
 > covariance — and `predict` now propagates the state *and* its uncertainty, equations (9)–(22).
 > What is missing is everything that corrects them: every `fuse_*` accepts without changing the
 > estimate. So the position is an IMU-only dead-reckoned one, and the uncertainty beside it grows
-> without bound, which is what makes `Status` and `Validity` honest about an unaided filter: they
-> report `Aligning`, then `DeadReckoning`, on schedule. The design is subject to change.
+> without bound — which is what makes `Validity` honest about it: each flag goes false as its own
+> variance passes `Config::accuracy`, 3.79 s in for tilt at the default noise. `Status` answers on
+> the aiding timers, so an unaided filter reports `DeadReckoning` well before that. The design is
+> subject to change.
 
 `fusion-nav` estimates 3D attitude, velocity, and position by fusing IMU measurements with GNSS,
 barometric altitude, and magnetometer observations. It is `no_std`, allocation-free, and aimed at
