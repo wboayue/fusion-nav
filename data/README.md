@@ -93,7 +93,9 @@ $ data/expect.sh --self-test                           # the comparator's own fi
 ```
 
 It generates every scenario first rather than reusing `target/sim/`, so no ceiling can be met by
-a flight produced before the change under test, and it runs the debug build: the nine scenarios
+a flight produced before the change under test; it fails on a scenario the simulator generated and
+this file does not gate, and on a line carrying no ceilings at all, since either reads as a green
+run over a gate that is not there. It runs the debug build: the nine scenarios
 are about ten seconds all told, against a minute to build the crate again under a second profile,
 and `score` is identical either way. `fetch.sh --check` uses `--release` for a reason that does
 not apply here — a two-hour log at 1.4M epochs.
@@ -105,6 +107,11 @@ reason is re-measured by copying:
   BREACH     mission: tilt=2.125, wanted tilt<=2.000
     got pos_h=1248.627 pos_v=204.617 vel=22.866 … tilt=2.125 yaw=2.936 …
 ```
+
+Each bound is the measured value plus 1 % — the header of `data/scenarios.txt` gives the
+arithmetic, and the short version is that the simulator's `sin` and `cos` come from the platform
+rather than from the `libm` crate that pins the filter, and propagation integrates a last-bit
+difference over tens of thousands of steps.
 
 Moving one is the same commitment as moving a manifest expectation: a sentence beside it saying
 what the data said. Both directions count. Stage 3 tightened `flight` across the board and
@@ -196,7 +203,10 @@ $ cargo run --example replay -- data/logs/<log-id>.csv
 side-by-side diff.
 
 `data/fetch.sh --check` converts and replays the whole pinned corpus and asserts the per-log
-expectations recorded beside each checksum against the `summary` line the replay example prints.
+expectations recorded beside each checksum against the `summary` line the replay example prints,
+through the same `data/expect.sh` that `data/bench.sh` reads ceilings with — so `key=value` here
+and `key<=value` there are one language, and a key named in the manifest but missing from the
+`summary` line fails instead of passing unnoticed.
 The keys are `rate=` and `window=` (the IMU rate and the samples it takes to cover
 `min_duration`), `align=`, `an=` and `alpha0=` (what initialization achieved, whether a moving
 window measured the vehicle's own acceleration from GNSS velocity — `ā_n` of equation (5′), which

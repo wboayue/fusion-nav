@@ -8,9 +8,10 @@
 #   data/expect.sh --self-test       fixtures with known verdicts
 #
 # Two files hold expectations against two lines the harness prints: `data/manifest.txt`
-# against `summary`, `data/scenarios.txt` against `score`. They differ in what produces the
-# input -- a converted ULog, a generated scenario -- and agree on everything after it, so the
-# comparison lives here once and the pair syntax is one language a reader learns once.
+# against `summary`, read by `data/fetch.sh --check`, and `data/scenarios.txt` against
+# `score`, read by `data/bench.sh`. They differ in what produces the input -- a converted
+# ULog, a generated scenario -- and agree on everything after it, so the comparison lives
+# here once and the pair syntax is one language a reader learns once.
 #
 # Three forms, because a corpus expectation and a benchmark ceiling want different things:
 #
@@ -28,13 +29,26 @@
 
 # Read `key=` out of a line of `key=value` pairs. Fails if the key is absent. The match is
 # on the whole key, so a ceiling on `pos_h` does not read `pos_h_max`.
+#
+# Splitting the line needs the unquoted expansion, which also invites pathname expansion: a
+# value containing `*`, `?` or `[...]` would be replaced by whatever matches it in whatever
+# directory the caller happens to be in, and the key would then misread or go missing. No
+# `score` or `summary` key can hold one today; `set -f` is what keeps that from being a
+# property this function depends on.
 pair_value() {
     local line=$1 key=$2 word
+    local restore_glob=0
+    case $- in *f*) ;; *) restore_glob=1; set -f ;; esac
     for word in $line; do
         case "$word" in
-            "$key"=*) printf '%s' "${word#*=}"; return 0 ;;
+            "$key"=*)
+                printf '%s' "${word#*=}"
+                [ "$restore_glob" = 1 ] && set +f
+                return 0
+                ;;
         esac
     done
+    [ "$restore_glob" = 1 ] && set +f
     return 1
 }
 
@@ -53,6 +67,11 @@ numeric_ok() {
 # Reports every failure rather than the first, so one run names everything that moved.
 compare_pairs() {
     local line=$1 expect=$2 label=${3:-} rc=0 pair key op want got
+    # Both loops here split on an unquoted expansion -- this one over the expectations, the
+    # one in `pair_value` over the line -- so both are open to pathname expansion. Disabled
+    # for the whole function, which covers `pair_value` too, since the option is global.
+    local restore_glob=0
+    case $- in *f*) ;; *) restore_glob=1; set -f ;; esac
     for pair in $expect; do
         case "$pair" in
             *'<='*) key=${pair%%<=*} op='<=' want=${pair##*<=} ;;
@@ -76,6 +95,7 @@ compare_pairs() {
             *) echo "  NOT A NUMBER ${label:+$label: }$key=$got cannot be compared against $pair" >&2; rc=1 ;;
         esac
     done
+    [ "$restore_glob" = 1 ] && set +f
     return $rc
 }
 
@@ -128,6 +148,28 @@ self_test() {
     t 1 'missing key'    "$score" 'nees_vel<=1'
     t 1 'not a number'   "$score" 'nees_att<=0.05'
     t 1 'malformed pair' "$score" 'pos_h'
+
+    # A value holding a glob character, checked from a directory where it matches files.
+    # Both loops split on an unquoted expansion, so without `set -f` both sides expand --
+    # and two matches is what makes that visible rather than self-cancelling: the line keeps
+    # the first match while the expectations become two pairs, the second of which nothing
+    # on the line satisfies. No `score` key can hold a glob character today, which is why
+    # the guard needs a fixture rather than a reader's memory.
+    local sandbox status
+    sandbox=$(mktemp -d)
+    touch "$sandbox/pos_h=12" "$sandbox/pos_h=13"
+    status=0
+    (
+        cd "$sandbox" || exit 1
+        compare_pairs 'score pos_h=1* scored=5' 'pos_h=1* scored>=5' 2>/dev/null
+    ) || status=$?
+    if [ "$status" = 0 ]; then
+        passed=$((passed + 1))
+    else
+        failed=$((failed + 1))
+        echo "  FAIL  a globbing value was expanded before it was compared" >&2
+    fi
+    rm -rf "$sandbox"
 
     # #17: lowering one ceiling fails naming the pair.
     local message

@@ -50,6 +50,9 @@ sha256() {
     fi
 }
 
+# shellcheck source=data/expect.sh
+. "$root/data/expect.sh"
+
 die() { echo "fetch: $*" >&2; exit 1; }
 
 # Manifest lines are: <sha256>  <name>  <url>  [key=value ...]. Blank lines and #
@@ -90,19 +93,12 @@ check_one() {
         echo "  no expectations  $name — ${summary#summary }"
         return 0
     fi
-    local rc=0 pair
-    for pair in $expect; do
-        case " $summary " in
-            *" $pair "*) ;;
-            *) echo "  MISMATCH $name: wanted $pair" >&2; rc=1 ;;
-        esac
-    done
-    if [ "$rc" != 0 ]; then
-        echo "    got ${summary#summary }" >&2
-    else
+    if compare_pairs "$summary" "$expect" "$name"; then
         echo "  ok       $name"
+        return 0
     fi
-    return $rc
+    echo "    got ${summary#summary }" >&2
+    return 1
 }
 
 verify_one() {
