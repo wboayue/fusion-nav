@@ -81,6 +81,7 @@
 //! | `in3s` | fraction of axis-epochs within 3σ, over all 15 states |
 //! | `nees_pos`, `nees_vel`, `nees_att` | mean NEES per degree of freedom; ≈1 is consistent |
 //! | `false_valid` | quantity-epochs claimed usable while the error exceeded `Config::accuracy` |
+//! | `false_valid_att` | the tilt and heading share of it, pinned apart so a total cannot hide it |
 //! | `scored` | epochs that had a truth row, which is what every figure above is a mean over |
 //!
 //! Convergence is **not** here: `aligned_at=` is on the `summary` line, it needs no truth,
@@ -98,6 +99,11 @@
 //! verdict the way the filter states it — per axis, not on a 2-D norm. Both halves are the
 //! same point: the key is a test of the claim, and re-deriving either half tests a copy of
 //! it instead. [`Quantity::falsified`] has the arithmetic.
+//!
+//! `false_valid_att` is the same count restricted to tilt and heading. A total is an allowance,
+//! and an allowance hides whatever it is not being spent on; `data/scenarios.txt` pins this one
+//! at zero wherever it is zero, so an attitude regression cannot settle under a velocity
+//! allowance granted for something else.
 //!
 //! Read it as a rate against `epochs=`, not as a defect count. The bar is a 1σ one, so a
 //! filter sitting exactly at it — which `Accuracy::default`'s attitude figures do — fails it
@@ -1579,6 +1585,19 @@ impl Score {
         self.false_valid.iter().sum()
     }
 
+    /// The attitude's share of it: tilt and heading, the first two of [`QUANTITIES`].
+    ///
+    /// Published beside the total because a total is an allowance, and an allowance hides
+    /// whatever it is not being spent on. `moving_start` carries 108 of these epochs on
+    /// its vertical velocity, which is a coarse start's velocity prior rather than the
+    /// attitude bound of (8′) — and a total pinned at 110 to admit them would pass a
+    /// hundred epochs of falsely valid *attitude* without a word. This one is pinned at
+    /// zero on every scenario, which is what makes "the tighter attitude prior is honest"
+    /// a claim `data/bench.sh` enforces rather than a sentence in a header.
+    fn false_valid_attitude(&self) -> u32 {
+        self.false_valid[0] + self.false_valid[1]
+    }
+
     /// The `score` line, in `summary`'s `key=value` shape so one parser reads both.
     ///
     /// With nothing scored it is `score scored=0` and no more. A full line of zeros would
@@ -1591,7 +1610,8 @@ impl Score {
         }
         format!(
             "score pos_h={:.3} pos_v={:.3} vel={:.3} pos_h_max={:.3} tilt={:.3} yaw={:.3} \
-             in3s={:.4} nees_pos={} nees_vel={} nees_att={} false_valid={} scored={}",
+             in3s={:.4} nees_pos={} nees_vel={} nees_att={} false_valid={} \
+             false_valid_att={} scored={}",
             self.rms(self.position_horizontal),
             self.rms(self.position_vertical),
             self.rms(self.velocity),
@@ -1603,6 +1623,7 @@ impl Score {
             self.nees_text(1),
             self.nees_text(2),
             self.false_valid(),
+            self.false_valid_attitude(),
             self.scored,
         )
     }

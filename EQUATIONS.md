@@ -240,24 +240,37 @@ averages sit from what a still vehicle reads — not how far the worst sample in
 ```math
 \sigma_{\text{tilt},0} = \max\left( \sigma_{\text{tilt}},\quad
 \frac{\bigl|\, \lVert \bar f \rVert - \gamma \,\bigr|}{\gamma},\quad
-\bigl\lVert (I - \hat d\, \hat d^\mathsf{T})\, \bar\omega\, T \bigr\rVert \right)
+\bigl\lVert (I - \hat d\, \hat d^\mathsf{T})\, \bar\omega\, T \bigr\rVert,\quad
+\angle\bigl( \bar f_1,\, \bar f_2 \bigr) \right)
 ```
 
 ```math
-\sigma_{\psi,0} = \min\left( \max\bigl( \sigma_\psi,\; \tan\delta \cdot \sigma_{\text{tilt},0} \bigr),\; \frac{\pi}{\sqrt 3} \right),
+\sigma_{\psi,0} = \min\left( \max\bigl( \sigma_\psi,\; \tan\delta \cdot \sigma_{\text{tilt},0},\; \bigl| \hat d \cdot \bar\omega\, T \bigr|,\; \lvert \psi_2 - \psi_1 \rvert \bigr),\; \frac{\pi}{\sqrt 3} \right),
 \qquad
 \tan\delta = \frac{\bigl| \bar m \cdot \hat d \bigr|}{\bigl\lVert (I - \hat d\, \hat d^\mathsf{T})\, \bar m \bigr\rVert}
 ```
 
-with $`T`$ the window's span and $`\hat d = -\bar f / \lVert \bar f \rVert`$ the direction (5)
-levelled to. The three tilt terms are the configured floor, specific force that is not gravity,
-and the turn the vehicle made **across** gravity while that vector was being averaged: rotation
-*about* gravity does not move it in body axes, since $`\dot{\hat g} = -\omega \times \hat g`$
-has magnitude $`\lVert \omega_\perp \rVert`$, and so costs the tilt nothing. The dip
-$`\delta`$ is read off the same averaged field (6) takes its heading from, and is the rate at
-which a tilt error turns that heading. $`\sigma_{\psi,0} = \pi/\sqrt 3`$, a heading uniform
-on the circle, where no magnetometer observed the window, where its field has no horizontal part,
-or where the bound above would claim more spread than a circle holds.
+with $`T`$ the window's span, $`\hat d = -\bar f / \lVert \bar f \rVert`$ the direction (5)
+levelled to, and the subscripts 1 and 2 the same averages taken over the first and the second
+**half** of the window — $`\psi_i`$ being the heading (6) yields from that half alone, so the
+declination cancels.
+
+Past the configured floor and the specific force that is not gravity, the attitude is bounded by
+two witnesses to how far it moved while it was being averaged, and **both** are needed because
+each is blind to what the other sees. The gyroscope's net rotation splits about $`\hat d`$:
+across it spoils the tilt, since $`\dot{\hat g} = -\omega \times \hat g`$ has magnitude
+$`\lVert \omega_\perp \rVert`$, while about it turns the vehicle without moving that vector
+in body axes and spoils the heading instead. But a net rotation cancels for a vehicle that swings
+out and comes back, charging nothing where the attitude (5) commits is the middle of an arc
+already left. The disagreement between the window's two halves never cancels — and cannot see a
+*coordinated* turn, where the specific force stays put in body axes while the vehicle banks, so
+every average agrees and the tilt is wrong by the bank angle. Neither alone is a bound; the
+evidence for that is in `data/scenarios.txt`.
+
+$`\sigma_{\psi,0} = \pi/\sqrt 3`$, a heading uniform on the circle, where no magnetometer
+observed the window, where its field has no horizontal part, or where the bound above would claim
+more spread than a circle holds. The dip $`\delta`$ is read off the same averaged field (6) takes
+its heading from, and is the rate at which a tilt error turns that heading.
 
 ## Nominal state propagation
 
@@ -766,7 +779,7 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | --------- | ------- | ------ | -------- |
 | (1)–(4) | state definitions | `state.rs` | `State`, `ErrorState` |
 | (5)–(8) | static initialization | `init.rs` | `measure`, `level_from_accel`, `heading_from_mag`, `nominal_state`, `classify`, `attitude_sigmas`, `initial_covariance` |
-| (8′) | what a coarse window supports | `init.rs` | `coarse_sigmas`, `heading_sensitivity` |
+| (8′) | what a coarse window supports | `init.rs` | `coarse_sigmas`, `window_drift`, `heading_sensitivity` |
 | (5′) `ā_n` | in-motion levelling | `init.rs` | `inertial_acceleration`; the correction itself is unbuilt |
 | (30) `α₀` | barometric reference | `init.rs` | `baro_reference` |
 | (9)–(11) | bias correction, gravity | `propagate.rs` | `ImuSample`, `corrected_imu` |

@@ -892,11 +892,13 @@ impl Eskf {
     /// the alignment was. The barometric reference is the caller's to set, because only it
     /// knows whether this start establishes a new one.
     ///
-    /// A static start clears the origin. It declares position zero to be where the
-    /// vehicle is now, and an origin held from before says zero is somewhere else; the
-    /// next geodetic fix places a new one. A coarse start keeps it, because its position
-    /// is unestablished and the first fix is adopted about the origin the flight already
-    /// has.
+    /// A start the window showed at rest clears the origin, on the same evidence that
+    /// establishes its position: both are the claim *zero is here*, and an origin held
+    /// from before says zero is somewhere else. The next geodetic fix places a new one.
+    /// A start taken in motion keeps it, because its position is unestablished and the
+    /// first fix is adopted about the origin the flight already has. The two move
+    /// together or a still short window would report an established position of `(0,0,0)`
+    /// about an origin nothing put under it.
     fn apply_alignment(
         &mut self,
         alignment: Alignment,
@@ -909,7 +911,7 @@ impl Eskf {
         self.state = state;
         self.diagnostics = Diagnostics::default();
         self.unestablished = Unestablished::after(settled, measured.field.is_some());
-        if alignment.is_static() {
+        if settled {
             self.origin = None;
         }
         self.initialized = true;
@@ -1010,7 +1012,7 @@ mod tests {
     use crate::config::GRAVITY;
     use crate::geodetic::LocalOrigin;
     use crate::health::Refusal;
-    use crate::init::tests::{gravity_at, still};
+    use crate::init::tests::{gravity_at, still, turning};
     use crate::state::ErrorState;
     use crate::units::{Acceleration, AngularRate, Radians};
 
@@ -1715,12 +1717,8 @@ mod tests {
         );
         assert!(!filter.is_aligned());
 
-        let mut window = [still(); 8];
-        for sample in &mut window {
-            sample.imu.gyro = AngularRate::body(0.0, 0.4, 0.0);
-        }
         let _ = filter
-            .initialize(&window, Seconds::from_secs(0.25))
+            .initialize(&turning(0.0, 0.4, 0.0), Seconds::from_secs(0.25))
             .expect("moving, not unusable");
         let tilt = filter.covariance().variance(ErrorState::AttitudeX);
         assert!(
@@ -1844,8 +1842,11 @@ mod tests {
     /// A filter that started while moving: it knows neither where it is nor how fast.
     fn coarse() -> Eskf {
         let mut filter = Eskf::new(Config::default());
-        let mut window = [still(); 8];
-        window[3].imu.gyro = AngularRate::body(0.0, 0.4, 0.0);
+        let mut window = turning(0.0, 0.4, 0.0);
+        // No magnetometer, so heading stays a prior whatever the covariance says.
+        for sample in &mut window {
+            sample.mag = None;
+        }
         let alignment = filter
             .initialize(&window, Seconds::from_secs(0.25))
             .expect("moving, not unusable");
@@ -2071,18 +2072,13 @@ mod tests {
 
     #[test]
     fn a_moving_start_needs_more_than_a_magnetometer_to_call_heading_valid() {
-        // Having observed the quantity is necessary, not sufficient. This window turned
-        // 0.8 rad across gravity while that vector was being averaged, and the fixture's
-        // field dips twice as far as it reaches north, so `tan(dip)` scales the tilt into
-        // 1.6 rad of yaw — three times `Accuracy::heading`. Fusing a heading establishes
-        // it and the covariance still refuses it.
+        // Having observed the quantity is necessary, not sufficient. This window's halves
+        // level 0.4 rad apart, and the dip scales that into 0.78 rad of yaw — half as
+        // much again as `Accuracy::heading`. Fusing a heading establishes it and the
+        // covariance still refuses it.
         let mut filter = Eskf::new(Config::default());
-        let mut window = window_with_mag();
-        for sample in &mut window {
-            sample.imu.gyro = AngularRate::body(0.0, 0.4, 0.0);
-        }
         let alignment = filter
-            .initialize(&window, Seconds::from_secs(0.25))
+            .initialize(&turning(0.0, 0.4, 0.0), Seconds::from_secs(0.25))
             .expect("moving, not unusable");
         assert!(matches!(alignment, Alignment::Coarse(..)));
         assert!(!filter.validity().heading, "the window was moving");
@@ -2538,20 +2534,32 @@ mod tests {
     }
 
     #[test]
-    fn a_static_start_clears_the_origin_and_a_coarse_one_keeps_it() {
+    fn the_origin_follows_stillness_and_not_the_alignment() {
+        // Two halves of one claim, which have to move together: a window that held still
+        // says zero is here, and that is the whole of what lets it report an established
+        // position. A short one says it as honestly -- `classify` calls it coarse before
+        // it measures motion -- so keying the origin on the verdict would leave such a
+        // start reporting an established (0,0,0) about an origin nothing put under it.
         let mut filter = initialized();
         assert!(filter.set_origin(zurich()));
         let _ = filter
             .initialize(&[still(); 8], Seconds::from_secs(0.1))
             .expect("short, so coarse");
+        assert_eq!(filter.origin(), None, "still, so zero is here now");
+        assert!(filter.validity().horizontal_position);
+
+        assert!(filter.set_origin(zurich()));
+        let _ = filter
+            .initialize(&turning(0.0, 0.4, 0.0), Seconds::from_secs(0.25))
+            .expect("moving, not unusable");
         assert!(
             filter.origin().is_some(),
-            "a coarse restart keeps the flight's origin"
+            "a restart in motion keeps the flight's origin"
         );
-        let _ = filter
-            .initialize(&[still(); 8], Seconds::from_secs(0.25))
-            .expect("a 2 s window");
-        assert_eq!(filter.origin(), None, "zero is here now, wherever here is");
+        assert!(
+            !filter.validity().horizontal_position,
+            "and says nothing about where it is until a fix is adopted about that origin"
+        );
     }
 
     #[test]

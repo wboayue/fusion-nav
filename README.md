@@ -187,10 +187,11 @@ reference the flight began with rather than calling its own altitude the ground.
 returns `false` for a value that is not a number.
 
 A window that is short or moving is **not refused**. It gives a coarse start: attitude
-uncertainty bounded by what that window's own averages support — equations (5)–(6) level the
-averaged specific force and field, so what widens the prior is how far those averages are from
-what a still vehicle reads, and not the worst sample in the window — with `Status::Aligning`
-until tilt and heading are within `Config::accuracy`. A window that is only *short*, taken with
+uncertainty bounded by what that window itself supports — equations (5)–(6) level its *averages*,
+so what widens the prior is how far those averages are from what a still vehicle reads, how far
+the vehicle turned while they were being taken, and how far the window's two halves disagree,
+rather than the worst sample in it — with `Status::Aligning` until tilt and heading are within
+`Config::accuracy`. A window that is only *short*, taken with
 the vehicle at rest, starts from the static figures and establishes what it saw: stillness is
 measured from the window, never read off the alignment. A filter that will not start is worth less than one
 that starts and says how much to trust it — refusing would rule out moving decks, hand launches,
