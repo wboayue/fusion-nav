@@ -32,6 +32,19 @@ covering the area before starting work in it.
 - **#10** — replay validation. Consistency on the corpus, which has no truth; accuracy on
   simulation and INSANE, which do. The two measure different things and are not collapsed.
 
+**The PR that lands a change updates the issues it falsifies, in the same PR.** A tracker is not a
+changelog: it carries ordering, what each stage leaves its successors, and the measured numbers a
+later decision gets argued from, so landed work makes some of it false rather than merely
+incomplete. The closing keyword is the easy half; the rest is the tracker covering the area and
+every issue whose *premise* moved. #97 is the measure of that cost — afterwards #31 and #10 still
+called #77 and #85 the next work, #86 still claimed to block a number that had shipped on harness
+fixtures instead, #89 still said these scenarios could not fail overconfident while `moving_start`
+was reading `nees_pos=10.20` on a committed line, #59 still argued from a tilt prior that no longer
+exists, and this file's own `Status` bullet had inverted. Six documents wrong from one merge, each
+reading as evidence until someone checked. Quote what the run printed, not the ceiling:
+`data/scenarios.txt` carries 1 % of margin, so a figure copied out of it is wrong in the direction
+of flattery.
+
 Issues here are worth the length they run to. The convention: cite `file:line` at a pinned
 upstream revision rather than paraphrasing PX4 or ArduPilot, state what it depends on and what it
 blocks, name the replay/manifest impact, and say what the data must say before the issue can close.
