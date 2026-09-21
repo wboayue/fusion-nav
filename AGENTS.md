@@ -599,3 +599,30 @@ JavaScript that GitHub ships and docs.rs and crates.io do not, so a diagram ther
 one surface and ten lines of `flowchart TD` on the other two. A diagram the README needs goes in
 a `text` fence, which renders the same everywhere. `DESIGN.md` and `GOALS.md` keep theirs —
 nothing includes them, and GitHub is where they are read.
+
+### The sources are fetched, and the citations to them are checked
+
+`reference/` holds the primary sources, fetched rather than committed for the same reason as the
+corpus logs — arXiv's licence covers distribution *there*, and a standards body owns its own
+document. The PDFs are gitignored; `reference/README.md` is the record, and an entry carries a
+URL, a sha256 and a line saying what the file is the source *of*, so a claim can be traced to one
+and a source that turns out to answer nothing can be dropped.
+
+Fetching them is what makes a citation checkable, and the check pays. `EQUATIONS.md`'s
+correspondence table maps thirteen of its equations onto Solà's, and reading the paper against
+the prose around them found two sentences that contradicted it: a global attitude-error
+perturbation moves `R` rather than changing signs, and the `Δt²` form of `Q` is his as much as
+PX4's, differing in which σ is held fixed rather than in the exponent. Solà numbers are v1's,
+arXiv holds no other version, and a bare number in that document is always its own.
+
+Three habits follow, and each cost something before it was written down:
+
+* **Cite what a claim actually rests on, and drop the rest.** Farrell and Markley & Crassidis sat
+  in the References with no equation, doc comment or number pointing at them. A bibliography
+  entry nothing rests on reads as support and supplies none.
+* **Say when a source cannot be checked.** Groves (2.112) needs a book, and the References and
+  `reference/README.md` both say so rather than leaving a reader to discover it.
+* **Check what a fetched source actually contains before citing it.** The WGS 84 standard
+  defines the ellipsoid but never writes the geodetic-to-ECEF conversion, so it is the source for
+  the constants in `src/geodetic.rs` (Tables 3.1 and 3.5) and not for (43) — which is what the
+  entry in `reference/README.md` says.
