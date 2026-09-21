@@ -4,10 +4,8 @@ use crate::config::Config;
 use crate::frames::{Body, Ned};
 use crate::geodetic::{Geodetic, LocalOrigin};
 use crate::health::{Diagnostics, Fusion, Propagation, SourceHealth, Status, Validity};
-use crate::init::{
-    self, Alignment, Coarse, InitError, StaticSample, baro_reference, peak_motion, state_is_finite,
-};
-use crate::propagate::ImuSample;
+use crate::init::{self, Alignment, Coarse, InitError, StaticSample, baro_reference, peak_motion};
+use crate::propagate::{ImuSample, corrected_imu, propagate_nominal};
 use crate::state::{Covariance, ErrorState, STATES, State};
 use crate::units::{
     Altitude, AltitudeNoise, HeadingNoise, MagField, Position, PositionNoise, Seconds, Velocity,
@@ -16,10 +14,11 @@ use crate::units::{
 
 /// A 15-state error-state Kalman filter.
 ///
-/// **Stub.** Every method below has its intended signature and does its own bookkeeping,
-/// but only initialization's mathematics is implemented: the state never moves from where
-/// [`initialize`](Self::initialize) put it, and neither does the covariance. This type
-/// exists to let the API shape be written against before the rest of the equations land.
+/// **Stub.** Every method below has its intended signature and does its own bookkeeping.
+/// What is implemented is initialization, (5)–(8), and nominal propagation, (9)–(15): the
+/// state dead reckons from where [`initialize`](Self::initialize) put it. Nothing corrects
+/// it — the covariance never moves, so [`Status`] and [`validity`](Self::validity) answer on
+/// the uncertainty the window set, and every `fuse_*` accepts without changing the estimate.
 #[derive(Clone, Debug)]
 pub struct Eskf {
     config: Config,
@@ -260,7 +259,7 @@ impl Eskf {
         state: State,
         covariance: Covariance,
     ) -> Result<Alignment, InitError> {
-        if !state_is_finite(&state) || !covariance.as_matrix().iter().all(|e| e.is_finite()) {
+        if !state.is_finite() || !covariance.as_matrix().iter().all(|e| e.is_finite()) {
             return Err(InitError::NotFinite);
         }
         if (0..STATES).any(|i| covariance.as_matrix()[(i, i)] <= 0.0) {
@@ -365,7 +364,14 @@ impl Eskf {
     /// then in the covariance, where nothing reports it and it never leaves. The timers
     /// advance, since the `dt` was fine and only the sample was not.
     ///
-    /// **Stub.** Advances the fusion timers and propagates nothing.
+    /// A state that comes out of (11)–(14) non-finite is discarded rather than stored, as
+    /// [`Propagation::StateNotFinite`]. A finite sample is not enough to guarantee a finite
+    /// result: f32 has a finite range and `a_n Δt` can leave it.
+    ///
+    /// **Stub.** The covariance does not propagate. The nominal state advances by dead
+    /// reckoning, (9)–(15), while its uncertainty stays where initialization put it, so
+    /// [`Status`] and [`Validity`] answer on a covariance that has not grown since the
+    /// window — equations (16)–(22) are what make them move.
     pub fn predict(&mut self, imu: ImuSample, dt: Seconds) -> Propagation {
         if !self.initialized {
             return Propagation::NotInitialized;
@@ -392,6 +398,14 @@ impl Eskf {
         if !imu.is_finite() {
             return self.refuse_step(Propagation::NotFinite);
         }
+
+        // Propagated into a local first: (11)–(14) can overflow f32 on a finite sample, and
+        // a state written before it is checked is one the filter has already published.
+        let propagated = propagate_nominal(self.state, corrected_imu(imu, &self.state), dt);
+        if !propagated.is_finite() {
+            return self.refuse_step(Propagation::StateNotFinite);
+        }
+        self.state = propagated;
         Propagation::Propagated
     }
 
@@ -1005,6 +1019,80 @@ mod tests {
             Propagation::Propagated
         );
         assert_eq!(elapsed(&filter), DT.as_secs());
+    }
+
+    /// The `Eskf`-level check that (11) is wired at all: a sample reporting *no* specific
+    /// force is a vehicle in free fall, whatever its attitude, because `a_n = R(q̂) 0 + g`
+    /// is gravity in any frame. One step and the estimate is falling at `γ Δt`.
+    ///
+    /// Written on the default sample rather than a plausible one for that reason — the
+    /// answer does not depend on what `aided()` happened to level to.
+    #[test]
+    fn a_step_with_no_specific_force_leaves_the_estimate_falling() {
+        let mut filter = aided();
+        assert_eq!(
+            filter.predict(ImuSample::default(), DT),
+            Propagation::Propagated
+        );
+        let velocity = filter.state().velocity.vector();
+        let free_fall = GRAVITY * DT.as_secs();
+        assert!((velocity.z - free_fall).abs() < 1e-6, "{velocity:?}");
+        assert!(
+            velocity.x.abs() < 1e-6 && velocity.y.abs() < 1e-6,
+            "{velocity:?}"
+        );
+    }
+
+    /// A finite sample whose propagation overflows f32 is refused, and the estimate the
+    /// filter keeps is the last one that was a number.
+    ///
+    /// It takes accumulation rather than one step — `f32::MAX` of specific force is
+    /// `1.7e36` of velocity over 5 ms — so the loop runs until the refusal rather than
+    /// asserting on a step count, and the comparison is against the state immediately
+    /// before it.
+    #[test]
+    fn a_propagation_that_overflows_is_refused_and_the_estimate_is_left_alone() {
+        let mut filter = aided();
+        let imu = ImuSample {
+            gyro: AngularRate::body(0.0, 0.0, 0.0),
+            accel: Acceleration::body(f32::MAX, 0.0, -GRAVITY),
+        };
+        assert!(imu.is_finite());
+
+        let mut before = filter.state();
+        let mut steps = 0;
+        loop {
+            match filter.predict(imu, DT) {
+                Propagation::Propagated => {
+                    before = filter.state();
+                    steps += 1;
+                    assert!(steps < 10_000, "never overflowed");
+                }
+                Propagation::StateNotFinite => break,
+                other => panic!("unexpected outcome {other:?}"),
+            }
+        }
+
+        assert_eq!(
+            filter.state(),
+            before,
+            "a poisoned state reached the filter"
+        );
+        assert!(filter.state().is_finite());
+        assert_eq!(
+            filter.diagnostics().propagation.refused_state_not_finite,
+            1,
+            "the refusal went uncounted"
+        );
+        // The refused step counts too: the time passed. Compared with a tolerance because
+        // the timer accumulates 0.005 a couple of hundred times in f32 while the
+        // right-hand side multiplies once.
+        let expected = DT.as_secs() * (steps + 1) as f32;
+        assert!(
+            (elapsed(&filter) - expected).abs() < 1e-3,
+            "{} vs {expected}: a refused step still happened in real time",
+            elapsed(&filter)
+        );
     }
 
     #[test]

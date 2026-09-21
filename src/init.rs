@@ -542,17 +542,6 @@ pub(crate) fn inertial_acceleration(
     (span > 0.0).then(|| Acceleration::from_vector((last.vector() - first.vector()) / span))
 }
 
-/// Whether every number in a seed state is finite. A quaternion is unit by construction,
-/// so only its finiteness is in question here.
-pub(crate) fn state_is_finite(state: &State) -> bool {
-    let q = state.attitude.quaternion();
-    [q.w, q.i, q.j, q.k].iter().all(|v| v.is_finite())
-        && state.position.is_finite()
-        && state.velocity.is_finite()
-        && state.accel_bias.is_finite()
-        && state.gyro_bias.is_finite()
-}
-
 /// Mean barometric altitude over the samples that carry one: `α₀` of equation (30).
 /// `None` if none do.
 ///

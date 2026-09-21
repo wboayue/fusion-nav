@@ -59,11 +59,12 @@ $ cargo run --example replay -- \
 ```
 
 ```text
-score pos_h=101.112 pos_v=14.025 vel=14.527 pos_h_max=125.000 tilt=11.323 yaw=36.041 …
+score pos_h=1248.627 pos_v=204.617 vel=22.866 pos_h_max=3195.988 tilt=2.125 yaw=2.936 …
 ```
 
-Those are the **stub's** figures — nothing propagates, so the estimate holds the initialization
-window while truth flies away — and they move when a stage of #31 lands.
+Those are **dead reckoning's** figures: (9)–(15) propagate and nothing corrects them, so over
+185 s of unaided flight a 2° tilt error leaks gravity into the horizontal channel and integrates
+twice. They move when a stage of #31 lands.
 
 What each key means, and what it can and cannot say on these scenarios, is in the module docs of
 `examples/replay.rs`, which owns the definitions. Two things about *using* it belong here:
@@ -101,15 +102,15 @@ A breach names the pair and prints the whole `score` line, so a ceiling that mov
 reason is re-measured by copying:
 
 ```text
-  BREACH     mission: tilt=11.323, wanted tilt<=11.000
-    got pos_h=101.112 pos_v=14.025 vel=14.527 … tilt=11.323 yaw=36.041 …
+  BREACH     mission: tilt=2.125, wanted tilt<=2.000
+    got pos_h=1248.627 pos_v=204.617 vel=22.866 … tilt=2.125 yaw=2.936 …
 ```
 
 Moving one is the same commitment as moving a manifest expectation: a sentence beside it saying
-what the data said. The usual direction is tighter, since every ceiling here was measured on a
-filter that propagates nothing. Some will have to loosen instead — `static`'s position ceilings
-are exactly zero today because the scenario does not move and neither does the estimate, and a
-real dead-reckoning filter drifts.
+what the data said. Both directions count. Stage 3 tightened `flight` across the board and
+loosened every 185 s scenario by an order of magnitude, and both were the same change: a filter
+that propagates nothing holds its position at zero, which beats integrating a tilt error for
+three minutes and loses to it over fourteen seconds.
 
 The `seed` column pins which flight produced the numbers, checked against the header the
 generator wrote. It is the same guard as the truth-file header above, one level out: that one
@@ -175,8 +176,9 @@ machines running the same one, which is a bug.
 
 Matching hashes are a slightly weaker statement than matching state: the CSV is written at fixed
 precision, so a last-bit difference usually rounds away before it reaches the file. The check also
-only covers as much arithmetic as the harness exercises, which is little while the equations are
-stubs and grows with each stage that lands.
+only covers as much arithmetic as the harness exercises, and that grows with each stage that
+lands: before (9)–(15) the estimate columns were constant after the initialization window, so the
+hash could only see the window. Every row is now a propagated one.
 
 ## PX4 corpus
 

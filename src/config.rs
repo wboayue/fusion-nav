@@ -8,7 +8,18 @@
 
 use crate::units::{Meters, MetersPerSecond, MetersPerSecond2, Radians, RadiansPerSecond, Seconds};
 
-/// Standard gravity, m s⁻².
+/// Standard gravity, m s⁻². The `γ` of equations (5) and (11).
+///
+/// The WGS-84 standard value, and a constant rather than a derived or configured one. Local
+/// gravity varies by about 0.5 % between the equator and the poles, and the filter holds a
+/// geodetic origin whose latitude would give it — but the origin is placed by the first GNSS
+/// fix, which can arrive after propagation has begun, and a propagation constant that changes
+/// mid-flight is the self-retuning `GOALS.md`'s differentiator 7 rules out. The derivation
+/// belongs to the offline tool that prints a `Config` from a log (#51).
+///
+/// What the error costs: 0.03 m s⁻² at the equator, entering (11) as a systematic vertical
+/// specific-force error. The accelerometer bias state absorbs a constant offset, so it shows
+/// up as a bias estimate wrong by that much rather than as vertical drift.
 pub const GRAVITY: f32 = 9.806_65;
 
 /// IMU noise, as the continuous-time densities of equations (16)–(21).

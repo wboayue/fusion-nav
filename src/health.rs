@@ -255,7 +255,26 @@ pub enum Propagation {
     /// does not: `EstimatorInterface::setIMUData` constrains the integration period and
     /// never tests `delta_ang` or `delta_vel`
     /// (`src/modules/ekf2/EKF/estimator_interface.cpp:82-110`, at `c4e4ef98`).
+    ///
+    /// This is the **input**, which is what `NotFinite` means wherever it appears —
+    /// [`Fusion::NotFinite`], [`InitError::NotFinite`](crate::InitError::NotFinite),
+    /// [`Refusal::NotFinite`]. What propagation *produced* is
+    /// [`StateNotFinite`](Self::StateNotFinite).
     NotFinite,
+    /// The propagated state carried a NaN or an infinity, so it was not committed. The
+    /// state and covariance are unchanged and the timers advanced.
+    ///
+    /// Distinct from [`NotFinite`](Self::NotFinite), which is the sample arriving: this is
+    /// a finite sample overflowing on the way through (11)–(14). `a_n = R(q̂) a_b + g` is a
+    /// product of finite numbers and f32 has a finite range, so a sensor reporting a
+    /// plausible-looking `1e38` is refused here rather than at intake.
+    ///
+    /// Refused rather than committed for the reason a NaN sample is: an infinity in the
+    /// state reaches the quaternion through (15), the covariance through (16)–(22), and
+    /// every estimate after it, with nothing downstream able to tell that it was ever a
+    /// number. The previous state is stale, and a stale state the filter admits to is
+    /// recoverable where a poisoned one it reports as an estimate is not.
+    StateNotFinite,
     /// No initialization has succeeded; see [`Fusion::NotInitialized`]. Nothing was
     /// propagated and no timer advanced.
     NotInitialized,
@@ -468,6 +487,14 @@ pub struct PropagationHealth {
     /// climbing here is a miswired or failed IMU, and there is no other record of it —
     /// the state simply stops advancing while the aiding timers run on.
     pub refused_not_finite: u32,
+    /// Steps whose propagated state carried a NaN or an infinity and was discarded.
+    ///
+    /// Counted apart from [`refused_not_finite`](Self::refused_not_finite) for the reason
+    /// that one is counted apart from [`refused_invalid`](Self::refused_invalid): a
+    /// different fault. That one is a sensor emitting a NaN; this one is arithmetic
+    /// overflowing on values it accepted, which is a magnitude problem rather than a
+    /// validity one and is read at a different place in a bring-up.
+    pub refused_state_not_finite: u32,
     /// The longest `dt` refused as too long, or `None` if none has been.
     ///
     /// How far past the limit the worst gap ran, which separates a scheduler that overran by a
@@ -492,6 +519,9 @@ impl PropagationHealth {
             }
             Propagation::NotFinite => {
                 self.refused_not_finite = self.refused_not_finite.saturating_add(1);
+            }
+            Propagation::StateNotFinite => {
+                self.refused_state_not_finite = self.refused_state_not_finite.saturating_add(1);
             }
             Propagation::Propagated | Propagation::NotInitialized => {}
         }

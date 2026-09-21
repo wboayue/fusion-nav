@@ -11,12 +11,10 @@
 #
 # Every number here was measured, and a change that moves one is a change that needs a sentence
 # saying what the data said -- the discipline `data/manifest.txt` already holds. Moves go both
-# ways. The usual direction is tighter, as each stage of #31 makes the filter better than the
-# stub these were taken from, and `data/bench.sh` prints the whole `score` line on a breach so
-# re-measuring is a copy. But `static`'s zeros will have to *rise* at stage 3 (#34): position
-# error is exactly zero today because nothing propagates and the scenario does not move, and a
-# real dead-reckoning filter drifts. A loosening is honest when the sentence beside it says
-# which equation started producing the error.
+# ways, and stage 3 moved them both ways at once: `flight` tightened across the board while every
+# 185 s scenario loosened by an order of magnitude. That is what dead reckoning is. Holding the
+# position at zero, which is what a filter that propagates nothing does, beats integrating a
+# tilt error for three minutes; it loses to it over fourteen seconds.
 #
 # The `seed` column pins which flight produced these numbers. `examples/simulate.rs` owns the
 # seed; `data/bench.sh` checks this column against the header the generator wrote, so changing
@@ -25,9 +23,11 @@
 # Six of the nine lines carry identical numbers, and that is the design rather than a
 # copy-paste: `gnss_outage`, `baro_drift`, `gnss_latency` and `mag_disturbance` are
 # one-variable departures from `mission` on `mission`'s seed, each departing in the *aiding*,
-# and no aiding reaches the state while every `fuse_*` is a stub. `harsh_imu` separates only
-# through the initialization window. They start measuring their own departure when the update
-# of (23)-(28) lands; `examples/replay.rs` carries the reasoning.
+# and no aiding reaches the state while every `fuse_*` is a stub. `harsh_imu` separates through
+# the initialization window, and now through propagation too: ten times the white noise is ten
+# times the gyroscope-bias error the window leaves behind, and `pos_h` is 8.5x `mission`'s.
+# They start measuring their own departure when the update of (23)-(28) lands;
+# `examples/replay.rs` carries the reasoning.
 #
 # What is not here is a test of the covariance itself. A ceiling pins what the filter did last
 # run, so it passes a filter that grew more accurate and more overconfident at once -- the
@@ -36,15 +36,17 @@
 # already indifferent to it -- lines are read as `name seed pairs`, and nothing assumes one
 # line per scenario.
 #
-# Today every figure measures the stub: `predict` propagates nothing, so the estimate holds the
-# window's attitude and a position of zero while truth flies away.
+# What every figure measures today: equations (9)-(15) dead reckon and nothing corrects them.
+# The covariance has not moved since initialization, which is why `nees_*` reads in the
+# thousands here and up to 3.9e7 on `harsh_imu` -- the error grows and the uncertainty it is
+# divided by does not. Those keys are a regression guard on the error alone until #35.
 
-static           1  pos_h<=0.000   pos_v<=0.000   vel<=0.000   pos_h_max<=0.000   tilt<=0.432   yaw<=0.563   in3s>=1.0000  nees_pos<=0.0000     nees_vel<=0.0000     nees_att<=0.0476   false_valid<=0       scored>=11600
-mission          2  pos_h<=101.112 pos_v<=14.025  vel<=14.527  pos_h_max<=125.000 tilt<=11.323  yaw<=36.041  in3s>=0.5294  nees_pos<=3473.4395  nees_vel<=7034.4132  nees_att<=33.6206  false_valid<=179874  scored>=36600
-harsh_imu        2  pos_h<=101.112 pos_v<=14.025  vel<=14.527  pos_h_max<=125.000 tilt<=11.390  yaw<=36.047  in3s>=0.5299  nees_pos<=3473.4395  nees_vel<=7034.4132  nees_att<=34.0113  false_valid<=180029  scored>=36600
-gnss_outage      2  pos_h<=101.112 pos_v<=14.025  vel<=14.527  pos_h_max<=125.000 tilt<=11.323  yaw<=36.041  in3s>=0.5294  nees_pos<=3473.4395  nees_vel<=7034.4132  nees_att<=33.6206  false_valid<=179874  scored>=36600
-moving_start     4  pos_h<=42.214  pos_v<=70.591  vel<=16.738  pos_h_max<=60.234  tilt<=35.740  yaw<=98.998  in3s>=0.6851  nees_pos<=1245.9952  nees_vel<=4150.5521  nees_att<=0.4948   false_valid<=45766   scored>=15999
-baro_drift       2  pos_h<=101.112 pos_v<=14.025  vel<=14.527  pos_h_max<=125.000 tilt<=11.323  yaw<=36.041  in3s>=0.5294  nees_pos<=3473.4395  nees_vel<=7034.4132  nees_att<=33.6206  false_valid<=179874  scored>=36600
-gnss_latency     2  pos_h<=101.112 pos_v<=14.025  vel<=14.527  pos_h_max<=125.000 tilt<=11.323  yaw<=36.041  in3s>=0.5294  nees_pos<=3473.4395  nees_vel<=7034.4132  nees_att<=33.6206  false_valid<=179874  scored>=36600
-mag_disturbance  2  pos_h<=101.112 pos_v<=14.025  vel<=14.527  pos_h_max<=125.000 tilt<=11.323  yaw<=36.041  in3s>=0.5294  nees_pos<=3473.4395  nees_vel<=7034.4132  nees_att<=33.6206  false_valid<=179874  scored>=36600
-flight           8  pos_h<=14.118  pos_v<=3.529   vel<=5.167   pos_h_max<=20.552  tilt<=5.883   yaw<=47.021  in3s>=0.6119  nees_pos<=70.5938    nees_vel<=889.8920   nees_att<=10.6179  false_valid<=2336    scored>=600
+static           1  pos_h<=29.292    pos_v<=20.191   vel<=2.218   pos_h_max<=82.369    tilt<=1.004  yaw<=0.292  in3s>=0.7486 nees_pos<=421.9137      nees_vel<=163.9889     nees_att<=0.2560  false_valid<=26185  scored>=11600
+mission          2  pos_h<=1248.627  pos_v<=204.617  vel<=22.866  pos_h_max<=3195.988  tilt<=2.125  yaw<=2.936  in3s>=0.6425 nees_pos<=533646.1865   nees_vel<=17428.9778   nees_att<=1.1539  false_valid<=150810 scored>=36600
+harsh_imu        2  pos_h<=10640.038 pos_v<=1732.279 vel<=197.267 pos_h_max<=27131.016 tilt<=18.872 yaw<=33.504 in3s>=0.5111 nees_pos<=38737065.2284 nees_vel<=1297140.3538 nees_att<=91.3370 false_valid<=194200 scored>=36600
+gnss_outage      2  pos_h<=1248.627  pos_v<=204.617  vel<=22.866  pos_h_max<=3195.988  tilt<=2.125  yaw<=2.936  in3s>=0.6425 nees_pos<=533646.1865   nees_vel<=17428.9778   nees_att<=1.1539  false_valid<=150810 scored>=36600
+moving_start     4  pos_h<=6116.797  pos_v<=1352.571 vel<=201.796 pos_h_max<=13657.758 tilt<=24.461 yaw<=8.419  in3s>=0.6096 nees_pos<=15585416.0708 nees_vel<=603283.0549  nees_att<=0.0923  false_valid<=61622  scored>=15999
+baro_drift       2  pos_h<=1248.627  pos_v<=204.617  vel<=22.866  pos_h_max<=3195.988  tilt<=2.125  yaw<=2.936  in3s>=0.6425 nees_pos<=533646.1865   nees_vel<=17428.9778   nees_att<=1.1539  false_valid<=150810 scored>=36600
+gnss_latency     2  pos_h<=1248.627  pos_v<=204.617  vel<=22.866  pos_h_max<=3195.988  tilt<=2.125  yaw<=2.936  in3s>=0.6425 nees_pos<=533646.1865   nees_vel<=17428.9778   nees_att<=1.1539  false_valid<=150810 scored>=36600
+mag_disturbance  2  pos_h<=1248.627  pos_v<=204.617  vel<=22.866  pos_h_max<=3195.988  tilt<=2.125  yaw<=2.936  in3s>=0.6425 nees_pos<=533646.1865   nees_vel<=17428.9778   nees_att<=1.1539  false_valid<=150810 scored>=36600
+flight           8  pos_h<=8.313     pos_v<=0.713    vel<=3.062   pos_h_max<=12.261    tilt<=3.512  yaw<=34.243 in3s>=0.7746 nees_pos<=23.2023       nees_vel<=312.4771     nees_att<=4.1023  false_valid<=2016   scored>=600

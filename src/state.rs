@@ -40,6 +40,26 @@ pub struct State {
     pub validity: Validity,
 }
 
+impl State {
+    /// Whether every number in the estimate is finite.
+    ///
+    /// Two callers with one question: [`Eskf::initialize_from`](crate::Eskf::initialize_from)
+    /// asks it of a seed the application supplied, and
+    /// [`Eskf::predict`](crate::Eskf::predict) asks it of what propagation produced, since
+    /// (11)–(14) can overflow f32 from finite inputs. Beside the type rather than in either
+    /// caller's module, because neither owns it.
+    ///
+    /// The quaternion is unit by construction, so only its finiteness is in question.
+    pub(crate) fn is_finite(&self) -> bool {
+        let q = self.attitude.quaternion();
+        [q.w, q.i, q.j, q.k].iter().all(|v| v.is_finite())
+            && self.position.is_finite()
+            && self.velocity.is_finite()
+            && self.accel_bias.is_finite()
+            && self.gyro_bias.is_finite()
+    }
+}
+
 /// Index of an error-state component within the covariance.
 ///
 /// The ordering is that of equation (2):
