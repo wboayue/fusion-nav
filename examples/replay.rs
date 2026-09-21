@@ -626,7 +626,7 @@ impl Replay {
         self.fusions += 1;
         // `ν` and the diagonal of `S` are left empty rather than computed here. The filter
         // publishes neither, and the harness working them out from the measurement and the
-        // covariance would be a second implementation of a quantity the update of (23)-(28)
+        // covariance would be a second implementation of a quantity the update of (23)–(28)
         // is about to own — the disagreement `AGENTS.md` keeps one implementation to avoid.
         // The columns exist so the shape is fixed before #36 has values to put in it.
         writeln!(
@@ -2451,7 +2451,7 @@ mod tests {
     #[test]
     fn the_innovation_columns_stay_empty_until_the_filter_publishes_one() {
         // Pinned rather than left to be noticed. The harness could work `ν` out from the
-        // measurement and the covariance, and must not: the update of (23)-(28) is about to
+        // measurement and the covariance, and must not: the update of (23)–(28) is about to
         // own that quantity, and two implementations of it would disagree while somebody
         // chases a filter bug that does not exist.
         let log = still_start().gnss_pos(2.0, 1.0, 2.0, -3.0);

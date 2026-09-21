@@ -108,12 +108,12 @@ pub(crate) type Transition = SMatrix<f32, STATES, STATES>;
 
 /// The nominal state and the covariance after one step, before either is committed.
 ///
-/// A pair rather than two return values because the commit is atomic: (11)-(14) and (22) can
+/// A pair rather than two return values because the commit is atomic: (11)–(14) and (22) can
 /// both overflow f32 from finite inputs, and a state written beside a covariance that was
-/// refused -- or the reverse -- is the poisoning that keeping the whole step out of the filter
+/// refused — or the reverse — is the poisoning that keeping the whole step out of the filter
 /// avoids. [`Eskf::predict`](crate::Eskf::predict) commits both or neither.
 pub(crate) struct Propagated {
-    /// The nominal state of (13)-(15).
+    /// The nominal state of (13)–(15).
     pub(crate) state: State,
     /// The covariance of (22).
     pub(crate) covariance: Covariance,
@@ -126,9 +126,9 @@ impl Propagated {
     }
 }
 
-/// Advance the nominal state and its covariance over `dt`. Equations (9)-(22).
+/// Advance the nominal state and its covariance over `dt`. Equations (9)–(22).
 ///
-/// The bias correction of (9)-(10) is applied once here, and both halves read that one
+/// The bias correction of (9)–(10) is applied once here, and both halves read that one
 /// `Corrected` sample and the one attitude it arrived with. `F` is built before the nominal
 /// step runs, because (20) linearizes about the state at the **start** of the interval:
 /// building it afterwards would linearize about the state (15) has already rotated, and no
@@ -153,7 +153,7 @@ pub(crate) fn propagate(
 /// `F`, the discrete state transition matrix of equation (20), linearized about the nominal
 /// state at the start of the interval.
 ///
-/// The continuous error dynamics (16)-(19) that (20) discretizes, with the local attitude
+/// The continuous error dynamics (16)–(19) that (20) discretizes, with the local attitude
 /// error `δθ` of equation (2), `q = q̂ ⊗ Exp(δθ)`:
 ///
 /// ```text
@@ -166,13 +166,13 @@ pub(crate) fn propagate(
 /// (17) is the coupling that motivates the whole filter: a tilt error rotates the measured
 /// specific force into the wrong navigation-frame direction, and the mistake integrates into
 /// velocity and then into position. Read backwards it is also what makes tilt observable at
-/// all -- the reason a velocity innovation can correct an attitude no sensor measures
+/// all — the reason a velocity innovation can correct an attitude no sensor measures
 /// directly.
 ///
 /// Every block is first order in `Δt` except the attitude block, which is the exact solution
 /// of (18)'s homogeneous part, `R{ω Δt}ᵀ = exp(−[ω]ₓ Δt)`. (20) permits `I − [ω]ₓ Δt` where
 /// the exact form is not justified, and here it is: the exact block costs one [`exp_quat`] --
-/// a sine, a cosine, and a quaternion to matrix -- against the roughly 6750 multiplications
+/// a sine, a cosine, and a quaternion to matrix — against the roughly 6750 multiplications
 /// the two 15 x 15 products of (22) spend on the same sample. The approximation buys nothing
 /// measurable and gives up accuracy at high rotation rates, which is the regime a propagated
 /// covariance exists for.
@@ -222,15 +222,15 @@ fn transition_matrix(state: &State, imu: Corrected, dt: Seconds) -> Transition {
 /// a matrix again.
 ///
 /// **`Δt`, not `Δt²`.** [`ImuNoise`]'s four fields are spectral densities, and a density's
-/// contribution over a step is `σ² Δt` -- for the white-noise blocks and the two random walks
+/// contribution over a step is `σ² Δt` — for the white-noise blocks and the two random walks
 /// alike. The `Δt²` that (21) carried on the white-noise blocks is PX4's and ArduPilot's form,
 /// where the parameter is the σ of one sample's increment rather than a density: PX4
 /// `sq(dt) * accel_var` with `accel_var = sq(ekf2_acc_noise)`
 /// (`src/modules/ekf2/EKF/python/ekf_derivation/generated/predict_covariance.h:161-164`,
 /// `EKF/covariance.cpp:119-133`, at `c4e4ef98e9`), ArduPilot `dvxVar = sq(dt * _accNoise)`
 /// (`libraries/AP_NavEKF3/AP_NavEKF3_core.cpp:1177` at `368dc0c428`). That form ties `Q` to
-/// the IMU rate -- the variance it adds over `T` seconds is `σ² Δt T`, so the same airframe
-/// logged at 400 Hz is given eight times less process noise than at 50 Hz -- and the corpus in
+/// the IMU rate — the variance it adds over `T` seconds is `σ² Δt T`, so the same airframe
+/// logged at 400 Hz is given eight times less process noise than at 50 Hz — and the corpus in
 /// `data/manifest.txt` spans 50 Hz to 250 Hz with `Config` shared across all of it. `Δt` is
 /// rate-independent, and `EQUATIONS.md` (21) is amended to it.
 ///
@@ -269,7 +269,7 @@ fn process_noise(noise: &ImuNoise, dt: Seconds) -> [f32; STATES] {
 ///
 /// Written as (22) reads, which is the most expensive thing the filter does: of order 6750
 /// multiplications and three 900-byte temporaries per IMU sample, at up to 400 Hz. (20) is
-/// sparse enough -- two identity blocks, two zero rows -- that a block-wise form would cut
+/// sparse enough — two identity blocks, two zero rows — that a block-wise form would cut
 /// both, at the cost of the one equation a reader of this crate is most likely to have come
 /// for.
 ///
@@ -279,8 +279,8 @@ fn process_noise(noise: &ImuNoise, dt: Seconds) -> [f32; STATES] {
 /// (`-Zemit-stack-sizes`, `opt-level = 3`; the figure is `predict`'s because this function
 /// inlines into it). That is the "few kilobytes rather than one" `DESIGN.md` predicts for the
 /// working set, comfortable on the STM32H7 class it names and a quarter of the RAM on an 8 KB
-/// Cortex-M0 part. The block-wise form is the lever if a target needs it, and #41 -- stack
-/// high-water measured on hardware -- is what would say so.
+/// Cortex-M0 part. The block-wise form is the lever if a target needs it, and #41 — stack
+/// high-water measured on hardware — is what would say so.
 ///
 /// `Q` arrives as a diagonal and is added as one, which keeps those temporaries to three
 /// rather than four.
@@ -483,7 +483,7 @@ mod tests {
         assert!((velocity.z - free_fall).abs() < 1e-4, "{velocity:?}");
     }
 
-    // --- (16)-(22): the covariance ---------------------------------------------------------
+    // --- (16)–(22): the covariance ---------------------------------------------------------
 
     /// Tilted, turning, translating, and biased: nothing in the state or the sample below is
     /// zero, so no block of (20) can be checked against an accidental zero.
@@ -783,7 +783,7 @@ mod tests {
         );
     }
 
-    /// The covariance half of what (11)-(14) already owed: `F P Fᵀ` leaves f32's range from
+    /// The covariance half of what (11)–(14) already owed: `F P Fᵀ` leaves f32's range from
     /// finite inputs, and the step reports it rather than committing an infinity that reaches
     /// every later `S` and never leaves.
     #[test]

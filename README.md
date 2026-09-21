@@ -166,7 +166,9 @@ and GNSS velocity. From the window the filter takes:
   gravity. `validity.heading` is false and `Status` stays `Aligning` until the first
   `fuse_mag_heading` is accepted, however still the window was — `Initialization::sigma_yaw` is a
   prior on a yaw nobody measured, and the covariance alone cannot tell the two apart (the reset
-  that should replace such a yaw is not yet built)
+  that should replace such a yaw is not yet built). Leaving `Aligning` is one-way: it reports a
+  start that has not been resolved, while `validity.tilt` and `validity.heading` stay live and go
+  false again as an unaided covariance grows past `Config::accuracy`
 * **gyroscope bias** from the averaged gyroscope, but only from a window taken at rest, which is
   what makes the bias observable rather than the vehicle's own turn rate. A window taken in
   motion starts it at zero, as both PX4 and ArduPilot do at every start. The accelerometer bias

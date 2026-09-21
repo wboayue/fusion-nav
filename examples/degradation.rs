@@ -1,11 +1,12 @@
 //! What happens when sources stop arriving: status transitions, per-source diagnostics,
 //! and an application-driven recovery.
 //!
-//! `predict` propagates the nominal state, (9)–(15), but every `fuse_*` still accepts
-//! unconditionally, so no measurement is ever actually gated out and the estimate here is
-//! IMU-only dead reckoning. What is real is the attitude the window yields, that dead
-//! reckoning, and the health bookkeeping: the timers, the aggregate [`Status`], and the fact
-//! that recovery is the application's decision rather than the filter's.
+//! `predict` propagates the nominal state and its covariance, (9)–(22), but every `fuse_*`
+//! still accepts unconditionally, so no measurement is ever actually gated out and the estimate
+//! here is IMU-only dead reckoning with a monotonically growing uncertainty. What is real is
+//! the attitude the window yields, that dead reckoning, and the health bookkeeping: the timers,
+//! the aggregate [`Status`], and the fact that recovery is the application's decision rather
+//! than the filter's.
 //!
 //! Run with `cargo run --example degradation`. For the loop itself, see `basic.rs`.
 

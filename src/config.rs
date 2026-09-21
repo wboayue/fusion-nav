@@ -288,7 +288,7 @@ pub struct Config {
     /// Largest `dt` [`Eskf::predict`](crate::Eskf::predict) will propagate over.
     ///
     /// Beyond this the step is refused and the state left alone, because the
-    /// discretization of equations (9)-(22) is a first-order approximation over a short
+    /// discretization of equations (9)–(22) is a first-order approximation over a short
     /// interval and one IMU sample cannot describe a long one. The filter reports and
     /// stops there, as it does for a locked-out gate: whether to reset, coast, or abort
     /// is the application's call.
