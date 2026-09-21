@@ -145,9 +145,9 @@ comparing rejection behaviour against EKF2 is a like-for-like check.
 Two gates, and they answer different questions. `data/manifest.txt` pins what real logs do, which
 is self-consistency, because no PX4 log carries truth. `data/scenarios.txt` pins accuracy against
 the simulator's analytic truth, and `data/bench.sh` asserts it in CI with no network and no PX4
-tooling. Neither yet tests the covariance's own distributional promise — a ceiling passes a filter
-that grew more accurate and more overconfident at once — which is ANEES over N seeds, #89, once
-#35 gives it a covariance that moves.
+tooling. Neither tests the covariance's own distributional promise, which is a third question
+again: see [three questions, three kinds of source](#three-questions-three-kinds-of-source) for
+why they do not collapse and what a ratchet cannot see.
 
 Trust in an estimator comes from reproducible numbers, not from documentation.
 
@@ -524,6 +524,34 @@ and tested rather than claims about what it does.
 Differentiator 6 depends on being able to show reproducible numbers. The constraint is that
 very few public datasets carry barometer, magnetometer, GNSS, and IMU together on a flight
 vehicle, which is exactly the `fusion-nav` sensor set.
+
+### Three questions, three kinds of source
+
+Validation asks three separate questions. A source answers one of them, sometimes two, never all
+three, and collapsing them is how a benchmark comes to certify something it never tested.
+
+**Is the filter self-consistent?** Innovation-based — a normalized test ratio against the gate
+thresholds, and divergence from EKF2's own published solution on the same log. This needs no
+truth, which is what makes the PX4 corpus usable at all: thousands of real flights carrying
+exactly what a flight controller sees, and no reference trajectory anywhere in them. What such a
+corpus can say is when the filter stopped vouching for its own attitude; what it cannot say is
+whether that attitude was any good.
+
+**How accurate is it?** Error-based — RMSE and NEES against a reference trajectory. This needs
+truth, so it is the simulator's question and INSANE's, and neither displaces the corpus: synthetic
+data cannot falsify a sensor model, and a clean RTK dataset does not present glitchy sensors.
+
+**Was a rejection correct?** This needs truth *and* deliberately hostile measurements, which is a
+third combination rather than a harder version of either. Consistency cannot answer it — a filter
+that has absorbed a bad fix looks perfectly consistent with it — and the clean-sky accuracy
+sources never present the case. That is the whole reason UrbanNav is in the secondary table below
+despite being a ground vehicle with no barometer and no magnetometer.
+
+A fourth question sits underneath the second and is easy to mistake for it: **is the covariance
+honest?** A ceiling on an error passes a filter that grew more accurate and more overconfident at
+once, and a ratchet cannot tell those apart, because a number moving down is what both look like.
+Answering it takes a distributional test — ANEES over N seeds against a chi-square bound — beside
+the ceilings rather than instead of them.
 
 ### Primary sources
 
