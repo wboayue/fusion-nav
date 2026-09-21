@@ -361,9 +361,10 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
   functions live here; tests of what the filter does with them stay in `eskf.rs`.
 - `src/propagate.rs` — `ImuSample` today; equations (9)–(22) land here.
 - `src/math.rs` — the primitives the equations share: `skew`, `exp_quat`, `wrap_pi`,
-  `enforce_symmetry` (42). Pure, stateless, and unit-tested against their definitions. Each one
-  no filter path calls yet carries its own `expect(dead_code)`, which its first caller must
-  delete; (6) took `wrap_pi`'s.
+  `enforce_symmetry` (42). Pure, stateless, and unit-tested against their definitions. All four
+  have callers as of (16)–(22), so none carries a dead-code allowance any more. The last one in
+  `src/` is `SourceHealth::record_rejected` (`src/health.rs:458`), waiting for the gate of (37) —
+  its first caller deletes it.
 - `src/state.rs` — `State` (nominal, 16 values), `Covariance`/`CovarianceMatrix` (15×15), and
   `ErrorState`, whose discriminants define the covariance ordering `[δp δv δθ δβa δβg]`.
 - `src/units.rs` — typed scalars/vectors. Types carry the claims that cause bugs — frame,
