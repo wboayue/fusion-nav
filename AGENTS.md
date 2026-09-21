@@ -231,11 +231,23 @@ overconfident at once, which is #89 (ANEES over N seeds), after #35 gives it a c
 moves. The format is already indifferent to several seeds per scenario.
 
 The comparison itself is shared, not copied: `data/expect.sh` owns `key=value`, `key<=value` and
-`key>=value` for both `data/scenarios.txt` and `data/manifest.txt`, so the pair syntax is one
-language and #4's tolerance ranges are a manifest edit rather than a second comparator. It carries
-fixtures with literal verdicts for the same reason `examples/replay.rs` does — the expectations in
-both files were produced by the harness they guard, so a comparator that waves something through
-turns a miscount into the baseline everything later is measured against.
+`key>=value`, and both readers source it — `data/bench.sh` for `data/scenarios.txt`,
+`data/fetch.sh --check` for `data/manifest.txt`. So the pair syntax is one language, and #4's
+tolerance ranges are a manifest edit rather than a second comparator. It carries fixtures with
+literal verdicts for the same reason `examples/replay.rs` does — the expectations in both files
+were produced by the harness they guard, so a comparator that waves something through turns a
+miscount into the baseline everything later is measured against.
+
+Two things it refuses that a substring match does not: a key named in the expectations and absent
+from the line, which is what notices a renamed `summary` or `score` key, and a value that is not a
+number where one is required — `nees_pos=none` is what the harness prints when a block does not
+invert, and awk reads it as zero, which passes every ceiling.
+
+**Ceilings carry 1 % of margin**, `scored` excepted, and the header of `data/scenarios.txt` says
+why: the simulator is a host tool on `std`'s transcendentals rather than the `libm` crate that
+pins the filter, and since (9)–(15) every figure is an integral over tens of thousands of steps,
+where a last-bit difference accumulates to roughly `n·eps`. Re-measure with the margin, never
+without it, and never widen it to make a breach go away — that is the change needing a sentence.
 
 **Converter changes are batched.** Regenerating the corpus is not free — logs fetched, `pyulog`
 installed, every log reconverted, replayed, and every moved expectation explained. Land changes
