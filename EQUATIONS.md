@@ -240,12 +240,12 @@ averages sit from what a still vehicle reads — not how far the worst sample in
 ```math
 \sigma_{\text{tilt},0} = \max\left( \sigma_{\text{tilt}},\quad
 \frac{\bigl|\, \lVert \bar f \rVert - \gamma \,\bigr|}{\gamma},\quad
-\bigl\lVert (I - \hat d\, \hat d^\mathsf{T})\, \bar\omega\, T \bigr\rVert,\quad
+\bigl\lVert (I - \hat d\, \hat d^\mathsf{T})\, \bar\omega_r\, T \bigr\rVert,\quad
 \angle\bigl( \bar f_1,\, \bar f_2 \bigr) \right)
 ```
 
 ```math
-\sigma_{\psi,0} = \min\left( \max\bigl( \sigma_\psi,\; \tan\delta \cdot \sigma_{\text{tilt},0},\; \bigl| \hat d \cdot \bar\omega\, T \bigr|,\; \lvert \psi_2 - \psi_1 \rvert \bigr),\; \frac{\pi}{\sqrt 3} \right),
+\sigma_{\psi,0} = \min\left( \max\bigl( \sigma_\psi,\; \tan\delta \cdot \sigma_{\text{tilt},0},\; \bigl| \hat d \cdot \bar\omega_r\, T \bigr|,\; \lvert \psi_2 - \psi_1 \rvert \bigr),\; \frac{\pi}{\sqrt 3} \right),
 \qquad
 \tan\delta = \frac{\bigl| \bar m \cdot \hat d \bigr|}{\bigl\lVert (I - \hat d\, \hat d^\mathsf{T})\, \bar m \bigr\rVert}
 ```
@@ -253,7 +253,10 @@ averages sit from what a still vehicle reads — not how far the worst sample in
 with $`T`$ the window's span, $`\hat d = -\bar f / \lVert \bar f \rVert`$ the direction (5)
 levelled to, and the subscripts 1 and 2 the same averages taken over the first and the second
 **half** of the window — $`\psi_i`$ being the heading (6) yields from that half alone, so the
-declination cancels.
+declination cancels. The rotation charged is what (7) did *not* take,
+$`\bar\omega_r = \bar\omega - \hat\beta_{g,0}`$: a window at rest commits the whole average as
+gyroscope bias, and the same quantity cannot be both removed from the state and charged to the
+prior around it. Where (7) left the bias at zero, $`\bar\omega_r = \bar\omega`$.
 
 Past the configured floor and the specific force that is not gravity, the attitude is bounded by
 two witnesses to how far it moved while it was being averaged, and **both** are needed because

@@ -494,19 +494,6 @@ pub(crate) fn heading_from_mag(
     ))
 }
 
-/// How much a tilt error leaks into the heading of (6): `tan δ` of equation (8′), measured
-/// off the window's own field rather than configured.
-///
-/// (6) levels `m̄` and takes the `atan2` of what is left horizontal, so an error in the
-/// tilt it levelled by tips the field and turns that horizontal part. The leak is the
-/// ratio of the field's vertical component to its horizontal one, which is `tan(dip)`:
-/// 1.96 at the 1.107 rad of dip [`heading_from_mag`] cites, and 1.22 on the window
-/// `2c42096b` starts from. Both components are taken about `down`, the direction (5)
-/// levelled to, so no Euler angles enter and the ratio does not depend on the frame they
-/// would be read in.
-///
-/// `None` where the horizontal part is zero: a field pointing straight down observes no
-/// heading at any tilt, so there is no error to scale rather than an infinite one.
 /// What the window's two halves disagree about: the tilt between the attitudes they
 /// yield, and the heading between them. The drift terms of equation (8′).
 ///
@@ -555,6 +542,19 @@ fn angle_between(first: Vector3<f32>, second: Vector3<f32>) -> f32 {
     ComplexField::acos((first.dot(&second) / norms).clamp(-1.0, 1.0))
 }
 
+/// How much a tilt error leaks into the heading of (6): `tan δ` of equation (8′), measured
+/// off the window's own field rather than configured.
+///
+/// (6) levels `m̄` and takes the `atan2` of what is left horizontal, so an error in the
+/// tilt it levelled by tips the field and turns that horizontal part. The leak is the
+/// ratio of the field's vertical component to its horizontal one, which is `tan(dip)`:
+/// 1.96 at the 1.107 rad of dip [`heading_from_mag`] cites, and 1.22 on the window
+/// `2c42096b` starts from. Both components are taken about `down`, the direction (5)
+/// levelled to, so no Euler angles enter and the ratio does not depend on the frame they
+/// would be read in.
+///
+/// `None` where the horizontal part is zero: a field pointing straight down observes no
+/// heading at any tilt, so there is no error to scale rather than an infinite one.
 fn heading_sensitivity(field: MagField<Body>, down: Vector3<f32>) -> Option<f32> {
     let field = field.vector();
     let vertical = field.dot(&down);
@@ -567,14 +567,19 @@ fn heading_sensitivity(field: MagField<Body>, down: Vector3<f32>) -> Option<f32>
 ///
 /// A static start gets the configured figures. A coarse one gets what its own window
 /// supports, equation (8′); see [`coarse_sigmas`].
+///
+/// `gyro_bias` is the one [`nominal_state`] committed from the same window, and the
+/// coarse bound reads the window's rotation net of it. Passed rather than re-derived so
+/// that the two cannot disagree about what the average held.
 pub(crate) fn attitude_sigmas(
     init: &Initialization,
     alignment: Alignment,
     measured: &Measured,
+    gyro_bias: AngularRate<Body>,
 ) -> (Radians, Radians) {
     match alignment {
         Alignment::Static | Alignment::Seeded => (init.sigma_tilt, init.sigma_yaw),
-        Alignment::Coarse(_) => coarse_sigmas(init, measured),
+        Alignment::Coarse(_) => coarse_sigmas(init, measured, gyro_bias),
     }
 }
 
@@ -608,10 +613,26 @@ pub(crate) fn attitude_sigmas(
 /// and 108 with both (`data/scenarios.txt`). A bound is not tighter for dropping the term
 /// that was holding it up.
 ///
+/// The rotation is `ω̄ − β̂_g`, not `ω̄`, because (7) has already taken part of that average
+/// out of the measurement: a window at rest commits the whole of it as
+/// [`State::gyro_bias`], so charging it again as motion bounds the attitude by an error
+/// the state has just removed. A parked vehicle whose gyroscope reads 0.05 rad/s —
+/// ordinary for a MEMS part, and well inside the 0.262 rad/s `max_gyro_rate` — over a
+/// 1.6 s window that is coarse only for being short otherwise starts at 0.080 rad of
+/// tilt against an [`Accuracy::tilt`](crate::Accuracy::tilt) of 0.052. That start never
+/// resolves: the alignment latch only promotes, so
+/// [`Status::Aligning`](crate::Status::Aligning) masks every aiding transition for the
+/// flight — the same cost the averages above exist to avoid, from a vehicle that never
+/// moved.
+///
 /// [`Coarse`]'s own payload is not read here. It reports why [`classify`] refused the
 /// window as static, which is a question about peaks; this is a question about averages,
 /// and the same window answers the two differently.
-fn coarse_sigmas(init: &Initialization, measured: &Measured) -> (Radians, Radians) {
+fn coarse_sigmas(
+    init: &Initialization,
+    measured: &Measured,
+    gyro_bias: AngularRate<Body>,
+) -> (Radians, Radians) {
     // Small-angle, as (5) reads it: an average that is not gravity leans the levelled
     // vertical by the fraction of `γ` it is out by.
     let from_force = (measured.force.vector().norm() - GRAVITY).abs() / GRAVITY;
@@ -619,7 +640,7 @@ fn coarse_sigmas(init: &Initialization, measured: &Measured) -> (Radians, Radian
     // What the gyroscope says the vehicle did, split about the vertical (5) levelled to:
     // rotation across gravity moves that vector and spoils the tilt, rotation about it
     // leaves the vector alone and spoils the heading of (6) instead.
-    let net = measured.rate.vector() * measured.span.as_secs();
+    let net = (measured.rate.vector() - gyro_bias.vector()) * measured.span.as_secs();
     let down = measured.down();
     let across = down.map_or(net.norm(), |down| (net - down * net.dot(&down)).norm());
     let about = down.map_or(0.0, |down| net.dot(&down).abs());
@@ -796,10 +817,19 @@ pub(crate) mod tests {
     }
 
     /// The tilt and yaw sigmas a window would start with, in radians.
+    ///
+    /// The gyroscope bias comes from (7) on the same window, the way `apply_alignment`
+    /// supplies it, so a test sees the pair as the filter commits them.
     fn sigmas(window: &[StaticSample], dt: Seconds) -> (f32, f32) {
         let init = Initialization::default();
         let measured = measure(window, dt).expect("a usable window");
-        let (tilt, yaw) = attitude_sigmas(&init, classify(&measured, &init), &measured);
+        let state = nominal_state(&measured, Radians::ZERO, at_rest(&measured, &init));
+        let (tilt, yaw) = attitude_sigmas(
+            &init,
+            classify(&measured, &init),
+            &measured,
+            state.gyro_bias,
+        );
         (tilt.as_radians(), yaw.as_radians())
     }
 
@@ -1157,6 +1187,42 @@ pub(crate) mod tests {
         assert!(
             (yaw - init.sigma_yaw.as_radians()).abs() < 1e-6,
             "the configured prior, not the 1.81 rad of a heading nothing observed, got {yaw}"
+        );
+    }
+
+    #[test]
+    fn a_parked_vehicles_gyroscope_bias_is_not_also_charged_as_motion() {
+        // (7) commits ω̄ as the gyroscope bias of a window at rest, so the same rotation
+        // cannot also bound the attitude — it is not motion the window failed to see, it
+        // is a sensor offset the state now carries. 0.05 rad/s is ordinary for a MEMS
+        // part and well inside the 0.262 rad/s tolerance; eight samples at 0.2 s is a
+        // 1.6 s window, still, and coarse only for being short.
+        let mut window = window_at(0.0, 0.0, 0.0, 0.0);
+        for sample in &mut window {
+            sample.imu.gyro = AngularRate::body(0.05, 0.0, 0.0);
+        }
+        let dt = Seconds::from_secs(0.2);
+        let init = Initialization::default();
+        let measured = measure(&window, dt).expect("a usable window");
+        assert!(at_rest(&measured, &init), "0.05 rad/s is inside 0.262");
+        let bias = nominal_state(&measured, Radians::ZERO, true)
+            .gyro_bias
+            .vector();
+        assert!(
+            (bias.x - 0.05).abs() < 1e-6,
+            "(7) commits the average, got {bias:?}"
+        );
+
+        let (tilt, yaw) = sigmas(&window, dt);
+        assert!(
+            (tilt - init.sigma_tilt.as_radians()).abs() < 1e-6,
+            "charging ω̄ rather than ω̄ − β̂_g reads 0.08 rad here, over the 0.052 of \
+             `Accuracy::tilt`, and latches `Aligning` for the flight; got {tilt}"
+        );
+        assert!(
+            (yaw - init.sigma_yaw.as_radians()).abs() < 1e-6,
+            "the configured prior; a bias about gravity would charge the heading the \
+             same way, got {yaw}"
         );
     }
 

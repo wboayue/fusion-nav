@@ -906,7 +906,10 @@ impl Eskf {
         measured: &Measured,
         settled: bool,
     ) {
-        let (sigma_tilt, sigma_yaw) = init::attitude_sigmas(&self.config.init, alignment, measured);
+        // The bias of (7) as committed, so that what it absorbed is not charged a second
+        // time as motion the window could not vouch for; see `init::coarse_sigmas`.
+        let (sigma_tilt, sigma_yaw) =
+            init::attitude_sigmas(&self.config.init, alignment, measured, state.gyro_bias);
         self.covariance = init::initial_covariance(&self.config.init, sigma_tilt, sigma_yaw);
         self.state = state;
         self.diagnostics = Diagnostics::default();
