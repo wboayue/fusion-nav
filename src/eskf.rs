@@ -20,6 +20,72 @@ use crate::units::{
 /// it. Nothing corrects either — every `fuse_*` accepts without changing the estimate, so
 /// [`Status`] and [`validity`](Self::validity) are answers about an unaided filter that has no
 /// way back.
+///
+/// # Example
+///
+/// A whole flight's worth of calls, in the order they happen, with what each one is allowed to
+/// answer. The README's quick start is the same loop without the assertions.
+///
+/// ```
+/// use fusion_nav::prelude::*;
+///
+/// let mut filter = Eskf::new(Config::default());
+/// let dt = Seconds::from_secs(0.0025); // 400 Hz IMU
+///
+/// // A vehicle sitting still: no rotation, gravity the only specific force. 800 samples
+/// // at 400 Hz is the 2 s `Initialization::min_duration` wants.
+/// let still = StaticSample {
+///     imu: ImuSample {
+///         gyro: AngularRate::body(0.0, 0.0, 0.0),
+///         accel: Acceleration::body(0.0, 0.0, -GRAVITY),
+///     },
+///     ..StaticSample::default()
+/// };
+///
+/// // Initialization reports what it achieved rather than refusing what it dislikes. A
+/// // window that is short or moving gives `Alignment::Coarse`, and the filter runs and
+/// // says `Status::Aligning` until attitude converges.
+/// assert_eq!(filter.initialize(&[still; 800], dt)?, Alignment::Static);
+///
+/// // Nothing in that window carried a barometer, so there is no reference altitude and
+/// // `fuse_baro_altitude` would refuse. See `StaticSample::baro`.
+///
+/// assert!(filter.predict(ImuSample::default(), dt).is_propagated());
+///
+/// // GNSS in latitude and longitude. The filter holds the navigation origin: the first
+/// // fix places it, under the estimate, so every later fix converts about the same point.
+/// // `clamped` bounds the receiver's own `eph` and `epv` the way both autopilots do.
+/// let outcome = filter.fuse_gnss_geodetic(
+///     Geodetic::from_degrees(47.397_742, 8.545_594, 488.0),
+///     PositionNoise::clamped(1.5, 3.0, 0.5, 100.0),
+/// );
+/// assert!(outcome.is_accepted());
+/// assert!(filter.origin().is_some());
+///
+/// // A solution whose vertical velocity the receiver did not measure: the down axis
+/// // carries a σ large enough that its gain is negligible, rather than a claim.
+/// let outcome = filter.fuse_gnss_velocity(
+///     Velocity::ned(0.0, 0.0, 0.0),
+///     VelocityNoise::horizontal_vertical(0.3, 1000.0),
+/// );
+/// assert!(outcome.is_accepted());
+///
+/// // Nothing in that window carried a magnetometer either, so nothing observed the
+/// // rotation about gravity: heading is not valid, and `Aligning` says the attitude has
+/// // not converged rather than the aiding having failed.
+/// let state = filter.state();
+/// assert_eq!(state.status, Status::Aligning);
+/// assert!(state.validity.tilt && !state.validity.heading);
+///
+/// // The first accepted magnetic heading is what establishes yaw.
+/// let outcome = filter.fuse_mag_heading(
+///     MagField::body(0.22, 0.0, 0.44),
+///     HeadingNoise::from_sigma(0.1),
+/// );
+/// assert!(outcome.is_accepted());
+/// assert_eq!(filter.state().status, Status::Healthy);
+/// # Ok::<(), fusion_nav::InitError>(())
+/// ```
 #[derive(Clone, Debug)]
 pub struct Eskf {
     config: Config,

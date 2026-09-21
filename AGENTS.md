@@ -15,7 +15,8 @@ about it, and what `attitude_lost=` measures per log. What is real is
 the health bookkeeping (timers, `Status`, `Diagnostics`), the typed API surface, and the replay
 harness. Anything stubbed says so in its doc comment with a `**Stub.**` paragraph — keep that
 marker accurate when landing real math, and keep the same caveat in `README.md`, `DESIGN.md`,
-`EQUATIONS.md`, `src/lib.rs`, and the example module docs, which all repeat it. `EQUATIONS.md`'s
+`EQUATIONS.md`, `src/eskf.rs`, and the example module docs, which all repeat it —
+`src/lib.rs` inherits the README's, since it includes the file. `EQUATIONS.md`'s
 is the one to watch: it sits above a mapping table that separately marks functions as unbuilt, so
 the two can contradict each other, and did — the banner claimed no implementation existed while
 the table below it listed the geodetic origin and the initial covariance as built.
@@ -108,12 +109,13 @@ per question answered, never per importance.
 
 ```bash
 cargo test --all-targets          # unit tests: inline `mod tests` across src/, and in examples/replay.rs
-cargo test --doc                  # doctests in lib.rs / prelude carry the usage contract
+cargo test --doc                  # README.md (included by lib.rs), plus the item doctests
 cargo test --lib eskf::tests::a_step_over_the_limit_is_refused_but_the_time_still_passes  # one test
 cargo fmt --all -- --check
 cargo clippy --all-targets --no-deps   # CI runs with RUSTFLAGS=-D warnings
 cargo build --lib --target thumbv7em-none-eabihf   # also thumbv6m-none-eabi; both gate CI
 panic-check/run.sh                # no reachable panic, both thumb targets; needs llvm-tools
+tools/check-anchors.sh            # every `.md#anchor` resolves; --self-test runs its fixtures
 cargo +1.89 build --lib           # MSRV
 
 # Stack frame per function, which `propagate_covariance` and `enforce_symmetry` both cite a
@@ -151,7 +153,7 @@ data/fetch.sh --add <url> [name]  # download once, append a manifest line to com
 uv run tools/ulog2replay.py log.ulg -o log.csv [--reference]   # ULog -> replay CSV
 ```
 
-**`uv` is the package manager and the runner for everything under `tools/`.** The converter
+**`uv` is the package manager and the runner for the Python tools under `tools/`.** The converter
 declares `pyulog` inline (PEP 723), so `uv run tools/ulog2replay.py` resolves it with no
 virtualenv to create or keep current — a tool run a few times a year is the one whose setup
 instructions rot. `data/fetch.sh` cannot use `uv run` (it invokes a single interpreter), so it
@@ -486,7 +488,8 @@ Every source touches the same eight places, and three of them are public:
 - `Validity` and `predicted_validity`: decide whether the source constrains a quantity, and say so.
 - A `summary` key in `examples/replay.rs`, pinned per log in `data/manifest.txt`, plus a corpus log
   that uniquely covers the source — or an honest note that none does.
-- The README fusion table, the `lib.rs` doctest, and `EQUATIONS.md`'s mapping table.
+- The README fusion table, the `Eskf` and `prelude` doctests, and `EQUATIONS.md`'s mapping
+  table.
 - `tools/ulog2replay.py`, which has to find the source in a ULog and name its variance columns.
 - `examples/simulate.rs`, which has to model it — an error table, a `sample`, a row — and the
   column legend its generated headers carry. Nothing connects these two to the replay format at
@@ -567,12 +570,32 @@ survey date, so write competitor facts in a shape that survives re-checking: "a 
 downloads a quarter" keeps, "~36 in the last 90 days" was already 33 when someone looked, and
 "nine minor versions behind" became ten when `nalgebra` shipped.
 
-The README is not compiled — `lib.rs` does not `include_str!` it — so its snippets rot silently;
-its old API block went missing `Status::Aligning`, `Fusion::Reset`, and `Fusion::NoReference`
-without anything failing. When an enum or signature changes, check the README's tables and quick
-start against the `lib.rs` doctest, which is the compiled source of truth. Snippets handle every
+The README **is** the crate's front page: `src/lib.rs` is one `#![doc = include_str!]` and no
+prose of its own, so `cargo test --doc` compiles every snippet the user guide shows. A snippet
+that cannot stand alone takes hidden `# ` setup lines rather than a `text` fence — a snippet
+that opts out is the one that rots — and few of them, because rustdoc hides those lines while
+GitHub and crates.io print them. The integration loop is `no_run`: it compiles, which is the
+part that catches a renamed method, and it never terminates. Assertions live on the items they
+document, `Eskf` and `prelude`, so the README carries shape and those carry behavior.
+
+What the compiler still does not read is the prose around the snippets. The variant tables for
+`Status`, `Propagation` and `Fusion` are written by hand, and a missing row is how the old API
+block lost `Status::Aligning`, `Fusion::Reset` and `Fusion::NoReference`. Snippets handle every
 `#[must_use]` outcome rather than `let _ =`; the README is where integrators copy from. `Fusion`
 no longer carries the lint, because `Diagnostics` covers acceptance and rejection, but a snippet
-still shows the refusals it does not cover rather than dropping them. Cross-doc anchors
-(`DESIGN.md#measurement-rejection` from `GOALS.md`) break on heading renames — grep for
-`.md#` before renaming one.
+still shows the refusals it does not cover rather than dropping them.
+
+The README reaches the other documents through **absolute** GitHub URLs, since rustdoc serves it
+with no siblings beside it and a relative `DESIGN.md` is a 404 on docs.rs. Both forms, and
+in-page anchors, are resolved against the headings they name by `tools/check-anchors.sh`, which
+CI runs together with its `--self-test` fixtures — so a renamed heading fails there rather than
+in a reader's browser, and nobody greps for `.md#` first. It refuses a relative sibling link in
+any file rustdoc includes, which is the docs.rs 404 nobody reading GitHub can see. It is shell
+rather than Python, and outside `uv`'s remit above, because it reads the repository's Markdown
+and nothing else.
+
+For the same reason the README carries **no mermaid**: mermaid renders through client-side
+JavaScript that GitHub ships and docs.rs and crates.io do not, so a diagram there is a picture on
+one surface and ten lines of `flowchart TD` on the other two. A diagram the README needs goes in
+a `text` fence, which renders the same everywhere. `DESIGN.md` and `GOALS.md` keep theirs —
+nothing includes them, and GitHub is where they are read.
