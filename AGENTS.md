@@ -26,26 +26,32 @@ the table below it listed the geodetic origin and the initial covariance as buil
 Two tracking issues own ordering and hold rules the individual issues do not repeat. Read the one
 covering the area before starting work in it.
 
-- **#31** — implementing `EQUATIONS.md`, staged as #32–#40. Carries the stage table, the
-  dependency reasoning (why the simulator and `rejected=` come *before* the math), and standing
-  rules that apply to every stage.
-- **#10** — replay validation. Consistency on the corpus, which has no truth; accuracy on
-  simulation and INSANE, which do. The two measure different things and are not collapsed.
+- **#31** — implementing `EQUATIONS.md`, staged as #32–#40. Carries the stage table, what each
+  landed stage leaves its successors, and standing rules that apply to every stage. *Why* that
+  order — the simulator and `rejected=` before the math, `-D warnings` deciding what can land
+  alone — is `DESIGN.md`, "Staging the implementation".
+- **#10** — replay validation. Carries which issue answers which question, and the measured
+  numbers those answers are argued from. The questions themselves — self-consistency without
+  truth, accuracy with it, a correct rejection needing truth *and* hostile measurements, and the
+  covariance's own honesty underneath all three — are `GOALS.md`, "Three questions, three kinds
+  of source".
 
 **A merge is not finished until the issues it falsified are updated.** A tracker is not a
 changelog: it carries ordering, what each stage leaves its successors, and the measured numbers a
 later decision gets argued from, so landed work makes some of it false rather than merely
-incomplete. The update immediately follows the merge rather than riding in the PR: an issue body
-is not code, it has no review to pass and no branch to rebase, and the figures it should quote are
-the ones the merged run printed. The closing keyword is the easy half; the rest is the tracker
-covering the area and every issue whose *premise* moved. #97 is the measure of that cost:
-afterwards #31 and #10 still called #77 and #85 the next work, #86 still claimed to block a number
-that had shipped on harness fixtures instead, #89 still said these scenarios could not fail overconfident while `moving_start`
-was reading `nees_pos=10.20` on a committed line, #59 still argued from a tilt prior that no longer
-exists, and this file's own `Status` bullet had inverted. Six documents wrong from one merge, each
-reading as evidence until someone checked. Quote what the run printed, not the ceiling:
-`data/scenarios.txt` carries 1 % of margin, so a figure copied out of it is wrong in the direction
-of flattery.
+incomplete. Nor is it the home for reasoning that outlives it — a tracker closes and takes
+whatever is only written there with it, which is why the two above cite `DESIGN.md` and `GOALS.md`
+for *why* rather than restating it. The update immediately follows the merge rather than riding in
+the PR: an issue body is not code, it has no review to pass and no branch to rebase, and the
+figures it should quote are the ones the merged run printed. The closing keyword is the easy half;
+the rest is the tracker covering the area and every issue whose *premise* moved. #97 is the
+measure of that cost: afterwards #31 and #10 still called #77 and #85 the next work, #86 still
+claimed to block a number that had shipped on harness fixtures instead, #89 still said these
+scenarios could not fail overconfident while `moving_start` was reading `nees_pos=10.20` on a
+committed line, #59 still argued from a tilt prior that no longer exists, and this file's own
+`Status` bullet had inverted. Six documents wrong from one merge, each reading as evidence until
+someone checked. Quote what the run printed, not the ceiling: `data/scenarios.txt` carries 1 % of
+margin, so a figure copied out of it is wrong in the direction of flattery.
 
 Issues here are worth the length they run to. The convention: cite `file:line` at a pinned
 upstream revision rather than paraphrasing PX4 or ArduPilot, state what it depends on and what it
