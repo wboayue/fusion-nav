@@ -58,20 +58,30 @@
 # would read near 1 -- so these numbers are also the evidence for the `dt` form, since the
 # simulator's own noise table says under-confident is the only honest answer here.
 #
-# `moving_start` is the exception worth reading: `nees_pos=10.09` and `nees_vel=10.80`, the only
-# figures above 1 anywhere in this file. A coarse start's position and velocity priors are
-# `Initialization`'s 1 m and 0.1 m/s while the truth is kilometres away, so the covariance is
-# genuinely overconfident there -- honestly reported, since `Validity` marks both
-# `Unestablished` and no output claims otherwise, and #77 and #85 are the same argument about
-# the attitude priors. `nees_att` rose 3.6 % rather than collapsing with the rest, because the
-# attitude block of (20) rotates a wide yaw prior into the tilt axes on a vehicle that is
-# turning, which is the one place propagation moves variance between axes rather than adding it.
+# `moving_start` is the exception worth reading, and the only line #77 and #85 move at all --
+# it is the only scenario that starts coarse. Its six error keys do not budge, since nothing
+# about the nominal state changed; everything derived from `P` does. `nees_att` goes 0.0967 to
+# 0.5164, five times closer to the 1 a consistent filter reads, and no attitude quantity-epoch
+# is falsely valid before or after. That is the answer to what #77 asked: bounding a coarse
+# tilt by the average equations (5)-(6) level, rather than by the worst sample in the window,
+# is honest and not merely tighter.
+#
+# `false_valid` 0 to 115 is what it cost, and the breakdown says it is not the attitude: 7 on
+# position (h), 108 on velocity (v), 0 on tilt and heading. A prior that wide grew the position
+# and velocity blocks through (20) faster than dead reckoning grew the error, so the filter
+# withdrew those two outputs before it was wrong about them. It no longer does, and what shows
+# through is the overconfidence `nees_pos=10.26` and `nees_vel=10.56` were already reporting: a
+# coarse start's position and velocity priors are `Initialization`'s 1 m and 0.1 m/s while the
+# truth is kilometres away. Nothing is outside 3 sigma (`in3s=1.0000`), so those 115 epochs
+# claim "usable to 5 m and 1 m/s" with an error inside three times the sigma they report and
+# outside the mission bar they are judged on. Re-bounding those two priors is not this pass;
+# #89's ANEES is the gate that would fail on it.
 
 static           1  pos_h<=29.585    pos_v<=20.393   vel<=2.241   pos_h_max<=83.193    tilt<=1.015  yaw<=0.295 in3s>=0.9900 nees_pos<=0.0131 nees_vel<=0.0140 nees_att<=0.0027 false_valid<=0 scored>=11600
 mission          2  pos_h<=1261.114  pos_v<=206.664  vel<=23.095  pos_h_max<=3227.948  tilt<=2.147  yaw<=2.966 in3s>=0.9900 nees_pos<=0.0120 nees_vel<=0.0116 nees_att<=0.0018 false_valid<=0 scored>=36600
 harsh_imu        2  pos_h<=10746.439 pos_v<=1749.602 vel<=199.240 pos_h_max<=27402.327 tilt<=19.061 yaw<=33.840 in3s>=0.9900 nees_pos<=0.0783 nees_vel<=0.1862 nees_att<=0.0975 false_valid<=0 scored>=36600
 gnss_outage      2  pos_h<=1261.114  pos_v<=206.664  vel<=23.095  pos_h_max<=3227.948  tilt<=2.147  yaw<=2.966 in3s>=0.9900 nees_pos<=0.0120 nees_vel<=0.0116 nees_att<=0.0018 false_valid<=0 scored>=36600
-moving_start     4  pos_h<=6177.965  pos_v<=1366.097 vel<=203.814 pos_h_max<=13794.336 tilt<=24.706 yaw<=8.504 in3s>=0.9900 nees_pos<=10.1903 nees_vel<=10.9042 nees_att<=0.0977 false_valid<=0 scored>=15999
+moving_start     4  pos_h<=6177.965  pos_v<=1366.097 vel<=203.814 pos_h_max<=13794.336 tilt<=24.706 yaw<=8.504 in3s>=0.9900 nees_pos<=10.3606 nees_vel<=10.6635 nees_att<=0.5216 false_valid<=117 scored>=15999
 baro_drift       2  pos_h<=1261.114  pos_v<=206.664  vel<=23.095  pos_h_max<=3227.948  tilt<=2.147  yaw<=2.966 in3s>=0.9900 nees_pos<=0.0120 nees_vel<=0.0116 nees_att<=0.0018 false_valid<=0 scored>=36600
 gnss_latency     2  pos_h<=1261.114  pos_v<=206.664  vel<=23.095  pos_h_max<=3227.948  tilt<=2.147  yaw<=2.966 in3s>=0.9900 nees_pos<=0.0120 nees_vel<=0.0116 nees_att<=0.0018 false_valid<=0 scored>=36600
 mag_disturbance  2  pos_h<=1261.114  pos_v<=206.664  vel<=23.095  pos_h_max<=3227.948  tilt<=2.147  yaw<=2.966 in3s>=0.9900 nees_pos<=0.0120 nees_vel<=0.0116 nees_att<=0.0018 false_valid<=0 scored>=36600

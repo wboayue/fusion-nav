@@ -23,10 +23,13 @@
 # alignment bar) and heading 30, and the static logs still read 0.00 -- a
 # window that observed gravity and a magnetometer is aligned when it closes.
 #
-# 2c42096b reads never, and not for want of a magnetometer -- it logs 35631
-# of them. A coarse start's attitude prior is wider than Accuracy allows and
-# nothing shrinks it, so neither tilt nor heading ever comes under the bar.
-# That is the value the update of (23)-(28) has to move.
+# 2c42096b is the one non-zero value, 0.20, and the wait is the heading's
+# rather than the tilt's: its window is moving, so nothing established a
+# heading there and Validity::heading waits for the first fused magnetic
+# heading. Tilt was already under the bar when the window closed, because
+# what bounds a coarse tilt is what that window's average supports and not
+# the worst sample in it (#77). It read never until then, on a prior that
+# nothing could bring under Accuracy.
 #
 # attitude_lost= is the other side of the same question, added with covariance
 # propagation: seconds to the first epoch where that validity went away
@@ -36,12 +39,15 @@
 # no truth to score against and only bookkeeping to check.
 #
 # It varies by what the vehicle was doing, which is the evidence that it
-# measures the covariance rather than the clock: 3.79 s and 3.80 s on the two
-# logs of a vehicle sitting still, 1.70 s and 0.82 s on the two being handled
-# (7592c9b2 starts at roll 2.94 pitch 6.56), because a body-frame attitude
-# covariance rotates with the body and a 20-degree yaw prior becomes partly a
-# tilt prior as the vehicle turns. Every one of these should read never once
-# a measurement can shrink a covariance.
+# measures the covariance rather than the clock: 3.79 s, 3.80 s and 3.78 s on
+# the three logs of a vehicle nobody is moving about, 1.70 s and 0.82 s on
+# the two being handled (7592c9b2 starts at roll 2.94 pitch 6.56), because a
+# body-frame attitude covariance rotates with the body and a 20-degree yaw
+# prior becomes partly a tilt prior as the vehicle turns. That 2c42096b lands
+# with the first group and not apart from it is the point of #77: a vehicle
+# vibrating on the spot starts from a prior the size of a quiet one's and
+# holds its tilt for the same 3.8 s. Every one of these should read never
+# once a measurement can shrink a covariance.
 #
 # rejected= is the gate's verdict and discarded= is everything that never
 # reached it -- a variance of zero or less, a NaN, an altitude with no
@@ -149,19 +155,22 @@ b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-
 #     stopped. The only true sensor dropout in the corpus.
 #   - The only log that starts in motion: peak |a|-g of 5.5 m/s^2 over the
 #     first eligible window, so it is the one entry that exercises a coarse
-#     start, Status::Aligning, and the two Fusion::Reset adoptions that
-#     give a moving start its first position and velocity. A coarse start
-#     establishes no barometric reference, so alpha0=none here and its
-#     35575 barometer rows are all refused with Fusion::NoReference --
-#     the application would have to name a reference. That is the whole
-#     reason the alpha0 key exists: nothing else in the summary line
-#     notices barometric aiding disappearing. It is also the one entry with
-#     heading=invalid: its window carries a magnetometer, so yaw0 is a
-#     computed -22.47 rather than zero, but a coarse start has levelled it
-#     against a tilt nothing vouches for -- yaw starts at the full circle and
-#     Unestablished::heading says nothing has established it. Expect this
-#     to change when equations (34)-(36) land and the yaw reset it
-#     describes is performed.
+#     start, the Status::Aligning it passes through, and the two
+#     Fusion::Reset adoptions that give a moving start its first position
+#     and velocity. A window taken in motion establishes no barometric
+#     reference, so alpha0=none here and its 35575 barometer rows are all
+#     refused with Fusion::NoReference -- the application would have to
+#     name a reference. That is the whole reason the alpha0 key exists:
+#     nothing else in the summary line notices barometric aiding
+#     disappearing. It is also the one entry with heading=invalid: its
+#     window carries a magnetometer, so yaw0 is a computed -22.47 rather
+#     than zero, but the window was moving and Unestablished::heading says
+#     nothing established it. The first fused magnetic heading does, which
+#     is the 0.20 s of aligned_at. The yaw sigma the start carries is not
+#     the full circle any more: tan(dip) is 1.22 on this window and the
+#     tilt it supports is small, so sigma_yaw governs. Expect heading= to
+#     change when equations (34)-(36) land and the yaw reset they describe
+#     is performed.
 #   - The only entry with an=measured: its window carries two GNSS
 #     velocity rows, 1 s apart, so the vehicle's own acceleration is
 #     measurable and equation (5') has something to subtract. What it
@@ -172,17 +181,22 @@ b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-
 #     translating: |a|-g peaks at 5.46 m/s^2, but roll0=0.42 and
 #     pitch0=-0.89 put the *averaged* specific force just under 1 deg
 #     off plumb. So in-motion levelling cannot be judged on this
-#     corpus, and the tilt this window would support is nowhere near
-#     the 31.9 deg (5.46/g) that attitude_sigmas charges it. roll0 and
-#     pitch0 are what pin that, which a figure written into this note
-#     cannot: the window they describe is the one the harness commits,
-#     and no hand derivation over some other offset agrees with it.
+#     corpus. It is also the measurement #77 was filed on: charging
+#     the peak made the tilt prior 31.9 deg (5.46/g), where charging
+#     the average that (5) actually levels makes it 0.33 deg -- under
+#     the 1.15 deg floor Initialization::sigma_tilt sets, which is what
+#     the start now gets. roll0 and pitch0 are what pin that, which a
+#     figure written into this note cannot: the window they describe is
+#     the one the harness commits, and no hand derivation over some
+#     other offset agrees with it.
 #     an= is pinned to catch the velocity disappearing out of the
 #     window -- a converter or window-policy change would otherwise
 #     silently leave (5') nothing to work with.
-# The 888 Healthy/Degraded transitions this log used to show are masked
-# while alignment is a stub: Aligning outranks Degraded, and a stub
-# covariance never shrinks, so it never leaves Aligning. Expect them back,
-# and this expectation to change again, when propagation lands.
+# The 888 Healthy/Degraded transitions this log has are reported, and what
+# reports them is #77 rather than propagation. Aligning outranks Degraded,
+# so they stay masked for as long as a start goes unresolved -- and a prior
+# charged the window's worst sample went unresolved for all 7127 s. Charged
+# the window's average it resolves 0.20 s in, and the line describes the
+# aiding the flight actually had.
 # Source: PX4 Flight Review (CC BY 4.0).
-9289375e4280ddec891b26b870f5065f2310d2e39527e4e8706d22e537d047dd  2c42096b-fa9b-4c74-8b89-ac79bf067a1d.ulg  https://cdn.logs.px4.io/2c42096b-fa9b-4c74-8b89-ac79bf067a1d.ulg  rate=199 window=398 align=coarse an=measured alpha0=none heading=invalid roll0=0.42 pitch0=-0.89 yaw0=-22.47 resets=2 aligned_at=never attitude_lost=never rejected=0 discarded=35575 refused=0 invalid=0 transitions=2 status=Aligning
+9289375e4280ddec891b26b870f5065f2310d2e39527e4e8706d22e537d047dd  2c42096b-fa9b-4c74-8b89-ac79bf067a1d.ulg  https://cdn.logs.px4.io/2c42096b-fa9b-4c74-8b89-ac79bf067a1d.ulg  rate=199 window=398 align=coarse an=measured alpha0=none heading=invalid roll0=0.42 pitch0=-0.89 yaw0=-22.47 resets=2 aligned_at=0.20 attitude_lost=3.78 rejected=0 discarded=35575 refused=0 invalid=0 transitions=888 status=Healthy

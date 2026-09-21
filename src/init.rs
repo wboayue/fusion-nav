@@ -70,8 +70,9 @@ pub struct StaticSample {
     /// GNSS interval of span, in either direction.
     ///
     /// **Stub.** Measured and reported on
-    /// [`Coarse::NotStationary`](Coarse::NotStationary); nothing levels with it yet,
-    /// which needs the attitude of equations (5)–(7).
+    /// [`Coarse::NotStationary`](Coarse::NotStationary); nothing levels with it yet.
+    /// That is equation (5′), and the attitude it needs to rotate `ā_n` into body axes
+    /// now exists.
     pub velocity: Option<Velocity<Ned>>,
 }
 
@@ -83,6 +84,131 @@ impl StaticSample {
             && self.baro.is_none_or(|b| b.as_meters().is_finite())
             && self.velocity.is_none_or(|v| v.is_finite())
     }
+}
+
+/// What one pass over the initialization window measures: the averages equations (5)–(7)
+/// level from, the peaks [`at_rest`] judges, and the span [`classify`] measures.
+///
+/// One value rather than a function per quantity, because the state and its covariance
+/// have to describe the *same* average. [`nominal_state`] levels from `force` and
+/// [`attitude_sigmas`] bounds how well it levelled; two walks of the window would be two
+/// definitions of `f̄`, free to drift apart while each still looked right on its own.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Measured {
+    /// `f̄`, the averaged specific force (5) levels from. Every sample carries one.
+    pub force: Acceleration<Body>,
+    /// `ω̄`, the averaged angular rate (7) takes as the gyroscope bias. Every sample
+    /// carries one.
+    pub rate: AngularRate<Body>,
+    /// `m̄`, the averaged magnetic field (6) takes a heading from, over the samples that
+    /// carry one. `None` if none do, which is a vehicle with no magnetometer.
+    pub field: Option<MagField<Body>>,
+    /// `ā_n` of equation (5′); see [`inertial_acceleration`].
+    pub inertial_accel: Option<Acceleration<Ned>>,
+    /// Largest angular rate magnitude in the window.
+    pub peak_gyro: RadiansPerSecond,
+    /// Largest departure of the specific-force magnitude from gravity.
+    pub peak_deviation: MetersPerSecond2,
+    /// `window.len() * dt`.
+    pub span: Seconds,
+}
+
+impl Measured {
+    /// Measure a window whose samples have already been checked.
+    ///
+    /// [`measure`] is the entry point that checks them. The one other caller is
+    /// [`Eskf::initialize_coarse`](crate::Eskf::initialize_coarse), which holds a window
+    /// of one, checks it itself, and spans no time.
+    ///
+    /// The averages accumulate in `f64`, which here is precaution rather than necessity:
+    /// summing a few thousand readings near `γ` in f32 costs on the order of 10⁻⁵ rad of
+    /// tilt, against a 0.02 rad prior. It is the choice [`baro_reference`] has to make for
+    /// real — altitudes are metres above mean sea level — and this sum is paid once per
+    /// flight.
+    pub(crate) fn over(window: &[StaticSample], dt: Seconds) -> Self {
+        let mut force = Vector3::<f64>::zeros();
+        let mut rate = Vector3::<f64>::zeros();
+        let mut field = Vector3::<f64>::zeros();
+        let mut fields = 0u32;
+        let mut peak_gyro = 0.0f32;
+        let mut peak_deviation = 0.0f32;
+        for sample in window {
+            let (accel, gyro) = (sample.imu.accel.vector(), sample.imu.gyro.vector());
+            force += widen(accel);
+            rate += widen(gyro);
+            if let Some(measurement) = sample.mag {
+                field += widen(measurement.vector());
+                fields += 1;
+            }
+            peak_gyro = peak_gyro.max(gyro.norm());
+            peak_deviation = peak_deviation.max((accel.norm() - GRAVITY).abs());
+        }
+        let samples = window.len() as u32;
+        Self {
+            force: Acceleration::from_vector(mean(force, samples)),
+            rate: AngularRate::from_vector(mean(rate, samples)),
+            field: (fields > 0).then(|| MagField::from_vector(mean(field, fields))),
+            inertial_accel: inertial_acceleration(window, dt),
+            peak_gyro: RadiansPerSecond::from_rad_per_s(peak_gyro),
+            peak_deviation: MetersPerSecond2::from_m_per_s2(peak_deviation),
+            span: Seconds::from_secs(window.len() as f32 * dt.as_secs()),
+        }
+    }
+
+    /// The direction equation (5) called down, `−f̄ / ‖f̄‖`: the axis the tilt bound and
+    /// the dip are both measured about.
+    ///
+    /// `None` for an average of zero, which is a stopped or disconnected accelerometer:
+    /// that window has no vertical to measure anything about. [`level_from_accel`] levels
+    /// it to zero rather than to NaN and [`coarse_sigmas`] keeps the same promise, falling
+    /// back to bounds that do not need a direction rather than dividing by the norm.
+    fn down(&self) -> Option<Vector3<f32>> {
+        self.force
+            .vector()
+            .try_normalize(f32::MIN_POSITIVE)
+            .map(|f| -f)
+    }
+}
+
+/// Widen a measurement for accumulation; see [`Measured::over`].
+fn widen(measurement: Vector3<f32>) -> Vector3<f64> {
+    Vector3::new(
+        f64::from(measurement.x),
+        f64::from(measurement.y),
+        f64::from(measurement.z),
+    )
+}
+
+/// An accumulated sum as its mean, and zero for nothing accumulated — which [`measure`]
+/// refuses before any caller sees it.
+fn mean(sum: Vector3<f64>, count: u32) -> Vector3<f32> {
+    if count == 0 {
+        return Vector3::zeros();
+    }
+    let n = f64::from(count);
+    Vector3::new((sum.x / n) as f32, (sum.y / n) as f32, (sum.z / n) as f32)
+}
+
+/// Measure a window, refusing the input nothing can be made of.
+///
+/// Every check initialization makes on raw input is here, so that everything downstream —
+/// [`classify`], [`nominal_state`], [`attitude_sigmas`] — takes a [`Measured`] and cannot
+/// be handed an empty window, an unusable `dt`, or a value that is not a number.
+///
+/// # Errors
+///
+/// [`InitError::NoSamples`], [`InitError::InvalidStep`], [`InitError::NotFinite`].
+pub(crate) fn measure(window: &[StaticSample], dt: Seconds) -> Result<Measured, InitError> {
+    if window.is_empty() {
+        return Err(InitError::NoSamples);
+    }
+    if !dt.is_usable_step() {
+        return Err(InitError::InvalidStep { dt });
+    }
+    if !window.iter().all(StaticSample::is_finite) {
+        return Err(InitError::NotFinite);
+    }
+    Ok(Measured::over(window, dt))
 }
 
 /// What [`Eskf::initialize`](crate::Eskf::initialize) achieved.
@@ -97,8 +223,8 @@ pub enum Alignment {
     /// bias from the averaged rate, and the covariance
     /// [`Initialization`](crate::Initialization) describes. Equations (5)–(8).
     Static,
-    /// The window was usable but not a static interval, so attitude starts coarse and
-    /// the covariance is inflated to say so. The filter runs and reports
+    /// The window was usable but not a static interval, so the covariance says what that
+    /// window supports rather than what a still one would. The filter runs and reports
     /// [`Status::Aligning`](crate::Status::Aligning) until tilt and heading uncertainty
     /// first come within [`Config::accuracy`](crate::Config::accuracy).
     Coarse(Coarse),
@@ -124,6 +250,10 @@ impl Alignment {
 pub enum Coarse {
     /// The window spans less than
     /// [`Initialization::min_duration`](crate::Initialization::min_duration).
+    ///
+    /// Reported before motion is measured at all, so it says nothing about whether the
+    /// vehicle was moving: a short window of a parked vehicle is this variant, and
+    /// [`at_rest`] is what separates the two.
     WindowTooShort {
         /// Duration the configuration requires.
         required: Seconds,
@@ -150,9 +280,9 @@ pub enum Coarse {
         /// and this is the part of it GNSS can account for. A launch off a moving deck
         /// reads both, and only one of them spoils tilt.
         ///
-        /// **Stub.** Reported, not yet subtracted: the correction of (5′) needs the
-        /// attitude of (5)–(7) to rotate `ā_n` into body axes, so today it narrows
-        /// nothing — [`attitude_sigmas`] still charges the whole deviation to tilt.
+        /// **Stub.** Reported, not yet subtracted, so it narrows nothing today:
+        /// [`attitude_sigmas`] bounds tilt by how far the window's *averaged* specific
+        /// force is from gravity, and a real `ā_n` is part of what puts it there.
         inertial_accel: Option<Acceleration<Ned>>,
     },
 }
@@ -210,44 +340,28 @@ impl core::fmt::Display for InitError {
 
 impl core::error::Error for InitError {}
 
-/// Classify a window as a static or a coarse start, or refuse it as unusable.
+/// Classify a measured window as a static or a coarse start.
 ///
 /// The test behind [`Eskf::alignment_of`](crate::Eskf::alignment_of): long enough, then
-/// still enough, against the tolerances in `init`.
-pub(crate) fn classify(
-    window: &[StaticSample],
-    dt: Seconds,
-    init: &Initialization,
-) -> Result<Alignment, InitError> {
-    if window.is_empty() {
-        return Err(InitError::NoSamples);
-    }
-    if !dt.is_usable_step() {
-        return Err(InitError::InvalidStep { dt });
-    }
-    if !window.iter().all(StaticSample::is_finite) {
-        return Err(InitError::NotFinite);
-    }
-
+/// still enough, against the tolerances in `init`. Total, because [`measure`] has already
+/// refused every window that can be refused.
+pub(crate) fn classify(measured: &Measured, init: &Initialization) -> Alignment {
     let required = init.min_duration;
-    let provided = Seconds::from_secs(window.len() as f32 * dt.as_secs());
-    if provided < required {
-        return Ok(Alignment::Coarse(Coarse::WindowTooShort {
+    if measured.span < required {
+        return Alignment::Coarse(Coarse::WindowTooShort {
             required,
-            provided,
-        }));
+            provided: measured.span,
+        });
     }
-
-    let (peak_gyro, peak_accel_deviation) = peak_motion(window);
-    if !at_rest(peak_gyro, peak_accel_deviation, init) {
-        return Ok(Alignment::Coarse(Coarse::NotStationary {
-            peak_gyro,
-            peak_accel_deviation,
-            span: provided,
-            inertial_accel: inertial_acceleration(window, dt),
-        }));
+    if !at_rest(measured, init) {
+        return Alignment::Coarse(Coarse::NotStationary {
+            peak_gyro: measured.peak_gyro,
+            peak_accel_deviation: measured.peak_deviation,
+            span: measured.span,
+            inertial_accel: measured.inertial_accel,
+        });
     }
-    Ok(Alignment::Static)
+    Alignment::Static
 }
 
 /// The nominal state a window yields. Equation (7), from the attitude of (5)–(6).
@@ -262,14 +376,14 @@ pub(crate) fn classify(
 /// (`src/modules/ekf2/EKF/ekf.cpp:213-227`, `c4e4ef98`) — so averaging is this crate's,
 /// and it is worth taking only where their precondition holds.
 ///
-/// Every value read here is finite and the window is non-empty: [`classify`] refuses
+/// Every value read here is finite and the window is non-empty: [`measure`] refuses
 /// both before any of this is reached.
-pub(crate) fn nominal_state(window: &[StaticSample], declination: Radians, at_rest: bool) -> State {
-    let (roll, pitch) = level_from_accel(mean_specific_force(window));
+pub(crate) fn nominal_state(measured: &Measured, declination: Radians, at_rest: bool) -> State {
+    let (roll, pitch) = level_from_accel(measured.force);
     // Stillness observes tilt and never the rotation about it, so a window with no
     // magnetometer anywhere in it keeps ψ₀ = 0 — a stated direction rather than a
     // measured one, which is what `Unestablished::heading` records.
-    let yaw = mean_field(window).map_or(Radians::ZERO, |field| {
+    let yaw = measured.field.map_or(Radians::ZERO, |field| {
         heading_from_mag(field, roll, pitch, declination)
     });
 
@@ -288,7 +402,7 @@ pub(crate) fn nominal_state(window: &[StaticSample], declination: Radians, at_re
         // attitude — so there is nothing left for this to hold.
         accel_bias: Acceleration::zero(),
         gyro_bias: if at_rest {
-            mean_angular_rate(window)
+            measured.rate
         } else {
             AngularRate::zero()
         },
@@ -346,93 +460,99 @@ pub(crate) fn heading_from_mag(
     ))
 }
 
-/// `f̄`, the averaged specific force (5) levels from. Every sample carries one.
-fn mean_specific_force(window: &[StaticSample]) -> Acceleration<Body> {
-    Acceleration::from_vector(mean(window, |sample| Some(sample.imu.accel.vector())))
-}
-
-/// `ω̄`, the averaged angular rate (7) takes as the gyroscope bias. Every sample carries
-/// one.
-fn mean_angular_rate(window: &[StaticSample]) -> AngularRate<Body> {
-    AngularRate::from_vector(mean(window, |sample| Some(sample.imu.gyro.vector())))
-}
-
-/// `m̄`, the averaged magnetic field (6) takes a heading from, over the samples that
-/// carry one. `None` if none do, which is a vehicle with no magnetometer.
-fn mean_field(window: &[StaticSample]) -> Option<MagField<Body>> {
-    mean_present(window, |sample| sample.mag.map(MagField::vector)).map(MagField::from_vector)
-}
-
-/// Mean of a vector every sample carries, and zero for an empty window — which
-/// [`classify`] refuses before any caller here sees it.
-fn mean(
-    window: &[StaticSample],
-    select: impl Fn(&StaticSample) -> Option<Vector3<f32>>,
-) -> Vector3<f32> {
-    mean_present(window, select).unwrap_or_else(Vector3::zeros)
-}
-
-/// Mean of a vector quantity over the samples that carry one. `None` if none do.
+/// How much a tilt error leaks into the heading of (6): `tan δ` of equation (8′), measured
+/// off the window's own field rather than configured.
 ///
-/// Accumulated in `f64`, which here is precaution rather than necessity: summing a few
-/// thousand readings near `γ` in f32 costs on the order of 10⁻⁵ rad of tilt, against a
-/// 0.02 rad prior. It is the choice [`baro_reference`] has to make for real — altitudes
-/// are metres above mean sea level — and this sum is paid once per flight.
-fn mean_present(
-    window: &[StaticSample],
-    select: impl Fn(&StaticSample) -> Option<Vector3<f32>>,
-) -> Option<Vector3<f32>> {
-    let mut sum = Vector3::<f64>::zeros();
-    let mut count = 0u32;
-    for sample in window {
-        if let Some(value) = select(sample) {
-            sum += Vector3::new(f64::from(value.x), f64::from(value.y), f64::from(value.z));
-            count += 1;
-        }
-    }
-    (count > 0).then(|| {
-        let n = f64::from(count);
-        Vector3::new((sum.x / n) as f32, (sum.y / n) as f32, (sum.z / n) as f32)
-    })
+/// (6) levels `m̄` and takes the `atan2` of what is left horizontal, so an error in the
+/// tilt it levelled by tips the field and turns that horizontal part. The leak is the
+/// ratio of the field's vertical component to its horizontal one, which is `tan(dip)`:
+/// 1.96 at the 1.107 rad of dip [`heading_from_mag`] cites, and 1.22 on the window
+/// `2c42096b` starts from. Both components are taken about `down`, the direction (5)
+/// levelled to, so no Euler angles enter and the ratio does not depend on the frame they
+/// would be read in.
+///
+/// `None` where the horizontal part is zero: a field pointing straight down observes no
+/// heading at any tilt, so there is no error to scale rather than an infinite one.
+fn heading_sensitivity(field: MagField<Body>, down: Vector3<f32>) -> Option<f32> {
+    let field = field.vector();
+    let vertical = field.dot(&down);
+    let horizontal = (field - down * vertical).norm();
+    (horizontal > 0.0).then(|| vertical.abs() / horizontal)
 }
 
-/// Initial tilt and yaw standard deviations for an alignment.
+/// Initial tilt and yaw standard deviations for an alignment: the attitude block of
+/// equation (8).
 ///
-/// A static start gets the configured figures. A coarse one gets the standard deviation
-/// of a heading known only to be somewhere on the circle, and a tilt bound that is the
-/// worst of three: the configured value, specific force away from gravity
-/// (small-angle, `deviation / g`), and rotation during the window (`ω · span`).
-pub(crate) fn attitude_sigmas(init: &Initialization, alignment: Alignment) -> (Radians, Radians) {
+/// A static start gets the configured figures. A coarse one gets what its own window
+/// supports, equation (8′); see [`coarse_sigmas`].
+pub(crate) fn attitude_sigmas(
+    init: &Initialization,
+    alignment: Alignment,
+    measured: &Measured,
+) -> (Radians, Radians) {
     match alignment {
         Alignment::Static | Alignment::Seeded => (init.sigma_tilt, init.sigma_yaw),
-        Alignment::Coarse(Coarse::WindowTooShort { .. }) => {
-            (init.sigma_tilt, UNKNOWN_HEADING_SIGMA)
-        }
-        // `inertial_accel` is measured but not spent: charging the whole deviation to
-        // tilt is right until (5′) actually subtracts it, since the tilt error a
-        // correction would remove is still in the answer.
-        Alignment::Coarse(Coarse::NotStationary {
-            peak_gyro,
-            peak_accel_deviation,
-            span,
-            inertial_accel: _,
-        }) => {
-            // Two ways a moving window spoils tilt, and the worse one governs.
-            // Specific force that is not gravity tilts the answer directly,
-            // small-angle, by `deviation / g`. Rotation spoils it instead by turning
-            // the vehicle while its gravity vector is being averaged, by at most
-            // `ω · span`. A window can suffer either without the other: a vehicle
-            // rotating about its own gravity vector reads a clean `g`.
-            let from_force = peak_accel_deviation.as_m_per_s2() / GRAVITY;
-            let from_rotation = peak_gyro.as_rad_per_s() * span.as_secs();
-            let tilt = init
-                .sigma_tilt
-                .as_radians()
-                .max(from_force)
-                .max(from_rotation);
-            (Radians::from_radians(tilt), UNKNOWN_HEADING_SIGMA)
-        }
+        Alignment::Coarse(_) => coarse_sigmas(init, measured),
     }
+}
+
+/// What a window that is not a static interval supports. Equation (8′): the widest of the
+/// configured tilt and two measurements of how the window spoiled its own average, and a
+/// heading whose error the dip scales that tilt by.
+///
+/// Equations (5)–(6) level the *averaged* specific force, so what bounds the attitude
+/// they yield is how far that average is from what a still vehicle reads — not how far
+/// the worst sample in the window was. The two differ by two orders of magnitude on
+/// `2c42096b`, the corpus's one moving start: its peak `|f| − γ` is 5.46 m/s² (31.9°) on
+/// a vehicle vibrating with its props spinning, while the mean vector sits 0.06 m/s²
+/// (0.33°) off gravity and levels to the `roll0=0.42 pitch0=-0.89` that `data/manifest.txt`
+/// pins, under a degree off plumb. Vibration averages out; a peak does not know that.
+///
+/// A prior that wide is not free. [`Status::Aligning`](crate::Status::Aligning) outranks
+/// `Degraded`, so a start that cannot resolve masks every aiding transition behind it: on
+/// that log the peak's 0.557 rad of tilt and full-circle yaw are worth 888 transitions
+/// masked over 7127 s, where the averages resolve the start 0.20 s in.
+///
+/// [`Coarse`]'s own payload is not read here. It reports why [`classify`] refused the
+/// window as static, which is a question about peaks; this is a question about averages,
+/// and the same window answers the two differently.
+fn coarse_sigmas(init: &Initialization, measured: &Measured) -> (Radians, Radians) {
+    // Small-angle, as (5) reads it: an average that is not gravity leans the levelled
+    // vertical by the fraction of `γ` it is out by.
+    let from_force = (measured.force.vector().norm() - GRAVITY).abs() / GRAVITY;
+
+    // How far the vehicle turned while its gravity vector was being averaged, `ω̄ · span`
+    // — the net rotation, where a peak rate charges a vehicle that rolls one way and back
+    // for an excursion that nets to nothing. Rotation *about* gravity turns the vehicle
+    // without moving that vector in body axes at all, since `dĝ/dt = −ω × ĝ` has
+    // magnitude `|ω_⊥|`, so only the part across it spoils tilt. Yaw spoils the heading
+    // average of (6) instead, which is where the dip below charges it.
+    let net_rotation = measured.rate.vector() * measured.span.as_secs();
+    let down = measured.down();
+    let from_rotation = down.map_or(net_rotation.norm(), |down| {
+        (net_rotation - down * net_rotation.dot(&down)).norm()
+    });
+
+    let tilt = init
+        .sigma_tilt
+        .as_radians()
+        .max(from_force)
+        .max(from_rotation);
+
+    // (6) levels the field by that tilt, so the tilt error leaks into the heading scaled
+    // by the dip — saturating at the circle, since `π/√3` is the widest standard
+    // deviation a heading can have and a bound past it claims a spread the quantity does
+    // not have. A window no magnetometer observed gets the circle outright, as does one
+    // whose field observes no heading to be wrong about.
+    let circle = UNKNOWN_HEADING_SIGMA.as_radians();
+    let yaw = down
+        .zip(measured.field)
+        .and_then(|(down, field)| heading_sensitivity(field, down))
+        .map_or(circle, |dip| {
+            init.sigma_yaw.as_radians().max(dip * tilt).min(circle)
+        });
+
+    (Radians::from_radians(tilt), Radians::from_radians(yaw))
 }
 
 /// The diagonal initial covariance `P₀`. Equation (8).
@@ -472,41 +592,21 @@ pub(crate) fn initial_covariance(
 /// prior; see `GOALS.md`.
 const UNKNOWN_HEADING_SIGMA: Radians = Radians::from_radians(1.813_799_4);
 
-/// Whether measured peak motion is within the tolerances that make a window a still one.
+/// Whether the window's peak motion is within the tolerances that make it a still one.
 ///
-/// Half of what [`classify`] asks, and all of what the barometric reference asks, which is
-/// why it is separate: a window can be too short to align an attitude from and still be a
-/// window of a vehicle sitting on the ground. `classify` reports the short one as
-/// [`Coarse::WindowTooShort`] before it ever measures motion, so window length is not a
-/// stand-in for this test in either direction.
+/// Half of what [`classify`] asks, and all of what the barometric reference and what the
+/// start establishes ask, which is why it is separate: a window can be too short to align
+/// an attitude from and still be a window of a vehicle sitting on the ground. `classify`
+/// reports the short one as [`Coarse::WindowTooShort`] before it ever measures motion, so
+/// window length is not a stand-in for this test in either direction.
 ///
-/// GNSS velocity does not enter, however well it explains the specific force. The two
-/// things that hang on this answer — [`Alignment::Static`] and the barometric reference —
-/// both mean *the vehicle was on the ground*, and a deck accelerating under it is not
-/// that however precisely the acceleration is known.
-pub(crate) fn at_rest(
-    peak_gyro: RadiansPerSecond,
-    peak_accel_deviation: MetersPerSecond2,
-    init: &Initialization,
-) -> bool {
-    peak_gyro <= init.max_gyro_rate && peak_accel_deviation <= init.max_accel_deviation
-}
-
-/// Largest angular rate magnitude, and largest departure of the specific-force magnitude
-/// from gravity, over a window. The two measures [`at_rest`] judges.
-pub(crate) fn peak_motion(window: &[StaticSample]) -> (RadiansPerSecond, MetersPerSecond2) {
-    let mut peak_gyro = 0.0f32;
-    let mut peak_deviation = 0.0f32;
-    for sample in window {
-        let gyro = sample.imu.gyro.vector().norm();
-        let deviation = (sample.imu.accel.vector().norm() - GRAVITY).abs();
-        peak_gyro = peak_gyro.max(gyro);
-        peak_deviation = peak_deviation.max(deviation);
-    }
-    (
-        RadiansPerSecond::from_rad_per_s(peak_gyro),
-        MetersPerSecond2::from_m_per_s2(peak_deviation),
-    )
+/// GNSS velocity does not enter, however well it explains the specific force. The things
+/// that hang on this answer — [`Alignment::Static`], the barometric reference, and
+/// whether position and velocity were established at all — all mean *the vehicle was on
+/// the ground*, and a deck accelerating under it is not that however precisely the
+/// acceleration is known.
+pub(crate) fn at_rest(measured: &Measured, init: &Initialization) -> bool {
+    measured.peak_gyro <= init.max_gyro_rate && measured.peak_deviation <= init.max_accel_deviation
 }
 
 /// Mean navigation-frame acceleration over the window: `ā_n` of equation (5′), the term
@@ -582,14 +682,36 @@ pub(crate) mod tests {
     const DT: Seconds = Seconds::from_secs(0.25);
 
     fn classify_default(window: &[StaticSample], dt: Seconds) -> Result<Alignment, InitError> {
-        classify(window, dt, &Initialization::default())
+        Ok(classify(&measure(window, dt)?, &Initialization::default()))
     }
 
-    /// The tilt sigma a window would start with, in radians.
-    fn coarse_tilt(window: &[StaticSample]) -> f32 {
+    /// The nominal state a window yields at the default 4 Hz.
+    fn nominal(window: &[StaticSample], declination: Radians, at_rest: bool) -> State {
+        nominal_state(
+            &measure(window, DT).expect("a usable window"),
+            declination,
+            at_rest,
+        )
+    }
+
+    /// The tilt and yaw sigmas a window would start with, in radians.
+    fn sigmas(window: &[StaticSample], dt: Seconds) -> (f32, f32) {
         let init = Initialization::default();
-        let alignment = classify(window, DT, &init).expect("moving, not unusable");
-        attitude_sigmas(&init, alignment).0.as_radians()
+        let measured = measure(window, dt).expect("a usable window");
+        let (tilt, yaw) = attitude_sigmas(&init, classify(&measured, &init), &measured);
+        (tilt.as_radians(), yaw.as_radians())
+    }
+
+    /// The tilt sigma alone, at the default 4 Hz, which most cases here are about.
+    fn coarse_tilt(window: &[StaticSample]) -> f32 {
+        sigmas(window, DT).0
+    }
+
+    /// `tan` of the dip [`INCLINATION`] writes, which is what a tilt error costs a
+    /// heading. No `f32::tan` here: the crate is `no_std`.
+    fn dip_gain() -> f32 {
+        let (sin, cos) = ComplexField::sin_cos(INCLINATION);
+        sin / cos
     }
 
     /// Magnetic inclination, rad, down-positive: the mid-latitude dip the corpus carries
@@ -667,7 +789,7 @@ pub(crate) mod tests {
         // sequence they mean.
         for (roll, pitch) in TILTS {
             let window = window_at(roll, pitch, 0.0, 0.0);
-            let state = nominal_state(&window, Radians::ZERO, true);
+            let state = nominal(&window, Radians::ZERO, true);
             let navigation = state.attitude.quaternion() * window[0].imu.accel.vector();
             assert!(
                 (navigation - Vector3::new(0.0, 0.0, -GRAVITY)).norm() < 1e-4,
@@ -683,7 +805,7 @@ pub(crate) mod tests {
         const DECLINATION: f32 = -0.06;
         for (roll, pitch) in TILTS {
             for yaw in [0.0, 0.9, -2.5, 3.0] {
-                let state = nominal_state(
+                let state = nominal(
                     &window_at(roll, pitch, yaw, DECLINATION),
                     Radians::from_radians(DECLINATION),
                     true,
@@ -743,7 +865,7 @@ pub(crate) mod tests {
     fn a_window_with_no_magnetometer_keeps_a_heading_of_zero() {
         // Stillness observes tilt and never the rotation about it. Zero is a stated
         // direction rather than a measured one, which `Unestablished::heading` records.
-        let state = nominal_state(&[still(); 8], Radians::from_radians(0.35), true);
+        let state = nominal(&[still(); 8], Radians::from_radians(0.35), true);
         assert_eq!(committed_angles(&state).2, 0.0);
     }
 
@@ -759,7 +881,7 @@ pub(crate) mod tests {
             },
             ..still()
         }; 8];
-        let state = nominal_state(&window, Radians::ZERO, true);
+        let state = nominal(&window, Radians::ZERO, true);
         assert!(
             (state.gyro_bias.vector() - offset.vector()).norm() < 1e-7,
             "{:?}",
@@ -778,7 +900,7 @@ pub(crate) mod tests {
             },
             ..still()
         }; 8];
-        let state = nominal_state(&window, Radians::ZERO, false);
+        let state = nominal(&window, Radians::ZERO, false);
         assert_eq!(state.gyro_bias, AngularRate::zero());
     }
 
@@ -810,11 +932,59 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn rotation_spoils_tilt_even_when_the_specific_force_reads_a_clean_g() {
+    fn a_coarse_start_widens_tilt_in_proportion_to_the_motion_it_saw() {
         let mut window = [still(); 8];
-        // Turning about the gravity vector: |a| stays exactly g, and the average of a
-        // gravity vector taken while the vehicle turned 0.8 rad is worth that much less.
-        window[3].imu.gyro = AngularRate::body(0.0, 0.0, 0.4);
+        // 2.94 m/s^2 of unexplained specific force on one sample of eight: over the
+        // stationarity tolerance, so the window is coarse, and a mean 0.368 m/s^2 out.
+        window[0].imu.accel = Acceleration::body(0.0, 0.0, -GRAVITY - 2.941_995);
+        let tilt = coarse_tilt(&window);
+        assert!(
+            (tilt - 0.0375).abs() < 1e-4,
+            "an eighth of the spike is 0.0375 rad; charging the peak reads 0.3, got {tilt}"
+        );
+    }
+
+    #[test]
+    fn vibration_averages_out_of_the_tilt_where_a_peak_charges_all_of_it() {
+        // The shape `2c42096b` has: a vehicle sitting with its props spinning, whose
+        // specific force is never gravity and whose average is. Alternating, so every
+        // sample is over the 1.961 m/s^2 tolerance and the mean cancels exactly.
+        let mut window = [still(); 8];
+        for (index, sample) in window.iter_mut().enumerate() {
+            let shake = if index % 2 == 0 { 3.0 } else { -3.0 };
+            sample.imu.accel = Acceleration::body(0.0, 0.0, -GRAVITY + shake);
+        }
+        let tilt = coarse_tilt(&window);
+        assert!(
+            (tilt - Initialization::default().sigma_tilt.as_radians()).abs() < 1e-6,
+            "nothing above the floor; the peak of 3 m/s^2 would charge 0.306, got {tilt}"
+        );
+    }
+
+    #[test]
+    fn rotation_about_gravity_costs_the_tilt_it_never_moved_nothing() {
+        let mut window = [still(); 8];
+        // Yawing the whole window: |a| stays exactly g and the gravity vector does not
+        // move in body axes at all, so its average is as good as a still window's. Over
+        // the 0.262 rad/s tolerance, so this is still a coarse start.
+        for sample in &mut window {
+            sample.imu.gyro = AngularRate::body(0.0, 0.0, 0.4);
+        }
+        let tilt = coarse_tilt(&window);
+        assert!(
+            (tilt - Initialization::default().sigma_tilt.as_radians()).abs() < 1e-6,
+            "0.8 rad of turn about gravity is worth no tilt; without the projection off \
+             `down` this reads 0.8, got {tilt}"
+        );
+    }
+
+    #[test]
+    fn rotation_across_gravity_is_charged_the_turn_it_made() {
+        let mut window = [still(); 8];
+        // Pitching instead: the same 0.8 rad of turn, all of it across gravity.
+        for sample in &mut window {
+            sample.imu.gyro = AngularRate::body(0.0, 0.4, 0.0);
+        }
         let tilt = coarse_tilt(&window);
         assert!(
             (tilt - 0.8).abs() < 1e-4,
@@ -823,15 +993,134 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_coarse_start_widens_tilt_in_proportion_to_the_motion_it_saw() {
+    fn one_sample_of_rotation_is_charged_its_share_of_the_window() {
         let mut window = [still(); 8];
-        // 2.94 m/s^2 of unexplained specific force — over the stationarity tolerance,
-        // and three tenths of a radian of tilt the filter cannot account for.
-        window[0].imu.accel = Acceleration::body(0.0, 0.0, -GRAVITY - 2.941_995);
+        window[3].imu.gyro = AngularRate::body(0.0, 0.4, 0.0);
         let tilt = coarse_tilt(&window);
         assert!(
-            (tilt - 0.3).abs() < 1e-4,
-            "tilt should be about 0.3 rad, got {tilt}"
+            (tilt - 0.1).abs() < 1e-4,
+            "one sample of eight is a mean rate of 0.05 and 0.1 rad of turn; the peak \
+             rate would charge the full 0.8, got {tilt}"
+        );
+    }
+
+    #[test]
+    fn a_still_short_window_keeps_the_heading_its_magnetometer_observed() {
+        // The window of #85: still, carrying a field, and coarse only because it is
+        // short. `classify` calls it short before it measures motion, so nothing about
+        // that verdict says the heading is worth less than a 2 s window's.
+        let window = window_at(0.0, 0.0, 0.9, 0.0);
+        let (tilt, yaw) = sigmas(&window, Seconds::from_secs(0.1));
+        let init = Initialization::default();
+        assert!(
+            (tilt - init.sigma_tilt.as_radians()).abs() < 1e-6,
+            "got {tilt}"
+        );
+        assert!(
+            (yaw - init.sigma_yaw.as_radians()).abs() < 1e-6,
+            "the configured prior, not the 1.81 rad of a heading nothing observed, got {yaw}"
+        );
+    }
+
+    #[test]
+    fn a_window_no_magnetometer_observed_gets_the_circle_however_still_it_was() {
+        // Stillness observes tilt and never the rotation about it.
+        let (tilt, yaw) = sigmas(&[still(); 8], Seconds::from_secs(0.1));
+        assert!(
+            (tilt - Initialization::default().sigma_tilt.as_radians()).abs() < 1e-6,
+            "got {tilt}"
+        );
+        assert!(
+            (yaw - UNKNOWN_HEADING_SIGMA.as_radians()).abs() < 1e-6,
+            "got {yaw}"
+        );
+    }
+
+    #[test]
+    fn a_moving_window_charges_its_heading_the_tilt_it_levelled_by() {
+        // The dip couples them: (6) levels the field by the tilt of (5), so a tilt this
+        // window cannot vouch for is a heading error scaled by `tan(dip)`.
+        let mut window = window_at(0.0, 0.0, 0.9, 0.0);
+        for sample in &mut window {
+            sample.imu.gyro = AngularRate::body(0.0, 0.3, 0.0);
+        }
+        let (tilt, yaw) = sigmas(&window, DT);
+        assert!((tilt - 0.6).abs() < 1e-4, "0.3 rad/s over 2 s, got {tilt}");
+        assert!(
+            (yaw - dip_gain() * tilt).abs() < 1e-4,
+            "tan(dip) is {}, so the yaw is {}, got {yaw}",
+            dip_gain(),
+            dip_gain() * tilt
+        );
+    }
+
+    #[test]
+    fn a_heading_bound_saturates_at_the_circle_it_cannot_be_wider_than() {
+        let mut window = window_at(0.0, 0.0, 0.9, 0.0);
+        for sample in &mut window {
+            sample.imu.gyro = AngularRate::body(0.0, 0.8, 0.0);
+        }
+        let (tilt, yaw) = sigmas(&window, DT);
+        assert!((tilt - 1.6).abs() < 1e-4, "got {tilt}");
+        assert!(
+            (yaw - UNKNOWN_HEADING_SIGMA.as_radians()).abs() < 1e-6,
+            "tan(dip) times 1.6 rad is {}, which is more spread than a circle holds, got {yaw}",
+            dip_gain() * tilt
+        );
+    }
+
+    #[test]
+    fn the_heading_sensitivity_is_the_tangent_of_the_dip_at_any_tilt() {
+        for (roll, pitch) in TILTS {
+            let down = -gravity_at(roll, pitch, 0.4).vector().normalize();
+            let measured = heading_sensitivity(field_at(roll, pitch, 0.4, 0.0), down)
+                .expect("a field with a horizontal part");
+            assert!(
+                (measured - dip_gain()).abs() < 1e-4,
+                "at ({roll}, {pitch}) got {measured}, want {}",
+                dip_gain()
+            );
+        }
+    }
+
+    #[test]
+    fn a_field_straight_down_observes_no_heading_at_any_tilt() {
+        // `tan(dip)` is unbounded there, and a bound that divided by the horizontal part
+        // would put that infinity into `P` through `initial_covariance`.
+        let down = Vector3::new(0.0, 0.0, 1.0);
+        assert_eq!(
+            heading_sensitivity(MagField::body(0.0, 0.0, 0.5), down),
+            None
+        );
+        assert_eq!(
+            heading_sensitivity(MagField::body(0.0, 0.0, 0.0), down),
+            None
+        );
+    }
+
+    #[test]
+    fn an_accelerometer_averaging_to_zero_is_bounded_and_not_made_a_nan() {
+        // Stopped or disconnected: there is no vertical to measure a turn about, and
+        // `Measured::down` reports none rather than dividing by a norm of zero.
+        //
+        // The rotation is 0.6 rad/s for a reason. At 1.2 rad of turn it is the widest of
+        // the three bounds, so the fallback has to carry it: with `normalize()` in place
+        // of `try_normalize` this reads 1.0 instead, because the NaN it makes is dropped
+        // by `f32::max` rather than surfacing. A slower turn passes either way.
+        let mut window = [still(); 8];
+        for sample in &mut window {
+            sample.imu.accel = Acceleration::body(0.0, 0.0, 0.0);
+            sample.imu.gyro = AngularRate::body(0.0, 0.6, 0.0);
+            sample.mag = Some(MagField::body(0.22, 0.0, 0.44));
+        }
+        let (tilt, yaw) = sigmas(&window, DT);
+        assert!(
+            (tilt - 1.2).abs() < 1e-6,
+            "0.6 rad/s over 2 s, above the 1.0 rad that |0 - g| / g is worth, got {tilt}"
+        );
+        assert!(
+            (yaw - UNKNOWN_HEADING_SIGMA.as_radians()).abs() < 1e-6,
+            "no down means no dip to scale by, got {yaw}"
         );
     }
 

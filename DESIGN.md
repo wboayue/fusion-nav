@@ -130,7 +130,8 @@ origin: the fix and the estimate are then relative to the same point by construc
 motion capture — and is right only if the caller's origin is the filter's.
 
 The first fix places the origin, under the estimate where there is one, and at the fix itself
-after a coarse start, where it is adopted rather than fused. See
+after a start whose window did not show the vehicle at rest, where it is adopted rather than
+fused. See
 [geodetic origin](EQUATIONS.md#geodetic-origin).
 
 ### GNSS Velocity
