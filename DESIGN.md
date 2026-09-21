@@ -4,9 +4,11 @@ How `fusion-nav` is built and why. For how to use it see [README.md](README.md);
 mathematics see [EQUATIONS.md](EQUATIONS.md); for positioning and decisions already made see
 [GOALS.md](GOALS.md).
 
-> **Status: API sketch.** The structure below is the intended one. The types and signatures
-> exist; almost none of the estimation mathematics does. Initialization is the exception —
-> equations (5)–(8) are implemented and the filter starts at the attitude it levelled.
+> **Status: dead reckoning, not yet aided.** The structure below is the intended one, and the
+> types and signatures exist. Implemented: initialization, equations (5)–(8), so the filter
+> starts at the attitude it levelled; and nominal propagation, (9)–(15), so the state dead
+> reckons from there. Not implemented: everything that corrects it — the covariance does not
+> propagate and no measurement changes the estimate.
 
 ## Error-State Kalman Filter
 

@@ -58,7 +58,6 @@ pub(crate) fn skew(u: Vector3<f32>) -> Matrix3<f32> {
 /// sample as [`Propagation::NotFinite`](crate::Propagation::NotFinite), so the `φ` that
 /// (15) builds from a gyroscope is finite before it arrives. The `δθ̂` (39) injects comes
 /// from the correction rather than from a sensor, so it owes its own check.
-#[cfg_attr(not(test), expect(dead_code, reason = "(15) and (39) are unwritten"))]
 pub(crate) fn exp_quat(phi: Vector3<f32>) -> UnitQuaternion<f32> {
     let angle = phi.norm();
     let half = 0.5 * angle;

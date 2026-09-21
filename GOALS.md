@@ -181,7 +181,7 @@ a `Config` the user reads and commits.
 | gate thresholds | chi-square quantile for a chosen percentile and dimension | a constructor, not a number |
 | `Timeouts` | observed per-source update intervals | offline recommendation only |
 | GNSS `R` | the receiver, floored | per measurement — **done** |
-| local gravity `γ` | the origin's latitude, by the WGS-84 gravity formula | candidate; a constant today (#66) |
+| local gravity `γ` | the origin's latitude, by the WGS-84 gravity formula | the offline tool (#51); a constant in the filter — see the decision below |
 | magnetic declination | a magnetic model, given the GNSS origin and date | optional, for its flash cost |
 
 And what stays with the user, because no amount of data yields it:
@@ -403,6 +403,31 @@ concluded a constant was not enough, which is evidence, and if validation shows 
 dominating the error budget on long flights, ArduPilot's offset tracker is the cheaper of the two
 answers: it leaves the 15 states alone. See
 [barometric altitude](EQUATIONS.md#barometric-altitude).
+
+### Local gravity as a constant, derived offline
+
+γ varies by about 0.5 % between the equator and the poles and falls roughly 3 µm s⁻² per metre of
+altitude. At the equator the WGS-84 standard 9.80665 overstates it by about 0.03 m s⁻², which
+enters (11) as a systematic vertical specific-force error rather than as noise — the accelerometer
+bias state absorbs a constant offset, so the practical cost is a bias estimate wrong by the gravity
+error and a vertical channel leaning on the barometer to hide it.
+
+The filter already holds the geodetic origin, so the latitude is in hand, and differentiator 7 says
+not to demand a number the system could compute. This is the case where that rule meets its own
+boundary: *derived at a defined moment, reported, never silently retuned*. The origin is placed by
+the first GNSS fix, which can arrive after propagation has begun, so deriving γ there would change
+a propagation constant mid-flight.
+
+**Decided:** `config::GRAVITY` stays the WGS-84 constant, and γ is derived where there is a defined
+moment for it — the offline tool that prints a `Config` from a log (#51), reading the log's own
+origin. The alternative considered and rejected was deriving it at origin placement only when the
+origin precedes the first `predict`: defensible, but two code paths and two possible values of a
+constant, for 0.03 m s⁻² at the extreme. A `Config` field was rejected outright as the thing
+differentiator 7 exists to prevent.
+
+The cost is that a vehicle flying far from 45° latitude carries a small constant gravity error
+until someone runs the offline tool, and that the error shows up in the accelerometer bias estimate
+rather than anywhere labelled gravity.
 
 ### Rejection handling: report, do not self-recover
 

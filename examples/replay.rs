@@ -1,8 +1,8 @@
 //! Replay a recorded flight from CSV and write the estimate back out as CSV.
 //!
-//! Nothing here estimates anything after initialization — `predict` propagates nothing and
-//! every `fuse_*` accepts unconditionally, so every estimate column holds whatever the
-//! window put there and every test ratio comes out zero. What this establishes is the replay
+//! `predict` propagates the nominal state, (9)–(15), so the estimate columns hold a dead
+//! reckoned trajectory — but every `fuse_*` still accepts unconditionally, so nothing corrects
+//! it and every test ratio comes out zero. What this establishes is the replay
 //! harness and the normalized log format `GOALS.md` commits to. What it exercises, that `basic.rs` and
 //! `degradation.rs` cannot, is irregular `dt` taken from timestamps, per-sample variance,
 //! a source that appears partway through the log, and an initialization window found in
@@ -108,10 +108,11 @@
 //!
 //! # What the score measures today
 //!
-//! **Stub.** `predict` propagates nothing, so the estimate holds the initialization window's
-//! attitude and a position of zero for the whole log while truth flies away. Every figure
-//! here is that, which is the point: it is the baseline each stage of #31 is measured
-//! against.
+//! **Stub.** (9)–(15) propagate and nothing corrects them, so every figure here is unaided
+//! dead reckoning: the tilt the window leaves behind leaks gravity into the horizontal
+//! channel, and two integrations turn it into position. That is the point — it is the
+//! baseline each stage of #31 is measured against, and the one the update of (23)–(28) has
+//! to beat.
 //!
 //! Two boundaries on reading the consistency keys, both from the simulator rather than from
 //! the filter. `nees_*` and `in3s` cannot fail in the *overconfident* direction on these
@@ -126,9 +127,11 @@
 //! alone. That difference is zero today for four of the five: `gnss_outage`, `baro_drift`,
 //! `gnss_latency` and `mag_disturbance` score identically to `mission` to the last digit,
 //! because each departs in the *aiding* and no aiding reaches the state while `fuse_*` is a
-//! stub. Only `harsh_imu` separates, by 0.07° of tilt, and only because it moves the
-//! initialization window. The pairing is built and dormant; it starts measuring when the
-//! update of (23)–(28) lands.
+//! stub. Only `harsh_imu` separates, and propagation is what widened the gap: ten times the
+//! white noise is ten times the gyroscope-bias error the window leaves behind, which is 8.5×
+//! `mission`'s horizontal error rather than the 0.07° of tilt it used to be. The pairing is
+//! built and dormant for the other four; it starts measuring when the update of (23)–(28)
+//! lands.
 //!
 //! A refused propagation step is still scored. The epoch row is written either way — the
 //! state is simply the one before it — and that stale state is what the filter published, so
@@ -341,9 +344,9 @@ struct Replay {
     /// magnetometer has observed nothing it could level a heading with.
     heading_at_init: bool,
     /// The attitude equations (5)–(7) committed, captured at that moment rather than read
-    /// off the filter at the end. The stub propagates nothing, so the two agree today and
-    /// would keep agreeing until (12)–(15) land — at which point this key would silently
-    /// become an end-of-log attitude, which is the trap `heading=` already documents.
+    /// off the filter at the end. Since (12)–(15) landed the two differ on any log whose
+    /// vehicle turns, and reading it off the end would silently report an end-of-log
+    /// attitude instead — the trap `heading=` documents, which this capture is what avoids.
     attitude_at_init: Option<Attitude>,
     epochs: u32,
     /// Rows written to the fusion file: every `fuse_*` call the log made, whatever its

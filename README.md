@@ -2,10 +2,12 @@
 
 Embedded-first inertial navigation using a 15-state Error-State Kalman Filter (ESKF).
 
-> **Status: API sketch.** The types and signatures below exist and compile; almost none of the
-> estimation mathematics does. Initialization is real — the filter levels, takes a heading and a
-> gyroscope bias, and sets its covariance — but `predict` propagates nothing and every `fuse_*`
-> accepts unconditionally. The design is subject to change.
+> **Status: dead reckoning, not yet aided.** The types and signatures below exist and compile.
+> Initialization is real — the filter levels, takes a heading and a gyroscope bias, and sets its
+> covariance — and `predict` now propagates the state, equations (9)–(15). What is missing is
+> everything that corrects it: the covariance does not grow, and every `fuse_*` accepts without
+> changing the estimate. So the position is an IMU-only dead-reckoned one, and the uncertainty
+> beside it is the one initialization set. The design is subject to change.
 
 `fusion-nav` estimates 3D attitude, velocity, and position by fusing IMU measurements with GNSS,
 barometric altitude, and magnetometer observations. It is `no_std`, allocation-free, and aimed at
@@ -246,7 +248,8 @@ Call `predict(imu, dt)` on every IMU sample. The result is `#[must_use]`:
 | `Propagated` | state advanced over the full `dt` |
 | `StepTooLong { dt, limit }` | `dt` exceeded `Config::max_predict_dt`; state unchanged, but health timers advanced because the time really passed |
 | `InvalidStep { dt }` | `dt` zero, negative, or NaN; nothing moved |
-| `NotFinite` | the sample carried a NaN or an infinity; state unchanged, health timers advanced as above |
+| `NotFinite` | the **sample** carried a NaN or an infinity; state unchanged, health timers advanced as above |
+| `StateNotFinite` | the propagated **state** did, so it was discarded; a finite sample can still overflow f32 through (11)–(14) |
 | `NotInitialized` | no state to propagate |
 
 ### Measurements

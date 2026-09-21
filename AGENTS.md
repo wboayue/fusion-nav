@@ -4,10 +4,12 @@ This file provides guidance to coding agents working with code in this repositor
 
 ## Status
 
-**API sketch.** Types and signatures compile; almost none of the estimation mathematics exists.
-Initialization is the exception — equations (5)–(8) are implemented, so the filter starts at the
-attitude and biases the window yields. `predict` propagates nothing, every `fuse_*` accepts with
-a zero test ratio. What is real is
+**Dead reckoning, not yet aided.** Types and signatures compile. Initialization is real —
+equations (5)–(8), so the filter starts at the attitude and biases the window yields — and
+`predict` propagates the nominal state, (9)–(15), so position, velocity and attitude move. Nothing
+corrects them: the covariance does not propagate, (16)–(22) are unwritten, and every `fuse_*`
+accepts with a zero test ratio. So the estimate is IMU-only dead reckoning carrying the
+uncertainty initialization set. What is real is
 the health bookkeeping (timers, `Status`, `Diagnostics`), the typed API surface, and the replay
 harness. Anything stubbed says so in its doc comment with a `**Stub.**` paragraph — keep that
 marker accurate when landing real math, and keep the same caveat in `README.md`, `DESIGN.md`,
@@ -209,19 +211,21 @@ the `covers` field of the table in that file, which is the single place the list
 tables are deliberately not `Config`'s; matching them would score the filter against its own
 assumptions. `data/flight.csv` is the `flight` scenario's committed output, with
 `data/flight.truth.csv` beside it — regenerate it with the command above, never hand-edit it. Its contents reach the
-determinism hash through the initialization window only: the attitude and gyroscope-bias columns
-of `target/replay.csv` are that window's averages, and every column is then constant for the rest
-of the file because nothing propagates. So regenerating the log moves the hash, while a change
-after the window does not — that second half is what changes when propagation lands.
+determinism hash through every column now that (9)–(15) propagate: the window still sets where
+the attitude and gyroscope-bias columns start, and the rest of the file is a dead-reckoned
+trajectory rather than a constant. So a change anywhere in propagation moves the hash, which is
+what makes the byte-for-byte diff of `target/replay.csv` the reviewable artifact it was written to
+be — before stage 3 it could only see the window.
 
 **Scenario ceilings ratchet, in both directions.** `data/scenarios.txt` holds a measured ceiling
 per `score` key per scenario and `data/bench.sh` asserts them in CI, which is the only gate in the
 repository that reads *accuracy* rather than self-consistency. Same discipline as the manifest: a
 number that moves needs a sentence saying what the data said, and the whole `score` line is
 printed on a breach so re-measuring is a copy rather than a second run. Tightening is the usual
-direction as each stage of #31 improves on the stub the ceilings were taken from, but a loosening
-is honest where the equation that landed is the reason — `static`'s position ceilings are exactly
-zero because nothing propagates, and stage 3 will have to raise them. What a ceiling cannot do is
+direction as each stage of #31 improves on the filter the ceilings were taken from, but a
+loosening is honest where the equation that landed is the reason — `static`'s position ceilings
+were exactly zero while nothing propagated, and stage 3 raised them to what dead reckoning on a
+stationary vehicle actually drifts. What a ceiling cannot do is
 test the covariance's own promise: it passes a filter that grew more accurate and more
 overconfident at once, which is #89 (ANEES over N seeds), after #35 gives it a covariance that
 moves. The format is already indifferent to several seeds per scenario.
