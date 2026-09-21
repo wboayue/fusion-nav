@@ -194,9 +194,9 @@ impl Default for Initialization {
 /// directly — these are the coarse per-quantity bar.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Accuracy {
-    /// Roll and pitch. Also the bar for alignment:
-    /// [`Status::Aligning`](crate::Status::Aligning) lasts until tilt and heading are
-    /// both within these.
+    /// Roll and pitch. Also the bar alignment is measured against:
+    /// [`Status::Aligning`](crate::Status::Aligning) ends when tilt and heading **first** come
+    /// within these, and does not return when they leave again.
     pub tilt: Radians,
     /// Heading.
     pub heading: Radians,
@@ -207,32 +207,54 @@ pub struct Accuracy {
 }
 
 impl Default for Accuracy {
-    /// Attitude matches what a good static alignment gives, so a filter that started
-    /// still — and had a magnetometer to take a heading from — is aligned from its first
-    /// sample. Position and velocity are **placeholders** — loose enough to admit a 1 Hz
-    /// GNSS solution, and nothing more considered than that.
+    /// Attitude clears the prior a static alignment starts from, by the margin an unaided
+    /// filter takes to drift through. Position and velocity are **placeholders** — loose
+    /// enough to admit a 1 Hz GNSS solution, and nothing more considered than that.
     ///
-    /// The attitude equality is a knife edge, and it holds only because the stub never
-    /// propagates. [`tilt`](Accuracy::tilt) equals
-    /// [`Initialization::sigma_tilt`](Initialization::sigma_tilt) and
-    /// [`heading`](Accuracy::heading) equals
-    /// [`Initialization::sigma_yaw`](Initialization::sigma_yaw), and
-    /// [`Validity`](crate::Validity) compares with `<=`, so a static start passes by
-    /// exactly zero margin. The first real [`predict`](crate::Eskf::predict) adds `Q` and
-    /// the covariance grows: a static start will drop to
-    /// [`Status::Aligning`](crate::Status::Aligning) on its first step, and heading — which
-    /// only a magnetometer brings back down — may never return. Recorded rather than
-    /// corrected, because the number to widen these to is a measurement, not a guess: how
-    /// long real logs take to converge, read off the corpus the way
-    /// [`Timeouts::degraded_after`] was. The replay `summary` line reports it as
-    /// `aligned_at=`, which every entry in `data/manifest.txt` now pins — at 0.00 s on
-    /// every static log, since the bar is passed by exactly zero margin, and `never` on the
-    /// coarse one. Both figures measure the stub: they move when covariance propagation
-    /// lands, and that is when they become the evidence this comment is waiting for.
+    /// A bar equal to the prior it is compared against is no bar at all, which is what these
+    /// were until covariance propagation landed: [`tilt`](Accuracy::tilt) was
+    /// [`Initialization::sigma_tilt`](Initialization::sigma_tilt) exactly and
+    /// [`heading`](Accuracy::heading) was
+    /// [`Initialization::sigma_yaw`](Initialization::sigma_yaw) exactly, compared with `<=`,
+    /// so a static start passed by zero margin and the first `Q` of equation (21) took it
+    /// away again. It reads `aligned_at=0.00` on every static log in `data/manifest.txt` and
+    /// `never` one step later — a filter that reported convergence for exactly one sample.
+    ///
+    /// 3° of tilt is what PX4 declares tilt alignment at (`getTiltVariance() <
+    /// sq(radians(3.f))`, `src/modules/ekf2/EKF/control.cpp:73-78` at `c4e4ef98e9`);
+    /// ArduPilot uses 5° (`tiltErrorVariance < sq(radians(5.0))`,
+    /// `libraries/AP_NavEKF3/AP_NavEKF3_Control.cpp:520-525` at `368dc0c428`). Heading has no
+    /// published counterpart — both estimators latch yaw alignment on the magnetometer reset
+    /// rather than comparing a variance — so 30° is a mission number under one hard
+    /// constraint: it has to clear `sigma_yaw`, since a heading whose prior is 20° can never
+    /// be valid under a 20° bar.
+    ///
+    /// What they buy, measured on a static start at [`ImuNoise`]'s defaults: 3.79 s of unaided
+    /// propagation before tilt leaves the bar, 35.4 s before heading does
+    /// (`an_unaided_start_holds_its_attitude_for_the_margin_the_defaults_buy`). Neither is the
+    /// `σ_g² t` the white-noise density alone gives, which would be 10.4 s and 657 s — the
+    /// gyroscope-bias prior enters attitude through equation (20)'s `−I Δt` and grows as
+    /// `σ_βg² t²`, overtaking the white-noise term inside two seconds.
+    ///
+    /// What those two times move is [`Validity`](crate::Validity), and nothing else.
+    /// [`Status`](crate::Status) is already answering on the aiding timers by then — an unaided
+    /// filter reports [`DeadReckoning`](crate::Status::DeadReckoning) from
+    /// [`Timeouts::dead_reckoning_after`], or from its first step if no source was ever accepted
+    /// — and the latch below keeps [`Aligning`](crate::Status::Aligning) out of it. So these are
+    /// a claim about which outputs a controller may still use, which is the question
+    /// [`Accuracy`] exists to answer. Supply your own numbers.
+    ///
+    /// These bars are read live by [`Validity`](crate::Validity) and once by
+    /// [`Status`](crate::Status): crossing one takes an output out of service, and does not put
+    /// the filter back into [`Aligning`](crate::Status::Aligning). What that split is worth was
+    /// measured on the corpus, and it is on
+    /// [`Eskf::is_aligned`](crate::Eskf::is_aligned) — four `Healthy`/`Aligning` flaps in four
+    /// seconds on one log, from a yaw prior rotating into the tilt axes rather than from
+    /// anything degrading.
     fn default() -> Self {
         Self {
-            tilt: Radians::from_radians(0.02),
-            heading: Radians::from_radians(0.35),
+            tilt: Radians::from_radians(0.052),
+            heading: Radians::from_radians(0.52),
             position: Meters::from_meters(5.0),
             velocity: MetersPerSecond::from_m_per_s(1.0),
         }
@@ -269,7 +291,7 @@ pub struct Config {
     /// Largest `dt` [`Eskf::predict`](crate::Eskf::predict) will propagate over.
     ///
     /// Beyond this the step is refused and the state left alone, because the
-    /// discretization of equations (9)-(22) is a first-order approximation over a short
+    /// discretization of equations (9)–(22) is a first-order approximation over a short
     /// interval and one IMU sample cannot describe a long one. The filter reports and
     /// stops there, as it does for a locked-out gate: whether to reset, coast, or abort
     /// is the application's call.

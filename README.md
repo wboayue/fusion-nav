@@ -4,10 +4,13 @@ Embedded-first inertial navigation using a 15-state Error-State Kalman Filter (E
 
 > **Status: dead reckoning, not yet aided.** The types and signatures below exist and compile.
 > Initialization is real — the filter levels, takes a heading and a gyroscope bias, and sets its
-> covariance — and `predict` now propagates the state, equations (9)–(15). What is missing is
-> everything that corrects it: the covariance does not grow, and every `fuse_*` accepts without
-> changing the estimate. So the position is an IMU-only dead-reckoned one, and the uncertainty
-> beside it is the one initialization set. The design is subject to change.
+> covariance — and `predict` now propagates the state *and* its uncertainty, equations (9)–(22).
+> What is missing is everything that corrects them: every `fuse_*` accepts without changing the
+> estimate. So the position is an IMU-only dead-reckoned one, and the uncertainty beside it grows
+> without bound — which is what makes `Validity` honest about it: each flag goes false as its own
+> variance passes `Config::accuracy`, 3.79 s in for tilt at the default noise. `Status` answers on
+> the aiding timers, so an unaided filter reports `DeadReckoning` well before that. The design is
+> subject to change.
 
 `fusion-nav` estimates 3D attitude, velocity, and position by fusing IMU measurements with GNSS,
 barometric altitude, and magnetometer observations. It is `no_std`, allocation-free, and aimed at
@@ -165,7 +168,9 @@ and GNSS velocity. From the window the filter takes:
   gravity. `validity.heading` is false and `Status` stays `Aligning` until the first
   `fuse_mag_heading` is accepted, however still the window was — `Initialization::sigma_yaw` is a
   prior on a yaw nobody measured, and the covariance alone cannot tell the two apart (the reset
-  that should replace such a yaw is not yet built)
+  that should replace such a yaw is not yet built). Leaving `Aligning` is one-way: it reports a
+  start that has not been resolved, while `validity.tilt` and `validity.heading` stay live and go
+  false again as an unaided covariance grows past `Config::accuracy`
 * **gyroscope bias** from the averaged gyroscope, but only from a window taken at rest, which is
   what makes the bias observable rather than the vehicle's own turn rate. A window taken in
   motion starts it at zero, as both PX4 and ArduPilot do at every start. The accelerometer bias

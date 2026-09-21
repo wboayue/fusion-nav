@@ -100,7 +100,7 @@ pub enum Alignment {
     /// The window was usable but not a static interval, so attitude starts coarse and
     /// the covariance is inflated to say so. The filter runs and reports
     /// [`Status::Aligning`](crate::Status::Aligning) until tilt and heading uncertainty
-    /// are within [`Config::accuracy`](crate::Config::accuracy).
+    /// first come within [`Config::accuracy`](crate::Config::accuracy).
     Coarse(Coarse),
     /// The state came from [`Eskf::initialize_from`](crate::Eskf::initialize_from) rather
     /// than from a window. Whether it counts as aligned is a question for the covariance

@@ -43,21 +43,36 @@
 # What is not here is a test of the covariance itself. A ceiling pins what the filter did last
 # run, so it passes a filter that grew more accurate and more overconfident at once -- the
 # failure that reaches the gate, the gain and `Validity`. That needs ANEES over N seeds against
-# a chi-square bound, which needs a covariance that moves: #89, after #35. The format is
-# already indifferent to it -- lines are read as `name seed pairs`, and nothing assumes one
-# line per scenario.
+# a chi-square bound: #89, which is now unblocked. The format is already indifferent to it --
+# lines are read as `name seed pairs`, and nothing assumes one line per scenario.
 #
-# What every figure measures today: equations (9)-(15) dead reckon and nothing corrects them.
-# The covariance has not moved since initialization, which is why `nees_*` reads in the
-# thousands here and up to 3.9e7 on `harsh_imu` -- the error grows and the uncertainty it is
-# divided by does not. Those keys are a regression guard on the error alone until #35.
+# What every figure measures today: equations (9)-(22) propagate the state and its covariance,
+# and nothing corrects either. The error keys are unchanged by covariance propagation, because
+# the nominal state is -- `pos_h`, `pos_v`, `vel`, `pos_h_max`, `tilt` and `yaw` all still read
+# what stage 3 measured. Everything derived from `P` moved, in the direction
+# `examples/simulate.rs` predicted before it could be checked: the filter is *under*-confident
+# against its IMU table, by about the two orders of magnitude that table says to expect
+# (`nees_pos` 0.0118 on `mission` where a consistent filter reads 1), `in3s` is 1.0000
+# everywhere, and `false_valid` is 0 outside `flight`. Under the `dt^2` discretization of (21)
+# that both production estimators use, `Q` would be 200x smaller at this rate and `nees_*`
+# would read near 1 -- so these numbers are also the evidence for the `dt` form, since the
+# simulator's own noise table says under-confident is the only honest answer here.
+#
+# `moving_start` is the exception worth reading: `nees_pos=10.09` and `nees_vel=10.80`, the only
+# figures above 1 anywhere in this file. A coarse start's position and velocity priors are
+# `Initialization`'s 1 m and 0.1 m/s while the truth is kilometres away, so the covariance is
+# genuinely overconfident there -- honestly reported, since `Validity` marks both
+# `Unestablished` and no output claims otherwise, and #77 and #85 are the same argument about
+# the attitude priors. `nees_att` rose 3.6 % rather than collapsing with the rest, because the
+# attitude block of (20) rotates a wide yaw prior into the tilt axes on a vehicle that is
+# turning, which is the one place propagation moves variance between axes rather than adding it.
 
-static           1  pos_h<=29.585    pos_v<=20.393   vel<=2.241   pos_h_max<=83.193    tilt<=1.015  yaw<=0.295  in3s>=0.7411 nees_pos<=426.1329      nees_vel<=165.6288     nees_att<=0.2586  false_valid<=26447  scored>=11600
-mission          2  pos_h<=1261.114  pos_v<=206.664  vel<=23.095  pos_h_max<=3227.948  tilt<=2.147  yaw<=2.966  in3s>=0.6360 nees_pos<=538982.6484   nees_vel<=17603.2676   nees_att<=1.1655  false_valid<=152319 scored>=36600
-harsh_imu        2  pos_h<=10746.439 pos_v<=1749.602 vel<=199.240 pos_h_max<=27402.327 tilt<=19.061 yaw<=33.840 in3s>=0.5059 nees_pos<=39124435.8807 nees_vel<=1310111.7574 nees_att<=92.2504 false_valid<=196142 scored>=36600
-gnss_outage      2  pos_h<=1261.114  pos_v<=206.664  vel<=23.095  pos_h_max<=3227.948  tilt<=2.147  yaw<=2.966  in3s>=0.6360 nees_pos<=538982.6484   nees_vel<=17603.2676   nees_att<=1.1655  false_valid<=152319 scored>=36600
-moving_start     4  pos_h<=6177.965  pos_v<=1366.097 vel<=203.814 pos_h_max<=13794.336 tilt<=24.706 yaw<=8.504  in3s>=0.6035 nees_pos<=15741270.2316 nees_vel<=609315.8855  nees_att<=0.0933  false_valid<=62239  scored>=15999
-baro_drift       2  pos_h<=1261.114  pos_v<=206.664  vel<=23.095  pos_h_max<=3227.948  tilt<=2.147  yaw<=2.966  in3s>=0.6360 nees_pos<=538982.6484   nees_vel<=17603.2676   nees_att<=1.1655  false_valid<=152319 scored>=36600
-gnss_latency     2  pos_h<=1261.114  pos_v<=206.664  vel<=23.095  pos_h_max<=3227.948  tilt<=2.147  yaw<=2.966  in3s>=0.6360 nees_pos<=538982.6484   nees_vel<=17603.2676   nees_att<=1.1655  false_valid<=152319 scored>=36600
-mag_disturbance  2  pos_h<=1261.114  pos_v<=206.664  vel<=23.095  pos_h_max<=3227.948  tilt<=2.147  yaw<=2.966  in3s>=0.6360 nees_pos<=538982.6484   nees_vel<=17603.2676   nees_att<=1.1655  false_valid<=152319 scored>=36600
-flight           8  pos_h<=8.397     pos_v<=0.721    vel<=3.093   pos_h_max<=12.384    tilt<=3.548  yaw<=34.586 in3s>=0.7668 nees_pos<=23.4344       nees_vel<=315.6019     nees_att<=4.1434  false_valid<=2037   scored>=600
+static           1  pos_h<=29.585    pos_v<=20.393   vel<=2.241   pos_h_max<=83.193    tilt<=1.015  yaw<=0.295 in3s>=0.9900 nees_pos<=0.0131 nees_vel<=0.0140 nees_att<=0.0027 false_valid<=0 scored>=11600
+mission          2  pos_h<=1261.114  pos_v<=206.664  vel<=23.095  pos_h_max<=3227.948  tilt<=2.147  yaw<=2.966 in3s>=0.9900 nees_pos<=0.0120 nees_vel<=0.0116 nees_att<=0.0018 false_valid<=0 scored>=36600
+harsh_imu        2  pos_h<=10746.439 pos_v<=1749.602 vel<=199.240 pos_h_max<=27402.327 tilt<=19.061 yaw<=33.840 in3s>=0.9900 nees_pos<=0.0783 nees_vel<=0.1862 nees_att<=0.0975 false_valid<=0 scored>=36600
+gnss_outage      2  pos_h<=1261.114  pos_v<=206.664  vel<=23.095  pos_h_max<=3227.948  tilt<=2.147  yaw<=2.966 in3s>=0.9900 nees_pos<=0.0120 nees_vel<=0.0116 nees_att<=0.0018 false_valid<=0 scored>=36600
+moving_start     4  pos_h<=6177.965  pos_v<=1366.097 vel<=203.814 pos_h_max<=13794.336 tilt<=24.706 yaw<=8.504 in3s>=0.9900 nees_pos<=10.1903 nees_vel<=10.9042 nees_att<=0.0977 false_valid<=0 scored>=15999
+baro_drift       2  pos_h<=1261.114  pos_v<=206.664  vel<=23.095  pos_h_max<=3227.948  tilt<=2.147  yaw<=2.966 in3s>=0.9900 nees_pos<=0.0120 nees_vel<=0.0116 nees_att<=0.0018 false_valid<=0 scored>=36600
+gnss_latency     2  pos_h<=1261.114  pos_v<=206.664  vel<=23.095  pos_h_max<=3227.948  tilt<=2.147  yaw<=2.966 in3s>=0.9900 nees_pos<=0.0120 nees_vel<=0.0116 nees_att<=0.0018 false_valid<=0 scored>=36600
+mag_disturbance  2  pos_h<=1261.114  pos_v<=206.664  vel<=23.095  pos_h_max<=3227.948  tilt<=2.147  yaw<=2.966 in3s>=0.9900 nees_pos<=0.0120 nees_vel<=0.0116 nees_att<=0.0018 false_valid<=0 scored>=36600
+flight           8  pos_h<=8.397     pos_v<=0.721    vel<=3.093   pos_h_max<=12.384    tilt<=3.548  yaw<=34.586 in3s>=0.9900 nees_pos<=0.4683 nees_vel<=0.4923 nees_att<=0.9529 false_valid<=573 scored>=600

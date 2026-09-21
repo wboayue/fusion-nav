@@ -1,15 +1,16 @@
 # Equations
 
-> **Status: the estimation mathematics is partly implemented.** The filter dead reckons: (9)–(15)
-> propagate the nominal state, so `predict` moves position, velocity and attitude. Nothing corrects
-> them — the covariance does not propagate, (16)–(22) are unwritten, and every `fuse_*` accepts
-> with a zero test ratio, so the uncertainty reported is still the one initialization set. Also
-> built: the attitude and biases of (5)–(7), the initial covariance (8), the barometric reference
-> `α₀` of (30), the window's own acceleration `ā_n` of (5′) — measured and reported though nothing
-> levels with it yet — the geodetic origin (43)–(44), the angle wrap of (35), and, unit-tested but
-> not yet called from any filter path, the remaining shared primitives and the symmetry
-> enforcement of (42); the [equation-to-code mapping](#equation-to-code-mapping) marks the
-> functions that do not exist yet.
+> **Status: the estimation mathematics is partly implemented.** The filter dead reckons with a
+> growing covariance: (9)–(15) propagate the nominal state and (16)–(22) propagate `P`, so
+> `predict` moves position, velocity and attitude and says how little it knows about them. Nothing
+> corrects them — every `fuse_*` accepts with a zero test ratio, (23)–(28) are unwritten, and
+> nothing in propagation takes uncertainty back out; the only things that narrow a block are the
+> resets of (41), which an application asks for. Also built: the attitude and biases of (5)–(7), the
+> initial covariance (8), the barometric reference `α₀` of (30), the window's own acceleration
+> `ā_n` of (5′) — measured and reported though nothing levels with it yet — the geodetic origin
+> (43)–(44), the angle wrap of (35), and the symmetry enforcement of (42), now called after every
+> covariance step; the [equation-to-code mapping](#equation-to-code-mapping) marks the functions
+> that do not exist yet.
 
 This document is the normative mathematical description of `fusion-nav`. Equations are numbered
 so that the implementation can cite them directly; see
@@ -67,6 +68,7 @@ subscript.
 | $`G`$ | reset Jacobian | 15 × 15 |
 | $`w_a, w_g`$ | accelerometer and gyroscope white noise | — |
 | $`w_{\beta a}, w_{\beta g}`$ | bias random-walk driving noise | — |
+| $`\sigma_a, \sigma_g, \sigma_{\beta a}, \sigma_{\beta g}`$ | the spectral densities of those four, as `ImuNoise` states them | per $`\sqrt{\mathrm{Hz}}`$ |
 
 ### Operators
 
@@ -345,14 +347,31 @@ Discrete process noise, impulse form:
 **(21)**
 
 ```math
-Q = \mathrm{diag}\left( 0,\quad \sigma_a^2 \Delta t^2 I,\quad \sigma_g^2 \Delta t^2 I,\quad \sigma_{\beta a}^2 \Delta t\, I,\quad \sigma_{\beta g}^2 \Delta t\, I \right)
+Q = \mathrm{diag}\left( 0,\quad \sigma_a^2 \Delta t\, I,\quad \sigma_g^2 \Delta t\, I,\quad \sigma_{\beta a}^2 \Delta t\, I,\quad \sigma_{\beta g}^2 \Delta t\, I \right)
 ```
+
+Every block carries $`\Delta t`$, and the four $`\sigma`$ are **spectral densities**:
+`ImuNoise`'s fields are stated per $`\sqrt{\mathrm{Hz}}`$ and `examples/simulate.rs` draws its
+per-sample noise as $`\sigma / \sqrt{\Delta t}`$, so a density's contribution to variance over a
+step is $`\sigma^2 \Delta t`$ — for the white-noise blocks exactly as for the two random walks.
+
+PX4 and ArduPilot write the white-noise blocks with $`\Delta t^2`$ instead, because their
+parameters are the $`\sigma`$ of one sample's increment rather than densities: PX4
+`sq(dt) * accel_var` with `accel_var = sq(ekf2_acc_noise)`
+(`src/modules/ekf2/EKF/python/ekf_derivation/generated/predict_covariance.h:161-164`,
+`EKF/covariance.cpp:119-133`, at `c4e4ef98e9`), ArduPilot `dvxVar = sq(dt * _accNoise)`
+(`libraries/AP_NavEKF3/AP_NavEKF3_core.cpp:1177` at `368dc0c428`). That form ties $`Q`$ to the
+sample rate — the variance it adds over $`T`$ seconds is $`\sigma^2 \Delta t\, T`$, so the same
+airframe logged at 400 Hz is given eight times less process noise than at 50 Hz — and the logs
+in `data/manifest.txt` run from 50 Hz to 250 Hz against one `Config`. The $`\Delta t`$ form is
+rate-independent, and `propagate::process_noise` implements it.
 
 The velocity block of (21) is the rotated accelerometer noise $`R \Sigma_a R^\mathsf{T}`$. Writing
 it as $`\sigma_a^2 I`$ is exact only when the accelerometer noise is **isotropic**, since
 $`R (\sigma_a^2 I) R^\mathsf{T} = \sigma_a^2 I`$ for orthogonal $`R`$. Real IMUs are not
 isotropic — the z axis is typically noisier. Either use a per-axis $`\Sigma_a`$ and carry the
-rotation, or set $`\sigma_a`$ to the worst axis and document the conservatism.
+rotation, or set $`\sigma_a`$ to the worst axis and document the conservatism; the code takes the
+second, which is also what lets $`Q`$ be built as a diagonal rather than a matrix.
 
 Covariance propagation:
 
@@ -722,10 +741,10 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | (30) `α₀` | barometric reference | `init.rs` | `baro_reference` |
 | (9)–(11) | bias correction, gravity | `propagate.rs` | `ImuSample`, `corrected_imu` |
 | (12)–(15) | nominal propagation | `propagate.rs` | `propagate_nominal` |
-| (16)–(19) | error dynamics | `propagate.rs` | `error_dynamics` |
+| (16)–(19) | error dynamics | `propagate.rs` | carried as the derivation on `transition_matrix`; (20) is what the filter computes |
 | (20) | state transition matrix | `propagate.rs` | `transition_matrix` |
 | (21) | discrete process noise | `propagate.rs` | `process_noise` |
-| (22) | covariance propagation | `propagate.rs` | `propagate_covariance` |
+| (22) | covariance propagation | `propagate.rs` | `propagate_covariance`, called with (9)–(15) by `propagate` |
 | (23)–(27) | generic update, Joseph form | `update.rs` | `update` |
 | (28) | GNSS position | `observation/gnss.rs` | `position_jacobian` |
 | (29) | GNSS velocity | `observation/gnss.rs` | `velocity_jacobian` |

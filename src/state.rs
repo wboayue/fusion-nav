@@ -165,6 +165,17 @@ impl Covariance {
     pub const fn as_matrix(&self) -> &CovarianceMatrix {
         &self.0
     }
+
+    /// Whether every entry is finite.
+    ///
+    /// Two callers with one question, as [`State::is_finite`] has:
+    /// [`Eskf::initialize_from`](crate::Eskf::initialize_from) asks it of a seed the
+    /// application supplied, and [`Eskf::predict`](crate::Eskf::predict) asks it of what (22)
+    /// produced, since `F P Fᵀ + Q` overflows f32 from finite inputs for the same reason
+    /// (11)–(14) do.
+    pub(crate) fn is_finite(&self) -> bool {
+        self.0.iter().all(|entry| entry.is_finite())
+    }
 }
 
 impl Default for Covariance {

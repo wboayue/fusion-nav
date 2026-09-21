@@ -6,9 +6,10 @@ mathematics see [EQUATIONS.md](EQUATIONS.md); for positioning and decisions alre
 
 > **Status: dead reckoning, not yet aided.** The structure below is the intended one, and the
 > types and signatures exist. Implemented: initialization, equations (5)–(8), so the filter
-> starts at the attitude it levelled; and nominal propagation, (9)–(15), so the state dead
-> reckons from there. Not implemented: everything that corrects it — the covariance does not
-> propagate and no measurement changes the estimate.
+> starts at the attitude it levelled; nominal propagation, (9)–(15), so the state dead reckons
+> from there; and covariance propagation, (16)–(22), so the uncertainty beside it grows. Not
+> implemented: the measurement update — no observation changes the estimate, and nothing takes
+> uncertainty back out.
 
 ## Error-State Kalman Filter
 

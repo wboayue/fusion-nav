@@ -226,8 +226,9 @@ and no flight data settles it. Asking is correct here.
 whether each quantity will be good if the vehicle leaves the ground now, rather than whether it
 is good while sitting still with half its states unobservable. ArduPilot's `pred_horiz_pos_rel`
 is the same idea and PX4 has no equivalent, which makes it the one place the status model here is
-ahead of both. In the stub it means *aiding is arriving*; with covariance propagation it should
-mean *projected to a horizon and tested*.
+ahead of both. It still means *aiding is arriving*: (16)–(22) make the projection possible — a
+copy of `P` propagated forward and tested there — and what is missing now is the horizon, which is
+a mission number rather than a derivable one.
 
 ## Open design questions
 
@@ -333,9 +334,16 @@ Two API decisions shape the rest, and are worth settling early:
 * **`Aligning` is not `Degraded`.** Degraded means aided and drifting; aligning means the
   attitude itself has not converged. Conflating them would mislead a controller in precisely the
   phase where the distinction matters most. **Settled**, with `Aligning` the more severe of the
-  two. The cost is visible in the corpus: the one log that starts in motion now reports
-  `Aligning` throughout and its 888 aiding transitions are masked behind it, because a stub
-  covariance never shrinks and the filter therefore never finishes aligning.
+  two. The cost is visible in the corpus: the one log that starts in motion reports `Aligning`
+  throughout and its 888 aiding transitions are masked behind it, because nothing yet shrinks a
+  covariance and the filter therefore never finishes aligning.
+
+  Leaving `Aligning` is **one-way**, and that is a second decision the corpus forced once `P`
+  began to grow. Read live, the bar puts a filter back into `Aligning` whenever tilt uncertainty
+  crosses `Accuracy::tilt` — four `Healthy`/`Aligning` flaps in four seconds on the handled log,
+  from a yaw prior rotating into the tilt axes rather than from anything degrading. So `Aligning`
+  reports *a start that has not been resolved*, and attitude quality right now is `Validity::tilt`,
+  which does fall back. PX4 and ArduPilot latch the same flag for the same reason.
 
 Position and velocity were a related gap, and are now closed. A static start defines the origin
 as where the vehicle was and its velocity as zero, both true by construction; a coarse start can

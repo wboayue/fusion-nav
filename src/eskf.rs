@@ -5,7 +5,7 @@ use crate::frames::{Body, Ned};
 use crate::geodetic::{Geodetic, LocalOrigin};
 use crate::health::{Diagnostics, Fusion, Propagation, SourceHealth, Status, Validity};
 use crate::init::{self, Alignment, Coarse, InitError, StaticSample, baro_reference, peak_motion};
-use crate::propagate::{ImuSample, corrected_imu, propagate_nominal};
+use crate::propagate::{ImuSample, propagate};
 use crate::state::{Covariance, ErrorState, STATES, State};
 use crate::units::{
     Altitude, AltitudeNoise, HeadingNoise, MagField, Position, PositionNoise, Seconds, Velocity,
@@ -15,10 +15,11 @@ use crate::units::{
 /// A 15-state error-state Kalman filter.
 ///
 /// **Stub.** Every method below has its intended signature and does its own bookkeeping.
-/// What is implemented is initialization, (5)–(8), and nominal propagation, (9)–(15): the
-/// state dead reckons from where [`initialize`](Self::initialize) put it. Nothing corrects
-/// it — the covariance never moves, so [`Status`] and [`validity`](Self::validity) answer on
-/// the uncertainty the window set, and every `fuse_*` accepts without changing the estimate.
+/// What is implemented is initialization, (5)–(8), and propagation, (9)–(22): the state dead
+/// reckons from where [`initialize`](Self::initialize) put it and the covariance grows around
+/// it. Nothing corrects either — every `fuse_*` accepts without changing the estimate, so
+/// [`Status`] and [`validity`](Self::validity) are answers about an unaided filter that has no
+/// way back.
 #[derive(Clone, Debug)]
 pub struct Eskf {
     config: Config,
@@ -28,6 +29,10 @@ pub struct Eskf {
     baro_reference: Option<Altitude>,
     origin: Option<LocalOrigin>,
     unestablished: Unestablished,
+    /// Whether the attitude has ever met [`Config::accuracy`](crate::Config::accuracy) since
+    /// initialization. Latched, and the test behind [`Status::Aligning`]; see
+    /// [`is_aligned`](Self::is_aligned) for why it is not read live.
+    aligned: bool,
     initialized: bool,
 }
 
@@ -58,6 +63,7 @@ impl Eskf {
             baro_reference: None,
             origin: None,
             unestablished: Unestablished::default(),
+            aligned: false,
             initialized: false,
         }
     }
@@ -140,6 +146,7 @@ impl Eskf {
         if !window.iter().any(|sample| sample.mag.is_some()) {
             self.unestablished.heading = true;
         }
+        self.note_alignment();
         Ok(alignment)
     }
 
@@ -210,6 +217,7 @@ impl Eskf {
         self.apply_alignment(alignment, state);
         // The barometric reference is left alone: one sample does not establish one, and
         // a restart at altitude should keep the reference the flight began with.
+        self.note_alignment();
         Ok(alignment)
     }
 
@@ -259,7 +267,7 @@ impl Eskf {
         state: State,
         covariance: Covariance,
     ) -> Result<Alignment, InitError> {
-        if !state.is_finite() || !covariance.as_matrix().iter().all(|e| e.is_finite()) {
+        if !state.is_finite() || !covariance.is_finite() {
             return Err(InitError::NotFinite);
         }
         if (0..STATES).any(|i| covariance.as_matrix()[(i, i)] <= 0.0) {
@@ -272,6 +280,8 @@ impl Eskf {
         // heading included, so no first measurement overwrites one.
         self.unestablished = Unestablished::default();
         self.initialized = true;
+        self.aligned = false;
+        self.note_alignment();
         Ok(Alignment::Seeded)
     }
 
@@ -364,14 +374,17 @@ impl Eskf {
     /// then in the covariance, where nothing reports it and it never leaves. The timers
     /// advance, since the `dt` was fine and only the sample was not.
     ///
-    /// A state that comes out of (11)–(14) non-finite is discarded rather than stored, as
-    /// [`Propagation::StateNotFinite`]. A finite sample is not enough to guarantee a finite
-    /// result: f32 has a finite range and `a_n Δt` can leave it.
+    /// A step that comes out of (11)–(14) or (22) non-finite is discarded rather than
+    /// stored, as [`Propagation::StateNotFinite`], and the state and the covariance are
+    /// discarded together: a finite sample is not enough to guarantee a finite result, since
+    /// f32 has a finite range and both `a_n Δt` and `F P Fᵀ` can leave it. Committing one
+    /// half would leave the filter reporting an estimate whose uncertainty describes a
+    /// different step.
     ///
-    /// **Stub.** The covariance does not propagate. The nominal state advances by dead
-    /// reckoning, (9)–(15), while its uncertainty stays where initialization put it, so
-    /// [`Status`] and [`Validity`] answer on a covariance that has not grown since the
-    /// window — equations (16)–(22) are what make them move.
+    /// The covariance only grows here. (22) adds `Q` and (20) spreads what is already there;
+    /// nothing in propagation takes uncertainty back out, which is the measurement update's
+    /// job. So an unaided filter's [`Validity`] flags go false in the order their variances
+    /// cross [`Config::accuracy`](crate::Config::accuracy), and [`Status`] follows.
     pub fn predict(&mut self, imu: ImuSample, dt: Seconds) -> Propagation {
         if !self.initialized {
             return Propagation::NotInitialized;
@@ -399,13 +412,16 @@ impl Eskf {
             return self.refuse_step(Propagation::NotFinite);
         }
 
-        // Propagated into a local first: (11)–(14) can overflow f32 on a finite sample, and
-        // a state written before it is checked is one the filter has already published.
-        let propagated = propagate_nominal(self.state, corrected_imu(imu, &self.state), dt);
+        // Propagated into a local first: (11)–(14) and (22) can both overflow f32 on a
+        // finite sample, and a state written before it is checked is one the filter has
+        // already published.
+        let propagated = propagate(self.state, self.covariance, imu, dt, &self.config.imu);
         if !propagated.is_finite() {
             return self.refuse_step(Propagation::StateNotFinite);
         }
-        self.state = propagated;
+        self.state = propagated.state;
+        self.covariance = propagated.covariance;
+        self.note_alignment();
         Propagation::Propagated
     }
 
@@ -644,6 +660,7 @@ impl Eskf {
         // not to believe.
         if outcome.is_accepted() {
             self.unestablished.heading = false;
+            self.note_alignment();
         }
         outcome
     }
@@ -659,7 +676,7 @@ impl Eskf {
         // carries meaningful ones, and every read overwrites them.
         let validity = self.validity();
         let mut state = self.state;
-        state.status = self.derive_status(validity);
+        state.status = self.derive_status();
         state.validity = validity;
         state
     }
@@ -674,17 +691,40 @@ impl Eskf {
         &self.covariance
     }
 
-    /// Whether attitude is good enough to use — the test behind
-    /// [`Status::Aligning`], and the same bar as
-    /// [`Validity::attitude`](crate::Validity::attitude).
+    /// Whether the attitude has **ever** met [`Config::accuracy`](crate::Config::accuracy)
+    /// since initialization — the test behind [`Status::Aligning`].
     ///
-    /// Read from the covariance against [`Config::accuracy`](crate::Config::accuracy), so
-    /// convergence is measured rather than timed. With one thing the covariance cannot
-    /// say: a heading nothing ever observed is not aligned however tight
-    /// [`sigma_yaw`](crate::Initialization::sigma_yaw) is, so this stays false on a
-    /// vehicle with no magnetometer. See [`validity`](Self::validity).
-    pub fn is_aligned(&self) -> bool {
-        self.validity().attitude()
+    /// Promotion is measured, not timed: it takes
+    /// [`Validity::attitude`](crate::Validity::attitude) reading true off the covariance,
+    /// which also means it stays false on a vehicle with no magnetometer, since a heading
+    /// nothing ever observed is not aligned however tight
+    /// [`sigma_yaw`](crate::Initialization::sigma_yaw) is. What it does not do is fall back:
+    /// alignment is an event, "the start has been resolved", where
+    /// [`validity`](Self::validity) is the live question, "is tilt good enough right now".
+    ///
+    /// Conflating the two is what a corpus replay showed costs: with the bar read live, the
+    /// handled log `7592c9b2` flaps `Healthy`/`Aligning` four times in four seconds and every
+    /// static log ends `Aligning`. Not because anything degraded — because a body-frame
+    /// attitude covariance **rotates** with the body (equation (20)), so a 20° yaw prior
+    /// becomes partly a roll-and-pitch prior as the vehicle turns, and back again. That is
+    /// honest about tilt right now, which is [`Validity`]'s job, and useless as a report that
+    /// the filter has not finished starting up. PX4 and ArduPilot both latch it for the same
+    /// reason: `tilt_align` and `tiltAlignComplete` are only ever tested while false
+    /// (`src/modules/ekf2/EKF/control.cpp:73-78` at `c4e4ef98e9`,
+    /// `libraries/AP_NavEKF3/AP_NavEKF3_Control.cpp:520-525` at `368dc0c428`).
+    pub const fn is_aligned(&self) -> bool {
+        self.aligned
+    }
+
+    /// Latch [`is_aligned`](Self::is_aligned) if the attitude now meets the bar.
+    ///
+    /// Called from every path that can move the attitude covariance or establish heading.
+    /// A latch is state, so it cannot be derived on read the way [`Status`] is — and reading
+    /// it lazily would make the answer depend on whether anyone asked.
+    fn note_alignment(&mut self) {
+        if !self.aligned {
+            self.aligned = self.validity().attitude();
+        }
     }
 
     /// Which parts of the estimate are good enough to use, right now.
@@ -738,9 +778,10 @@ impl Eskf {
     /// in today, so it predicts exactly what it is. That changes when in-motion leveling
     /// lands — see `GOALS.md`.
     ///
-    /// **Stub.** With no covariance propagation, "expects" cannot mean a projection
-    /// forward; it means aiding is arriving. A real implementation should propagate to a
-    /// horizon and test that.
+    /// **Stub.** "Expects" means aiding is arriving, not a projection forward. (16)–(22) now
+    /// make the projection possible — propagate a copy of `P` to a horizon and test it there —
+    /// and what is still missing is the horizon itself, which is a number nothing in the crate
+    /// can derive: how long after arming the vehicle needs the estimate. Stage 9 owns it.
     pub fn predicted_validity(&self) -> Validity {
         let now = self.validity();
         if !self.initialized {
@@ -859,13 +900,21 @@ impl Eskf {
             self.origin = None;
         }
         self.initialized = true;
+        // A fresh start is unaligned until its own covariance says otherwise, and the
+        // caller has bookkeeping left to do — a window with no magnetometer marks heading
+        // unestablished after this returns — so the latch is set by `note_alignment` at the
+        // end of each entry point rather than here.
+        self.aligned = false;
     }
 
     /// Aggregate alignment and the per-source timers into one status, most severe first.
     ///
     /// Only sources that have ever been accepted count toward aiding: a vehicle with no
     /// magnetometer is not permanently `Degraded` for lacking one.
-    fn derive_status(&self, validity: Validity) -> Status {
+    ///
+    /// Alignment enters as the latch of [`is_aligned`](Self::is_aligned) rather than as the
+    /// live [`Validity`], which is the one thing here that is not derived on read.
+    fn derive_status(&self) -> Status {
         let timeouts = &self.config.timeouts;
         let mut used = 0;
         let mut fresh = 0;
@@ -887,7 +936,7 @@ impl Eskf {
             // Nothing is arriving that could align the filter either, so this outranks
             // `Aligning`.
             Status::DeadReckoning
-        } else if !validity.attitude() {
+        } else if !self.aligned {
             Status::Aligning
         } else if fresh == used {
             Status::Healthy
@@ -1002,6 +1051,49 @@ mod tests {
             .as_secs()
     }
 
+    /// The margin [`Accuracy`]'s defaults were chosen for, measured rather than derived: a
+    /// static start with a magnetometer in the window holds its tilt for 3.79 s of unaided
+    /// propagation and its heading for 35.4 s, at [`ImuNoise`](crate::ImuNoise)'s defaults.
+    ///
+    /// Not the `σ_g² t` the white-noise density alone would give — that is 10.4 s and 657 s.
+    /// The gyroscope-bias prior reaches attitude through (20)'s `−I Δt` and accumulates as
+    /// `σ_βg² t²`, which overtakes the white-noise term within two seconds and is what actually
+    /// sets both figures. A test rather than a comment because [`Accuracy`] cites the numbers:
+    /// change a bar or a density and this says by how much the margin moved.
+    #[test]
+    fn an_unaided_start_holds_its_attitude_for_the_margin_the_defaults_buy() {
+        let mut filter = Eskf::new(Config::default());
+        assert_eq!(
+            filter.initialize(&window_with_mag(), Seconds::from_secs(0.25)),
+            Ok(Alignment::Static)
+        );
+
+        let dt = Seconds::from_secs(0.005);
+        let holding_still = ImuSample {
+            accel: Acceleration::body(0.0, 0.0, -GRAVITY),
+            ..ImuSample::default()
+        };
+        let (mut tilt_held, mut heading_held) = (None, None);
+
+        for step in 1..8_000 {
+            assert_eq!(filter.predict(holding_still, dt), Propagation::Propagated);
+            let elapsed = step as f32 * dt.as_secs();
+            let validity = filter.validity();
+            if tilt_held.is_none() && !validity.tilt {
+                tilt_held = Some(elapsed);
+            }
+            if heading_held.is_none() && !validity.heading {
+                heading_held = Some(elapsed);
+                break;
+            }
+        }
+
+        let tilt = tilt_held.expect("tilt leaves the bar inside 40 s");
+        let heading = heading_held.expect("heading leaves the bar inside 40 s");
+        assert!((tilt - 3.79).abs() < 0.05, "tilt held {tilt} s");
+        assert!((heading - 35.4).abs() < 0.2, "heading held {heading} s");
+    }
+
     #[test]
     fn predict_before_initialize_is_refused() {
         let mut filter = Eskf::new(Config::default());
@@ -1019,6 +1111,66 @@ mod tests {
             Propagation::Propagated
         );
         assert_eq!(elapsed(&filter), DT.as_secs());
+    }
+
+    /// The `Eskf`-level check that (16)–(22) are wired at all: a step grows the uncertainty it
+    /// was initialized with. Before this stage a static start held `Initialization`'s sigmas
+    /// for the whole flight.
+    #[test]
+    fn a_step_grows_the_covariance() {
+        let mut filter = initialized();
+        let before = *filter.covariance();
+
+        assert_eq!(
+            filter.predict(ImuSample::default(), DT),
+            Propagation::Propagated
+        );
+
+        let after = filter.covariance();
+        for state in [
+            ErrorState::PositionNorth,
+            ErrorState::VelocityNorth,
+            ErrorState::AttitudeX,
+            ErrorState::GyroBiasX,
+        ] {
+            assert!(
+                after.variance(state) > before.variance(state),
+                "{state:?}: {} did not grow from {}",
+                after.variance(state),
+                before.variance(state),
+            );
+        }
+    }
+
+    /// A refused step commits neither half. The state and the covariance advance together or
+    /// not at all: a state stored beside the covariance of a different step reports an estimate
+    /// whose uncertainty describes something else, which is worse than the refusal it replaces.
+    ///
+    /// The seed is finite and its diagonal positive, so `initialize_from` accepts it, and one
+    /// step of `F P Fᵀ` then leaves f32's range — the covariance's version of the overflow
+    /// (11)–(14) already had.
+    #[test]
+    fn an_overflowing_covariance_commits_neither_half() {
+        let mut filter = Eskf::new(Config::default());
+        let seed = State {
+            velocity: Velocity::ned(1.0, 2.0, 3.0),
+            ..State::default()
+        };
+        let enormous = Covariance::from_matrix(
+            crate::state::CovarianceMatrix::from_diagonal_element(f32::MAX),
+        );
+        assert_eq!(
+            filter.initialize_from(seed, enormous),
+            Ok(Alignment::Seeded)
+        );
+
+        assert_eq!(
+            filter.predict(ImuSample::default(), DT),
+            Propagation::StateNotFinite
+        );
+        assert_eq!(filter.state().velocity, seed.velocity);
+        assert_eq!(*filter.covariance(), enormous);
+        assert_eq!(filter.diagnostics().propagation.refused_state_not_finite, 1);
     }
 
     /// The `Eskf`-level check that (11) is wired at all: a sample reporting *no* specific
@@ -1784,6 +1936,71 @@ mod tests {
         assert_eq!(filter.state().velocity, state.velocity);
     }
 
+    /// Alignment does not fall back: once the attitude has met the bar, a covariance that
+    /// grows past it takes `Validity::tilt` away and leaves [`Status`] alone.
+    ///
+    /// Both halves matter, and the second is the one a latch could get wrong by reporting a
+    /// filter as started-up while its outputs are unusable. The live flag is what a
+    /// controller branches on, and it goes false here.
+    #[test]
+    fn a_covariance_growing_past_the_bar_ends_validity_but_not_alignment() {
+        // Aided *and* aligned: the baro gives a source timer to keep the status out of
+        // `DeadReckoning`, and the magnetometer is what makes heading an estimate.
+        let window = [StaticSample {
+            baro: Some(Altitude::from_meters(100.0)),
+            mag: Some(MagField::body(0.22, 0.0, 0.44)),
+            ..still()
+        }; 8];
+        let mut filter = Eskf::new(Config::default());
+        assert_eq!(
+            filter.initialize(&window, Seconds::from_secs(0.25)),
+            Ok(Alignment::Static)
+        );
+        assert!(
+            filter
+                .fuse_baro_altitude(Altitude::from_meters(100.0), AltitudeNoise::from_sigma(2.0))
+                .is_accepted()
+        );
+        assert!(filter.is_aligned());
+        assert!(filter.validity().tilt);
+
+        // Past the 3.79 s the default bars buy, with the barometer still arriving at 2 Hz so
+        // that aiding is never stale: otherwise `degraded_after` expires on the way and
+        // `Degraded` would be what the status assertion below saw.
+        for step in 1..=800 {
+            assert_eq!(
+                filter.predict(
+                    ImuSample {
+                        accel: Acceleration::body(0.0, 0.0, -GRAVITY),
+                        ..ImuSample::default()
+                    },
+                    Seconds::from_secs(0.005),
+                ),
+                Propagation::Propagated
+            );
+            if step % 100 == 0 {
+                assert!(
+                    filter
+                        .fuse_baro_altitude(
+                            Altitude::from_meters(100.0),
+                            AltitudeNoise::from_sigma(2.0)
+                        )
+                        .is_accepted()
+                );
+            }
+        }
+
+        assert!(
+            !filter.validity().tilt,
+            "tilt has grown past Accuracy::tilt"
+        );
+        assert!(
+            filter.is_aligned(),
+            "the start was resolved and stays resolved"
+        );
+        assert_eq!(filter.state().status, Status::Healthy);
+    }
+
     #[test]
     fn a_static_start_is_valid_in_every_part() {
         let mut filter = Eskf::new(Config::default());
@@ -1799,9 +2016,9 @@ mod tests {
 
     #[test]
     fn a_static_window_without_a_magnetometer_leaves_heading_unestablished() {
-        // The covariance on its own would say otherwise: `Initialization::sigma_yaw` and
-        // `Accuracy::heading` are both 0.35 rad, so the prior passes the bar exactly. It
-        // is a prior on a yaw nothing ever observed.
+        // The covariance on its own would say otherwise: `Initialization::sigma_yaw` is
+        // 0.35 rad against an `Accuracy::heading` of 0.52, so the prior clears the bar
+        // comfortably. It is a prior on a yaw nothing ever observed.
         let filter = initialized();
         let validity = filter.validity();
         assert!(validity.tilt, "gravity pins roll and pitch");

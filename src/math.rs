@@ -7,13 +7,6 @@
 //! (42)'s other half, the diagonal variance floor, is not here. It only means something
 //! once a covariance shrinks, so it lands with the update that first shrinks one.
 
-//! Each function still waiting for its equation carries its own `expect(dead_code)` naming
-//! the one that will call it. `expect` rather than `allow`, and one per function rather than
-//! one for the module, so that each stage's first caller fails the build until it deletes
-//! the line: a module-wide allowance stays satisfied while any one function is still
-//! unwired, and would cover a later unused item by accident. [`wrap_pi`] has lost its,
-//! to (6).
-
 use core::f32::consts::{PI, TAU};
 
 use nalgebra::{ComplexField, Matrix3, Quaternion, UnitQuaternion, Vector3};
@@ -26,7 +19,6 @@ use crate::state::{CovarianceMatrix, STATES};
 /// the sign convention is what a reader checks this against, and it should be on the page
 /// next to the equations that use it.
 #[rustfmt::skip]
-#[cfg_attr(not(test), expect(dead_code, reason = "(16)-(19) and (41) are unwritten"))]
 pub(crate) fn skew(u: Vector3<f32>) -> Matrix3<f32> {
     Matrix3::new(
          0.0, -u.z,  u.y,
@@ -119,7 +111,6 @@ pub(crate) fn wrap_pi(angle: f32) -> f32 {
 /// The two forms agree bit for bit — `a + a` and a multiplication by ½ are both exact in
 /// binary floating point — so an already-symmetric `P` is unchanged either way and the
 /// cheaper one costs no accuracy.
-#[cfg_attr(not(test), expect(dead_code, reason = "(22) and (27) are unwritten"))]
 pub(crate) fn enforce_symmetry(p: &mut CovarianceMatrix) {
     // Both indices stay below `STATES`, which is the dimension of `P`, so neither the read
     // nor the write can be out of range: `nalgebra` indexing panics, and nothing in `src/`

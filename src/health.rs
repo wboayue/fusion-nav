@@ -39,6 +39,13 @@ pub enum Status {
     /// carrying no magnetometer at all therefore never leaves, and — since this hides
     /// [`Degraded`](Self::Degraded) — its source timeouts stop showing in `Status` and
     /// have to be read from [`Diagnostics`].
+    ///
+    /// Leaving is permanent, and that is a claim about this variant rather than about the
+    /// estimate: it reports a start that has not been resolved yet, not attitude quality
+    /// now. Quality now is [`Validity::tilt`](crate::Validity::tilt), which does fall back,
+    /// and which an unaided filter loses within seconds of propagating. See
+    /// [`Eskf::is_aligned`](crate::Eskf::is_aligned) for what re-entering this state cost on
+    /// the corpus.
     Aligning,
     /// Nothing is aiding the filter. Position and velocity error grows without bound.
     #[default]
@@ -264,10 +271,13 @@ pub enum Propagation {
     /// The propagated state carried a NaN or an infinity, so it was not committed. The
     /// state and covariance are unchanged and the timers advanced.
     ///
-    /// Distinct from [`NotFinite`](Self::NotFinite), which is the sample arriving: this is
-    /// a finite sample overflowing on the way through (11)–(14). `a_n = R(q̂) a_b + g` is a
-    /// product of finite numbers and f32 has a finite range, so a sensor reporting a
-    /// plausible-looking `1e38` is refused here rather than at intake.
+    /// Distinct from [`NotFinite`](Self::NotFinite), which is the sample arriving: this is a
+    /// finite sample overflowing on the way through (11)–(14) or (22). `a_n = R(q̂) a_b + g` and
+    /// `F P Fᵀ` are both products of finite numbers, and f32 has a finite range, so a sensor
+    /// reporting a plausible-looking `1e38` — or a covariance already wide enough that one more
+    /// step leaves the range — is refused here rather than at intake. Either half failing
+    /// discards both, since a state committed beside the covariance of a different step reports
+    /// an uncertainty that describes something else.
     ///
     /// Refused rather than committed for the reason a NaN sample is: an infinity in the
     /// state reaches the quaternion through (15), the covariance through (16)–(22), and
@@ -487,7 +497,8 @@ pub struct PropagationHealth {
     /// climbing here is a miswired or failed IMU, and there is no other record of it —
     /// the state simply stops advancing while the aiding timers run on.
     pub refused_not_finite: u32,
-    /// Steps whose propagated state carried a NaN or an infinity and was discarded.
+    /// Steps whose propagated state or covariance carried a NaN or an infinity, discarded
+    /// together.
     ///
     /// Counted apart from [`refused_not_finite`](Self::refused_not_finite) for the reason
     /// that one is counted apart from [`refused_invalid`](Self::refused_invalid): a
