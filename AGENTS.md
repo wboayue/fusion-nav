@@ -38,9 +38,9 @@ later decision gets argued from, so landed work makes some of it false rather th
 incomplete. The update immediately follows the merge rather than riding in the PR: an issue body
 is not code, it has no review to pass and no branch to rebase, and the figures it should quote are
 the ones the merged run printed. The closing keyword is the easy half; the rest is the tracker
-covering the area and every issue whose *premise* moved. #97 is the measure of that cost — afterwards #31 and #10 still
-called #77 and #85 the next work, #86 still claimed to block a number that had shipped on harness
-fixtures instead, #89 still said these scenarios could not fail overconfident while `moving_start`
+covering the area and every issue whose *premise* moved. #97 is the measure of that cost:
+afterwards #31 and #10 still called #77 and #85 the next work, #86 still claimed to block a number
+that had shipped on harness fixtures instead, #89 still said these scenarios could not fail overconfident while `moving_start`
 was reading `nees_pos=10.20` on a committed line, #59 still argued from a tilt prior that no longer
 exists, and this file's own `Status` bullet had inverted. Six documents wrong from one merge, each
 reading as evidence until someone checked. Quote what the run printed, not the ceiling:
