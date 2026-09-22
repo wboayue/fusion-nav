@@ -606,8 +606,14 @@ the module and function intended to implement each. Implementation work follows 
 equation numbers in the doc comment (existing stubs already do), and updates the table when the
 layout changes. `README.md` is the user guide (why an ESKF, how to initialize, run, and read
 health); architecture and implementation detail go in `DESIGN.md`, replay/corpus usage in
-`data/README.md`. `GOALS.md` records positioning, the six differentiators, and decisions already
-made — check it before changing scope; the non-goals list is deliberate. Its landscape carries a
+`data/README.md`. `GLOSSARY.md` defines the vocabulary the rest assume — one entry per term,
+pointing at the document that owns the thing rather than restating it, so a definition cannot
+drift from the equation it describes. A term a newcomer would have to look up belongs there, not
+expanded inline in the document using it. It carries *this* crate's vocabulary rather than the
+field's, with one exception: a term PX4 or ArduPilot uses for a different thing, which is where a
+reader arrives already holding the wrong definition — `Reset` is recovery there and adoption
+here. `GOALS.md` records positioning, the six differentiators, and decisions already made — check
+it before changing scope; the non-goals list is deliberate. Its landscape carries a
 survey date, so write competitor facts in a shape that survives re-checking: "a few dozen
 downloads a quarter" keeps, "~36 in the last 90 days" was already 33 when someone looked, and
 "nine minor versions behind" became ten when `nalgebra` shipped.

@@ -1,0 +1,271 @@
+# Glossary
+
+Terms this repository uses without explaining, for a reader who has not worked on estimators
+before. Each entry says what the word means and points at the document that owns the thing —
+the mathematics is [EQUATIONS.md](EQUATIONS.md), the structure [DESIGN.md](DESIGN.md), the
+positioning [GOALS.md](GOALS.md), the harness [data/README.md](data/README.md). Nothing here is
+normative: an entry that disagrees with one of those is wrong.
+
+It defines this crate's vocabulary rather than the field's. The exception is the last section,
+for a reader arriving from PX4 or ArduPilot, where their word and ours name different things and
+the difference is the kind that costs a day.
+
+## Frames and quantities
+
+* **Navigation frame**, **body frame** — the two coordinate systems every vector belongs to.
+  The navigation frame is fixed to the earth at the origin; the body frame is bolted to the
+  vehicle and turns with it. A number without a frame is not a quantity, which is why
+  `src/units.rs` puts the frame in the type.
+* **NED**, **ENU** — North-East-Down and East-North-Up, two conventions for the navigation
+  frame. This crate is NED, so **down is positive** and gravity has a positive `z`.
+  ROS and most geographic software are ENU. See
+  [conventions](EQUATIONS.md#notation-and-conventions).
+* **FRD**, **FLU** — Forward-Right-Down and Forward-Left-Up, the same disagreement for the body
+  frame. This crate is FRD; many IMU breakout boards are FLU.
+* **Attitude** — the vehicle's orientation: the rotation that carries a body-frame vector into
+  the navigation frame. Equivalently roll, pitch and yaw, or a quaternion, or a 3 × 3 rotation
+  matrix.
+* **Roll, pitch, yaw** — rotations about the forward, right and down axes. **Tilt** is roll and
+  pitch together, the part gravity can measure; **heading** is yaw, the part it cannot.
+* **Quaternion** — four numbers representing a rotation, used instead of Euler angles because
+  they have no gimbal lock and compose cheaply. The cost is two conventions that look alike and
+  are not: **Hamilton** vs JPL, and **scalar-first** vs scalar-last storage. This crate is
+  Hamilton, scalar-first; `Attitude`'s constructors name the convention because getting it wrong
+  produces a filter that runs and reports health while flying an attitude that is a half turn
+  out.
+* **Specific force** — what an accelerometer actually measures: acceleration minus gravity, in
+  body axes. A stationary level vehicle reads `[0, 0, −γ]`, not zero, which is what makes
+  levelling from the accelerometer possible at all. See
+  [initialization](EQUATIONS.md#initialization).
+* **Levelling**, **alignment** — recovering the initial attitude before the filter can run.
+  Levelling is the tilt half, from gravity; alignment is the whole job, including heading.
+  A **static** (quasi-stationary) window gives the good answer, a **coarse** one the usable
+  answer with the uncertainty to match. See
+  [alignment beyond the static window](GOALS.md#alignment-beyond-the-static-window).
+* **Declination** — the angle between magnetic north, which a magnetometer measures, and true
+  north, which the navigation frame uses. It varies by location and by year.
+* **Geodetic coordinates**, **ECEF**, **local tangent plane** — latitude/longitude/height on the
+  WGS-84 ellipsoid; an earth-centred Cartesian frame; and the flat NED frame this filter works
+  in, pinned to a geodetic **origin**. Converting between them is
+  [equations (43)–(44)](EQUATIONS.md#geodetic-origin); the flat approximation's cost is in the
+  README's limitations.
+
+## The filter
+
+* **Inertial navigation**, **dead reckoning** — integrating gyroscope and accelerometer readings
+  to carry position, velocity and attitude forward with no outside reference. It is exact for an
+  instant and hopeless over a minute, because every error integrates: an attitude error tips
+  gravity into the horizontal channel and integrates twice. The 1261 m and 0.70 m quoted around
+  the repository are the same 185 s flight dead-reckoned and aided.
+* **Kalman filter** — the recursive estimator underneath all of this: carry a state estimate and
+  a covariance, **predict** both forward with a model, **correct** both when a measurement
+  arrives, weighting the two by how much each claims to be trusted.
+* **Extended Kalman filter (EKF)** — a Kalman filter on a nonlinear system, linearized about the
+  current estimate at each step. `H` and `F` are that linearization.
+* **Error-state Kalman filter (ESKF)** — the variant this crate implements. The **nominal
+  state** (16 values) integrates the IMU directly and carries no covariance. The **error state**
+  (15 values) is the small difference between the nominal state and the truth, and *that* is
+  what the Kalman filter estimates. Attitude is why: a three-component attitude error keeps the
+  covariance non-singular while the quaternion keeps its unit norm. See
+  [state definitions](EQUATIONS.md#state-definitions) and
+  [DESIGN.md](DESIGN.md#error-state-kalman-filter).
+* **Predict**, **propagate** — carry the state and its covariance forward by one IMU step,
+  [equations (9)–(22)](EQUATIONS.md#nominal-state-propagation). The estimate gets worse and the
+  covariance says so.
+* **Update**, **fuse**, **correct** — fold one measurement in,
+  [equations (23)–(27)](EQUATIONS.md#measurement-update).
+* **Aiding** — any measurement from outside the IMU that constrains the drift: GNSS, barometer,
+  magnetometer. A filter that is *aided* is being corrected; an *unaided* one is dead reckoning,
+  whatever its covariance looked like a second ago.
+* **Injection and reset** — the ESKF's extra step: the estimated error is added into the nominal
+  state, then the error state is zeroed and the covariance rotated by the **reset Jacobian**
+  `G`. This is why the error state's prior is always zero.
+  [Equations (39)–(41)](EQUATIONS.md#error-injection-and-reset).
+* **Bias** — the slowly varying offset an inertial sensor adds to every reading. Estimated here
+  as six states, three per sensor, because an unestimated gyroscope bias is an attitude error
+  that grows linearly and then a position error that grows cubically. **Drift** is what the
+  *solution* does when a bias is not estimated; the bias is the cause, the drift the symptom.
+* **Random walk** — the model for how a bias moves: the integral of white noise, so its
+  uncertainty grows linearly with time rather than staying put. `ImuNoise::gyro_bias_walk` and
+  `accel_bias_walk` are its strength. Measuring it honestly takes an **Allan variance** soak of
+  several hours, which is why `GOALS.md` lists it as a number the user supplies.
+* **Observability** — whether the available measurements can actually determine a state. It is
+  not about noise: a stationary vehicle never observes yaw at all, however long it sits, and an
+  accelerometer bias is not separable from tilt at rest. This is why heading waits for a
+  magnetometer and why a coarse start marks position and velocity `Unestablished` rather than
+  trusting a prior.
+
+## Uncertainty
+
+* **Covariance**, `P` — the filter's own account of how wrong it might be: a 15 × 15 matrix whose
+  diagonal holds each state's variance and whose off-diagonal terms hold the correlations. The
+  correlations are what let a GNSS position fix correct velocity and attitude.
+* **Variance**, **σ (sigma)** — squared spread and spread. A state's σ is the square root of its
+  diagonal entry in `P`; **3σ** is the interval a Gaussian falls inside 99.7 % of the time.
+* **Three noise matrices, easily confused** — `P` above; `Q`, the **process noise**, which is how
+  much uncertainty propagation adds per step (`Config::imu`); and `R`, the **measurement noise**,
+  which is how bad a *particular* measurement is and therefore arrives as an argument to each
+  `fuse_*` rather than living in `Config`. `P0` is the initial `P`, a prior on the state and not
+  a property of any sensor.
+* **Noise density**, **spectral density** — the units `ImuNoise` states, `rad s⁻¹/√Hz` and
+  friends. They look odd because the noise is continuous-time: variance accumulates linearly with
+  time, so the σ over an interval `Δt` is the density times `√Δt`. Doubling the sample rate does
+  not double the drift.
+* **Kalman gain**, `K` — how much of a measurement's disagreement to believe, set by the ratio of
+  the filter's uncertainty to the total. Confident filter, ignored measurement; uncertain filter,
+  adopted measurement.
+* **Joseph form** — the algebraically equivalent but numerically stabler way of writing the
+  covariance update, [equation (27)](EQUATIONS.md#measurement-update). It costs more arithmetic
+  and keeps `P` symmetric and positive definite in `f32`, which the short form does not.
+* **Positive definite**, **symmetry enforcement** — a covariance must be symmetric with positive
+  variances, or it is not a covariance. Rounding erodes both, so
+  [equation (42)](EQUATIONS.md#numerical-conditioning) re-symmetrizes after every operation and
+  the variances are floored.
+* **Overconfident**, **conservative** — a covariance smaller than the true error, or larger.
+  Overconfidence is the dangerous direction twice over: it makes the filter ignore the
+  measurements that would fix it (see **gate lockout**) and it makes `Validity` vouch for an
+  output that is not good enough.
+* **Marginal** vs **joint** — a test on one axis at a time, reading only `P`'s diagonal, against
+  a test on a whole block, reading its correlations. `in3s` and `nees_*` below are the same
+  distinction; a covariance with the right variances and the wrong correlations passes the first
+  and fails the second.
+
+## Measurement updates and gating
+
+* **Observation model**, `h(x)` — what the filter expects a sensor to read given its current
+  state. **`H`** is that model's Jacobian: the matrix saying how a small error in each state
+  moves the prediction. [Observation models](EQUATIONS.md#observation-models).
+* **Innovation**, `ν` (also **residual**) — measured minus predicted, `z − h(x̂)`,
+  [equation (23)](EQUATIONS.md#measurement-update). It is the only thing a measurement ever tells
+  the filter, and the only quantity available for checking a filter that has no truth to compare
+  against.
+* **Innovation covariance**, `S` — how large the innovation should be if both the filter and the
+  sensor are telling the truth: `H P Hᵀ + R`. The filter's uncertainty and the sensor's, added.
+* **Mahalanobis distance** — distance measured in σ rather than in metres, `νᵀ S⁻¹ ν` under the
+  square root. It is what makes "is 3 m a lot?" answerable: it depends on `S`.
+* **NIS**, normalized innovation squared — that distance squared, `ε = νᵀ S⁻¹ ν`,
+  [equation (37)](EQUATIONS.md#innovation-gating). Under the hypothesis that the filter and the
+  sensor are both honest it is **chi-square** distributed with `dim(z)` **degrees of freedom**,
+  which is what turns it into a test.
+* **Gate**, **gating** — rejecting a measurement whose `ε` exceeds a threshold `γ` taken from
+  that chi-square distribution at a chosen **percentile**. A 99 % gate rejects one good
+  measurement in a hundred by construction; that is the price of catching the bad ones.
+* **Test ratio**, `r = ε / γ` — the gate's verdict as one dimensionless number, so `r > 1` means
+  rejected whatever the observation's dimension, and GNSS position, barometer and heading are
+  comparable on one scale. PX4 publishes the same quantity, which is what makes replay comparison
+  like-for-like.
+* **Gate lockout** — the failure mode gating creates. If the *filter* is wrong rather than the
+  measurement, every correct measurement looks inconsistent, all of them are rejected, and the
+  filter dead-reckons while reporting confidence. This crate reports it and refuses to
+  self-recover; the reasoning is [gate lockout](EQUATIONS.md#gate-lockout) and
+  [rejection handling](GOALS.md#rejection-handling-report-do-not-self-recover).
+* **Adoption** — taking a measurement as the state outright instead of fusing it, the
+  zero-information limit of the update. Used once per quantity after a coarse start, for
+  quantities that were never established. It is not a recovery mechanism.
+* **Latency** — the age of a measurement when it is fused. GNSS solutions are 100–200 ms stale;
+  this filter does not model that, which is in the README's limitations.
+
+## Scoring a run
+
+* **Ground truth** — the true trajectory, known only where it was generated or surveyed. The PX4
+  corpus has none, which is why `examples/simulate.rs` exists. See
+  [three questions](GOALS.md#three-questions-three-kinds-of-source).
+* **Consistency** vs **accuracy** — two different questions, and the distinction the validation
+  plan is built on. Consistency asks whether the filter's errors match the uncertainty it
+  claims, and needs no truth. Accuracy asks how close it is, and needs truth. A filter can be
+  consistent and inaccurate, or accurate and overconfident; a benchmark that collapses the two
+  certifies something it never tested.
+* **RMSE** — root-mean-square error, the score keys `pos_h`, `pos_v` and `vel`. An average, so it
+  hides excursions, which is why `pos_h_max` is pinned beside it.
+* **NEES**, normalized estimation error squared — the Mahalanobis distance of the *error* against
+  `P`, which needs truth. Divided by its degrees of freedom it should average **1**: above 1 the
+  filter is overconfident, below 1 conservative. The `nees_pos`, `nees_vel` and `nees_att` keys.
+* **ANEES** — NEES averaged over many independent runs, compared against a chi-square confidence
+  interval. A single run's NEES is too noisy to test anything; the average over N seeds is what
+  turns "≈1" into a bound that can fail. Not built yet (#89).
+* **`in3s`** — the fraction of axis-epochs where the error sat inside 3σ, over all 15 states. The
+  marginal companion to `nees_*`, and the only key that reaches the bias states.
+* **`false_valid`** — how often the filter said an output was usable while the truth error was
+  outside the accuracy the mission asked for. It reads the filter's own verdict and falsifies it
+  in the shape the filter states it, per axis; re-deriving either half would test a copy of the
+  claim. See [scoring against truth](data/README.md#scoring-against-truth).
+* **Epoch** — one IMU sample time, and the row unit of the replay output. Every score above is a
+  mean over the epochs that had a truth row (`scored`).
+* **Ceiling** — a measured bound per score key per scenario in `data/scenarios.txt`, asserted in
+  CI. It ratchets in both directions and needs a sentence when it moves. What it cannot catch is
+  a filter that got more accurate and more overconfident at once, which is ANEES's job. See
+  [ceilings](data/README.md#ceilings-and-what-they-gate).
+* **Corpus**, **manifest**, **scenario** — the data and its bookkeeping. A corpus is a body of
+  flights: real PX4 logs, fetched rather than committed, or the seeded flights
+  `examples/simulate.rs` generates with truth beside them. The manifest pins each fetched log by
+  checksum *and* by the output replaying it must produce. A scenario is one generated flight, and
+  exists only if it covers something no other one does.
+
+## Words this crate uses in a particular way
+
+* **`Status`** — one enum answering *how bad is the worst thing*, most-severe-first:
+  `DeadReckoning` > `Aligning` > `Degraded` > `Healthy`.
+* **`Validity`** — six per-quantity flags answering *which outputs can I use*, derived from `P`
+  against `Config::accuracy`. `Status` is the summary, `Validity` the detail, and neither
+  substitutes for the other; the reasoning is
+  [per-quantity validity](GOALS.md#per-quantity-validity-not-one-ladder).
+* **`Accuracy`** — what the *mission* needs from each output, and the one knob the filter cannot
+  derive for the caller. It moves `Validity` and nothing else.
+* **Aligning** — the start has not produced an attitude the filter can work from yet. It latches:
+  once resolved it never returns, because read live it flaps.
+* **Unestablished** — a quantity that was never observed, as distinct from one that has gone
+  stale. A prior is not an estimate.
+* **Stub** — a function whose signature and doc comment exist while its mathematics does not.
+  Marked with a `**Stub.**` paragraph, and the marker is kept accurate.
+
+## Coming from PX4 or ArduPilot
+
+Where the two estimators this crate is measured against use a word differently. Source citations
+are `file:line` at PX4 `c4e4ef98e9` and ArduPilot `368dc0c428`; where the claim belongs to another
+document, the entry points there instead of repeating it.
+
+* **Delta angle, delta velocity** — both estimators take *integrated* increments from the IMU
+  (`src/modules/ekf2/EKF/common.h:182-189`;
+  `libraries/AP_NavEKF3/AP_NavEKF3_core.h:599-602`). `ImuSample` takes an instantaneous angular
+  rate and specific force, with `dt` alongside: divide their increments by their integration
+  period. The conversion is exact only when that period is the interval you then pass as `dt`,
+  which is why it is the caller's to do rather than the filter's to assume.
+* **Fusion time horizon**, **output predictor** — PX4 fuses at a *delayed* horizon and runs a
+  separate fast predictor forward to the present
+  (`src/modules/ekf2/EKF/output_predictor/output_predictor.h:54-59`), which is how it absorbs
+  sensor latency. This filter has neither: every measurement is fused as though current. That is
+  a stated limitation, not an omission — see the README's limitations and
+  [measurement latency](GOALS.md#measurement-latency).
+* **Reset** — the trap. There, a reset is *recovery*: states are set to a measurement after an
+  aiding timeout, and a counter is published so consumers can step their own state
+  (`xy_reset_counter` and friends, `msg/versioned/VehicleLocalPosition.msg`). Here, `Fusion::Reset`
+  is **adoption**: the first fix for a quantity a coarse start never established, once, never for
+  recovery. This filter does not reset itself at all
+  ([rejection handling](GOALS.md#rejection-handling-report-do-not-self-recover)).
+* **Innovation test ratio** — the same name and nearly the same number. Theirs is per axis against
+  the diagonal of `S`; this crate's is joint over the whole observation, which is what makes a
+  percentile mean what it names. `Gates`'s doc comment owns the comparison and its citations.
+* **`filter_control_status`**, **`nav_filter_status`** — their per-quantity validity bits. The
+  counterpart is `Validity`, and `Eskf::predicted_validity` answers ArduPilot's
+  `pred_horiz_pos_rel` question. `Status` is *not* the counterpart: it is a one-glance severity
+  summary with no equivalent there. See
+  [per-quantity validity](GOALS.md#per-quantity-validity-not-one-ladder).
+* **Tilt align, yaw align** — their alignment flags, latched as this crate latches
+  `Status::Aligning`. The thresholds behind `ALIGNED_TILT` and `ALIGNED_HEADING` cite what each
+  estimator uses.
+* **GSF yaw estimator** — a Gaussian Sum Filter recovering yaw from IMU and GNSS velocity, which
+  is how both fly without a magnetometer. Unbuilt here, so heading needs a magnetometer; the
+  README's limitations say what that costs.
+* **Lane**, **core** — ArduPilot runs several EKF3 instances on different IMUs and switches
+  between them on relative error (`libraries/AP_NavEKF3/AP_NavEKF3.h:329-337`). `Eskf` is one
+  instance and does no such selection; running several and choosing is the application's.
+* **Magnetic field states** — both can estimate earth- and body-frame field states (`EK3_MAG_CAL`).
+  This crate fuses heading only and estimates no field states, which makes magnetometer
+  calibration a precondition rather than something the filter learns. See
+  [the decision](GOALS.md#magnetometer-without-magnetic-field-states).
+* **Barometer bias state** — they estimate one; here the barometric reference `α₀` is a constant
+  fixed at initialization, so reference drift becomes vertical error. See
+  [the decision](GOALS.md#barometric-reference-as-a-constant).
+* **`EKF2_*`, `EK3_*` parameters** — dozens of tunables, most describing the hardware rather than
+  the mission. `Config` is deliberately small, and the ambition is smaller still:
+  [configuration derived, not demanded](GOALS.md#7-configuration-derived-not-demanded).
