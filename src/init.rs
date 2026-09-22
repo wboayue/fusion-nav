@@ -1217,7 +1217,7 @@ pub(crate) mod tests {
         let (tilt, yaw) = sigmas(&window, dt);
         assert!(
             (tilt - init.sigma_tilt.as_radians()).abs() < 1e-6,
-            "charging ω̄ rather than ω̄ − β̂_g reads 0.08 rad here, over the 0.052 of \
+            "charging ω̄ rather than ω̄ − β̂_g reads 0.08 rad here, over the 0.0524 (3°) of \
              `ALIGNED_TILT`, and latches `Aligning` for the flight; got {tilt}"
         );
         assert!(
