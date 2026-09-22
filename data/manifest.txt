@@ -44,23 +44,33 @@
 # 2.90 with aligned_at= and transitions= unmoved: the two bars are two bars.
 #
 # It varies by what the vehicle was doing, which is the evidence that it
-# measures the covariance rather than the clock: 3.82 s, 3.84 s and 3.82 s on
-# the three logs of a vehicle nobody is moving about, 1.70 s and 0.82 s on
-# the two being handled (7592c9b2 starts at roll 2.94 pitch 6.56), because a
-# body-frame attitude covariance rotates with the body and a 20-degree yaw
-# prior becomes partly a tilt prior as the vehicle turns. That 2c42096b lands
-# with the first group and not apart from it is the point of #77: a vehicle
-# vibrating on the spot starts from a prior the size of a quiet one's and
-# holds its tilt for the same 3.8 s. Every one of these should read never
-# once a measurement can shrink a covariance.
+# measures the covariance rather than the clock. The two logs with no GNSS
+# position, which are handled rather than flown, read 1.70 s and 0.82 s
+# (7592c9b2 starts at roll 2.94 pitch 6.56). A body-frame attitude covariance
+# rotates with the body, so a 20-degree yaw prior becomes partly a tilt prior
+# as the vehicle turns. Unaided, the other three read 3.82 s, 3.84 s and
+# 3.82 s, and 2c42096b landing with the quiet ones was the point of #77: a
+# vehicle vibrating on the spot starts from a prior the size of a quiet one's.
+#
+# Fusing GNSS position (23)-(28) moves only those three, to 5.78 s, 12.64 s
+# and 3.93 s. A fix measures position, so it reaches tilt only through (17),
+# in proportion to the horizontal acceleration the vehicle makes: the
+# vibrating 2c42096b gains 0.11 s, 3949f175 1.96 s and a299e722 8.80 s. A
+# position fix delays the loss and does not prevent it. Whether velocity,
+# stage 6, which reaches tilt through one integration fewer, makes these read
+# never is that stage's measurement to take.
 #
 # rejected= is the gate's verdict and discarded= is everything that never
 # reached it -- a variance of zero or less, a NaN, an altitude with no
 # reference. Nothing on this line reported either before: refused= and
 # invalid= count propagation steps, not measurements, so a change that began
 # turning down every fix in the corpus would have passed --check unmoved.
-# rejected= is zero everywhere until the chi-square gate of (37) is real, and
-# is pinned now so the first non-zero is a diff rather than a discovery.
+# rejected= is zero on every log, and at every gate #36 tried: 95 %, 99 %,
+# 99.9 % and 5 sigma. The largest GNSS position test ratio at 95 % is 0.21,
+# and the mean is 0.005-0.02 where a consistent R would put it near 0.38.
+# PX4's eph and epv are far wider than the innovations they come with. So no
+# fix in this corpus is an outlier to this filter, and the first non-zero
+# here is a diff rather than a discovery. Gates::default carries the rest.
 #
 # discarded= is also what separates two logs that alpha0= reads the same way.
 # 7592c9b2 is alpha0=none discarded=0: an LPE log with no barometer rows at
@@ -118,7 +128,7 @@
 # also the one start here that would notice nothing if (6)'s levelling were
 # dropped -- the tilt it levels by is zero.
 # Source: PX4 Flight Review (CC BY 4.0).
-b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-4425-b118-7b7187331a98.ulg  https://cdn.logs.px4.io/3949f175-26b4-4425-b118-7b7187331a98.ulg  rate=250 window=500 align=static an=none alpha0=set heading=valid roll0=0.01 pitch0=0.01 yaw0=24.38 resets=0 aligned_at=0.00 attitude_lost=3.82 rejected=0 discarded=0 refused=0 invalid=0 transitions=2 status=Healthy
+b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-4425-b118-7b7187331a98.ulg  https://cdn.logs.px4.io/3949f175-26b4-4425-b118-7b7187331a98.ulg  rate=250 window=500 align=static an=none alpha0=set heading=valid roll0=0.01 pitch0=0.01 yaw0=24.38 resets=0 aligned_at=0.00 attitude_lost=5.78 rejected=0 discarded=0 refused=0 invalid=0 transitions=2 status=Healthy
 
 # 64 s quadrotor, PX4 v1.10.0, EKF2. No GNSS topic; baro and mag only.
 # 11 SD-card dropouts totalling 2796 ms leave four holes in sensor_combined up
@@ -133,7 +143,7 @@ b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-
 # window 8x, which is what forced replay's median estimator. Also uses the old
 # lat/lon/alt integer field spelling.
 # Source: PX4 Flight Review (CC BY 4.0).
-1c0ea42d6e22cef5cb8730e71a7740b4f5a35988e88e677a72351835cd42990a  a299e722-a7f0-4e2e-bcdf-ce487d556ac1.ulg  https://cdn.logs.px4.io/a299e722-a7f0-4e2e-bcdf-ce487d556ac1.ulg  rate=50 window=101 align=static an=none alpha0=set heading=valid roll0=1.19 pitch0=-2.93 yaw0=-176.42 resets=0 aligned_at=0.00 attitude_lost=3.84 rejected=0 discarded=0 refused=0 invalid=0 transitions=2 status=Healthy
+1c0ea42d6e22cef5cb8730e71a7740b4f5a35988e88e677a72351835cd42990a  a299e722-a7f0-4e2e-bcdf-ce487d556ac1.ulg  https://cdn.logs.px4.io/a299e722-a7f0-4e2e-bcdf-ce487d556ac1.ulg  rate=50 window=101 align=static an=none alpha0=set heading=valid roll0=1.19 pitch0=-2.93 yaw0=-176.42 resets=0 aligned_at=0.00 attitude_lost=12.64 rejected=0 discarded=0 refused=0 invalid=0 transitions=2 status=Healthy
 
 # 68 s quadrotor on AUAV_X21, genuinely old firmware, LPE estimator.
 # The only log where the barometer and magnetometer are fields of
@@ -204,4 +214,4 @@ b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-
 # the window's average it resolves 0.20 s in, and the line describes the
 # aiding the flight actually had.
 # Source: PX4 Flight Review (CC BY 4.0).
-9289375e4280ddec891b26b870f5065f2310d2e39527e4e8706d22e537d047dd  2c42096b-fa9b-4c74-8b89-ac79bf067a1d.ulg  https://cdn.logs.px4.io/2c42096b-fa9b-4c74-8b89-ac79bf067a1d.ulg  rate=199 window=398 align=coarse an=measured alpha0=none heading=invalid roll0=0.42 pitch0=-0.89 yaw0=-22.47 resets=2 aligned_at=0.20 attitude_lost=3.82 rejected=0 discarded=35575 refused=0 invalid=0 transitions=888 status=Healthy
+9289375e4280ddec891b26b870f5065f2310d2e39527e4e8706d22e537d047dd  2c42096b-fa9b-4c74-8b89-ac79bf067a1d.ulg  https://cdn.logs.px4.io/2c42096b-fa9b-4c74-8b89-ac79bf067a1d.ulg  rate=199 window=398 align=coarse an=measured alpha0=none heading=invalid roll0=0.42 pitch0=-0.89 yaw0=-22.47 resets=2 aligned_at=0.20 attitude_lost=3.93 rejected=0 discarded=35575 refused=0 invalid=0 transitions=888 status=Healthy

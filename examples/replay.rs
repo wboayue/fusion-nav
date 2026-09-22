@@ -46,7 +46,7 @@
 //! apart or say what became of one:
 //!
 //! ```text
-//! # one row per fuse_* call. gates gnss_pos=7.814728 gnss_vel=7.814728 baro=3.841459 mag=3.841459
+//! # one row per fuse_* call. gates gnss_pos=16.266236 gnss_vel=16.266236 baro=10.827566 mag=10.827566
 //! t_s,source,nu0,nu1,nu2,s0,s1,s2,ratio,outcome
 //! 2.0000,gnss_pos,,,,,,,0.0000,accepted
 //! 0.1000,baro,,,,,,,,not_initialized

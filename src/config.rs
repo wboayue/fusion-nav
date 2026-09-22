@@ -201,7 +201,10 @@ impl Gate<3> {
 /// those correlations — a yaw error couples north and east, so the region `S` describes is an
 /// ellipsoid rather than a box aligned with the navigation axes. What it costs is all or
 /// nothing: a vertical outlier rejects a good horizontal fix, which ArduPilot's split avoids.
-/// Whether the corpus shows that is #36's question, and a `Gate<2>` field would be the answer.
+/// The corpus shows no such fix. Across the 5348 GNSS positions in `data/manifest.txt`'s logs,
+/// the largest vertical `ν² / S` alone is 1.65, against 10.83 for a one-dimensional test at
+/// [`Percentile::P999`], so a `Gate<2>` and `Gate<1>` pair would reject nothing the joint test
+/// does not. It is the data that would change this, not the argument.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Gates {
     /// GNSS position.
@@ -227,17 +230,31 @@ impl Gates {
 }
 
 impl Default for Gates {
-    /// The 95th percentile, a placeholder the corpus has not yet been asked about.
+    /// The 99.9th percentile: the tightest gate that costs nothing measurable on good data.
     ///
-    /// It is tighter than both production estimators, which gate GNSS and the barometer at
-    /// 5σ (PX4 `src/modules/ekf2/EKF/common.h:348-374` at `c4e4ef98e9`; ArduPilot
-    /// `*_I_GATE_DEFAULT 500`, in hundredths of σ, `libraries/AP_NavEKF3/AP_NavEKF3.cpp:34-36`
-    /// at `368dc0c428`). At 95 % one good fix in twenty is rejected by
-    /// construction — every 20 s at 1 Hz GNSS, each feeding the consecutive-rejection count.
-    /// No test ratio is non-zero until the update of (23)–(28) lands, so the corpus cannot say
-    /// yet; #36 replays it across the [`Percentile`]s and picks from what it reads.
+    /// GNSS position was replayed at 95 %, 99 %, 99.9 % and a 5σ equivalent (`γ` = 31.81 at
+    /// three degrees of freedom, the two-sided tail of 5σ in one).
+    ///
+    /// The corpus cannot tell them apart. No log rejects a fix at any of the four, because
+    /// PX4's `eph` and `epv` are far wider than the innovations they come with: the mean test
+    /// ratio at 95 % is 0.005–0.02 across the three logs carrying GNSS and the largest is 0.21,
+    /// where a consistent `R` would put the mean near 0.38.
+    ///
+    /// The simulator, whose GNSS errors are exactly the Gaussian `R` claims, can, and it prices
+    /// the tight end. On `mission`, 95 % rejects 30 of 915 good fixes and 99 % rejects 4,
+    /// with horizontal RMSE 0.716 m and 0.702 m and vertical 0.796 m and 0.749 m. 99.9 %
+    /// rejects 1 and 5σ none, and both give the same 0.702 m and 0.749 m that 99 % does. So
+    /// 95 % buys worse accuracy, and one good fix in thirty turned away, for protection
+    /// against outliers that nothing here contains.
+    ///
+    /// Between 99.9 % and 5σ the good data says nothing, and only hostile measurements can
+    /// decide, which is #60's. 99.9 % stays the tighter of the two. It is still tighter than
+    /// both production estimators, which test each axis at 5σ (PX4
+    /// `src/modules/ekf2/EKF/common.h:348-374` at `c4e4ef98e9`; ArduPilot `*_I_GATE_DEFAULT
+    /// 500`, in hundredths of σ, `libraries/AP_NavEKF3/AP_NavEKF3.cpp:34-36` at `368dc0c428`):
+    /// a one-axis outlier fails `γ` = 16.27 at 4.0σ.
     fn default() -> Self {
-        Self::at(Percentile::P95)
+        Self::at(Percentile::P999)
     }
 }
 
@@ -529,15 +546,15 @@ mod tests {
     }
 
     #[test]
-    fn the_default_is_the_95th_percentile() {
-        assert_eq!(Gates::default(), Gates::at(Percentile::P95));
+    fn the_default_is_the_999th_percentile() {
+        assert_eq!(Gates::default(), Gates::at(Percentile::P999));
         assert_eq!(
             Gates::default().gnss_position,
-            Gate::<3>::at(Percentile::P95)
+            Gate::<3>::at(Percentile::P999)
         );
         assert_eq!(
             Gates::default().baro_altitude,
-            Gate::<1>::at(Percentile::P95)
+            Gate::<1>::at(Percentile::P999)
         );
     }
 }

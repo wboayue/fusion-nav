@@ -31,73 +31,57 @@
 # seed; `data/bench.sh` checks this column against the header the generator wrote, so changing
 # a seed in that table invalidates the ceilings loudly rather than re-baselining them quietly.
 #
-# Six of the nine lines carry identical numbers, and that is the design rather than a
-# copy-paste: `gnss_outage`, `baro_drift`, `gnss_latency` and `mag_disturbance` are
-# one-variable departures from `mission` on `mission`'s seed, each departing in the *aiding*,
-# and no aiding reaches the state while every `fuse_*` is a stub. `harsh_imu` separates through
-# the initialization window, and now through propagation too: ten times the white noise is ten
-# times the gyroscope-bias error the window leaves behind, and `pos_h` is 8.5x `mission`'s.
-# They start measuring their own departure when the update of (23)-(28) lands;
-# `examples/replay.rs` carries the reasoning.
+# `baro_drift` and `mag_disturbance` carry `mission`'s numbers exactly, and that is the design
+# rather than a copy-paste: both are one-variable departures from `mission` on `mission`'s seed,
+# each departing in an aiding source whose `fuse_*` is still a stub. They start measuring their
+# own departure at stages 7 and 8. The other departures separate now that GNSS position reaches
+# the state. `gnss_outage` dead-reckons through its gap and reads `pos_h` 4.64 m to `mission`'s
+# 0.70. `harsh_imu` hardly separates at all, because an aided filter no longer integrates its
+# noise for three minutes.
 #
 # What is not here is a test of the covariance itself. A ceiling pins what the filter did last
 # run, so it passes a filter that grew more accurate and more overconfident at once -- the
 # failure that reaches the gate, the gain and `Validity`. That needs ANEES over N seeds against
-# a chi-square bound: #89, which is now unblocked. The format is already indifferent to it --
-# lines are read as `name seed pairs`, and nothing assumes one line per scenario.
+# a chi-square bound: #89. The format is already indifferent to it -- lines are read as
+# `name seed pairs`, and nothing assumes one line per scenario.
 #
-# What every figure measures today: equations (9)-(22) propagate the state and its covariance,
-# and nothing corrects either. The error keys are unchanged by covariance propagation, because
-# the nominal state is -- `pos_h`, `pos_v`, `vel`, `pos_h_max`, `tilt` and `yaw` all still read
-# what stage 3 measured. Everything derived from `P` moved, in the direction
-# `examples/simulate.rs` predicted before it could be checked: the filter is *under*-confident
-# against its IMU table, by about the two orders of magnitude that table says to expect
-# (`nees_pos` 0.0118 on `mission` where a consistent filter reads 1), `in3s` is 1.0000
-# everywhere, and `false_valid` is 0 outside `flight`. Under the `dt^2` discretization of (21)
-# that both production estimators use, `Q` would be 200x smaller at this rate and `nees_*`
-# would read near 1 -- so these numbers are also the evidence for the `dt` form, since the
-# simulator's own noise table says under-confident is the only honest answer here.
+# What every figure measures today: equations (9)-(22) propagate, and GNSS position is fused
+# through (23)-(28) at `Gates::default`'s 99.9 %. Velocity, barometer and heading are still
+# stubs. Fusing position took every 185 s scenario from dead reckoning to aided navigation:
+# `mission`'s `pos_h` 1261 m to 0.70, `static`'s 29.6 m to 0.67. The consistency keys rose toward
+# the 1 a consistent filter reads, from below: `nees_pos` 0.0118 to 0.85 on `mission`. That is
+# the direction `examples/simulate.rs` predicts, since `Q` is conservative against its IMU table.
+# One line reads *over*confident, and it is meant to. `gnss_latency` delivers each fix late,
+# which this filter does not model (GOALS.md, "Measurement latency"), so a fix is wrong by the
+# distance flown in the delay and `R` does not say so: `nees_pos` 6.45, `in3s` 0.9467.
 #
-# `moving_start` is the exception worth reading, and the only line #77 and #85 move at all --
-# it is the only scenario that starts coarse. Its six error keys do not budge, since nothing
-# about the nominal state changed; everything derived from `P` does. `nees_att` goes 0.0967 to
-# 0.4961, five times closer to the 1 a consistent filter reads, and no attitude quantity-epoch
-# is falsely valid before or after. That is the answer to what #77 asked: bounding a coarse
-# tilt by the average equations (5)-(6) level, rather than by the worst sample in the window,
-# is honest and not merely tighter.
+# `moving_start` is where the coarse start's overconfidence went. Before a measurement could
+# correct anything, its position and velocity priors were `Initialization`'s 1 m and 0.1 m/s
+# against a truth kilometres away, and it read `nees_pos=10.30` and `nees_vel=10.59`. The first
+# fix is adopted (`Fusion::Reset`, once), and fused fixes after it bring both to 0.78 and 0.40.
 #
-# This line is also what said the bound needed both of its witnesses. (8')'s drift term -- how
-# far the window's two halves disagree -- catches a vehicle that swings out and comes back,
-# where the net rotation cancels to nothing. On its own it reads `nees_att=2.83` and 626 falsely
-# valid quantity-epochs here, *over*confident, because a coordinated turn holds its specific
-# force fixed in body axes: every average in the window agrees while the tilt is wrong by the
-# bank angle, and only the gyroscope witnesses it. Neither term alone is a bound.
+# `false_valid` is non-zero everywhere, because an aided filter's sigmas now sit near the bars
+# they are judged against. That is the regime the key exists for, and the bar is a 1-sigma one,
+# so `examples/replay.rs` says to read it as a rate. Nearly all of it is horizontal velocity,
+# which a position fix reaches only through the correlations of (20): 854 of `mission`'s
+# 36600 epochs (2.3 %). `false_valid_att` stays small: 40 tilt epochs on `mission`, 0.1 %.
+# `flight`'s 526 falsely valid heading epochs are gone, because position fixes carry the
+# unobserved heading from 0.60 rad out to 0.09 rad within four seconds.
 #
-# `false_valid` 0 to 108 is what it cost, and the breakdown says it is not the attitude: all 108
-# are velocity (v), none are tilt, heading or position. A prior that wide grew the velocity
-# block through (20) faster than dead reckoning grew the error, so the filter withdrew that
-# output before it was wrong about it. It no longer does, and what shows through is the
-# overconfidence `nees_vel=10.48` was already reporting: a coarse start's position and velocity
-# priors are `Initialization`'s 1 m and 0.1 m/s while the truth is kilometres away. Nothing is
-# outside 3 sigma (`in3s=1.0000`), so those 108 epochs claim "usable to 1 m/s" with an error
-# inside three times the sigma they report and outside the mission bar they are judged on.
-# Re-bounding those two priors is not this pass; #89's ANEES is the gate that would fail on it.
-#
-# `false_valid_att` is the attitude's share of the same count, pinned separately because a total
-# is an allowance and an allowance hides whatever it is not being spent on: `moving_start` can
-# carry 108 velocity epochs without also buying a hundred epochs of falsely valid attitude. It is
-# zero on eight of the nine lines, which is what makes #77's central claim a gate rather than a
-# sentence. `flight` is the exception at 526 of its 567, and that is not new and not this pass:
-# its window carries no magnetometer, so the first fused heading establishes a yaw whose prior is
-# `sigma_yaw` = 0.35 rad against a truth 0.60 rad out, and `Accuracy::heading` of 0.52 waves it
-# through. The total was already absorbing them; splitting the key is what made them visible.
+# `flight` is also the one line where fusing made a figure worse. `pos_v` went 0.72 m to 3.07,
+# and `pos_h` 8.4 to 9.1. The window has no magnetometer, so heading starts 0.6 rad out, and
+# the four seconds of fixes that correct it leave 0.39 m/s of error in vertical velocity. The
+# fixes stop at 6 s, and the eight seconds of dead reckoning after them integrate that to
+# 6.8 m. Unaided, the same fourteen seconds drifted 0.72 m from a velocity nothing had
+# disturbed. The covariance covers the error throughout (`in3s=1.0000`). A heading the window
+# observed, which is stage 8's, is the test of whether that is the cause.
 
-static           1  pos_h<=29.585    pos_v<=20.393   vel<=2.241   pos_h_max<=83.193    tilt<=1.015  yaw<=0.295 in3s>=0.9900 nees_pos<=0.0131 nees_vel<=0.0140 nees_att<=0.0027 false_valid<=0 false_valid_att<=0 scored>=11600
-mission          2  pos_h<=1261.114  pos_v<=206.664  vel<=23.095  pos_h_max<=3227.948  tilt<=2.147  yaw<=2.966 in3s>=0.9900 nees_pos<=0.0120 nees_vel<=0.0116 nees_att<=0.0018 false_valid<=0 false_valid_att<=0 scored>=36600
-harsh_imu        2  pos_h<=10746.439 pos_v<=1749.602 vel<=199.240 pos_h_max<=27402.327 tilt<=19.061 yaw<=33.840 in3s>=0.9900 nees_pos<=0.0783 nees_vel<=0.1862 nees_att<=0.0975 false_valid<=0 false_valid_att<=0 scored>=36600
-gnss_outage      2  pos_h<=1261.114  pos_v<=206.664  vel<=23.095  pos_h_max<=3227.948  tilt<=2.147  yaw<=2.966 in3s>=0.9900 nees_pos<=0.0120 nees_vel<=0.0116 nees_att<=0.0018 false_valid<=0 false_valid_att<=0 scored>=36600
-moving_start     4  pos_h<=6177.965  pos_v<=1366.097 vel<=203.814 pos_h_max<=13794.336 tilt<=24.706 yaw<=8.504 in3s>=0.9900 nees_pos<=10.3038 nees_vel<=10.5884 nees_att<=0.5011 false_valid<=110 false_valid_att<=0 scored>=15999
-baro_drift       2  pos_h<=1261.114  pos_v<=206.664  vel<=23.095  pos_h_max<=3227.948  tilt<=2.147  yaw<=2.966 in3s>=0.9900 nees_pos<=0.0120 nees_vel<=0.0116 nees_att<=0.0018 false_valid<=0 false_valid_att<=0 scored>=36600
-gnss_latency     2  pos_h<=1261.114  pos_v<=206.664  vel<=23.095  pos_h_max<=3227.948  tilt<=2.147  yaw<=2.966 in3s>=0.9900 nees_pos<=0.0120 nees_vel<=0.0116 nees_att<=0.0018 false_valid<=0 false_valid_att<=0 scored>=36600
-mag_disturbance  2  pos_h<=1261.114  pos_v<=206.664  vel<=23.095  pos_h_max<=3227.948  tilt<=2.147  yaw<=2.966 in3s>=0.9900 nees_pos<=0.0120 nees_vel<=0.0116 nees_att<=0.0018 false_valid<=0 false_valid_att<=0 scored>=36600
-flight           8  pos_h<=8.397     pos_v<=0.721    vel<=3.093   pos_h_max<=12.384    tilt<=3.548  yaw<=34.586 in3s>=0.9900 nees_pos<=0.4683 nees_vel<=0.4923 nees_att<=0.9529 false_valid<=573 false_valid_att<=532 scored>=600
+static           1  pos_h<=0.673 pos_v<=0.683 vel<=0.586 pos_h_max<=1.709  tilt<=1.026 yaw<=2.306  in3s>=0.9900 nees_pos<=0.7685 nees_vel<=0.3265 nees_att<=0.0822 false_valid<=302  false_valid_att<=0   scored>=11600
+mission          2  pos_h<=0.710 pos_v<=0.757 vel<=0.654 pos_h_max<=2.015  tilt<=1.021 yaw<=1.374  in3s>=0.9899 nees_pos<=0.8624 nees_vel<=0.3815 nees_att<=0.0911 false_valid<=903  false_valid_att<=41  scored>=36600
+harsh_imu        2  pos_h<=0.719 pos_v<=0.759 vel<=0.667 pos_h_max<=2.044  tilt<=1.532 yaw<=2.137  in3s>=0.9899 nees_pos<=0.8775 nees_vel<=0.3981 nees_att<=0.1812 false_valid<=1289 false_valid_att<=328 scored>=36600
+gnss_outage      2  pos_h<=4.682 pos_v<=0.744 vel<=0.859 pos_h_max<=28.549 tilt<=1.023 yaw<=1.584  in3s>=0.9900 nees_pos<=0.7774 nees_vel<=0.3461 nees_att<=0.0852 false_valid<=981  false_valid_att<=41  scored>=36600
+moving_start     4  pos_h<=0.713 pos_v<=0.717 vel<=0.768 pos_h_max<=2.206  tilt<=3.532 yaw<=4.608  in3s>=0.9899 nees_pos<=0.7831 nees_vel<=0.3981 nees_att<=0.1954 false_valid<=698  false_valid_att<=41  scored>=15999
+baro_drift       2  pos_h<=0.710 pos_v<=0.757 vel<=0.654 pos_h_max<=2.015  tilt<=1.021 yaw<=1.374  in3s>=0.9899 nees_pos<=0.8624 nees_vel<=0.3815 nees_att<=0.0911 false_valid<=903  false_valid_att<=41  scored>=36600
+gnss_latency     2  pos_h<=2.335 pos_v<=0.760 vel<=0.812 pos_h_max<=4.734  tilt<=1.180 yaw<=1.483  in3s>=0.9372 nees_pos<=6.5164 nees_vel<=0.5880 nees_att<=0.1224 false_valid<=3729 false_valid_att<=106 scored>=36600
+mag_disturbance  2  pos_h<=0.710 pos_v<=0.757 vel<=0.654 pos_h_max<=2.015  tilt<=1.021 yaw<=1.374  in3s>=0.9899 nees_pos<=0.8624 nees_vel<=0.3815 nees_att<=0.0911 false_valid<=903  false_valid_att<=41  scored>=36600
+flight           8  pos_h<=9.235 pos_v<=3.101 vel<=2.706 pos_h_max<=22.706 tilt<=3.044 yaw<=13.094 in3s>=0.9900 nees_pos<=0.6014 nees_vel<=0.5658 nees_att<=0.4663 false_valid<=26   false_valid_att<=0   scored>=600
