@@ -449,8 +449,9 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
   attitude has not converged. Only genuinely unusable input errors (`NoSamples`, `InvalidStep`,
   `NotFinite`, `InvalidVariance`). Three entry points — `initialize`, `initialize_coarse`,
   `initialize_from` — and each reports an `Alignment`; `alignment_of` classifies without
-  mutating. `is_aligned` reads the covariance against `Config::accuracy`, so promotion is
-  measured rather than timed — except heading, which no covariance can promote because
+  mutating. `is_aligned` reads the covariance against `ALIGNED_TILT` and `ALIGNED_HEADING` —
+  constants, never `Config::accuracy`, which is the mission's and moves only `Validity` — so
+  promotion is measured rather than timed — except heading, which no covariance can promote because
   stillness never observes yaw; that one waits for a magnetometer. Promotion only: the flag
   **latches**, so `Status::Aligning` reports a start that has not been resolved and never
   returns, while `Validity::tilt` stays live and does fall back. Read live it flapped
@@ -463,7 +464,7 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
   mission accuracy is not derivable), plus "was this ever established" — the `Unestablished` flags
   a coarse start sets on position and velocity, and the one a window with no magnetometer sets on
   heading, since stillness observes tilt but never yaw. A prior is not an estimate, and
-  `sigma_yaw` (0.35 rad) sits inside `Accuracy::heading` (0.52), so the covariance reports a yaw
+  `sigma_yaw` (0.35 rad) sits inside `Accuracy::heading` (0.5236, 30°), so the covariance reports a yaw
   nobody measured as good. `Eskf::predicted_validity` answers the arming question instead: valid now,
   or a constraining source is being accepted. Both exist because PX4 and ArduPilot answer
   per-quantity validity and a single ladder cannot.
