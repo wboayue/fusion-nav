@@ -421,6 +421,19 @@ tell a drifting reference from a genuine climb. The remedies available to an app
 re-establish `α₀` on the ground, to lean on GNSS height for the low-frequency component, or to
 accept the error over a flight short enough that it stays small.
 
+**What it costs, measured.** The `baro_drift` scenario is this paragraph with a number on it: the
+baseline flown with the reference walking 0.02 m/s, 3.7 m over 185 s. Against `mission`, which it
+matches on every other key, `pos_v` is 2.052 m to `mission`'s 0.083 — twenty-five times the error,
+and less than the full 3.7 m only because GNSS height drags the estimate back. The consistency
+keys are the more interesting half: `nees_pos` goes 1.04 to 257.27 and `in3s` 1.0000 to 0.9389.
+The error grows twenty-five-fold and the covariance does not move, because no state in the vector
+models the thing that is wrong — so the filter is metres out while reporting the same
+uncertainty it would on a perfect sensor, and `Validity` is derived from that covariance. An
+application that cannot accept a height claim of that kind is the one that needs a remedy above.
+The same mechanism at a tenth the size is what takes `static`'s `nees_pos` from 1.06 to 2.04 with
+no drift configured at all, where what the barometer cannot separate from a height is the
+accelerometer bias walk.
+
 This is the decision most likely to be revisited. Two independent production implementations
 concluded a constant was not enough, which is evidence, and if validation shows vertical drift
 dominating the error budget on long flights, ArduPilot's offset tracker is the cheaper of the two
