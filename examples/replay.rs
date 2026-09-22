@@ -635,15 +635,18 @@ impl Replay {
     ) -> io::Result<()> {
         self.ratios[source] = outcome.test_ratio();
         self.fusions += 1;
-        // `ν` and the diagonal of `S` are left empty rather than computed here. The filter
-        // publishes neither, and the harness working them out from the measurement and the
-        // covariance would be a second implementation of a quantity the update of (23)–(28)
-        // is about to own — the disagreement `AGENTS.md` keeps one implementation to avoid.
-        // The columns exist so the shape is fixed before #36 has values to put in it.
+        // `ν` and the diagonal of `S` as the filter published them, and only for a call the
+        // gate judged: a refusal or an adoption leaves the last update's values in place,
+        // which would be written against a measurement they do not describe. Never computed
+        // here — `AGENTS.md`, one statistic, one implementation.
+        let innovation = outcome
+            .test_ratio()
+            .and_then(|_| self.filter.diagnostics().sources()[source].1.innovation);
         writeln!(
             out.fusions,
-            "{t:.4},{},,,,,,,{},{}",
+            "{t:.4},{},{},{},{}",
             SOURCES[source],
+            innovation_fields(innovation),
             match outcome.test_ratio() {
                 Some(ratio) => format!("{ratio:.4}"),
                 None => String::new(),
@@ -1679,6 +1682,25 @@ impl Scoring {
     }
 }
 
+/// The `nu0..nu2,s0..s2` fields of one fusion row: the published innovation and the diagonal
+/// of its covariance, padded with empty fields past the observation's dimension, and all six
+/// empty where the gate ran no update.
+fn innovation_fields(innovation: Option<Innovation>) -> String {
+    let column = |values: &[f32], i: usize| {
+        values
+            .get(i)
+            .map_or_else(String::new, |value| format!("{value:.6}"))
+    };
+    let (nu, s) = innovation
+        .as_ref()
+        .map_or((&[][..], &[][..]), |i| (i.values(), i.variances()));
+    (0..3)
+        .map(|i| column(nu, i))
+        .chain((0..3).map(|i| column(s, i)))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 /// The name the fusion file records for one outcome.
 ///
 /// Exhaustive on purpose. `Fusion` is not `#[non_exhaustive]` — an outcome is matched, and a
@@ -1693,6 +1715,7 @@ fn verdict(outcome: Fusion) -> &'static str {
         Fusion::NoReference => "no_reference",
         Fusion::NotFinite => "not_finite",
         Fusion::InvalidNoise => "invalid_noise",
+        Fusion::StateInvalid => "state_invalid",
     }
 }
 
@@ -1713,8 +1736,8 @@ fn write_fusion_header(out: &mut impl Write, gates: Gates) -> io::Result<()> {
     )?;
     writeln!(
         out,
-        "# nu* and s* are empty: the filter publishes no innovation yet, and the harness \
-         does not compute one it would have to agree with later"
+        "# nu* and s* are the filter's published innovation and diag(S), empty where the \
+         gate ran no update or the source's fuse_* does not run one yet"
     )?;
     writeln!(out, "t_s,source,nu0,nu1,nu2,s0,s1,s2,ratio,outcome")
 }
@@ -2357,9 +2380,14 @@ mod tests {
     }
 
     #[test]
-    fn a_gate_that_turns_nothing_down_reports_zero_rejected() {
-        // Pinned while it is a constant, so that the first non-zero is a diff rather than
-        // a discovery. Nothing rejects until the χ² gate of (37) is real.
+    fn a_fix_the_gate_turns_down_is_counted_as_rejected() {
+        // A kilometre off a still start whose position σ is metres. The consistent fix
+        // beside it is what shows the count is the gate's and not every fix's.
+        let log = still_start()
+            .gnss_pos(2.0, 1.0, 2.0, -3.0)
+            .gnss_pos(2.2, 1000.0, 0.0, 0.0);
+        let summary = replay(&log).summary();
+        assert_eq!(key(&summary, "rejected"), "1", "{summary}");
         assert_eq!(key(&replay(&still_start()).summary(), "rejected"), "0");
     }
 
@@ -2521,16 +2549,37 @@ mod tests {
     }
 
     #[test]
-    fn the_innovation_columns_stay_empty_until_the_filter_publishes_one() {
-        // Pinned rather than left to be noticed. The harness could work `ν` out from the
-        // measurement and the covariance, and must not: the update of (23)–(28) is about to
-        // own that quantity, and two implementations of it would disagree while somebody
-        // chases a filter bug that does not exist.
+    fn a_gated_fix_carries_the_innovation_the_filter_published() {
+        // A still start sits at the origin, so `ν` is the fix itself. `S` is `H P Hᵀ + R`,
+        // so each entry is at least the row's own variance.
         let log = still_start().gnss_pos(2.0, 1.0, 2.0, -3.0);
         let row = fusion_rows(&log).pop().expect("a fusion row");
         let fields: Vec<&str> = row.split(',').collect();
-        assert_eq!(&fields[2..8], &["", "", "", "", "", ""], "ν and S: {row}");
-        assert_eq!(fields[8], "0.0000", "the ratio is published: {row}");
+        assert_eq!(
+            &fields[2..5],
+            &["1.000000", "2.000000", "-3.000000"],
+            "ν: {row}"
+        );
+        for (s, r) in fields[5..8].iter().zip([2.25, 2.25, 5.625]) {
+            let s: f32 = s.parse().unwrap_or_else(|_| panic!("S missing: {row}"));
+            assert!(s > r, "S below R: {row}");
+        }
+        assert_eq!(fields[9], "accepted", "{row}");
+    }
+
+    #[test]
+    fn a_call_the_gate_did_not_judge_leaves_the_innovation_columns_empty() {
+        // A refusal and a stub both follow a gated fix, whose values must not be written
+        // again against a measurement they do not describe. Velocity is still a stub.
+        let log = still_start()
+            .gnss_pos(2.0, 1.0, 2.0, -3.0)
+            .raw("2.100000,gnss_pos,1,2,-3,,,,0,2.25,5.625")
+            .gnss_vel(2.2, 0.0, 0.0, 0.0);
+        let rows = fusion_rows(&log);
+        for row in &rows[rows.len() - 2..] {
+            let fields: Vec<&str> = row.split(',').collect();
+            assert_eq!(&fields[2..8], &["", "", "", "", "", ""], "ν and S: {row}");
+        }
     }
 
     #[test]

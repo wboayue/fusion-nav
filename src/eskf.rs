@@ -5,12 +5,14 @@ use crate::frames::{Body, Ned};
 use crate::geodetic::{Geodetic, LocalOrigin};
 use crate::health::{Diagnostics, Fusion, Propagation, SourceHealth, Status, Validity};
 use crate::init::{self, Alignment, Coarse, InitError, Measured, StaticSample, baro_reference};
+use crate::observation::gnss;
 use crate::propagate::{ImuSample, propagate};
 use crate::state::{Covariance, ErrorState, STATES, State};
 use crate::units::{
     Altitude, AltitudeNoise, HeadingNoise, MagField, Position, PositionNoise, Radians, Seconds,
     Velocity, VelocityNoise,
 };
+use crate::update::{Update, update};
 
 /// A 15-state error-state Kalman filter.
 ///
@@ -511,6 +513,42 @@ impl Eskf {
         outcome
     }
 
+    /// Commit what an update produced and record it against its source, handing the outcome
+    /// back. Equations (23)–(41) are `update`'s; this is only the bookkeeping.
+    ///
+    /// One place for the reason [`refuse`] is one place: every `fuse_*` that runs an update
+    /// ends here, so none can commit a state without the covariance that goes with it, record
+    /// an acceptance without restarting the timer, or forget [`note_alignment`] — which an
+    /// update owes as much as a reset does, since a position fix narrows the attitude block
+    /// through the correlations (17) builds.
+    ///
+    /// [`note_alignment`]: Self::note_alignment
+    fn apply(
+        &mut self,
+        outcome: Update,
+        source: fn(&mut Diagnostics) -> &mut SourceHealth,
+    ) -> Fusion {
+        match outcome {
+            Update::Accepted {
+                state,
+                covariance,
+                ratio,
+                innovation,
+            } => {
+                self.state = state;
+                self.covariance = covariance;
+                source(&mut self.diagnostics).record_accepted(ratio, Some(innovation));
+                self.note_alignment();
+                Fusion::Accepted { test_ratio: ratio }
+            }
+            Update::Rejected { ratio, innovation } => {
+                source(&mut self.diagnostics).record_rejected(ratio, innovation);
+                Fusion::Rejected { test_ratio: ratio }
+            }
+            Update::Invalid => refuse(source(&mut self.diagnostics), Fusion::StateInvalid),
+        }
+    }
+
     /// Fuse a position fix already expressed in NED meters about the filter's origin.
     /// Equation (28).
     ///
@@ -535,7 +573,9 @@ impl Eskf {
     /// belongs with it rather than in [`Config`]. A caller handing over a raw `eph` is
     /// therefore trusting the receiver further than either production autopilot does.
     ///
-    /// **Stub.** Records an acceptance with a zero test ratio; corrects nothing.
+    /// A fix inconsistent with the estimate at [`Gates::gnss_position`](crate::Gates) is
+    /// [`Fusion::Rejected`] and changes nothing but the source's health. The test is joint
+    /// over all three axes; see [`Gates`](crate::Gates) for why.
     pub fn fuse_gnss_position(
         &mut self,
         position: Position<Ned>,
@@ -556,8 +596,14 @@ impl Eskf {
             self.diagnostics.gnss_position.record_adopted();
             return Fusion::Reset;
         }
-        let _ = (position, noise);
-        stub_accept(&mut self.diagnostics.gnss_position)
+        let observation = gnss::position_observation(&self.state, position, noise);
+        let outcome = update(
+            &self.state,
+            &self.covariance,
+            &observation,
+            self.config.gates.gnss_position,
+        );
+        self.apply(outcome, |diagnostics| &mut diagnostics.gnss_position)
     }
 
     /// Fuse a GNSS fix given as latitude, longitude and height. Equations (43), (44),
@@ -622,7 +668,7 @@ impl Eskf {
             placed,
             "the estimate and the fix's noise are both already checked"
         );
-        self.diagnostics.gnss_position.record_accepted(0.0);
+        self.diagnostics.gnss_position.record_accepted(0.0, None);
         Fusion::Accepted { test_ratio: 0.0 }
     }
 
@@ -1092,7 +1138,7 @@ fn refuse(source: &mut SourceHealth, outcome: Fusion) -> Fusion {
 /// What every `fuse_*` stub does in place of an update: record an acceptance with a zero
 /// test ratio.
 fn stub_accept(source: &mut SourceHealth) -> Fusion {
-    source.record_accepted(0.0);
+    source.record_accepted(0.0, None);
     Fusion::Accepted { test_ratio: 0.0 }
 }
 
@@ -1959,9 +2005,73 @@ mod tests {
             "the fix's own variance, not the configured prior"
         );
 
-        // Once is once: there is now an estimate for a gate to judge against.
+        // Once is once: there is now an estimate for a gate to judge against, and the same
+        // fix again is fused against it rather than adopted a second time.
         let outcome = filter.fuse_gnss_position(fix, PositionNoise::horizontal_vertical(1.5, 1.5));
-        assert!(!outcome.is_reset());
+        assert!(matches!(outcome, Fusion::Accepted { .. }), "{outcome:?}");
+        assert_eq!(filter.diagnostics().gnss_position.adopted, 1);
+    }
+
+    #[test]
+    fn a_fix_that_agrees_with_the_estimate_narrows_its_uncertainty() {
+        let mut filter = initialized();
+        let before = filter.covariance().variance(ErrorState::PositionNorth);
+        let outcome = filter.fuse_gnss_position(
+            Position::ned(0.5, -0.5, 0.2),
+            PositionNoise::horizontal_vertical(1.0, 1.0),
+        );
+
+        let Fusion::Accepted { test_ratio } = outcome else {
+            panic!("expected an acceptance, got {outcome:?}");
+        };
+        assert!(test_ratio > 0.0 && test_ratio <= 1.0);
+        assert!(filter.covariance().variance(ErrorState::PositionNorth) < before);
+        assert!(filter.state().position.x() > 0.0, "moved toward the fix");
+        let health = filter.diagnostics().gnss_position;
+        assert_eq!(health.test_ratio, Some(test_ratio));
+        assert!(health.innovation.is_some());
+    }
+
+    #[test]
+    fn a_rejected_fix_changes_nothing_but_the_sources_record_of_it() {
+        let mut filter = initialized();
+        let noise = PositionNoise::horizontal_vertical(1.0, 1.0);
+        assert!(
+            filter
+                .fuse_gnss_position(Position::ned(0.1, 0.0, 0.0), noise)
+                .is_accepted()
+        );
+        assert!(filter.predict(still().imu, DT).is_propagated());
+        let (state, covariance) = (filter.state(), *filter.covariance());
+        let timer = filter.diagnostics().gnss_position.time_since_accepted;
+
+        let outcome = filter.fuse_gnss_position(Position::ned(1000.0, 0.0, 0.0), noise);
+        assert!(matches!(outcome, Fusion::Rejected { test_ratio } if test_ratio > 1.0));
+        assert_eq!(filter.state(), state);
+        assert_eq!(filter.covariance(), &covariance);
+        let health = filter.diagnostics().gnss_position;
+        assert_eq!(health.time_since_accepted, timer);
+        assert_eq!((health.rejected, health.consecutive_rejections), (1, 1));
+        assert_eq!(health.test_ratio, outcome.test_ratio());
+    }
+
+    #[test]
+    fn a_covariance_that_is_no_longer_one_refuses_the_update() {
+        let mut filter = initialized();
+        let mut p = *filter.covariance().as_matrix();
+        p[(0, 0)] = -10.0;
+        filter.covariance = Covariance::from_matrix(p);
+        let state = filter.state();
+
+        let outcome = filter.fuse_gnss_position(
+            Position::ned(0.1, 0.0, 0.0),
+            PositionNoise::horizontal_vertical(1.0, 1.0),
+        );
+        assert_eq!(outcome, Fusion::StateInvalid);
+        assert_eq!(filter.state(), state);
+        let health = filter.diagnostics().gnss_position;
+        assert_eq!(health.last_refusal, Some(Refusal::StateInvalid));
+        assert_eq!((health.accepted, health.rejected), (0, 0));
     }
 
     #[test]
