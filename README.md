@@ -8,7 +8,7 @@ Embedded-first inertial navigation using a 15-state Error-State Kalman Filter (E
 > What is missing is everything that corrects them: every `fuse_*` accepts without changing the
 > estimate. So the position is an IMU-only dead-reckoned one, and the uncertainty beside it grows
 > without bound — which is what makes `Validity` honest about it: each flag goes false as its own
-> variance passes `Config::accuracy`, 3.79 s in for tilt at the default noise. `Status` answers on
+> variance passes `Config::accuracy`, 3.82 s in for tilt at the default noise. `Status` answers on
 > the aiding timers, so an unaided filter reports `DeadReckoning` well before that. The design is
 > subject to change.
 
@@ -153,7 +153,9 @@ and GNSS velocity. From the window the filter takes:
   prior on a yaw nobody measured, and the covariance alone cannot tell the two apart (the reset
   that should replace such a yaw is not yet built). Leaving `Aligning` is one-way: it reports a
   start that has not been resolved, while `validity.tilt` and `validity.heading` stay live and go
-  false again as an unaided covariance grows past `Config::accuracy`
+  false again as an unaided covariance grows past `Config::accuracy`. The two read different bars:
+  `Aligning` ends at the fixed `ALIGNED_TILT` (3°, PX4's) and `ALIGNED_HEADING` (30°), and
+  `validity` at whatever the mission asks
 * **gyroscope bias** from the averaged gyroscope, but only from a window taken at rest, which is
   what makes the bias observable rather than the vehicle's own turn rate. A window taken in
   motion starts it at zero, as both PX4 and ArduPilot do at every start. The accelerometer bias
@@ -174,7 +176,7 @@ uncertainty bounded by what that window itself supports — equations (5)–(6) 
 so what widens the prior is how far those averages are from what a still vehicle reads, how far
 the vehicle turned while they were being taken, and how far the window's two halves disagree,
 rather than the worst sample in it — with `Status::Aligning` until tilt and heading are within
-`Config::accuracy`. A window that is only *short*, taken with
+`ALIGNED_TILT` and `ALIGNED_HEADING`. A window that is only *short*, taken with
 the vehicle at rest, starts from the static figures and establishes what it saw: stillness is
 measured from the window, never read off the alignment. A filter that will not start is worth less than one
 that starts and says how much to trust it — refusing would rule out moving decks, hand launches,
@@ -358,7 +360,10 @@ same rule applied to attitude: a vehicle with no magnetometer has valid `tilt` a
 `heading`, until one is fused.
 
 `Config::accuracy` is the one group of numbers meant to be supplied rather than derived: a survey
-platform and a racing quadrotor disagree about what "good enough" means.
+platform and a racing quadrotor disagree about what "good enough" means. It moves `validity` and
+nothing else — `Status::Aligning` reads fixed bars, so asking for 1° of roll does not also make the
+filter wait for 1° before it calls the start resolved. A bar tighter than the prior
+`Initialization` starts from is never met, and that quantity is invalid from the first epoch.
 
 ### `predicted_validity` — will it be good if I take off now
 
@@ -374,7 +379,8 @@ false however much GNSS is accepted.
 ### Detail
 
 * `is_aligned()` — whether attitude has converged, on the same bar `Status::Aligning` uses: read
-  from the covariance against `Config::accuracy`, so promotion is measured rather than timed.
+  from the covariance against `ALIGNED_TILT` and `ALIGNED_HEADING`, so promotion is measured rather
+  than timed, and not against `Config::accuracy`, which is the mission's.
 * `diagnostics()` — per source: test ratio, time since last acceptance, consecutive rejections,
   and how many measurements were refused before the gate and why. A source that only ever refuses
   reads as "never accepted", like one that was never connected, and the refusal count is what

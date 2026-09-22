@@ -468,10 +468,10 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
   or a constraining source is being accepted. Both exist because PX4 and ArduPilot answer
   per-quantity validity and a single ladder cannot.
 - **An unaided filter loses its outputs on a schedule the defaults set**, and the schedule is
-  measured: at `ImuNoise`'s defaults a static start holds tilt for 3.79 s and heading for 35.4 s.
+  measured: at `ImuNoise`'s defaults a static start holds tilt for 3.82 s and heading for 35.8 s.
   Those two figures are cited by `Accuracy`'s doc comment and pinned by a test; the gyroscope-bias
   prior entering attitude through (20)'s `−I Δt` is what sets them, not the white-noise density,
-  which alone would give 10.4 s and 657 s. They move `Validity` only — `Status` is answering on
+  which alone would give 10.4 s and 674 s. They move `Validity` only — `Status` is answering on
   the aiding timers well before then, and the alignment latch keeps `Aligning` out of it.
 - **`Status` precedence is most-severe-first**: `DeadReckoning` > `Aligning` > `Degraded` >
   `Healthy`. Aligning outranking Degraded is deliberate, and what it costs is measured: the

@@ -15,13 +15,15 @@
 # some point, which transitions= already notices.
 #
 # aligned_at= is seconds from the end of the initialization window to the
-# first epoch whose Validity::attitude read true, or never. It is what
-# settled Accuracy's attitude defaults off the corpus the way replay settled
+# first epoch Eskf::is_aligned read true, or never. It is what settled the
+# alignment bars off the corpus the way replay settled
 # Timeouts::degraded_after: with tilt equal to Initialization::sigma_tilt and
 # heading equal to sigma_yaw, compared with <=, every static log here read
-# 0.00 and lost the claim one step later. tilt is now 3 degrees (PX4's own
-# alignment bar) and heading 30, and the static logs still read 0.00 -- a
-# window that observed gravity and a magnetometer is aligned when it closes.
+# 0.00 and lost the claim one step later. The bars are ALIGNED_TILT, 3
+# degrees (PX4's own), and ALIGNED_HEADING, 30, and the static logs read
+# 0.00 -- a window that observed gravity and a magnetometer is aligned when
+# it closes. They are constants, not Config::accuracy, so a mission bar
+# cannot move this key.
 #
 # 2c42096b is the one non-zero value, 0.20, and the wait is the heading's
 # rather than the tilt's: its window is moving, so nothing established a
@@ -29,17 +31,20 @@
 # heading. Tilt was already under the bar when the window closed, because
 # what bounds a coarse tilt is what that window's average supports and not
 # the worst sample in it (#77). It read never until then, on a prior that
-# nothing could bring under Accuracy.
+# nothing could bring under the alignment bar.
 #
-# attitude_lost= is the other side of the same question, added with covariance
-# propagation: seconds to the first epoch where that validity went away
-# again, or never. It exists because nothing else on this line moves when it
-# does -- Status::Aligning latches deliberately (Eskf::is_aligned), so the
-# growth of (16)-(22) would otherwise be invisible to the corpus, which has
-# no truth to score against and only bookkeeping to check.
+# attitude_lost= is the mission's side of the same question, added with
+# covariance propagation: seconds to the first epoch at or after alignment
+# where Validity::attitude read false against Config::accuracy, or never.
+# It exists because nothing else on this line moves when it does --
+# Status::Aligning latches deliberately (Eskf::is_aligned), so the growth of
+# (16)-(22) would otherwise be invisible to the corpus, which has no truth to
+# score against and only bookkeeping to check. Replayed at an Accuracy of 2.5
+# and 25 degrees instead, the five logs below read 2.90, 1.49, 2.92, 0.78 and
+# 2.90 with aligned_at= and transitions= unmoved: the two bars are two bars.
 #
 # It varies by what the vehicle was doing, which is the evidence that it
-# measures the covariance rather than the clock: 3.79 s, 3.80 s and 3.78 s on
+# measures the covariance rather than the clock: 3.82 s, 3.84 s and 3.82 s on
 # the three logs of a vehicle nobody is moving about, 1.70 s and 0.82 s on
 # the two being handled (7592c9b2 starts at roll 2.94 pitch 6.56), because a
 # body-frame attitude covariance rotates with the body and a 20-degree yaw
@@ -113,7 +118,7 @@
 # also the one start here that would notice nothing if (6)'s levelling were
 # dropped -- the tilt it levels by is zero.
 # Source: PX4 Flight Review (CC BY 4.0).
-b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-4425-b118-7b7187331a98.ulg  https://cdn.logs.px4.io/3949f175-26b4-4425-b118-7b7187331a98.ulg  rate=250 window=500 align=static an=none alpha0=set heading=valid roll0=0.01 pitch0=0.01 yaw0=24.38 resets=0 aligned_at=0.00 attitude_lost=3.79 rejected=0 discarded=0 refused=0 invalid=0 transitions=2 status=Healthy
+b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-4425-b118-7b7187331a98.ulg  https://cdn.logs.px4.io/3949f175-26b4-4425-b118-7b7187331a98.ulg  rate=250 window=500 align=static an=none alpha0=set heading=valid roll0=0.01 pitch0=0.01 yaw0=24.38 resets=0 aligned_at=0.00 attitude_lost=3.82 rejected=0 discarded=0 refused=0 invalid=0 transitions=2 status=Healthy
 
 # 64 s quadrotor, PX4 v1.10.0, EKF2. No GNSS topic; baro and mag only.
 # 11 SD-card dropouts totalling 2796 ms leave four holes in sensor_combined up
@@ -128,7 +133,7 @@ b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-
 # window 8x, which is what forced replay's median estimator. Also uses the old
 # lat/lon/alt integer field spelling.
 # Source: PX4 Flight Review (CC BY 4.0).
-1c0ea42d6e22cef5cb8730e71a7740b4f5a35988e88e677a72351835cd42990a  a299e722-a7f0-4e2e-bcdf-ce487d556ac1.ulg  https://cdn.logs.px4.io/a299e722-a7f0-4e2e-bcdf-ce487d556ac1.ulg  rate=50 window=101 align=static an=none alpha0=set heading=valid roll0=1.19 pitch0=-2.93 yaw0=-176.42 resets=0 aligned_at=0.00 attitude_lost=3.80 rejected=0 discarded=0 refused=0 invalid=0 transitions=2 status=Healthy
+1c0ea42d6e22cef5cb8730e71a7740b4f5a35988e88e677a72351835cd42990a  a299e722-a7f0-4e2e-bcdf-ce487d556ac1.ulg  https://cdn.logs.px4.io/a299e722-a7f0-4e2e-bcdf-ce487d556ac1.ulg  rate=50 window=101 align=static an=none alpha0=set heading=valid roll0=1.19 pitch0=-2.93 yaw0=-176.42 resets=0 aligned_at=0.00 attitude_lost=3.84 rejected=0 discarded=0 refused=0 invalid=0 transitions=2 status=Healthy
 
 # 68 s quadrotor on AUAV_X21, genuinely old firmware, LPE estimator.
 # The only log where the barometer and magnetometer are fields of
@@ -199,4 +204,4 @@ b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-
 # the window's average it resolves 0.20 s in, and the line describes the
 # aiding the flight actually had.
 # Source: PX4 Flight Review (CC BY 4.0).
-9289375e4280ddec891b26b870f5065f2310d2e39527e4e8706d22e537d047dd  2c42096b-fa9b-4c74-8b89-ac79bf067a1d.ulg  https://cdn.logs.px4.io/2c42096b-fa9b-4c74-8b89-ac79bf067a1d.ulg  rate=199 window=398 align=coarse an=measured alpha0=none heading=invalid roll0=0.42 pitch0=-0.89 yaw0=-22.47 resets=2 aligned_at=0.20 attitude_lost=3.78 rejected=0 discarded=35575 refused=0 invalid=0 transitions=888 status=Healthy
+9289375e4280ddec891b26b870f5065f2310d2e39527e4e8706d22e537d047dd  2c42096b-fa9b-4c74-8b89-ac79bf067a1d.ulg  https://cdn.logs.px4.io/2c42096b-fa9b-4c74-8b89-ac79bf067a1d.ulg  rate=199 window=398 align=coarse an=measured alpha0=none heading=invalid roll0=0.42 pitch0=-0.89 yaw0=-22.47 resets=2 aligned_at=0.20 attitude_lost=3.82 rejected=0 discarded=35575 refused=0 invalid=0 transitions=888 status=Healthy

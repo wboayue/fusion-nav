@@ -22,6 +22,37 @@ use crate::units::{Meters, MetersPerSecond, MetersPerSecond2, Radians, RadiansPe
 /// up as a bias estimate wrong by that much rather than as vertical drift.
 pub const GRAVITY: f32 = 9.806_65;
 
+/// Tilt uncertainty, per axis, at which a start counts as resolved: the bar behind
+/// [`Eskf::is_aligned`](crate::Eskf::is_aligned) and so
+/// [`Status::Aligning`](crate::Status::Aligning).
+///
+/// A constant rather than a field of [`Accuracy`], because it answers a different question.
+/// [`Accuracy`] is what the mission needs from an output; this is whether the start has
+/// produced an attitude the filter can work from, and no mission changes that. Both
+/// production estimators answer it with an internal constant nobody configures: PX4 declares
+/// tilt alignment at 3° (`getTiltVariance() < sq(radians(3.f))`,
+/// `src/modules/ekf2/EKF/control.cpp:73-78` at `c4e4ef98e9`), ArduPilot at 5°
+/// (`tiltErrorVariance < sq(radians(5.0))`,
+/// `libraries/AP_NavEKF3/AP_NavEKF3_Control.cpp:520-525` at `368dc0c428`). This takes the
+/// stricter of the two.
+pub const ALIGNED_TILT: Radians = Radians::from_degrees(3.0);
+
+/// Heading uncertainty at which a start counts as resolved, once a heading has been
+/// established at all: the yaw half of [`ALIGNED_TILT`]'s test.
+///
+/// No published counterpart exists to cite. Both estimators latch yaw alignment on the
+/// magnetometer reset rather than comparing a variance; the only yaw-variance bar either
+/// publishes is 15°, for accepting the GSF yaw estimator (`EKFGSF_yaw_err_max`,
+/// `src/modules/ekf2/EKF/common.h:396` at `c4e4ef98e9`; `GSF_YAW_ACCURACY_THRESHOLD_DEG`,
+/// `libraries/AP_NavEKF3/AP_NavEKF3_core.h:78` at `368dc0c428`), and a static start's own
+/// prior, [`Initialization::sigma_yaw`] at 20°, would fail it.
+///
+/// So 30° is chosen under one hard constraint: it has to clear `sigma_yaw`. A caller who
+/// configures `sigma_yaw` above it gets a static start that never leaves
+/// [`Aligning`](crate::Status::Aligning) until a heading measurement brings yaw down, which
+/// the type system cannot refuse.
+pub const ALIGNED_HEADING: Radians = Radians::from_degrees(30.0);
+
 /// IMU noise, as the continuous-time densities of equations (16)–(21).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ImuNoise {
@@ -192,11 +223,19 @@ impl Default for Initialization {
 /// Each is a standard deviation, compared against the covariance the filter carries. For
 /// limits that differ between axes, read [`Eskf::covariance`](crate::Eskf::covariance)
 /// directly — these are the coarse per-quantity bar.
+///
+/// Nothing here moves [`Status`](crate::Status). Whether the start has been resolved is
+/// [`ALIGNED_TILT`] and [`ALIGNED_HEADING`]'s question, so a survey platform can ask for 1° of
+/// roll without also waiting for 1° before the filter stops reporting
+/// [`Aligning`](crate::Status::Aligning).
+///
+/// A bar tighter than the prior [`Initialization`] starts from is accepted and never met: that
+/// quantity is invalid from the first epoch, while the filter aligns and reports
+/// [`Healthy`](crate::Status::Healthy) as usual. On a replay it reads `attitude_lost=0.00` —
+/// out of service the moment the start resolved — beside an `aligned_at=` that has not moved.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Accuracy {
-    /// Roll and pitch. Also the bar alignment is measured against:
-    /// [`Status::Aligning`](crate::Status::Aligning) ends when tilt and heading **first** come
-    /// within these, and does not return when they leave again.
+    /// Roll and pitch.
     pub tilt: Radians,
     /// Heading.
     pub heading: Radians,
@@ -208,31 +247,27 @@ pub struct Accuracy {
 
 impl Default for Accuracy {
     /// Attitude clears the prior a static alignment starts from, by the margin an unaided
-    /// filter takes to drift through. Position and velocity are **placeholders** — loose
-    /// enough to admit a 1 Hz GNSS solution, and nothing more considered than that.
+    /// filter takes to drift through. All four are **placeholders** for a mission nobody has
+    /// named: tilt and heading are [`ALIGNED_TILT`] and [`ALIGNED_HEADING`] because a bar
+    /// some estimator uses is a better starting point than none, and position and velocity
+    /// are loose enough to admit a 1 Hz GNSS solution.
     ///
-    /// A bar equal to the prior it is compared against is no bar at all, which is what these
-    /// were until covariance propagation landed: [`tilt`](Accuracy::tilt) was
-    /// [`Initialization::sigma_tilt`](Initialization::sigma_tilt) exactly and
-    /// [`heading`](Accuracy::heading) was
-    /// [`Initialization::sigma_yaw`](Initialization::sigma_yaw) exactly, compared with `<=`,
-    /// so a static start passed by zero margin and the first `Q` of equation (21) took it
-    /// away again. It reads `aligned_at=0.00` on every static log in `data/manifest.txt` and
-    /// `never` one step later — a filter that reported convergence for exactly one sample.
+    /// Exactly those, not rounded near them. A mission bar a hair under the alignment bar
+    /// opens a sliver where a start aligns and is out of service at the same epoch, for a
+    /// reason nobody chose: 0.052 rad against 3°'s 0.0524 did exactly that.
     ///
-    /// 3° of tilt is what PX4 declares tilt alignment at (`getTiltVariance() <
-    /// sq(radians(3.f))`, `src/modules/ekf2/EKF/control.cpp:73-78` at `c4e4ef98e9`);
-    /// ArduPilot uses 5° (`tiltErrorVariance < sq(radians(5.0))`,
-    /// `libraries/AP_NavEKF3/AP_NavEKF3_Control.cpp:520-525` at `368dc0c428`). Heading has no
-    /// published counterpart — both estimators latch yaw alignment on the magnetometer reset
-    /// rather than comparing a variance — so 30° is a mission number under one hard
-    /// constraint: it has to clear `sigma_yaw`, since a heading whose prior is 20° can never
-    /// be valid under a 20° bar.
+    /// A bar equal to the prior it is compared against is no bar at all: with
+    /// [`tilt`](Accuracy::tilt) at [`Initialization::sigma_tilt`](Initialization::sigma_tilt)
+    /// exactly and [`heading`](Accuracy::heading) at
+    /// [`Initialization::sigma_yaw`](Initialization::sigma_yaw) exactly, compared with `<=`, a
+    /// static start passes by zero margin and the first `Q` of equation (21) takes it away
+    /// again. On every static log in `data/manifest.txt` that read as a valid attitude for
+    /// exactly one sample.
     ///
-    /// What they buy, measured on a static start at [`ImuNoise`]'s defaults: 3.79 s of unaided
-    /// propagation before tilt leaves the bar, 35.4 s before heading does
+    /// What these buy, measured on a static start at [`ImuNoise`]'s defaults: 3.82 s of unaided
+    /// propagation before tilt leaves the bar, 35.8 s before heading does
     /// (`an_unaided_start_holds_its_attitude_for_the_margin_the_defaults_buy`). Neither is the
-    /// `σ_g² t` the white-noise density alone gives, which would be 10.4 s and 657 s — the
+    /// `σ_g² t` the white-noise density alone gives, which would be 10.4 s and 674 s — the
     /// gyroscope-bias prior enters attitude through equation (20)'s `−I Δt` and grows as
     /// `σ_βg² t²`, overtaking the white-noise term inside two seconds.
     ///
@@ -240,21 +275,13 @@ impl Default for Accuracy {
     /// [`Status`](crate::Status) is already answering on the aiding timers by then — an unaided
     /// filter reports [`DeadReckoning`](crate::Status::DeadReckoning) from
     /// [`Timeouts::dead_reckoning_after`], or from its first step if no source was ever accepted
-    /// — and the latch below keeps [`Aligning`](crate::Status::Aligning) out of it. So these are
-    /// a claim about which outputs a controller may still use, which is the question
-    /// [`Accuracy`] exists to answer. Supply your own numbers.
-    ///
-    /// These bars are read live by [`Validity`](crate::Validity) and once by
-    /// [`Status`](crate::Status): crossing one takes an output out of service, and does not put
-    /// the filter back into [`Aligning`](crate::Status::Aligning). What that split is worth was
-    /// measured on the corpus, and it is on
-    /// [`Eskf::is_aligned`](crate::Eskf::is_aligned) — four `Healthy`/`Aligning` flaps in four
-    /// seconds on one log, from a yaw prior rotating into the tilt axes rather than from
-    /// anything degrading.
+    /// — and [`Aligning`](crate::Status::Aligning) reads the alignment bars rather than these.
+    /// So these are a claim about which outputs a controller may still use, which is the
+    /// question [`Accuracy`] exists to answer. Supply your own numbers.
     fn default() -> Self {
         Self {
-            tilt: Radians::from_radians(0.052),
-            heading: Radians::from_radians(0.52),
+            tilt: ALIGNED_TILT,
+            heading: ALIGNED_HEADING,
             position: Meters::from_meters(5.0),
             velocity: MetersPerSecond::from_m_per_s(1.0),
         }
