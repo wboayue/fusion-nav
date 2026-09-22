@@ -4,4 +4,5 @@
 //! One file per sensor, each doing no more than forming an `Observation`; the update itself
 //! does not know which sensor it is correcting from.
 
+pub(crate) mod baro;
 pub(crate) mod gnss;

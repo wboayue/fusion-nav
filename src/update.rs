@@ -75,12 +75,22 @@ pub(crate) enum Update {
 /// zero. The unit tests show the difference on an ill-conditioned `P` rather than asserting
 /// it here.
 ///
-/// The frame is the largest in the crate: 6944 bytes on `thumbv6m-none-eabi` and 6848 on
-/// `thumbv7em-none-eabihf` at `opt-level = 3`, against 3920 for `propagate`. Most of it is
-/// (27), whose `I − KH`, its two products and `K R Kᵀ` are each a 900-byte 15 × 15. That is
-/// comfortable on the STM32H7 class `DESIGN.md` names and most of the RAM of an 8 KB
-/// Cortex-M0 part. #41, stack high-water on hardware, is what would say a less obvious form
-/// is worth writing.
+/// The frame is the largest in the crate: `update::<3>` is 6888 bytes on both
+/// `thumbv6m-none-eabi` and `thumbv7em-none-eabihf` at `opt-level = 3`, against 3920 for
+/// `propagate`. Most of it is (27), whose `I − KH`, its two products and `K R Kᵀ` are each a
+/// 900-byte 15 × 15. That is comfortable on the STM32H7 class `DESIGN.md` names and most of
+/// the RAM of an 8 KB Cortex-M0 part. #41, stack high-water on hardware, is what would say a
+/// less obvious form is worth writing.
+///
+/// `M` is what the rest scales with, and a scalar source is cheaper rather than free:
+/// `update::<1>` takes 4040 bytes on `thumbv6m` and 3984 on `thumbv7em`, so the barometer of
+/// (30) does not move the crate's high-water mark — `update::<3>` still sets it. What a
+/// second monomorphization does cost is flash, since each is a full copy of the 15 × 15
+/// arithmetic: linking the whole public API for `thumbv6m` under fat LTO went from 47474 to
+/// 49398 bytes of `.text` when (30) landed, 4.1 %. That is the price of the dimension being
+/// a type parameter, which is what makes a `Gate<M>` of the wrong dimension a compile error
+/// (#58); trading it back for a runtime `M` is #41's call to make with hardware numbers, not
+/// one to take on a 2 KB estimate.
 pub(crate) fn update<const M: usize>(
     state: &State,
     covariance: &Covariance,
@@ -185,9 +195,10 @@ fn attitude_error(dx: &SVector<f32, STATES>) -> Vector3<f32> {
 ///
 /// Applied to the attitude rows and columns only, which is all of `G P Gᵀ` that differs from
 /// `P`. The full product is the more obvious form and costs a 15 × 15 `G` and two more
-/// temporaries of `P`'s size: at `opt-level = 3` it measured 7808 bytes of stack for
-/// `update` on `thumbv6m-none-eabi` against 6944 this way, on a frame that is already the
-/// largest in the crate.
+/// temporaries of `P`'s size: at `opt-level = 3` it measured 864 bytes more of stack for
+/// `update` on `thumbv6m-none-eabi`, on a frame that is already the largest in the crate. The
+/// difference is quoted rather than the two totals, which move by tens of bytes with codegen
+/// — adding `update::<1>` for (30) moved this one without touching a line of it.
 ///
 /// (42) runs last, as after every covariance operation: both products of (27) and this one
 /// drift off symmetry in f32.

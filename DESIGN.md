@@ -8,8 +8,9 @@ mathematics see [EQUATIONS.md](EQUATIONS.md); for positioning and decisions alre
 > the types and signatures exist. Implemented: initialization, equations (5)–(8), so the filter
 > starts at the attitude it levelled; nominal propagation, (9)–(15), and covariance propagation,
 > (16)–(22), so the state dead reckons and the uncertainty beside it grows; and the measurement
-> update, (23)–(29) and (37)–(41), wired to both GNSS observations. Not implemented: the
-> barometer and heading observations (30)–(36), whose `fuse_*` still change nothing.
+> update, (23)–(30) and (37)–(41), wired to both GNSS observations and the barometer. Not
+> implemented: the magnetometer observations (31)–(36), whose `fuse_mag_heading` still changes
+> nothing.
 
 ## Error-State Kalman Filter
 

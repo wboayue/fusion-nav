@@ -1,9 +1,9 @@
 //! Replay a recorded flight from CSV and write the estimate back out as CSV.
 //!
 //! `predict` propagates the nominal state and its covariance, (9)–(22), and GNSS position fixes
-//! correct both, (23)–(41), so the estimate columns hold a position-aided trajectory and the
-//! GNSS position test ratios are real. The other three `fuse_*` still accept unconditionally
-//! with a ratio of zero. What this establishes is the replay
+//! correct both, (23)–(41), so the estimate columns hold an aided trajectory and the GNSS and
+//! barometer test ratios are real. The one remaining `fuse_*`, magnetic heading, still accepts
+//! unconditionally with a ratio of zero. What this establishes is the replay
 //! harness and the normalized log format `GOALS.md` commits to. What it exercises, that `basic.rs` and
 //! `degradation.rs` cannot, is irregular `dt` taken from timestamps, per-sample variance,
 //! a source that appears partway through the log, and an initialization window found in
@@ -126,10 +126,10 @@
 //!
 //! # What the score measures today
 //!
-//! **Stub.** The two GNSS observations are the only aiding that reaches the state, so every
-//! figure here is theirs: attitude and the biases are corrected only through the correlations
-//! (20) builds. Stages 7 and 8 of #31 add the barometer and the magnetometer, and each is
-//! measured against this.
+//! **Stub.** Nothing observes attitude: the two GNSS observations and the barometer are the
+//! aiding that reaches the state, and the attitude and bias keys are corrected only through the
+//! correlations (20) builds. Stage 8 of #31 adds the magnetometer, and is measured against
+//! this.
 //!
 //! `nees_*` is a ratio of two quantities that both move: the error, and a `P` that (22) grows
 //! and (27) shrinks. On these scenarios it approaches 1 from below, because
@@ -145,9 +145,11 @@
 //! `gnss_outage` and `gnss_latency` separate through the GNSS they change, and `harsh_imu`
 //! through propagation — no longer on the position keys at all, which read `mission`'s figures
 //! now that two quantities are aided, but on `tilt` and on `ba`, the keys that read the IMU's
-//! own errors. `baro_drift` and `mag_disturbance` still score identically to `mission` to the
-//! last digit, because each departs in a source whose `fuse_*` is a stub; they start measuring
-//! at stages 7 and 8.
+//! own errors. `baro_drift` separates on height since (30) landed — `pos_v` 2.052 m against
+//! `mission`'s 0.083, and `nees_pos` 257 against 1.04, which is what a reference the state
+//! vector cannot model costs. `mag_disturbance` still scores identically to `mission` to the
+//! last digit, because it departs in the one source whose `fuse_*` is a stub; it starts
+//! measuring at stage 8.
 //!
 //! A refused propagation step is still scored. The epoch row is written either way — the
 //! state is simply the one before it — and that stale state is what the filter published, so
@@ -675,6 +677,31 @@ impl Replay {
         self.total(|health| health.rejected)
     }
 
+    /// The same count split per source, as ` rejected_<source>=<n>` pairs.
+    ///
+    /// The total alone averages two sources moving in opposite directions, which is the
+    /// reading `ba=` and `bg=` were split to avoid: fusing velocity halved one bias and
+    /// worsened the other, and one key would have reported a clean win. A gate makes the
+    /// same shape of claim — `a299e722` turns down 284 velocity solutions, and an altitude
+    /// its barometer gate also turned down would arrive on that line as a larger number
+    /// with nothing saying which source grew.
+    ///
+    /// The total stays beside these rather than being replaced by them, and is not
+    /// redundant: `data/expect.sh` fails a key named in the expectations and absent from
+    /// the line, but never a key on the line that no expectation names, so a source whose
+    /// own key nobody added to a manifest entry goes unwatched. The sum is what notices.
+    ///
+    /// Names come from `SOURCES`, so a key reads as its own `r_<source>` column and the
+    /// fusion rows of that source spell it the same way; `Diagnostics` order is what pairs
+    /// the two lists, as it does for `RATIOS`.
+    fn rejections_by_source(&self) -> String {
+        SOURCES
+            .iter()
+            .zip(self.filter.diagnostics().sources())
+            .map(|(name, (_, health))| format!(" rejected_{name}={}", health.rejected))
+            .collect()
+    }
+
     /// Keep the first moment the filter reported itself aligned, and only the first.
     ///
     /// Taken at the commit as well as at every epoch: a window that carried a magnetometer
@@ -1027,7 +1054,7 @@ impl Replay {
         format!(
             "summary rate={:.0} window={} align={} an={} alpha0={} heading={} \
              roll0={roll0:.2} pitch0={pitch0:.2} yaw0={yaw0:.2} resets={} \
-             aligned_at={} attitude_lost={} rejected={} discarded={} refused={} \
+             aligned_at={} attitude_lost={} rejected={}{} discarded={} refused={} \
              invalid={} epochs={} \
              transitions={} status={:?}",
             self.interval.map_or(0.0, |interval| 1.0 / interval),
@@ -1081,12 +1108,13 @@ impl Replay {
             // because it is the only key that moves when propagation's uncertainty model
             // changes, and because the update of (23)–(28) should push it to `never`.
             self.attitude_lost_after(),
-            // The gate's verdict, which nothing on this line reported before: `refused=`
-            // and `invalid=` are propagation steps, not measurements, and a change that
-            // started turning down every fix in the corpus would have passed `--check`
-            // unmoved. It reads zero until the χ² gate of (37) is real, and is pinned
-            // from now so that the first non-zero is a diff and not a discovery.
+            // The gate's verdict, which no other key on this line reports: `refused=` and
+            // `invalid=` are propagation steps, not measurements, so a change that started
+            // turning down every fix in the corpus would pass `--check` unmoved without
+            // this. The total, then the same count per source; see `rejections_by_source`
+            // for why both.
             self.rejections(),
+            self.rejections_by_source(),
             // Everything that never reached the gate. See `Replay::discarded`.
             self.discarded(),
             self.filter.diagnostics().propagation.refused_too_long,
@@ -2407,6 +2435,43 @@ mod tests {
         let summary = replay(&log).summary();
         assert_eq!(key(&summary, "rejected"), "1", "{summary}");
         assert_eq!(key(&replay(&still_start()).summary(), "rejected"), "0");
+    }
+
+    #[test]
+    fn a_rejection_is_attributed_to_the_source_that_earned_it() {
+        // The same kilometre-off fix as above, so the total is 1 and exactly one source
+        // may claim it. Asserting the other three are zero is the half that matters: a
+        // fragment built off the wrong list would still total correctly while naming the
+        // source beside the right one. Survives zipping `SOURCES` against a `sources()`
+        // in a different order, which `RATIOS` would not have caught either.
+        let log = still_start()
+            .gnss_pos(2.0, 1.0, 2.0, -3.0)
+            .gnss_pos(2.2, 1000.0, 0.0, 0.0);
+        let summary = replay(&log).summary();
+        assert_eq!(key(&summary, "rejected_gnss_pos"), "1", "{summary}");
+        for source in ["gnss_vel", "baro", "mag"] {
+            assert_eq!(
+                key(&summary, &format!("rejected_{source}")),
+                "0",
+                "{source} rejected nothing: {summary}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_source_carries_its_own_rejection_key() {
+        // The keys are generated from `SOURCES`, so what a reader cannot see by reading
+        // the format string is that all four are actually on the line. A source added to
+        // `Diagnostics` without a `SOURCES` entry loses its key silently, and `zip` is
+        // what makes that silent rather than a compile error.
+        let summary = replay(&still_start()).summary();
+        for source in SOURCES {
+            assert!(
+                summary.contains(&format!(" rejected_{source}=")),
+                "no rejected_{source}= on the line: {summary}"
+            );
+        }
+        assert_eq!(SOURCES.len(), Diagnostics::default().sources().len());
     }
 
     #[test]

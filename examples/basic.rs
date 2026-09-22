@@ -1,8 +1,8 @@
 //! The smallest useful integration: initialize, propagate at IMU rate, fuse what arrives.
 //!
 //! The filter levels and takes a heading from the window, then `predict` propagates the
-//! nominal state and its covariance, (9)–(22), and each GNSS fix corrects both, (23)–(41).
-//! Velocity, barometer and heading still accept without correcting anything. What it shows is
+//! nominal state and its covariance, (9)–(22), and each GNSS fix and barometric altitude
+//! corrects both, (23)–(41). Heading still accepts without correcting anything. What it shows is
 //! the shape of the loop a flight controller would write.
 //!
 //! Run with `cargo run --example basic`. For dropouts, gate outcomes, and diagnostics,
