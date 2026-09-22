@@ -72,8 +72,8 @@ pub use state::{CovarianceMatrix, STATES};
 /// [`Frame`], [`STATES`], and [`CovarianceMatrix`]. Import those by path.
 pub mod prelude {
     pub use crate::config::{
-        ALIGNED_HEADING, ALIGNED_TILT, Accuracy, Config, GRAVITY, Gates, ImuNoise, Initialization,
-        Timeouts,
+        ALIGNED_HEADING, ALIGNED_TILT, Accuracy, Config, GRAVITY, Gate, Gates, ImuNoise,
+        Initialization, Percentile, Timeouts,
     };
     pub use crate::eskf::Eskf;
     pub use crate::frames::{Body, Enu, Ned};

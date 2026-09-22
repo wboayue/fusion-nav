@@ -38,7 +38,15 @@ pub extern "C" fn _start() -> ! {
 }
 
 fn drive() {
-    let mut filter = Eskf::new(black_box(Config::default()));
+    let mut gates = Gates::at(black_box(Percentile::P99));
+    gates.mag_heading = Gate::<1>::at(black_box(Percentile::P999));
+    if let Some(gate) = Gate::new(black_box(gates.baro_altitude.threshold())) {
+        gates.baro_altitude = gate;
+    }
+    let mut filter = Eskf::new(black_box(Config {
+        gates,
+        ..Config::default()
+    }));
     let dt = Seconds::from_secs(black_box(0.0025));
     let sample = StaticSample {
         imu: ImuSample {

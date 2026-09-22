@@ -46,7 +46,7 @@
 //! apart or say what became of one:
 //!
 //! ```text
-//! # one row per fuse_* call. gates gnss_pos=7.81 gnss_vel=7.81 baro=3.84 mag=3.84
+//! # one row per fuse_* call. gates gnss_pos=7.814728 gnss_vel=7.814728 baro=3.841459 mag=3.841459
 //! t_s,source,nu0,nu1,nu2,s0,s1,s2,ratio,outcome
 //! 2.0000,gnss_pos,,,,,,,0.0000,accepted
 //! 0.1000,baro,,,,,,,,not_initialized
@@ -1706,7 +1706,10 @@ fn write_fusion_header(out: &mut impl Write, gates: Gates) -> io::Result<()> {
     writeln!(
         out,
         "# one row per fuse_* call. gates gnss_pos={} gnss_vel={} baro={} mag={}",
-        gates.gnss_position, gates.gnss_velocity, gates.baro_altitude, gates.mag_heading
+        gates.gnss_position.threshold(),
+        gates.gnss_velocity.threshold(),
+        gates.baro_altitude.threshold(),
+        gates.mag_heading.threshold()
     )?;
     writeln!(
         out,
@@ -2534,14 +2537,11 @@ mod tests {
     fn the_fusion_header_carries_the_gates_the_ratios_were_produced_under() {
         // `r = ε / γ`, so a ratio without its `γ` is not recoverable to NIS.
         let mut out = Vec::new();
-        let config = Config {
-            gates: Gates {
-                baro_altitude: 2.71,
-                ..Gates::default()
-            },
-            ..Config::default()
+        let gates = Gates {
+            baro_altitude: Gate::new(2.71).expect("a positive threshold"),
+            ..Gates::default()
         };
-        write_fusion_header(&mut out, config.gates).expect("header");
+        write_fusion_header(&mut out, gates).expect("header");
         let text = String::from_utf8(out).expect("utf-8");
         assert!(text.contains("baro=2.71"), "the gate in force: {text}");
         assert_eq!(
