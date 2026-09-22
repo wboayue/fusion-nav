@@ -4,16 +4,20 @@ This file provides guidance to coding agents working with code in this repositor
 
 ## Status
 
-**Aided by GNSS position.** Initialization is real — equations (5)–(8), so the filter starts at
-the attitude and biases the window yields — `predict` propagates the nominal state *and* its
-covariance, (9)–(22), and a GNSS position fix corrects both: the update of (23)–(27) in Joseph
-form, its observation model (28), the gate of (37)–(38) and the injection and reset of (39)–(41)
-all exist, in `src/update.rs` and `src/observation/gnss.rs`. So `mission` scores 0.70 m of
-horizontal RMSE where dead reckoning scored 1261, and the gate turns a fix down rather than
-taking everything offered. What is still uncorrected is what the other three `fuse_*` carry:
-velocity, height and heading accept with a zero test ratio, so between fixes — and on every axis a
-position fix reaches only through the covariance — the estimate is still dead reckoning, which is
-what `Validity` and `attitude_lost=` stay honest about. Also real: the health bookkeeping (timers,
+**Aided by GNSS position and velocity.** Initialization is real — equations (5)–(8), so the filter
+starts at the attitude and biases the window yields — `predict` propagates the nominal state *and*
+its covariance, (9)–(22), and a GNSS position or velocity fix corrects both: the update of
+(23)–(27) in Joseph form, the observation models (28) and (29), the gate of (37)–(38) and the
+injection and reset of (39)–(41) all exist, in `src/update.rs` and `src/observation/gnss.rs`. So
+`mission` scores 0.240 m of horizontal RMSE and 0.190 m/s of velocity where dead reckoning scored
+1261, and velocity halves the attitude error with no attitude observation anywhere in the filter
+(`tilt` 1.010° → 0.509), the correction arriving through the velocity–attitude blocks (20) builds.
+The gate turns a fix down rather than taking everything offered — on the corpus as of (29), where
+`a299e722` refuses 284 of its 609 velocity solutions, a receiver its own differenced positions
+contradict (#105 is whether the harness should floor `R` as both production estimators do). What
+is still uncorrected is what the other two `fuse_*` carry: height and heading accept with a zero
+test ratio, so between fixes — and on every axis a fix reaches only through the covariance — the
+estimate is still dead reckoning, which is what `Validity` and `attitude_lost=` stay honest about. Also real: the health bookkeeping (timers,
 `Status`, `Diagnostics`), the typed API surface, and the replay harness. Anything stubbed says so in its doc comment with a `**Stub.**` paragraph — keep that
 marker accurate when landing real math, and keep the same caveat in `README.md`, `DESIGN.md`,
 `EQUATIONS.md`, `src/eskf.rs`, and the example module docs, which all repeat it —
@@ -79,7 +83,8 @@ cannot be corrected.
 builds on it, not after. The rule has held so far: #58 landed before stage 5, the first code to read
 `Config::gates`, so the gate reads a `Gate<M>` typed by its degrees of freedom rather than a bare
 `f32`, and stage 5 then decided the default percentile from replay (`P999`) in the diff that first
-made `rejected=` non-zero; #61 landed before stage 2, so a quaternion reaches `Attitude` only through
+turned a fix down at all — the corpus stayed at `rejected=0` on all five logs until (29) reached a
+receiver whose velocity it refuses; #61 landed before stage 2, so a quaternion reaches `Attitude` only through
 a constructor naming its convention (`body_to_ned`, `ned_to_body`, `flu_to_enu`, `flu_to_nwu`) and
 the `q̂₀` of (5)–(7) is committed through the final shape; #59's signature landed with it, so
 `StaticSample` carries GNSS velocity and `Coarse::NotStationary` reports `ā_n`. What is left of #59
@@ -395,7 +400,7 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
   crate, 6944 bytes on `thumbv6m`, which is why `reset` applies `G P Gᵀ` block-wise; the figure
   and the #41 that would revisit it are in the doc comments.
 - `src/observation/` — one module per sensor, each forming `y`, `H` and diagonal `R_m` and
-  nothing else. `gnss.rs` holds (28); (29)–(36) are unbuilt.
+  nothing else. `gnss.rs` holds (28) and (29); (30)–(36) are unbuilt.
 - `src/math.rs` — the primitives the equations share: `skew`, `exp_quat`, `wrap_pi`,
   `enforce_symmetry` (42). Pure, stateless, and unit-tested against their definitions. All four
   have callers as of (16)–(22), so none carries a dead-code allowance any more. Neither does
