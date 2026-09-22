@@ -4,12 +4,12 @@ How `fusion-nav` is built and why. For how to use it see [README.md](README.md);
 mathematics see [EQUATIONS.md](EQUATIONS.md); for positioning and decisions already made see
 [GOALS.md](GOALS.md).
 
-> **Status: aided by GNSS position only.** The structure below is the intended one, and the
-> types and signatures exist. Implemented: initialization, equations (5)–(8), so the filter
+> **Status: aided by GNSS position and velocity.** The structure below is the intended one, and
+> the types and signatures exist. Implemented: initialization, equations (5)–(8), so the filter
 > starts at the attitude it levelled; nominal propagation, (9)–(15), and covariance propagation,
 > (16)–(22), so the state dead reckons and the uncertainty beside it grows; and the measurement
-> update, (23)–(28) and (37)–(41), wired to GNSS position. Not implemented: the velocity,
-> barometer and heading observations (29)–(36), whose `fuse_*` still change nothing.
+> update, (23)–(29) and (37)–(41), wired to both GNSS observations. Not implemented: the
+> barometer and heading observations (30)–(36), whose `fuse_*` still change nothing.
 
 ## Error-State Kalman Filter
 
@@ -273,7 +273,11 @@ shown.
 The gate's `rejected=` was therefore added while every `fuse_*` was still a stub returning a zero
 test ratio. A key whose value is trivially constant still fixes the corpus baseline that its first
 real value is read against, so defining a statistic before there are values to put in it is the
-normal order here rather than a workaround.
+normal order here rather than a workaround. It paid at stage 6. `rejected=` had been zero across
+five logs and all four candidate gates while GNSS position was the only gated source; the first
+velocity fusion turned down 284 of one log's 609 solutions, and that arrived as a diff against a
+pinned zero rather than as a number nobody had a baseline for. The same argument is why `ba=` and
+`bg=` were added to the `score` line on the stub filter one commit before (29) landed.
 
 **`-D warnings` decides what can land alone.** The generic update of (23)–(28) has no caller of
 its own — an observation model is what calls it — so a module holding it and nothing else fails

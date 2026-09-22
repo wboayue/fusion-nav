@@ -80,6 +80,7 @@
 //! | `pos_h`, `pos_v`, `vel` | RMSE, m and m s⁻¹ |
 //! | `pos_h_max` | worst horizontal position error, m — the excursion an RMSE hides |
 //! | `tilt`, `yaw` | RMS attitude error, degrees |
+//! | `ba`, `bg` | RMS bias error, m s⁻² and rad s⁻¹ — the estimate against the bias applied |
 //! | `in3s` | fraction of axis-epochs within 3σ, over all 15 states |
 //! | `nees_pos`, `nees_vel`, `nees_att` | mean NEES per degree of freedom; ≈1 is consistent |
 //! | `false_valid` | quantity-epochs claimed usable while the error exceeded `Config::accuracy` |
@@ -92,8 +93,17 @@
 //! `in3s` and `nees_*` are not the same test twice. `in3s` is marginal — per axis, on the
 //! covariance diagonal alone — and `nees_*` is joint, reading each block's correlations. A
 //! covariance with the right variances and the wrong correlations passes the first and fails
-//! the second. `in3s` is also the only key that reaches the bias states, which no `nees_*`
-//! block covers and which the truth file carries as *applied*, walk included.
+//! the second. Neither reaches the bias states as an *error*: `in3s` asks only whether the
+//! bias error sits inside a 3σ that grows on its own, and no `nees_*` block covers them.
+//!
+//! `ba` and `bg` are that error, against the bias the truth file carries as *applied* to
+//! that sample, walk included. They are the only keys that fail when a bias estimate walks
+//! away from the bias in the IMU, which is a failure the position keys absorb for a long
+//! time: an accelerometer bias enters position through two integrations, so a filter can
+//! hold metre accuracy against fixes while its `β̂ₐ` is wrong by most of the bias. The
+//! simulator injects a fixed `[0.043, −0.062, 0.027]` m s⁻² that `ImuNoise::default` does
+//! not know about, so a `ba` at that magnitude is a filter estimating nothing, and the
+//! distance below it is what the aiding bought.
 //!
 //! `false_valid` counts quantity-epochs where the filter's own [`Validity`] said a quantity
 //! was usable and the truth error was outside `Config::accuracy`. It reads the filter's
@@ -116,10 +126,10 @@
 //!
 //! # What the score measures today
 //!
-//! **Stub.** GNSS position is the only aiding that reaches the state, so every figure here is
-//! a position-aided filter's: velocity, attitude and the biases are corrected only through the
-//! correlations a position fix reaches. Stages 6–8 of #31 add the rest, and each is measured
-//! against this.
+//! **Stub.** The two GNSS observations are the only aiding that reaches the state, so every
+//! figure here is theirs: attitude and the biases are corrected only through the correlations
+//! (20) builds. Stages 7 and 8 of #31 add the barometer and the magnetometer, and each is
+//! measured against this.
 //!
 //! `nees_*` is a ratio of two quantities that both move: the error, and a `P` that (22) grows
 //! and (27) shrinks. On these scenarios it approaches 1 from below, because
@@ -132,11 +142,12 @@
 //!
 //! Five of the scenarios are one-variable departures from `mission` on `mission`'s seed, so
 //! what attributes a fault is `score(departure) − score(mission)` rather than either alone.
-//! `gnss_outage` and `gnss_latency` separate through the position fixes they change, and
-//! `harsh_imu` through propagation, though a position-aided filter no longer integrates that
-//! noise far enough for it to show much. `baro_drift` and `mag_disturbance` still score
-//! identically to `mission` to the last digit, because each departs in a source whose `fuse_*`
-//! is a stub; they start measuring at stages 7 and 8.
+//! `gnss_outage` and `gnss_latency` separate through the GNSS they change, and `harsh_imu`
+//! through propagation — no longer on the position keys at all, which read `mission`'s figures
+//! now that two quantities are aided, but on `tilt` and on `ba`, the keys that read the IMU's
+//! own errors. `baro_drift` and `mag_disturbance` still score identically to `mission` to the
+//! last digit, because each departs in a source whose `fuse_*` is a stub; they start measuring
+//! at stages 7 and 8.
 //!
 //! A refused propagation step is still scored. The epoch row is written either way — the
 //! state is simply the one before it — and that stale state is what the filter published, so
@@ -827,6 +838,11 @@ impl Replay {
             score.rms(score.yaw).to_degrees(),
         );
         println!(
+            "  bias         RMS {:.5} m/s^2 accelerometer, {:.6} rad/s gyroscope",
+            score.rms(score.accel_bias),
+            score.rms(score.gyro_bias),
+        );
+        println!(
             "  consistency  {:.1}% of axis-epochs within 3 sigma; NEES/dof {} pos, \
              {} vel, {} att",
             100.0 * score.in3s(),
@@ -1486,6 +1502,8 @@ struct Score {
     velocity: f64,
     tilt: f64,
     yaw: f64,
+    accel_bias: f64,
+    gyro_bias: f64,
     within_3s: u64,
     axes: u64,
     nees: [f64; 3],
@@ -1524,6 +1542,10 @@ impl Score {
         );
         self.tilt += f64::from(horizontal(&error, AttitudeX, AttitudeY)).powi(2);
         self.yaw += f64::from(at(&error, AttitudeZ)).powi(2);
+        // Whole blocks, the way `velocity` is scored: a bias is estimated per axis but
+        // wrong as one vector, and no part of `Accuracy` splits it.
+        self.accel_bias += f64::from(error.fixed_rows::<BLOCK>(AccelBiasX.index()).norm_squared());
+        self.gyro_bias += f64::from(error.fixed_rows::<BLOCK>(GyroBiasX.index()).norm_squared());
 
         let p = covariance.as_matrix();
         for i in 0..STATES {
@@ -1612,14 +1634,16 @@ impl Score {
         }
         format!(
             "score pos_h={:.3} pos_v={:.3} vel={:.3} pos_h_max={:.3} tilt={:.3} yaw={:.3} \
-             in3s={:.4} nees_pos={} nees_vel={} nees_att={} false_valid={} \
-             false_valid_att={} scored={}",
+             ba={:.5} bg={:.6} in3s={:.4} nees_pos={} nees_vel={} nees_att={} \
+             false_valid={} false_valid_att={} scored={}",
             self.rms(self.position_horizontal),
             self.rms(self.position_vertical),
             self.rms(self.velocity),
             self.position_horizontal_max,
             self.rms(self.tilt).to_degrees(),
             self.rms(self.yaw).to_degrees(),
+            self.rms(self.accel_bias),
+            self.rms(self.gyro_bias),
             self.in3s(),
             self.nees_text(0),
             self.nees_text(1),
@@ -2565,11 +2589,12 @@ mod tests {
     #[test]
     fn a_call_the_gate_did_not_judge_leaves_the_innovation_columns_empty() {
         // A refusal and a stub both follow a gated fix, whose values must not be written
-        // again against a measurement they do not describe. Velocity is still a stub.
+        // again against a measurement they do not describe. The barometer is the stub here;
+        // this fixture names whichever source still is one, and moves when that changes.
         let log = still_start()
             .gnss_pos(2.0, 1.0, 2.0, -3.0)
             .raw("2.100000,gnss_pos,1,2,-3,,,,0,2.25,5.625")
-            .gnss_vel(2.2, 0.0, 0.0, 0.0);
+            .baro(2.2, 0.0);
         let rows = fusion_rows(&log);
         for row in &rows[rows.len() - 2..] {
             let fields: Vec<&str> = row.split(',').collect();
@@ -2723,6 +2748,8 @@ mod tests {
         assert_eq!(score.position_horizontal_max, 0.0);
         assert_eq!(score.rms(score.tilt), 0.0);
         assert_eq!(score.rms(score.yaw), 0.0);
+        assert_eq!(score.rms(score.accel_bias), 0.0);
+        assert_eq!(score.rms(score.gyro_bias), 0.0);
         assert_eq!(score.false_valid(), 0);
         assert_eq!(score.within_3s, score.axes, "all 15 axes, not just the 9");
         for block in 0..3 {
@@ -2745,6 +2772,31 @@ mod tests {
         for i in (0..STATES).filter(|i| !(6..9).contains(i)) {
             assert_eq!(error[i], 1.0, "state {i} is not in the error vector");
         }
+    }
+
+    #[test]
+    fn the_bias_keys_read_one_block_each() {
+        // Two keys, two blocks. An error in the accelerometer bias alone must leave `bg` at
+        // zero: wired to one offset, or to each other's, both move together and the pair
+        // stops saying which bias walked — which is the whole reason for publishing two.
+        // 3 and 4 on two axes rather than ones, so a key summing the block instead of
+        // taking its norm reads 7 here and 2 under a fixture of ones.
+        let mut values = [0.0f32; STATES];
+        values[ErrorState::AccelBiasX.index()] = 3.0;
+        values[ErrorState::AccelBiasY.index()] = 4.0;
+        let score = score_one(
+            &state_at(0.0, 0.0, 0.0),
+            &Covariance::from_sigmas([0.5; STATES]),
+            &truth_row(0.0, values),
+        );
+        assert_eq!(score.rms(score.accel_bias), 5.0, "the block's norm");
+        assert_eq!(score.rms(score.gyro_bias), 0.0, "a block of its own");
+        // And through the serialized line, where the two are positional arguments among
+        // fifteen: a key inserted in the wrong place reads its neighbour's value, and the
+        // accumulators above cannot see that.
+        let line = score.line();
+        assert_eq!(key(&line, "ba"), "5.00000");
+        assert_eq!(key(&line, "bg"), "0.000000");
     }
 
     #[test]
