@@ -18,11 +18,13 @@ use crate::update::{Update, update};
 ///
 /// **Stub.** Every method below has its intended signature and does its own bookkeeping.
 /// What is implemented is initialization, (5)–(8), propagation, (9)–(22), and the update of
-/// (23)–(41) for GNSS position: the state dead reckons from where
+/// (23)–(41) for both GNSS observations: the state dead reckons from where
 /// [`initialize`](Self::initialize) put it, the covariance grows around it, and
-/// [`fuse_gnss_position`](Self::fuse_gnss_position) and
-/// [`fuse_gnss_geodetic`](Self::fuse_gnss_geodetic) correct both. The other three `fuse_*`
-/// accept without changing the estimate.
+/// [`fuse_gnss_position`](Self::fuse_gnss_position),
+/// [`fuse_gnss_geodetic`](Self::fuse_gnss_geodetic) and
+/// [`fuse_gnss_velocity`](Self::fuse_gnss_velocity) correct both.
+/// [`fuse_baro_altitude`](Self::fuse_baro_altitude) and
+/// [`fuse_mag_heading`](Self::fuse_mag_heading) accept without changing the estimate.
 ///
 /// # Example
 ///
@@ -686,7 +688,9 @@ impl Eskf {
     /// is the constructor to reach for: all three axes are fused or none, and a per-axis
     /// σ is what says which of them the receiver actually measured.
     ///
-    /// **Stub.** Records an acceptance with a zero test ratio; corrects nothing.
+    /// A solution inconsistent with the estimate at
+    /// [`Gates::gnss_velocity`](crate::Gates) is [`Fusion::Rejected`] and changes nothing
+    /// but the source's health. One joint test over all three axes, as (28)'s is.
     pub fn fuse_gnss_velocity(
         &mut self,
         velocity: Velocity<Ned>,
@@ -707,8 +711,14 @@ impl Eskf {
             self.diagnostics.gnss_velocity.record_adopted();
             return Fusion::Reset;
         }
-        let _ = (velocity, noise);
-        stub_accept(&mut self.diagnostics.gnss_velocity)
+        let observation = gnss::velocity_observation(&self.state, velocity, noise);
+        let outcome = update(
+            &self.state,
+            &self.covariance,
+            &observation,
+            self.config.gates.gnss_velocity,
+        );
+        self.apply(outcome, |diagnostics| &mut diagnostics.gnss_velocity)
     }
 
     /// Fuse a barometric altitude. Equation (30).

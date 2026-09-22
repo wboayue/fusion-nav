@@ -2,15 +2,16 @@
 
 Embedded-first inertial navigation using a 15-state Error-State Kalman Filter (ESKF).
 
-> **Status: aided by GNSS position only.** The types and signatures below exist and compile.
-> Initialization is real — the filter levels, takes a heading and a gyroscope bias, and sets its
-> covariance — and `predict` propagates the state *and* its uncertainty, equations (9)–(22).
-> `fuse_gnss_position` and `fuse_gnss_geodetic` correct them, equations (23)–(28), through the
-> innovation gate of (37)–(38). The other three `fuse_*` still accept without changing the
-> estimate: velocity, attitude and the biases are corrected only as far as a position fix
-> reaches them through the covariance. Where no fix arrives, the uncertainty grows without bound,
-> and `Validity` says so: each flag goes false as its own variance passes `Config::accuracy`,
-> 3.82 s in for tilt at the default noise on an unaided start. The design is subject to change.
+> **Status: aided by GNSS position and velocity.** The types and signatures below exist and
+> compile. Initialization is real — the filter levels, takes a heading and a gyroscope bias, and
+> sets its covariance — and `predict` propagates the state *and* its uncertainty, equations
+> (9)–(22). `fuse_gnss_position`, `fuse_gnss_geodetic` and `fuse_gnss_velocity` correct them,
+> equations (23)–(29), through the innovation gate of (37)–(38). The remaining two `fuse_*`,
+> barometric altitude and magnetic heading, still accept without changing the estimate: attitude
+> and the biases are corrected only as far as the two GNSS observations reach them through the
+> covariance. Where no aiding arrives, the uncertainty grows without bound, and `Validity` says
+> so: each flag goes false as its own variance passes `Config::accuracy`, 3.82 s in for tilt at
+> the default noise on an unaided start. The design is subject to change.
 
 `fusion-nav` estimates 3D attitude, velocity, and position by fusing IMU measurements with GNSS,
 barometric altitude, and magnetometer observations. It is `no_std`, allocation-free, and aimed at

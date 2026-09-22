@@ -126,10 +126,10 @@
 //!
 //! # What the score measures today
 //!
-//! **Stub.** GNSS position is the only aiding that reaches the state, so every figure here is
-//! a position-aided filter's: velocity, attitude and the biases are corrected only through the
-//! correlations a position fix reaches. Stages 6–8 of #31 add the rest, and each is measured
-//! against this.
+//! **Stub.** The two GNSS observations are the only aiding that reaches the state, so every
+//! figure here is theirs: attitude and the biases are corrected only through the correlations
+//! (20) builds. Stages 7 and 8 of #31 add the barometer and the magnetometer, and each is
+//! measured against this.
 //!
 //! `nees_*` is a ratio of two quantities that both move: the error, and a `P` that (22) grows
 //! and (27) shrinks. On these scenarios it approaches 1 from below, because
@@ -142,11 +142,12 @@
 //!
 //! Five of the scenarios are one-variable departures from `mission` on `mission`'s seed, so
 //! what attributes a fault is `score(departure) − score(mission)` rather than either alone.
-//! `gnss_outage` and `gnss_latency` separate through the position fixes they change, and
-//! `harsh_imu` through propagation, though a position-aided filter no longer integrates that
-//! noise far enough for it to show much. `baro_drift` and `mag_disturbance` still score
-//! identically to `mission` to the last digit, because each departs in a source whose `fuse_*`
-//! is a stub; they start measuring at stages 7 and 8.
+//! `gnss_outage` and `gnss_latency` separate through the GNSS they change, and `harsh_imu`
+//! through propagation — no longer on the position keys at all, which read `mission`'s figures
+//! now that two quantities are aided, but on `tilt` and on `ba`, the keys that read the IMU's
+//! own errors. `baro_drift` and `mag_disturbance` still score identically to `mission` to the
+//! last digit, because each departs in a source whose `fuse_*` is a stub; they start measuring
+//! at stages 7 and 8.
 //!
 //! A refused propagation step is still scored. The epoch row is written either way — the
 //! state is simply the one before it — and that stale state is what the filter published, so
@@ -2588,11 +2589,12 @@ mod tests {
     #[test]
     fn a_call_the_gate_did_not_judge_leaves_the_innovation_columns_empty() {
         // A refusal and a stub both follow a gated fix, whose values must not be written
-        // again against a measurement they do not describe. Velocity is still a stub.
+        // again against a measurement they do not describe. The barometer is the stub here;
+        // this fixture names whichever source still is one, and moves when that changes.
         let log = still_start()
             .gnss_pos(2.0, 1.0, 2.0, -3.0)
             .raw("2.100000,gnss_pos,1,2,-3,,,,0,2.25,5.625")
-            .gnss_vel(2.2, 0.0, 0.0, 0.0);
+            .baro(2.2, 0.0);
         let rows = fusion_rows(&log);
         for row in &rows[rows.len() - 2..] {
             let fields: Vec<&str> = row.split(',').collect();

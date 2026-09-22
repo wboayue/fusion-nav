@@ -2,9 +2,10 @@
 
 > **Status: the estimation mathematics is partly implemented.** (9)–(15) propagate the nominal
 > state and (16)–(22) propagate `P`, so `predict` moves position, velocity and attitude and says
-> how little it knows about them. GNSS position corrects them: the update (23)–(27), its
-> observation model (28), the gate (37)–(38) and the injection and reset (39)–(41) are built. The
-> other observation models, (29)–(36), are not, and their `fuse_*` accept with a zero test ratio.
+> how little it knows about them. GNSS corrects them: the update (23)–(27), the observation
+> models for position (28) and velocity (29), the gate (37)–(38) and the injection and reset
+> (39)–(41) are built. The remaining observation models, (30)–(36), are not, and their `fuse_*`
+> accept with a zero test ratio.
 > Also built: the attitude and biases of (5)–(7), the
 > initial covariance (8) and the bound (8′) a coarse window earns, the barometric reference `α₀` of
 > (30), the window's own acceleration
@@ -807,7 +808,7 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | (22) | covariance propagation | `propagate.rs` | `propagate_covariance`, called with (9)–(15) by `propagate` |
 | (23)–(27) | generic update, Joseph form | `update.rs` | `update` |
 | (28) | GNSS position | `observation/gnss.rs` | `position_jacobian`, `position_observation` |
-| (29) | GNSS velocity | `observation/gnss.rs` | `velocity_jacobian`, unbuilt |
+| (29) | GNSS velocity | `observation/gnss.rs` | `velocity_jacobian`, `velocity_observation` |
 | (30) | barometric altitude | `observation/baro.rs` | `altitude_jacobian`, unbuilt |
 | (31)–(33) | magnetometer, three-axis | `observation/mag.rs` | `field_jacobian`, unbuilt and out of scope |
 | (34)–(36) | magnetometer, heading only | `observation/mag.rs` | `heading_innovation`, `heading_jacobian`, unbuilt |

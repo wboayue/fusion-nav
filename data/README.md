@@ -59,13 +59,14 @@ $ cargo run --example replay -- \
 ```
 
 ```text
-score pos_h=0.702 pos_v=0.749 vel=0.647 pos_h_max=1.995 tilt=1.010 yaw=1.360 …
+score pos_h=0.240 pos_v=0.273 vel=0.190 pos_h_max=0.878 tilt=0.509 yaw=0.636 …
 ```
 
-Those are figures for a filter aided by **GNSS position alone**: (23)–(28) correct the state at
-each fix, and velocity, barometer and heading are not fused yet. Unaided, the same 185 s read
-`pos_h=1248.627`, because a 2° tilt error leaks gravity into the horizontal channel and
-integrates twice. They move again when a stage of #31 lands.
+Those are figures for a filter aided by **GNSS position and velocity**: (23)–(29) correct the
+state at each fix and each velocity solution, and the barometer and the magnetometer are not
+fused yet. Aided by position alone the same 185 s read `pos_h=0.702`; unaided, `pos_h=1248.627`,
+because a 2° tilt error leaks gravity into the horizontal channel and integrates twice. They
+move again when a stage of #31 lands.
 
 What each key means, and what it can and cannot say on these scenarios, is in the module docs of
 `examples/replay.rs`, which owns the definitions. Two things about *using* it belong here:
