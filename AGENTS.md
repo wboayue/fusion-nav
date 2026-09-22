@@ -4,20 +4,35 @@ This file provides guidance to coding agents working with code in this repositor
 
 ## Status
 
-**Aided by GNSS position and velocity.** Initialization is real — equations (5)–(8), so the filter
-starts at the attitude and biases the window yields — `predict` propagates the nominal state *and*
-its covariance, (9)–(22), and a GNSS position or velocity fix corrects both: the update of
-(23)–(27) in Joseph form, the observation models (28) and (29), the gate of (37)–(38) and the
-injection and reset of (39)–(41) all exist, in `src/update.rs` and `src/observation/gnss.rs`. So
-`mission` scores 0.240 m of horizontal RMSE and 0.190 m/s of velocity where dead reckoning scored
-1261, and velocity halves the attitude error with no attitude observation anywhere in the filter
-(`tilt` 1.010° → 0.509), the correction arriving through the velocity–attitude blocks (20) builds.
+**Aided by GNSS position and velocity and by the barometer.** Initialization is real — equations
+(5)–(8), so the filter starts at the attitude and biases the window yields — `predict` propagates
+the nominal state *and* its covariance, (9)–(22), and a GNSS position, a GNSS velocity or a
+barometric altitude corrects both: the update of (23)–(27) in Joseph form, the observation models
+(28), (29) and (30), the gate of (37)–(38) and the injection and reset of (39)–(41) all exist, in
+`src/update.rs` and `src/observation/{gnss,baro}.rs`. So `mission` scores 0.240 m of horizontal
+RMSE, 0.190 m/s of velocity and 0.083 m of height where dead reckoning scored 1261, and velocity
+halves the attitude error with no attitude observation anywhere in the filter (`tilt` 1.010° →
+0.509), the correction arriving through the velocity–attitude blocks (20) builds.
 The gate turns a fix down rather than taking everything offered — on the corpus as of (29), where
 `a299e722` refuses 284 of its 609 velocity solutions, a receiver its own differenced positions
-contradict (#105 is whether the harness should floor `R` as both production estimators do). What
-is still uncorrected is what the other two `fuse_*` carry: height and heading accept with a zero
-test ratio, so between fixes — and on every axis a fix reaches only through the covariance — the
-estimate is still dead reckoning, which is what `Validity` and `attitude_lost=` stay honest about. Also real: the health bookkeeping (timers,
+contradict (#105 is whether the harness should floor `R` as both production estimators do); the
+barometer has never been turned down there, 6727 altitudes accepted across four logs. What is
+still uncorrected is what the last `fuse_*` carries: heading accepts with a zero test ratio, so
+between fixes — and on every axis a fix reaches only through the covariance — the estimate is
+still dead reckoning, which is what `Validity` and `attitude_lost=` stay honest about.
+
+**What (30) bought, and what it cost.** Height is the key that moved — `mission` `pos_v` 0.273 m →
+0.083, `flight` 0.819 → 0.414 — and `moving_start` is byte-identical on all fifteen keys, because
+a start in motion fixes no `α₀` and fuses no altitude. Two figures loosened and both are honest.
+`gnss_outage`'s `pos_h_max` went 11.93 m → 29.69 while its RMSE barely moved: 20 s into the gap
+`σ_pos_n` is 95 m against a barometer-held `σ_pos_d` of 0.14, so a height measurement's horizontal
+gain is ~94× the correlation the two carry and the sensor's own noise arrives sideways in metres.
+It is still worth having — the end-of-gap error is 1.39 m against 11.93 without it. And `static`'s
+`nees_pos` went 1.06 → 2.04, more accurate and more overconfident in one diff, which is #89's case:
+a 20 Hz barometer averages its noise down faster than the true error falls, and the accelerometer
+bias walk is what stops the error following. `baro_drift` is the same mechanism at full size —
+`pos_v` 2.052 m, `nees_pos` 257 — and `GOALS.md` now carries that figure under
+"Barometric reference as a constant", which had recorded the cost in words only. Also real: the health bookkeeping (timers,
 `Status`, `Diagnostics`), the typed API surface, and the replay harness. Anything stubbed says so in its doc comment with a `**Stub.**` paragraph — keep that
 marker accurate when landing real math, and keep the same caveat in `README.md`, `DESIGN.md`,
 `EQUATIONS.md`, `src/eskf.rs`, and the example module docs, which all repeat it —
