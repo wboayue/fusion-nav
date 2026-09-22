@@ -675,6 +675,31 @@ impl Replay {
         self.total(|health| health.rejected)
     }
 
+    /// The same count split per source, as ` rejected_<source>=<n>` pairs.
+    ///
+    /// The total alone averages two sources moving in opposite directions, which is the
+    /// reading `ba=` and `bg=` were split to avoid: fusing velocity halved one bias and
+    /// worsened the other, and one key would have reported a clean win. A gate makes the
+    /// same shape of claim — `a299e722` turns down 284 velocity solutions, and an altitude
+    /// its barometer gate also turned down would arrive on that line as a larger number
+    /// with nothing saying which source grew.
+    ///
+    /// The total stays beside these rather than being replaced by them, and is not
+    /// redundant: `data/expect.sh` fails a key named in the expectations and absent from
+    /// the line, but never a key on the line that no expectation names, so a source whose
+    /// own key nobody added to a manifest entry goes unwatched. The sum is what notices.
+    ///
+    /// Names come from `SOURCES`, so a key reads as its own `r_<source>` column and the
+    /// fusion rows of that source spell it the same way; `Diagnostics` order is what pairs
+    /// the two lists, as it does for `RATIOS`.
+    fn rejections_by_source(&self) -> String {
+        SOURCES
+            .iter()
+            .zip(self.filter.diagnostics().sources())
+            .map(|(name, (_, health))| format!(" rejected_{name}={}", health.rejected))
+            .collect()
+    }
+
     /// Keep the first moment the filter reported itself aligned, and only the first.
     ///
     /// Taken at the commit as well as at every epoch: a window that carried a magnetometer
@@ -1027,7 +1052,7 @@ impl Replay {
         format!(
             "summary rate={:.0} window={} align={} an={} alpha0={} heading={} \
              roll0={roll0:.2} pitch0={pitch0:.2} yaw0={yaw0:.2} resets={} \
-             aligned_at={} attitude_lost={} rejected={} discarded={} refused={} \
+             aligned_at={} attitude_lost={} rejected={}{} discarded={} refused={} \
              invalid={} epochs={} \
              transitions={} status={:?}",
             self.interval.map_or(0.0, |interval| 1.0 / interval),
@@ -1081,12 +1106,13 @@ impl Replay {
             // because it is the only key that moves when propagation's uncertainty model
             // changes, and because the update of (23)–(28) should push it to `never`.
             self.attitude_lost_after(),
-            // The gate's verdict, which nothing on this line reported before: `refused=`
-            // and `invalid=` are propagation steps, not measurements, and a change that
-            // started turning down every fix in the corpus would have passed `--check`
-            // unmoved. It reads zero until the χ² gate of (37) is real, and is pinned
-            // from now so that the first non-zero is a diff and not a discovery.
+            // The gate's verdict, which no other key on this line reports: `refused=` and
+            // `invalid=` are propagation steps, not measurements, so a change that started
+            // turning down every fix in the corpus would pass `--check` unmoved without
+            // this. The total, then the same count per source; see `rejections_by_source`
+            // for why both.
             self.rejections(),
+            self.rejections_by_source(),
             // Everything that never reached the gate. See `Replay::discarded`.
             self.discarded(),
             self.filter.diagnostics().propagation.refused_too_long,
@@ -2407,6 +2433,43 @@ mod tests {
         let summary = replay(&log).summary();
         assert_eq!(key(&summary, "rejected"), "1", "{summary}");
         assert_eq!(key(&replay(&still_start()).summary(), "rejected"), "0");
+    }
+
+    #[test]
+    fn a_rejection_is_attributed_to_the_source_that_earned_it() {
+        // The same kilometre-off fix as above, so the total is 1 and exactly one source
+        // may claim it. Asserting the other three are zero is the half that matters: a
+        // fragment built off the wrong list would still total correctly while naming the
+        // source beside the right one. Survives zipping `SOURCES` against a `sources()`
+        // in a different order, which `RATIOS` would not have caught either.
+        let log = still_start()
+            .gnss_pos(2.0, 1.0, 2.0, -3.0)
+            .gnss_pos(2.2, 1000.0, 0.0, 0.0);
+        let summary = replay(&log).summary();
+        assert_eq!(key(&summary, "rejected_gnss_pos"), "1", "{summary}");
+        for source in ["gnss_vel", "baro", "mag"] {
+            assert_eq!(
+                key(&summary, &format!("rejected_{source}")),
+                "0",
+                "{source} rejected nothing: {summary}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_source_carries_its_own_rejection_key() {
+        // The keys are generated from `SOURCES`, so what a reader cannot see by reading
+        // the format string is that all four are actually on the line. A source added to
+        // `Diagnostics` without a `SOURCES` entry loses its key silently, and `zip` is
+        // what makes that silent rather than a compile error.
+        let summary = replay(&still_start()).summary();
+        for source in SOURCES {
+            assert!(
+                summary.contains(&format!(" rejected_{source}=")),
+                "no rejected_{source}= on the line: {summary}"
+            );
+        }
+        assert_eq!(SOURCES.len(), Diagnostics::default().sources().len());
     }
 
     #[test]
