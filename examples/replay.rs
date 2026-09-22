@@ -2589,16 +2589,20 @@ mod tests {
     #[test]
     fn a_call_the_gate_did_not_judge_leaves_the_innovation_columns_empty() {
         // A refusal and a stub both follow a gated fix, whose values must not be written
-        // again against a measurement they do not describe. The barometer is the stub here;
-        // this fixture names whichever source still is one, and moves when that changes.
+        // again against a measurement they do not describe. The magnetometer is the stub here;
+        // this fixture names whichever source still is one, and moves when that changes. The
+        // verdicts are pinned because a barometer with no reference, refused `NoReference`
+        // before reaching the stub, passes the column check while testing only refusals.
         let log = still_start()
             .gnss_pos(2.0, 1.0, 2.0, -3.0)
             .raw("2.100000,gnss_pos,1,2,-3,,,,0,2.25,5.625")
-            .baro(2.2, 0.0);
+            .mag(2.2);
         let rows = fusion_rows(&log);
-        for row in &rows[rows.len() - 2..] {
+        let tail = &rows[rows.len() - 2..];
+        for (row, verdict) in tail.iter().zip(["invalid_noise", "accepted"]) {
             let fields: Vec<&str> = row.split(',').collect();
             assert_eq!(&fields[2..8], &["", "", "", "", "", ""], "ν and S: {row}");
+            assert_eq!(fields[9], verdict, "{row}");
         }
     }
 
