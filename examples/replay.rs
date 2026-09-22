@@ -2791,6 +2791,12 @@ mod tests {
         );
         assert_eq!(score.rms(score.accel_bias), 5.0, "the block's norm");
         assert_eq!(score.rms(score.gyro_bias), 0.0, "a block of its own");
+        // And through the serialized line, where the two are positional arguments among
+        // fifteen: a key inserted in the wrong place reads its neighbour's value, and the
+        // accumulators above cannot see that.
+        let line = score.line();
+        assert_eq!(key(&line, "ba"), "5.00000");
+        assert_eq!(key(&line, "bg"), "0.000000");
     }
 
     #[test]
