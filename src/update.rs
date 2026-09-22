@@ -366,10 +366,13 @@ mod tests {
             + SMatrix::<f32, 1, 1>::from_diagonal(&observation.r_m);
         let k = p * observation.h.transpose() * s.try_inverse().expect("S is 1 x 1 and > 0");
         let short = (CovarianceMatrix::identity() - k * observation.h) * p;
+        // Positive-definiteness alone, not symmetry: f32 rounding leaves the short form
+        // slightly asymmetric on its own, so an assertion that accepted either would pass
+        // without the short form ever losing the property Joseph form is chosen for.
+        // Cholesky reads the lower triangle only, so asymmetry does not decide it.
         assert!(
-            !is_symmetric(&short) || Cholesky::new(short).is_none(),
-            "the short form stays symmetric and positive-definite here, so this fixture \
-             shows nothing"
+            Cholesky::new(short).is_none(),
+            "the short form stays positive-definite here, so this fixture shows nothing"
         );
     }
 
