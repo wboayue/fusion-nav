@@ -222,7 +222,8 @@ stillness never supplies.
 
 `Config::accuracy` is deliberately the exception to [differentiator 7](#7-configuration-derived-not-demanded):
 how accurate is good enough is a property of the mission, not of the hardware or the mathematics,
-and no flight data settles it. Asking is correct here.
+and no flight data settles it. Asking is correct here. It is also why it moves `Validity` and
+nothing else: alignment is settled by two production estimators agreeing, so it is a constant.
 
 `Eskf::predicted_validity` answers the arming question that neither `Status` nor `Validity` can —
 whether each quantity will be good if the vehicle leaves the ground now, rather than whether it
@@ -284,9 +285,10 @@ The options, in the order they are worth doing:
    trustworthy. The missing concept was less any one algorithm than a way to say *running, but do
    not fly on my attitude yet*. **Done** — `initialize` no longer refuses a short or moving
    window, `initialize_coarse` needs no window at all, and `Status::Aligning` is reported until
-   `Eskf::is_aligned` says attitude uncertainty has come down to what a static start would have
-   given. Promotion is read from the covariance rather than run off a timer, and the bar reuses
-   `Initialization`'s own sigmas, so there is no new knob. Heading is the exception no covariance
+   `Eskf::is_aligned` says attitude uncertainty has come down to `ALIGNED_TILT` and
+   `ALIGNED_HEADING` — PX4's 3° of tilt, and 30° of heading, which neither estimator publishes a
+   variance bar for. Promotion is read from the covariance rather than run off a timer, and the
+   bars are constants, so there is no new knob. Heading is the exception no covariance
    can settle: stillness never observes yaw, so a vehicle with no magnetometer stays `Aligning`
    however tight the prior — which is what options 5 and 6 are for.
 3. **Gate policy while aligning.** Less of a special case than it first appears. The innovation
@@ -339,17 +341,23 @@ Two API decisions shape the rest, and are worth settling early:
   attitude itself has not converged. Conflating them would mislead a controller in precisely the
   phase where the distinction matters most. **Settled**, with `Aligning` the more severe of the
   two. The cost is real and the corpus has measured it: `Aligning` masked all 888 of the
-  in-motion log's aiding transitions for as long as its attitude prior stayed above `Accuracy`.
+  in-motion log's aiding transitions for as long as its attitude prior stayed above the alignment
+  bar.
   #77 brought that prior down to what the window supports, the start resolves 0.20 s in, and the
   transitions are reported. Which is the shape of the trade — the masking lasts exactly as long
   as a start takes to resolve, and that is a number the priors set.
 
   Leaving `Aligning` is **one-way**, and that is a second decision the corpus forced once `P`
   began to grow. Read live, the bar puts a filter back into `Aligning` whenever tilt uncertainty
-  crosses `Accuracy::tilt` — four `Healthy`/`Aligning` flaps in four seconds on the handled log,
+  crosses the tilt bar — four `Healthy`/`Aligning` flaps in four seconds on the handled log,
   from a yaw prior rotating into the tilt axes rather than from anything degrading. So `Aligning`
   reports *a start that has not been resolved*, and attitude quality right now is `Validity::tilt`,
   which does fall back. PX4 and ArduPilot latch the same flag for the same reason.
+
+  Nor does `Aligning` read the mission's bar, `Config::accuracy`. Whether the start has resolved
+  is not a mission question, and while one number answered both, fixing the alignment knife edge
+  meant widening a public promise about which outputs a controller may use (#95). Both
+  estimators answer it with an internal constant, and so does this one.
 
 Position and velocity were a related gap, and are now closed. A static start defines the origin
 as where the vehicle was and its velocity as zero, both true by construction; a coarse start can

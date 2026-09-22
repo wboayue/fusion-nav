@@ -15,13 +15,15 @@
 # some point, which transitions= already notices.
 #
 # aligned_at= is seconds from the end of the initialization window to the
-# first epoch whose Validity::attitude read true, or never. It is what
-# settled Accuracy's attitude defaults off the corpus the way replay settled
+# first epoch Eskf::is_aligned read true, or never. It is what settled the
+# alignment bars off the corpus the way replay settled
 # Timeouts::degraded_after: with tilt equal to Initialization::sigma_tilt and
 # heading equal to sigma_yaw, compared with <=, every static log here read
-# 0.00 and lost the claim one step later. tilt is now 3 degrees (PX4's own
-# alignment bar) and heading 30, and the static logs still read 0.00 -- a
-# window that observed gravity and a magnetometer is aligned when it closes.
+# 0.00 and lost the claim one step later. The bars are ALIGNED_TILT, 3
+# degrees (PX4's own), and ALIGNED_HEADING, 30, and the static logs read
+# 0.00 -- a window that observed gravity and a magnetometer is aligned when
+# it closes. They are constants, not Config::accuracy, so a mission bar
+# cannot move this key.
 #
 # 2c42096b is the one non-zero value, 0.20, and the wait is the heading's
 # rather than the tilt's: its window is moving, so nothing established a
@@ -29,14 +31,17 @@
 # heading. Tilt was already under the bar when the window closed, because
 # what bounds a coarse tilt is what that window's average supports and not
 # the worst sample in it (#77). It read never until then, on a prior that
-# nothing could bring under Accuracy.
+# nothing could bring under the alignment bar.
 #
-# attitude_lost= is the other side of the same question, added with covariance
-# propagation: seconds to the first epoch where that validity went away
-# again, or never. It exists because nothing else on this line moves when it
-# does -- Status::Aligning latches deliberately (Eskf::is_aligned), so the
-# growth of (16)-(22) would otherwise be invisible to the corpus, which has
-# no truth to score against and only bookkeeping to check.
+# attitude_lost= is the mission's side of the same question, added with
+# covariance propagation: seconds to the first epoch at or after alignment
+# where Validity::attitude read false against Config::accuracy, or never.
+# It exists because nothing else on this line moves when it does --
+# Status::Aligning latches deliberately (Eskf::is_aligned), so the growth of
+# (16)-(22) would otherwise be invisible to the corpus, which has no truth to
+# score against and only bookkeeping to check. Replayed at an Accuracy of 2.5
+# and 25 degrees instead, the five logs below read 2.90, 1.49, 2.92, 0.78 and
+# 2.90 with aligned_at= and transitions= unmoved: the two bars are two bars.
 #
 # It varies by what the vehicle was doing, which is the evidence that it
 # measures the covariance rather than the clock: 3.79 s, 3.80 s and 3.78 s on

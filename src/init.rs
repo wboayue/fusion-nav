@@ -260,7 +260,8 @@ pub enum Alignment {
     /// The window was usable but not a static interval, so the covariance says what that
     /// window supports rather than what a still one would. The filter runs and reports
     /// [`Status::Aligning`](crate::Status::Aligning) until tilt and heading uncertainty
-    /// first come within [`Config::accuracy`](crate::Config::accuracy).
+    /// first come within [`ALIGNED_TILT`](crate::ALIGNED_TILT) and
+    /// [`ALIGNED_HEADING`](crate::ALIGNED_HEADING).
     Coarse(Coarse),
     /// The state came from [`Eskf::initialize_from`](crate::Eskf::initialize_from) rather
     /// than from a window. Whether it counts as aligned is a question for the covariance
@@ -1217,7 +1218,7 @@ pub(crate) mod tests {
         assert!(
             (tilt - init.sigma_tilt.as_radians()).abs() < 1e-6,
             "charging ω̄ rather than ω̄ − β̂_g reads 0.08 rad here, over the 0.052 of \
-             `Accuracy::tilt`, and latches `Aligning` for the flight; got {tilt}"
+             `ALIGNED_TILT`, and latches `Aligning` for the flight; got {tilt}"
         );
         assert!(
             (yaw - init.sigma_yaw.as_radians()).abs() < 1e-6,

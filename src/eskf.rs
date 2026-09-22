@@ -1,6 +1,6 @@
 //! The filter itself.
 
-use crate::config::Config;
+use crate::config::{ALIGNED_HEADING, ALIGNED_TILT, Config};
 use crate::frames::{Body, Ned};
 use crate::geodetic::{Geodetic, LocalOrigin};
 use crate::health::{Diagnostics, Fusion, Propagation, SourceHealth, Status, Validity};
@@ -8,8 +8,8 @@ use crate::init::{self, Alignment, Coarse, InitError, Measured, StaticSample, ba
 use crate::propagate::{ImuSample, propagate};
 use crate::state::{Covariance, ErrorState, STATES, State};
 use crate::units::{
-    Altitude, AltitudeNoise, HeadingNoise, MagField, Position, PositionNoise, Seconds, Velocity,
-    VelocityNoise,
+    Altitude, AltitudeNoise, HeadingNoise, MagField, Position, PositionNoise, Radians, Seconds,
+    Velocity, VelocityNoise,
 };
 
 /// A 15-state error-state Kalman filter.
@@ -95,7 +95,7 @@ pub struct Eskf {
     baro_reference: Option<Altitude>,
     origin: Option<LocalOrigin>,
     unestablished: Unestablished,
-    /// Whether the attitude has ever met [`Config::accuracy`](crate::Config::accuracy) since
+    /// Whether the attitude has ever met [`ALIGNED_TILT`] and [`ALIGNED_HEADING`] since
     /// initialization. Latched, and the test behind [`Status::Aligning`]; see
     /// [`is_aligned`](Self::is_aligned) for why it is not read live.
     aligned: bool,
@@ -107,9 +107,9 @@ pub struct Eskf {
 /// [`Fusion::Reset`]), heading for the first magnetic heading.
 ///
 /// The covariance cannot carry this on its own. Every entry on its diagonal is a prior,
-/// and a prior tight enough to pass [`Config::accuracy`](crate::Config::accuracy) reads as
-/// an estimate whether or not anything ever measured the quantity. This is the flag that
-/// tells the two apart.
+/// and a prior tight enough to pass [`Config::accuracy`](crate::Config::accuracy) or
+/// [`ALIGNED_HEADING`] reads as an estimate whether or not anything ever measured the
+/// quantity. This is the flag that tells the two apart.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Unestablished {
     position: bool,
@@ -457,7 +457,8 @@ impl Eskf {
     /// The covariance only grows here. (22) adds `Q` and (20) spreads what is already there;
     /// nothing in propagation takes uncertainty back out, which is the measurement update's
     /// job. So an unaided filter's [`Validity`] flags go false in the order their variances
-    /// cross [`Config::accuracy`](crate::Config::accuracy), and [`Status`] follows.
+    /// cross [`Config::accuracy`](crate::Config::accuracy), and [`Status`] does not follow:
+    /// it reads the aiding timers and an alignment that has already latched.
     pub fn predict(&mut self, imu: ImuSample, dt: Seconds) -> Propagation {
         if !self.initialized {
             return Propagation::NotInitialized;
@@ -764,14 +765,16 @@ impl Eskf {
         &self.covariance
     }
 
-    /// Whether the attitude has **ever** met [`Config::accuracy`](crate::Config::accuracy)
-    /// since initialization — the test behind [`Status::Aligning`].
+    /// Whether the attitude has **ever** met [`ALIGNED_TILT`] and [`ALIGNED_HEADING`] since
+    /// initialization — the test behind [`Status::Aligning`].
     ///
-    /// Promotion is measured, not timed: it takes
-    /// [`Validity::attitude`](crate::Validity::attitude) reading true off the covariance,
-    /// which also means it stays false on a vehicle with no magnetometer, since a heading
-    /// nothing ever observed is not aligned however tight
-    /// [`sigma_yaw`](crate::Initialization::sigma_yaw) is. What it does not do is fall back:
+    /// Promotion is measured, not timed: it reads the covariance against those two bars, and
+    /// holds heading to the rule [`Validity`] does, so it stays false on a vehicle with no
+    /// magnetometer — a heading nothing ever observed is not aligned however tight
+    /// [`sigma_yaw`](crate::Initialization::sigma_yaw) is. It does not read
+    /// [`Config::accuracy`](crate::Config::accuracy): how good the attitude must be for the
+    /// mission and whether the start has been resolved are two questions, and a bar serving
+    /// both has to be wrong for one of them. What it does not do is fall back:
     /// alignment is an event, "the start has been resolved", where
     /// [`validity`](Self::validity) is the live question, "is tilt good enough right now".
     ///
@@ -795,8 +798,8 @@ impl Eskf {
     /// A latch is state, so it cannot be derived on read the way [`Status`] is — and reading
     /// it lazily would make the answer depend on whether anyone asked.
     fn note_alignment(&mut self) {
-        if !self.aligned {
-            self.aligned = self.validity().attitude();
+        if self.initialized && !self.aligned {
+            self.aligned = self.tilt_within(ALIGNED_TILT) && self.heading_within(ALIGNED_HEADING);
         }
     }
 
@@ -809,28 +812,46 @@ impl Eskf {
             return Validity::NONE;
         }
         let accuracy = &self.config.accuracy;
-        let within = |state, sigma: f32| self.covariance.variance(state) <= sigma * sigma;
-        let tilt = accuracy.tilt.as_radians();
         let position = accuracy.position.as_meters();
         let velocity = accuracy.velocity.as_m_per_s();
 
         Validity {
-            tilt: within(ErrorState::AttitudeX, tilt) && within(ErrorState::AttitudeY, tilt),
+            tilt: self.tilt_within(accuracy.tilt),
+            heading: self.heading_within(accuracy.heading),
             // A quantity nothing ever established is not valid however tight the prior on
             // it looks: nobody set that number.
-            heading: !self.unestablished.heading
-                && within(ErrorState::AttitudeZ, accuracy.heading.as_radians()),
             horizontal_position: !self.unestablished.position
-                && within(ErrorState::PositionNorth, position)
-                && within(ErrorState::PositionEast, position),
+                && self.within(ErrorState::PositionNorth, position)
+                && self.within(ErrorState::PositionEast, position),
             vertical_position: !self.unestablished.position
-                && within(ErrorState::PositionDown, position),
+                && self.within(ErrorState::PositionDown, position),
             horizontal_velocity: !self.unestablished.velocity
-                && within(ErrorState::VelocityNorth, velocity)
-                && within(ErrorState::VelocityEast, velocity),
+                && self.within(ErrorState::VelocityNorth, velocity)
+                && self.within(ErrorState::VelocityEast, velocity),
             vertical_velocity: !self.unestablished.velocity
-                && within(ErrorState::VelocityDown, velocity),
+                && self.within(ErrorState::VelocityDown, velocity),
         }
+    }
+
+    /// Whether roll and pitch are both within `bar`, one standard deviation per axis.
+    ///
+    /// Shared by [`validity`](Self::validity) and the alignment latch, which ask it against
+    /// different bars; one definition is what keeps the two claims the same shape.
+    fn tilt_within(&self, bar: Radians) -> bool {
+        let sigma = bar.as_radians();
+        self.within(ErrorState::AttitudeX, sigma) && self.within(ErrorState::AttitudeY, sigma)
+    }
+
+    /// Whether heading has been established and is within `bar`.
+    ///
+    /// A heading nothing observed fails whatever its variance: stillness never observes yaw,
+    /// and a prior on a yaw nobody measured is not an estimate of one.
+    fn heading_within(&self, bar: Radians) -> bool {
+        !self.unestablished.heading && self.within(ErrorState::AttitudeZ, bar.as_radians())
+    }
+
+    fn within(&self, state: ErrorState, sigma: f32) -> bool {
+        self.covariance.variance(state) <= sigma * sigma
     }
 
     /// Which parts of the estimate the filter expects to be good **if the vehicle left
@@ -1078,7 +1099,7 @@ fn stub_accept(source: &mut SourceHealth) -> Fusion {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::GRAVITY;
+    use crate::config::{Accuracy, GRAVITY};
     use crate::geodetic::LocalOrigin;
     use crate::health::Refusal;
     use crate::init::tests::{gravity_at, still, turning};
@@ -2636,6 +2657,32 @@ mod tests {
         let mut filter = initialized();
         assert!(!filter.set_origin(Geodetic::from_degrees(91.0, 0.0, 0.0)));
         assert_eq!(filter.origin(), None);
+    }
+
+    #[test]
+    fn a_mission_bar_tighter_than_the_prior_leaves_alignment_alone() {
+        // `Accuracy` is the mission's question and `ALIGNED_*` the start's: a survey platform
+        // asking for 1° of tilt and 10° of heading gets an attitude that is never valid
+        // against a 20 mrad and 20° prior, and a filter that aligns anyway.
+        let mut filter = Eskf::new(Config {
+            accuracy: Accuracy {
+                tilt: Radians::from_degrees(1.0),
+                heading: Radians::from_degrees(10.0),
+                ..Accuracy::default()
+            },
+            ..Config::default()
+        });
+        assert_eq!(
+            filter.initialize(&window_with_mag(), Seconds::from_secs(0.25)),
+            Ok(Alignment::Static)
+        );
+
+        assert!(filter.is_aligned(), "the start is resolved");
+        let validity = filter.validity();
+        assert!(
+            !validity.tilt && !validity.heading,
+            "and the mission bar is not met"
+        );
     }
 
     #[test]

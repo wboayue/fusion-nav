@@ -340,16 +340,21 @@ struct Replay {
     initialized_at: Option<f64>,
     alignment: Option<Alignment>,
     mag_at_init: bool,
-    /// When `Validity::attitude` first read true, in log time.
+    /// When `Eskf::is_aligned` first read true, in log time.
     ///
-    /// `Accuracy::tilt` equals `Initialization::sigma_tilt` and `Accuracy::heading` equals
-    /// `Initialization::sigma_yaw`, compared with `<=`, so a static start passed by exactly
-    /// zero margin — and this is the measurement that widened them (`src/config.rs`). It says
-    /// when the filter *claims* to have converged, not whether the attitude was good then;
-    /// that needs truth, which the corpus has not got.
+    /// The filter's own latch rather than `Validity::attitude`: the two read different bars
+    /// (`ALIGNED_TILT` and `ALIGNED_HEADING` against `Config::accuracy`), and re-deriving
+    /// alignment from validity would make this key move with a mission bar that
+    /// `Status::Aligning` does not read. It says when the filter *claims* to have converged,
+    /// not whether the attitude was good then; that needs truth, which the corpus has not
+    /// got.
     aligned_at: Option<f64>,
-    /// The first epoch after alignment where `Validity::attitude` went false again, which is
-    /// the covariance growth of (16)–(22) arriving on real data.
+    /// The first epoch at or after alignment where `Validity::attitude` reads false, which
+    /// is the covariance growth of (16)–(22) arriving on real data.
+    ///
+    /// Against `Config::accuracy`, the mission bar, where `aligned_at` reads the alignment
+    /// bars — so a mission bar the start never met reads `0.00` here, out of service the
+    /// moment the start resolved, rather than `never`, which would claim it held all log.
     ///
     /// `aligned_at` cannot see it: `Status::Aligning` latches, deliberately
     /// (`Eskf::is_aligned`), so nothing else on this line moves when an unaided filter's
@@ -516,7 +521,7 @@ impl Replay {
         // heading, and none at all leaves yaw a prior until a heading is fused.
         self.mag_at_init = window.iter().any(|s| s.mag.is_some());
         let state = self.filter.state();
-        self.note_alignment(t, state.validity);
+        self.note_alignment(t, self.filter.is_aligned(), state.validity);
         self.heading_at_init = state.validity.heading;
         self.attitude_at_init = Some(state.attitude);
         self.status = state.status;
@@ -594,7 +599,7 @@ impl Replay {
             }
         }
         let state = self.filter.state();
-        self.note_alignment(t, state.validity);
+        self.note_alignment(t, self.filter.is_aligned(), state.validity);
         if state.status != self.status {
             self.status = state.status;
             self.transitions.push((t, state.status));
@@ -662,13 +667,13 @@ impl Replay {
         self.total(|health| health.rejected)
     }
 
-    /// Keep the first moment the attitude read valid, and only the first.
+    /// Keep the first moment the filter reported itself aligned, and only the first.
     ///
     /// Taken at the commit as well as at every epoch: a window that carried a magnetometer
     /// leaves the filter aligned the instant it closes, and that is zero seconds rather
     /// than one `dt`.
-    fn note_alignment(&mut self, t: f64, validity: Validity) {
-        if self.aligned_at.is_none() && validity.attitude() {
+    fn note_alignment(&mut self, t: f64, aligned: bool, validity: Validity) {
+        if self.aligned_at.is_none() && aligned {
             self.aligned_at = Some(t);
         }
         // Only after alignment, and only the first time: before it, "not valid" is the
@@ -1816,9 +1821,19 @@ mod tests {
 
     /// Drive a fixture through the harness, keeping the fusion rows it wrote.
     fn drive(log: &Log, scoring: Option<Scoring>) -> Result<(Replay, String), String> {
+        drive_at(log, Accuracy::default(), scoring)
+    }
+
+    /// [`drive`] against a mission bar other than the default.
+    fn drive_at(
+        log: &Log,
+        accuracy: Accuracy,
+        scoring: Option<Scoring>,
+    ) -> Result<(Replay, String), String> {
         let mut replay = Replay::new(
             Config {
                 magnetic_declination: Radians::from_radians(-0.06),
+                accuracy,
                 ..Config::default()
             },
             scoring,
@@ -2226,6 +2241,39 @@ mod tests {
             "3.80",
             "one epoch past 3.79 s at this rate: {summary}"
         );
+    }
+
+    #[test]
+    fn a_mission_bar_moves_attitude_lost_and_leaves_alignment_alone() {
+        // `aligned_at=` and `transitions=` answer whether the start resolved, which the
+        // filter decides against `ALIGNED_TILT`; `attitude_lost=` answers whether the output
+        // met the mission's bar. A 1° tilt bar sits under the 20 mrad prior, so the output is
+        // out of service at 0.00 while nothing about alignment moves. The mutation it
+        // catches: the harness reading `aligned_at` off `Validity::attitude`, which reads
+        // `never` here.
+        let log = Log::new().mag(0.0).run(0.0, 400, DT, STILL);
+        let default = replay(&log).summary();
+        let tight = match drive_at(
+            &log,
+            Accuracy {
+                tilt: Radians::from_degrees(1.0),
+                ..Accuracy::default()
+            },
+            None,
+        ) {
+            Ok((replay, _)) => replay.summary(),
+            Err(e) => panic!("fixture replays: {e}"),
+        };
+
+        for unmoved in ["aligned_at", "transitions", "status"] {
+            assert_eq!(
+                key(&tight, unmoved),
+                key(&default, unmoved),
+                "{unmoved}: {tight}"
+            );
+        }
+        assert_eq!(key(&default, "attitude_lost"), "3.80");
+        assert_eq!(key(&tight, "attitude_lost"), "0.00", "{tight}");
     }
 
     #[test]

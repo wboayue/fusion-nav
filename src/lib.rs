@@ -71,7 +71,10 @@ pub use state::{CovarianceMatrix, STATES};
 /// Deliberately excluded, because their names are too generic to glob-import safely:
 /// [`Frame`], [`STATES`], and [`CovarianceMatrix`]. Import those by path.
 pub mod prelude {
-    pub use crate::config::{Accuracy, Config, GRAVITY, Gates, ImuNoise, Initialization, Timeouts};
+    pub use crate::config::{
+        ALIGNED_HEADING, ALIGNED_TILT, Accuracy, Config, GRAVITY, Gates, ImuNoise, Initialization,
+        Timeouts,
+    };
     pub use crate::eskf::Eskf;
     pub use crate::frames::{Body, Enu, Ned};
     pub use crate::geodetic::{Geodetic, LocalOrigin};

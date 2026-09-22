@@ -32,7 +32,9 @@ pub enum Status {
     ///
     /// Two ways out, and neither is a timer or an acknowledgement. Tilt and a widened
     /// yaw leave on their own, as soon as the covariance falls within
-    /// [`Config::accuracy`](crate::Config::accuracy). A heading nothing has observed
+    /// [`ALIGNED_TILT`](crate::ALIGNED_TILT) and [`ALIGNED_HEADING`](crate::ALIGNED_HEADING)
+    /// — fixed bars, not [`Config::accuracy`](crate::Config::accuracy), which is the
+    /// mission's and moves only [`Validity`](crate::Validity). A heading nothing has observed
     /// needs a measurement instead: stillness never supplies yaw, so a filter that
     /// started without a magnetometer stays here however small the covariance is, until
     /// [`Eskf::fuse_mag_heading`](crate::Eskf::fuse_mag_heading) accepts one. A vehicle
