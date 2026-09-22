@@ -55,6 +55,25 @@
 # which this filter does not model (GOALS.md, "Measurement latency"), so a fix is wrong by the
 # distance flown in the delay and `R` does not say so: `nees_pos` 6.45, `in3s` 0.9467.
 #
+# `ba` and `bg` are the bias error itself, and they are pinned here before anything observes
+# velocity -- the way `rejected=` was pinned before the gate that moves it existed. The
+# simulator injects a fixed [0.043, -0.062, 0.027] m/s^2 and [0.0021, -0.0034, 0.0012] rad/s
+# that `ImuNoise::default` does not know about, norms of 0.0801 and 0.00417, so those norms
+# are what a filter estimating nothing reads and the distance below them is what the aiding
+# bought. `static` reads ba=0.0722, 90 % of the injected bias: a stationary vehicle's fixes
+# reach the accelerometer bias through (17) only in proportion to the horizontal acceleration
+# it makes, and it makes none. `mission` reads 0.0535 and `moving_start` 0.0869, which is
+# *above* the norm -- a coarse start's estimate walked the wrong way and nothing pulled it
+# back. The gyroscope side starts far better because the static window seeds it from omega-bar
+# (equation (8)): `mission` bg=0.00132 against that 0.00417, and `moving_start`, which had no
+# still window to seed from, reads 0.00527. These two keys are the only ones here that fail
+# when a bias estimate walks away from the bias in the IMU; the position keys absorb it for a
+# long time, since an accelerometer bias reaches position through two integrations and a
+# filter can hold metre accuracy against fixes while its beta-hat is wrong by most of the
+# bias. Stage 6 (#37) is the test of them: velocity error grows linearly from accelerometer
+# bias, so a velocity observation is what should move `ba`, and nothing else in this file
+# would notice if it did not.
+#
 # `moving_start` is where the coarse start's overconfidence went. Before a measurement could
 # correct anything, its position and velocity priors were `Initialization`'s 1 m and 0.1 m/s
 # against a truth kilometres away, and it read `nees_pos=10.30` and `nees_vel=10.59`. The first
@@ -76,12 +95,12 @@
 # disturbed. The covariance covers the error throughout (`in3s=1.0000`). A heading the window
 # observed, which is stage 8's, is the test of whether that is the cause.
 
-static           1  pos_h<=0.673 pos_v<=0.683 vel<=0.586 pos_h_max<=1.709  tilt<=1.026 yaw<=2.306  in3s>=0.9900 nees_pos<=0.7685 nees_vel<=0.3265 nees_att<=0.0822 false_valid<=302  false_valid_att<=0   scored>=11600
-mission          2  pos_h<=0.710 pos_v<=0.757 vel<=0.654 pos_h_max<=2.015  tilt<=1.021 yaw<=1.374  in3s>=0.9899 nees_pos<=0.8624 nees_vel<=0.3815 nees_att<=0.0911 false_valid<=903  false_valid_att<=41  scored>=36600
-harsh_imu        2  pos_h<=0.719 pos_v<=0.759 vel<=0.667 pos_h_max<=2.044  tilt<=1.532 yaw<=2.137  in3s>=0.9899 nees_pos<=0.8775 nees_vel<=0.3981 nees_att<=0.1812 false_valid<=1289 false_valid_att<=328 scored>=36600
-gnss_outage      2  pos_h<=4.682 pos_v<=0.744 vel<=0.859 pos_h_max<=28.549 tilt<=1.023 yaw<=1.584  in3s>=0.9900 nees_pos<=0.7774 nees_vel<=0.3461 nees_att<=0.0852 false_valid<=981  false_valid_att<=41  scored>=36600
-moving_start     4  pos_h<=0.713 pos_v<=0.717 vel<=0.768 pos_h_max<=2.206  tilt<=3.532 yaw<=4.608  in3s>=0.9899 nees_pos<=0.7831 nees_vel<=0.3981 nees_att<=0.1954 false_valid<=698  false_valid_att<=41  scored>=15999
-baro_drift       2  pos_h<=0.710 pos_v<=0.757 vel<=0.654 pos_h_max<=2.015  tilt<=1.021 yaw<=1.374  in3s>=0.9899 nees_pos<=0.8624 nees_vel<=0.3815 nees_att<=0.0911 false_valid<=903  false_valid_att<=41  scored>=36600
-gnss_latency     2  pos_h<=2.335 pos_v<=0.760 vel<=0.812 pos_h_max<=4.734  tilt<=1.180 yaw<=1.483  in3s>=0.9372 nees_pos<=6.5164 nees_vel<=0.5880 nees_att<=0.1224 false_valid<=3729 false_valid_att<=106 scored>=36600
-mag_disturbance  2  pos_h<=0.710 pos_v<=0.757 vel<=0.654 pos_h_max<=2.015  tilt<=1.021 yaw<=1.374  in3s>=0.9899 nees_pos<=0.8624 nees_vel<=0.3815 nees_att<=0.0911 false_valid<=903  false_valid_att<=41  scored>=36600
-flight           8  pos_h<=9.235 pos_v<=3.101 vel<=2.706 pos_h_max<=22.706 tilt<=3.044 yaw<=13.094 in3s>=0.9900 nees_pos<=0.6014 nees_vel<=0.5658 nees_att<=0.4663 false_valid<=26   false_valid_att<=0   scored>=600
+static           1  pos_h<=0.673 pos_v<=0.683 vel<=0.586 pos_h_max<=1.709  tilt<=1.026 yaw<=2.306  ba<=0.07296 bg<=0.001412 in3s>=0.9900 nees_pos<=0.7685 nees_vel<=0.3265 nees_att<=0.0822 false_valid<=302  false_valid_att<=0   scored>=11600
+mission          2  pos_h<=0.710 pos_v<=0.757 vel<=0.654 pos_h_max<=2.015  tilt<=1.021 yaw<=1.374  ba<=0.05401 bg<=0.001333 in3s>=0.9899 nees_pos<=0.8624 nees_vel<=0.3815 nees_att<=0.0911 false_valid<=903  false_valid_att<=41  scored>=36600
+harsh_imu        2  pos_h<=0.719 pos_v<=0.759 vel<=0.667 pos_h_max<=2.044  tilt<=1.532 yaw<=2.137  ba<=0.15502 bg<=0.002509 in3s>=0.9899 nees_pos<=0.8775 nees_vel<=0.3981 nees_att<=0.1812 false_valid<=1289 false_valid_att<=328 scored>=36600
+gnss_outage      2  pos_h<=4.682 pos_v<=0.744 vel<=0.859 pos_h_max<=28.549 tilt<=1.023 yaw<=1.584  ba<=0.05383 bg<=0.001366 in3s>=0.9900 nees_pos<=0.7774 nees_vel<=0.3461 nees_att<=0.0852 false_valid<=981  false_valid_att<=41  scored>=36600
+moving_start     4  pos_h<=0.713 pos_v<=0.717 vel<=0.768 pos_h_max<=2.206  tilt<=3.532 yaw<=4.608  ba<=0.08772 bg<=0.005323 in3s>=0.9899 nees_pos<=0.7831 nees_vel<=0.3981 nees_att<=0.1954 false_valid<=698  false_valid_att<=41  scored>=15999
+baro_drift       2  pos_h<=0.710 pos_v<=0.757 vel<=0.654 pos_h_max<=2.015  tilt<=1.021 yaw<=1.374  ba<=0.05401 bg<=0.001333 in3s>=0.9899 nees_pos<=0.8624 nees_vel<=0.3815 nees_att<=0.0911 false_valid<=903  false_valid_att<=41  scored>=36600
+gnss_latency     2  pos_h<=2.335 pos_v<=0.760 vel<=0.812 pos_h_max<=4.734  tilt<=1.180 yaw<=1.483  ba<=0.05258 bg<=0.001656 in3s>=0.9372 nees_pos<=6.5164 nees_vel<=0.5880 nees_att<=0.1224 false_valid<=3729 false_valid_att<=106 scored>=36600
+mag_disturbance  2  pos_h<=0.710 pos_v<=0.757 vel<=0.654 pos_h_max<=2.015  tilt<=1.021 yaw<=1.374  ba<=0.05401 bg<=0.001333 in3s>=0.9899 nees_pos<=0.8624 nees_vel<=0.3815 nees_att<=0.0911 false_valid<=903  false_valid_att<=41  scored>=36600
+flight           8  pos_h<=9.235 pos_v<=3.101 vel<=2.706 pos_h_max<=22.706 tilt<=3.044 yaw<=13.094 ba<=0.06744 bg<=0.003608 in3s>=0.9900 nees_pos<=0.6014 nees_vel<=0.5658 nees_att<=0.4663 false_valid<=26   false_valid_att<=0   scored>=600
