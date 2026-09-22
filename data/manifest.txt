@@ -92,8 +92,10 @@
 # 0.3 and _gpsVertVelNoise 0.5 (AP_NavEKF3_PosVelFusion.cpp:821-822, defaults
 # at AP_NavEKF3.cpp:23-24) -- and either floor would have absorbed every one
 # of these 284. Read at PX4-Autopilot c4e4ef98 and ardupilot 368dc0c4. The
-# harness does not apply them because R belongs to the measurement and the
-# corpus is here to say what receivers actually report.
+# harness does not apply them, so the corpus says what receivers actually
+# report rather than what this repository would prefer they reported. Whether
+# that is the right policy for a corpus whose figures get compared against
+# EKF2's is #105, and this line is what moves if it is decided the other way.
 #
 # discarded= is also what separates two logs that alpha0= reads the same way.
 # 7592c9b2 is alpha0=none discarded=0: an LPE log with no barometer rows at
