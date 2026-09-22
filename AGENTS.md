@@ -397,10 +397,10 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
   is tested against a synthetic `H`. One Cholesky factorization of `S` serves the gate and the
   gain, and the gate runs first, so a rejection computes nothing it could commit. `Eskf::apply` is
   the one path that commits what it returns and records it. Its stack frame is the largest in the
-  crate, 6944 bytes on `thumbv6m`, which is why `reset` applies `G P Gᵀ` block-wise; the figure
+  crate, 6888 bytes on `thumbv6m`, which is why `reset` applies `G P Gᵀ` block-wise; the figure
   and the #41 that would revisit it are in the doc comments.
 - `src/observation/` — one module per sensor, each forming `y`, `H` and diagonal `R_m` and
-  nothing else. `gnss.rs` holds (28) and (29); (30)–(36) are unbuilt.
+  nothing else. `gnss.rs` holds (28) and (29) and `baro.rs` holds (30); (31)–(36) are unbuilt.
 - `src/math.rs` — the primitives the equations share: `skew`, `exp_quat`, `wrap_pi`,
   `enforce_symmetry` (42). Pure, stateless, and unit-tested against their definitions. All four
   have callers as of (16)–(22), so none carries a dead-code allowance any more. Neither does

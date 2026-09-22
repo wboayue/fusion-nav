@@ -4,8 +4,8 @@
 > state and (16)–(22) propagate `P`, so `predict` moves position, velocity and attitude and says
 > how little it knows about them. GNSS corrects them: the update (23)–(27), the observation
 > models for position (28) and velocity (29), the gate (37)–(38) and the injection and reset
-> (39)–(41) are built. The remaining observation models, (30)–(36), are not, and their `fuse_*`
-> accept with a zero test ratio.
+> (39)–(41) are built, and so is the barometric altitude of (30). The remaining observation
+> models, (31)–(36), are not, and `fuse_mag_heading` accepts with a zero test ratio.
 > Also built: the attitude and biases of (5)–(7), the
 > initial covariance (8) and the bound (8′) a coarse window earns, the barometric reference `α₀` of
 > (30), the window's own acceleration
@@ -539,10 +539,16 @@ The barometer measures height, and the navigation frame is a plane. Written as a
 treats $`-p_D`$ as height, which is off by the plane's rise above the surface, $`d^2 / 2R`$ at a
 horizontal distance $`d`$ from the origin (see [geodetic origin](#geodetic-origin)): 8 cm at 1 km,
 7.8 m at 10 km. GNSS positions converted by (43) carry that rise and the barometer does not, so
-beyond a few kilometres the two disagree about height by exactly that amount. When (30) is
-implemented, $`h(x)`$ should be minus the height of $`\hat{p}`$ above $`h_0`$, by the inverse of
-(43) — $`p_D - (p_N^2 + p_E^2) / 2R`$ to second order — so both sides are heights; $`H`$ is
-unchanged to first order.
+beyond a few kilometres the two disagree about height by exactly that amount. Removing it means
+writing $`h(x)`$ as minus the height of $`\hat{p}`$ above $`h_0`$, by the inverse of (43) —
+$`p_D - (p_N^2 + p_E^2) / 2R`$ to second order — so both sides are heights; $`H`$ is unchanged to
+first order.
+
+`altitude_observation` does not write it, and its doc comment carries the measurement that
+decided so: neither the corpus nor the simulator travels far enough from an origin for the term
+to be worth a millimetre against a barometer's own noise, and the simulator generates its reading
+from $`-p_D`$ on a flat plane, so it could not score the correction even where it mattered. That
+comment owns the numbers and the condition for revisiting them.
 
 ### Magnetometer, three-axis
 
@@ -809,7 +815,7 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | (23)–(27) | generic update, Joseph form | `update.rs` | `update` |
 | (28) | GNSS position | `observation/gnss.rs` | `position_jacobian`, `position_observation` |
 | (29) | GNSS velocity | `observation/gnss.rs` | `velocity_jacobian`, `velocity_observation` |
-| (30) | barometric altitude | `observation/baro.rs` | `altitude_jacobian`, unbuilt |
+| (30) | barometric altitude | `observation/baro.rs` | `altitude_jacobian`, `altitude_observation` |
 | (31)–(33) | magnetometer, three-axis | `observation/mag.rs` | `field_jacobian`, unbuilt and out of scope |
 | (34)–(36) | magnetometer, heading only | `observation/mag.rs` | `heading_innovation`, `heading_jacobian`, unbuilt |
 | (37) `γ` | gate thresholds | `config.rs` | `Gate::at`, `Gate::new`, `Gates::at` |

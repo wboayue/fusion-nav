@@ -52,8 +52,11 @@ pub use state::{CovarianceMatrix, STATES};
 /// };
 /// assert_eq!(filter.predict(broken, dt), Propagation::NotFinite);
 ///
+/// // Two metres above the reference the window fixed. An altitude far from what the
+/// // filter expects is `Fusion::Rejected` instead — the gate of (37) runs on every
+/// // measurement, and a 52 m step from a vehicle that has not moved does not pass it.
 /// let outcome = filter.fuse_baro_altitude(
-///     Altitude::from_meters(60.0),
+///     Altitude::from_meters(114.0),
 ///     AltitudeNoise::from_sigma(2.0),
 /// );
 /// assert!(outcome.is_accepted());
@@ -62,7 +65,7 @@ pub use state::{CovarianceMatrix, STATES};
 /// // variance some sensor could have. Zero or negative is refused, not fused.
 /// assert_eq!(
 ///     filter.fuse_baro_altitude(
-///         Altitude::from_meters(60.0),
+///         Altitude::from_meters(114.0),
 ///         AltitudeNoise::from_variance(0.0),
 ///     ),
 ///     Fusion::InvalidNoise,

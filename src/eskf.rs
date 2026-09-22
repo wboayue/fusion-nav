@@ -5,7 +5,7 @@ use crate::frames::{Body, Ned};
 use crate::geodetic::{Geodetic, LocalOrigin};
 use crate::health::{Diagnostics, Fusion, Propagation, SourceHealth, Status, Validity};
 use crate::init::{self, Alignment, Coarse, InitError, Measured, StaticSample, baro_reference};
-use crate::observation::gnss;
+use crate::observation::{baro, gnss};
 use crate::propagate::{ImuSample, propagate};
 use crate::state::{Covariance, ErrorState, STATES, State};
 use crate::units::{
@@ -16,13 +16,15 @@ use crate::update::{Update, update};
 
 /// A 15-state error-state Kalman filter.
 ///
-/// **Stub.** Every method below has its intended signature and does its own bookkeeping.
-/// What is implemented is initialization, (5)–(8), propagation, (9)–(22), and the update of
-/// (23)–(41) for both GNSS observations: the state dead reckons from where
-/// [`initialize`](Self::initialize) put it, the covariance grows around it, and
+/// **Stub.** One method below is still one: [`fuse_mag_heading`](Self::fuse_mag_heading)
+/// has its intended signature and does its own bookkeeping, and corrects nothing. Everything
+/// else is implemented — initialization, (5)–(8), propagation, (9)–(22), and the update of
+/// (23)–(41) for the two GNSS observations and the barometer: the state dead reckons from
+/// where [`initialize`](Self::initialize) put it, the covariance grows around it, and
 /// [`fuse_gnss_position`](Self::fuse_gnss_position),
-/// [`fuse_gnss_geodetic`](Self::fuse_gnss_geodetic) and
-/// [`fuse_gnss_velocity`](Self::fuse_gnss_velocity) correct both.
+/// [`fuse_gnss_geodetic`](Self::fuse_gnss_geodetic),
+/// [`fuse_gnss_velocity`](Self::fuse_gnss_velocity) and
+/// [`fuse_baro_altitude`](Self::fuse_baro_altitude) correct both.
 /// [`fuse_baro_altitude`](Self::fuse_baro_altitude) and
 /// [`fuse_mag_heading`](Self::fuse_mag_heading) accept without changing the estimate.
 ///
@@ -736,7 +738,20 @@ impl Eskf {
     /// condition. An application here inflates σ on the calls it applies to, and says in
     /// its own code when that is.
     ///
-    /// **Stub.** Records an acceptance with a zero test ratio; corrects nothing.
+    /// An altitude inconsistent with the estimate at
+    /// [`Gates::baro_altitude`](crate::Gates) is [`Fusion::Rejected`] and changes nothing
+    /// but the source's health. One degree of freedom, so the threshold is a `Gate<1>` and
+    /// a `Gate<3>` in that field does not compile.
+    ///
+    /// There is no adoption here, unlike the two GNSS observations: a height is not a
+    /// quantity this source can establish. `α₀` is what relates the barometer to the
+    /// navigation origin, and a start that left position unestablished is exactly a start
+    /// that fixed no `α₀` either, so the measurement is refused above rather than adopted.
+    /// A caller that names a reference with
+    /// [`set_baro_reference`](Self::set_baro_reference) after a coarse start is claiming
+    /// the two are related, and the altitude then corrects an unestablished position
+    /// through the gate like any other measurement — against a covariance wide enough to
+    /// accept it.
     pub fn fuse_baro_altitude(&mut self, altitude: Altitude, noise: AltitudeNoise) -> Fusion {
         if !self.initialized {
             return refuse(&mut self.diagnostics.baro_altitude, Fusion::NotInitialized);
@@ -747,11 +762,17 @@ impl Eskf {
         if !noise.is_positive() {
             return refuse(&mut self.diagnostics.baro_altitude, Fusion::InvalidNoise);
         }
-        if self.baro_reference.is_none() {
+        let Some(reference) = self.baro_reference else {
             return refuse(&mut self.diagnostics.baro_altitude, Fusion::NoReference);
-        }
-        let _ = (altitude, noise);
-        stub_accept(&mut self.diagnostics.baro_altitude)
+        };
+        let observation = baro::altitude_observation(&self.state, altitude, reference, noise);
+        let outcome = update(
+            &self.state,
+            &self.covariance,
+            &observation,
+            self.config.gates.baro_altitude,
+        );
+        self.apply(outcome, |diagnostics| &mut diagnostics.baro_altitude)
     }
 
     /// Fuse magnetic heading from a calibrated three-axis magnetometer.
@@ -1626,6 +1647,50 @@ mod tests {
     }
 
     #[test]
+    fn an_altitude_above_the_reference_pulls_the_estimate_up_and_moves_nothing_sideways() {
+        let mut filter = Eskf::new(Config::default());
+        let _ = filter
+            .initialize(&window_with_baro([100.0; 8]), Seconds::from_secs(0.25))
+            .expect("a 2 s window of stillness");
+
+        // Two metres above the reference the window fixed, on a sensor claiming 0.5 m.
+        assert!(
+            filter
+                .fuse_baro_altitude(Altitude::from_meters(102.0), AltitudeNoise::from_sigma(0.5))
+                .is_accepted()
+        );
+
+        let position = filter.state().position.vector();
+        assert!(
+            position[2] < -1.0,
+            "up is negative down: {} should be near -2 m",
+            position[2]
+        );
+        assert_eq!(
+            (position[0], position[1]),
+            (0.0, 0.0),
+            "(30) observes p_D alone, and a still start correlates it with nothing"
+        );
+    }
+
+    #[test]
+    fn an_altitude_the_gate_turns_down_leaves_the_estimate_where_it_was() {
+        let mut filter = Eskf::new(Config::default());
+        let _ = filter
+            .initialize(&window_with_baro([100.0; 8]), Seconds::from_secs(0.25))
+            .expect("a 2 s window of stillness");
+        let before = filter.state().position;
+
+        // A hundred metres of climb the instant the window closed, on a 0.5 m sensor: the
+        // shape of a pressure transient, and what `Gates::baro_altitude` is there for.
+        let outcome =
+            filter.fuse_baro_altitude(Altitude::from_meters(200.0), AltitudeNoise::from_sigma(0.5));
+        assert!(matches!(outcome, Fusion::Rejected { .. }), "{outcome:?}");
+        assert_eq!(filter.state().position, before);
+        assert_eq!(filter.diagnostics().baro_altitude.rejected, 1);
+    }
+
+    #[test]
     fn a_static_restart_replaces_the_reference() {
         let mut filter = aided();
         assert_eq!(filter.baro_reference(), Some(Altitude::from_meters(100.0)));
@@ -1735,10 +1800,14 @@ mod tests {
             Fusion::NoReference
         );
 
+        // At the reference, so this asserts that fusion resumed rather than what the gate
+        // of (37) makes of an altitude. The seed holds p_D = 0 at σ = 0.5 m, so the 60 m
+        // asked for above would be 8 m of innovation on a 2 m sensor — ε = 15.1 against
+        // the 10.83 of `Gate::<1>::at(P999)` — and is turned down on its merits.
         assert!(filter.set_baro_reference(Altitude::from_meters(52.0)));
         assert!(
             filter
-                .fuse_baro_altitude(Altitude::from_meters(60.0), AltitudeNoise::from_sigma(2.0))
+                .fuse_baro_altitude(Altitude::from_meters(52.0), AltitudeNoise::from_sigma(2.0))
                 .is_accepted()
         );
     }

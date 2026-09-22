@@ -468,7 +468,8 @@ pub struct SourceHealth {
     /// the measurement and the covariance, which would be a second implementation of (23) and
     /// (24) free to disagree with this one. `None` after an acceptance that ran no update: an
     /// adoption ([`Fusion::Reset`]), a geodetic fix spent placing the origin, and a source whose
-    /// `fuse_*` is still a stub.
+    /// `fuse_*` is still a stub — [`Eskf::fuse_mag_heading`](crate::Eskf::fuse_mag_heading) is
+    /// the one left.
     ///
     /// [`test_ratio`]: Self::test_ratio
     pub innovation: Option<Innovation>,

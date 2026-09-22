@@ -5,11 +5,11 @@ Embedded-first inertial navigation using a 15-state Error-State Kalman Filter (E
 > **Status: aided by GNSS position and velocity.** The types and signatures below exist and
 > compile. Initialization is real — the filter levels, takes a heading and a gyroscope bias, and
 > sets its covariance — and `predict` propagates the state *and* its uncertainty, equations
-> (9)–(22). `fuse_gnss_position`, `fuse_gnss_geodetic` and `fuse_gnss_velocity` correct them,
-> equations (23)–(29), through the innovation gate of (37)–(38). The remaining two `fuse_*`,
-> barometric altitude and magnetic heading, still accept without changing the estimate: attitude
-> and the biases are corrected only as far as the two GNSS observations reach them through the
-> covariance. Where no aiding arrives, the uncertainty grows without bound, and `Validity` says
+> (9)–(22). `fuse_gnss_position`, `fuse_gnss_geodetic`, `fuse_gnss_velocity` and
+> `fuse_baro_altitude` correct them, equations (23)–(30), through the innovation gate of
+> (37)–(38). The one remaining `fuse_*`, magnetic heading, still accepts without changing the
+> estimate: attitude and the biases are corrected only as far as those three observations reach
+> them through the covariance. Where no aiding arrives, the uncertainty grows without bound, and `Validity` says
 > so: each flag goes false as its own variance passes `Config::accuracy`, 3.82 s in for tilt at
 > the default noise on an unaided start. The design is subject to change.
 
@@ -455,7 +455,9 @@ Known and deliberate, stated here rather than discovered in flight.
 * **Local tangent plane.** Position is Cartesian NED about a fixed origin. The geodetic
   conversion is exact at any range ([equation (43)](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#geodetic-origin)), but a plane
   leaves a curved Earth: `d` from the origin it sits `d²/2R` above the surface, 8 cm at 1 km and
-  7.8 m at 10 km, so `-p_D` far out is not height and the barometer model has to correct for it.
+  7.8 m at 10 km, so `-p_D` far out is not height. The barometer model does not correct for it,
+  and [equation (30)](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#barometric-altitude)
+  records the measurement behind that.
 * **No self-recovery**, by design — see above.
 
 Features deliberately deferred (wind, terrain, optical flow, airspeed, ...) are listed in

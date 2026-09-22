@@ -102,9 +102,12 @@
 # position gate has turned down nothing in 5348 fixes. Without the split, a
 # stage that adds a gated source arrives here as a larger number with nothing
 # saying which source grew -- the reading ba= and bg= were split to avoid.
-# Pinned at zero for baro and mag while their fuse_* are still stubs, so the
-# first non-zero is a diff rather than a discovery, which is the same order
-# rejected= itself was pinned in (#83, before the gate existed).
+# They were pinned at zero for baro and mag before either fused, so a first
+# non-zero would be a diff rather than a discovery -- the same order rejected=
+# itself was pinned in (#83, before the gate existed). rejected_baro= stayed at
+# zero when (30) landed and is now a live key on four of the five logs: 2026,
+# 4407 and 294 altitudes accepted and none turned down, against a gate of 10.83
+# at one degree of freedom. rejected_mag= is still structural.
 #
 # The total stays beside the parts and is not redundant. data/expect.sh fails
 # a key named here and absent from the line, but never a key on the line that
@@ -200,8 +203,20 @@ b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-
 #
 # This is the entry that makes rejected= a live key rather than a structural
 # zero, and the one that would notice a velocity gate quietly widened.
+#
+# transitions= went 2 to 4 when (30) landed, and the cause is this receiver
+# rather than the barometer. The barometer itself is never turned down here --
+# 294 altitudes accepted, rejected_baro=0 -- but fusing them moves the state,
+# and one marginal velocity solution at t=28.76 moves with it: its test ratio
+# goes 0.9562 to 1.0666, straddling the gate. On main that acceptance broke a
+# run of rejections; without it the run stretches from 26.56 s to 29.06 s,
+# which is 2.5 s and exactly Timeouts::degraded_after, so Status reports
+# Degraded for 0.22 s and back. The total is unmoved at 284 either way. What
+# this line now also pins is that a receiver already contradicted by its own
+# positions sits close enough to the gate that any change upstream of it can
+# flip a solution, which is #105's argument from a second direction.
 # Source: PX4 Flight Review (CC BY 4.0).
-1c0ea42d6e22cef5cb8730e71a7740b4f5a35988e88e677a72351835cd42990a  a299e722-a7f0-4e2e-bcdf-ce487d556ac1.ulg  https://cdn.logs.px4.io/a299e722-a7f0-4e2e-bcdf-ce487d556ac1.ulg  rate=50 window=101 align=static an=none alpha0=set heading=valid roll0=1.19 pitch0=-2.93 yaw0=-176.42 resets=0 aligned_at=0.00 attitude_lost=58.14 rejected=284 rejected_gnss_pos=0 rejected_gnss_vel=284 rejected_baro=0 rejected_mag=0 discarded=0 refused=0 invalid=0 transitions=2 status=Healthy
+1c0ea42d6e22cef5cb8730e71a7740b4f5a35988e88e677a72351835cd42990a  a299e722-a7f0-4e2e-bcdf-ce487d556ac1.ulg  https://cdn.logs.px4.io/a299e722-a7f0-4e2e-bcdf-ce487d556ac1.ulg  rate=50 window=101 align=static an=none alpha0=set heading=valid roll0=1.19 pitch0=-2.93 yaw0=-176.42 resets=0 aligned_at=0.00 attitude_lost=58.14 rejected=284 rejected_gnss_pos=0 rejected_gnss_vel=284 rejected_baro=0 rejected_mag=0 discarded=0 refused=0 invalid=0 transitions=4 status=Healthy
 
 # 68 s quadrotor on AUAV_X21, genuinely old firmware, LPE estimator.
 # The only log where the barometer and magnetometer are fields of
