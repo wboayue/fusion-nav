@@ -1,9 +1,8 @@
 //! Replay a recorded flight from CSV and write the estimate back out as CSV.
 //!
-//! `predict` propagates the nominal state and its covariance, (9)–(22), and GNSS position fixes
-//! correct both, (23)–(41), so the estimate columns hold an aided trajectory and the GNSS and
-//! barometer test ratios are real. The one remaining `fuse_*`, magnetic heading, still accepts
-//! unconditionally with a ratio of zero. What this establishes is the replay
+//! `predict` propagates the nominal state and its covariance, (9)–(22), and every source the
+//! crate carries corrects both, (23)–(41), so the estimate columns hold an aided trajectory and
+//! every test ratio on the fusion rows is real. What this establishes is the replay
 //! harness and the normalized log format `GOALS.md` commits to. What it exercises, that `basic.rs` and
 //! `degradation.rs` cannot, is irregular `dt` taken from timestamps, per-sample variance,
 //! a source that appears partway through the log, and an initialization window found in
@@ -59,7 +58,7 @@
 //!
 //! `nu*` and `s*` are `SourceHealth::innovation` as the filter published it: `ν` of (23) and
 //! the diagonal of `S` of (24), padded with empty fields past the observation's dimension.
-//! They are empty where the gate ran no update — a refusal, an adoption, a stub source. The
+//! They are empty where the gate ran no update — a refusal or an adoption. The
 //! harness never works them out from the measurement and the covariance itself: that would be
 //! a second implementation of a quantity the update owns, free to disagree with it while
 //! somebody chased a filter bug that did not exist.
@@ -126,10 +125,11 @@
 //!
 //! # What the score measures today
 //!
-//! **Stub.** Nothing observes attitude: the two GNSS observations and the barometer are the
-//! aiding that reaches the state, and the attitude and bias keys are corrected only through the
-//! correlations (20) builds. Stage 8 of #31 adds the magnetometer, and is measured against
-//! this.
+//! Every source the crate carries reaches the state: the two GNSS observations, the barometer
+//! and magnetic heading. Attitude is observed directly for the first time in `yaw` alone —
+//! (34)–(36) constrain the rotation about gravity and nothing else, so `tilt` is still
+//! corrected only through the correlations (20) builds, and a heading is priced for the tilt
+//! it was levelled by through (36′).
 //!
 //! `nees_*` is a ratio of two quantities that both move: the error, and a `P` that (22) grows
 //! and (27) shrinks. On these scenarios it approaches 1 from below, because
@@ -147,9 +147,9 @@
 //! now that two quantities are aided, but on `tilt` and on `ba`, the keys that read the IMU's
 //! own errors. `baro_drift` separates on height since (30) landed — `pos_v` 2.052 m against
 //! `mission`'s 0.083, and `nees_pos` 257 against 1.04, which is what a reference the state
-//! vector cannot model costs. `mag_disturbance` still scores identically to `mission` to the
-//! last digit, because it departs in the one source whose `fuse_*` is a stub; it starts
-//! measuring at stage 8.
+//! vector cannot model costs. `mag_disturbance` separates on `yaw` alone since (34)–(36)
+//! landed — 0.726 deg against `mission`'s 0.651 — which is what a 30 deg field error costs a
+//! filter that refuses all 200 samples of it.
 //!
 //! A refused propagation step is still scored. The epoch row is written either way — the
 //! state is simply the one before it — and that stale state is what the filter published, so
@@ -2653,18 +2653,21 @@ mod tests {
 
     #[test]
     fn a_call_the_gate_did_not_judge_leaves_the_innovation_columns_empty() {
-        // A refusal and a stub both follow a gated fix, whose values must not be written
-        // again against a measurement they do not describe. The magnetometer is the stub here;
-        // this fixture names whichever source still is one, and moves when that changes. The
-        // verdicts are pinned because a barometer with no reference, refused `NoReference`
-        // before reaching the stub, passes the column check while testing only refusals.
+        // A refusal and an adoption both follow a gated fix, whose values must not be
+        // written again against a measurement they do not describe. No source is a stub
+        // any more, so those two are the whole of what reaches a fusion row without a
+        // verdict from the gate. The magnetometer is the adoption here: this window
+        // carries none, so yaw is unestablished and the first field is taken rather than
+        // tested. The verdicts are pinned because a barometer with no reference, refused
+        // `NoReference` before it reaches an update, passes the column check while
+        // testing only refusals.
         let log = still_start()
             .gnss_pos(2.0, 1.0, 2.0, -3.0)
             .raw("2.100000,gnss_pos,1,2,-3,,,,0,2.25,5.625")
             .mag(2.2);
         let rows = fusion_rows(&log);
         let tail = &rows[rows.len() - 2..];
-        for (row, verdict) in tail.iter().zip(["invalid_noise", "accepted"]) {
+        for (row, verdict) in tail.iter().zip(["invalid_noise", "reset"]) {
             let fields: Vec<&str> = row.split(',').collect();
             assert_eq!(&fields[2..8], &["", "", "", "", "", ""], "ν and S: {row}");
             assert_eq!(fields[9], verdict, "{row}");

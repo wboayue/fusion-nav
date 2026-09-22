@@ -556,7 +556,13 @@ fn angle_between(first: Vector3<f32>, second: Vector3<f32>) -> f32 {
 ///
 /// `None` where the horizontal part is zero: a field pointing straight down observes no
 /// heading at any tilt, so there is no error to scale rather than an infinite one.
-fn heading_sensitivity(field: MagField<Body>, down: Vector3<f32>) -> Option<f32> {
+///
+/// Shared with [`observation::mag`](crate::observation::mag), which needs the same `tan δ`
+/// for the levelling variance of (36′). The ratio is between the field and a direction,
+/// so it is the same number in any frame the two are expressed in together: the window
+/// passes the body-frame gravity direction, and the update passes the body-frame
+/// navigation down axis.
+pub(crate) fn heading_sensitivity(field: MagField<Body>, down: Vector3<f32>) -> Option<f32> {
     let field = field.vector();
     let vertical = field.dot(&down);
     let horizontal = (field - down * vertical).norm();

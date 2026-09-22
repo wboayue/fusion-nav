@@ -2,16 +2,17 @@
 
 Embedded-first inertial navigation using a 15-state Error-State Kalman Filter (ESKF).
 
-> **Status: aided by GNSS position and velocity.** The types and signatures below exist and
-> compile. Initialization is real — the filter levels, takes a heading and a gyroscope bias, and
-> sets its covariance — and `predict` propagates the state *and* its uncertainty, equations
-> (9)–(22). `fuse_gnss_position`, `fuse_gnss_geodetic`, `fuse_gnss_velocity` and
-> `fuse_baro_altitude` correct them, equations (23)–(30), through the innovation gate of
-> (37)–(38). The one remaining `fuse_*`, magnetic heading, still accepts without changing the
-> estimate: attitude and the biases are corrected only as far as those three observations reach
-> them through the covariance. Where no aiding arrives, the uncertainty grows without bound, and `Validity` says
-> so: each flag goes false as its own variance passes `Config::accuracy`, 3.82 s in for tilt at
-> the default noise on an unaided start. The design is subject to change.
+> **Status: aided by GNSS position and velocity, the barometer and magnetic heading.** The
+> types and signatures below exist and compile. Initialization is real — the filter levels,
+> takes a heading and a gyroscope bias, and sets its covariance — and `predict` propagates the
+> state *and* its uncertainty, equations (9)–(22). Every `fuse_*` corrects them through the
+> innovation gate of (37)–(38): `fuse_gnss_position`, `fuse_gnss_geodetic`,
+> `fuse_gnss_velocity` and `fuse_baro_altitude` by equations (23)–(30), and `fuse_mag_heading`
+> by (34)–(36). Yaw is the one attitude component any of them observes directly; roll and
+> pitch are corrected as far as the covariance carries an observation into them. Where no
+> aiding arrives, the uncertainty grows without bound, and `Validity` says so: each flag goes
+> false as its own variance passes `Config::accuracy`, 3.82 s in for tilt at the default noise
+> on an unaided start. The design is subject to change.
 
 `fusion-nav` estimates 3D attitude, velocity, and position by fusing IMU measurements with GNSS,
 barometric altitude, and magnetometer observations. It is `no_std`, allocation-free, and aimed at
@@ -287,7 +288,7 @@ Call `predict(imu, dt)` on every IMU sample. The result is `#[must_use]`:
 | `fuse_gnss_position(position, noise)` | NED position about the filter's origin, for a caller that converts itself |
 | `fuse_gnss_velocity(velocity, noise)` | NED velocity |
 | `fuse_baro_altitude(altitude, noise)` | altitude, relative to `α₀` |
-| `fuse_mag_heading(field, noise)` | body-frame field, fused as heading only |
+| `fuse_mag_heading(field, noise)` | body-frame field, reduced to a heading and fused as one scalar |
 
 The noise is an argument, not configuration, because the accuracy of a fix is a property of that
 fix. Build it the way the source reports it: `PositionNoise::horizontal_vertical(eph, epv)` and
@@ -299,7 +300,9 @@ stays small under multipath while the fix is metres wrong; ArduPilot also caps, 
 horizontal position only while GNSS is its sole horizontal aid. Where an axis was not measured at
 all — a two-dimensional fix, a solution with no vertical velocity — `horizontal_vertical` is the
 constructor instead, since it leaves that axis' σ alone where `clamped` would cap it back into a
-measurement. The magnetometer must already be calibrated for hard and soft iron.
+measurement. The magnetometer must already be calibrated for hard and soft iron: `noise` is on
+the heading rather than on the field, and the filter widens it by the tilt it levelled with —
+equation (36′) — but nothing in it can find a hard-iron offset.
 
 Every measurement passes through an innovation gate first. The result carries the test ratio, so
 a rejection is diagnosable. Reading it is optional: `diagnostics()` keeps the ratio, the counts

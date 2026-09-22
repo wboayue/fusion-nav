@@ -44,8 +44,8 @@
 # 2.90 with aligned_at= and transitions= unmoved: the two bars are two bars.
 #
 # It varies by what the vehicle was doing, which is the evidence that it
-# measures the covariance rather than the clock. The two logs with no GNSS
-# position, which are handled rather than flown, read 1.70 s and 0.82 s
+# measures the covariance rather than the clock. Unaided, the two logs with no
+# GNSS position, which are handled rather than flown, read 1.70 s and 0.82 s
 # (7592c9b2 starts at roll 2.94 pitch 6.56). A body-frame attitude covariance
 # rotates with the body, so a 20-degree yaw prior becomes partly a tilt prior
 # as the vehicle turns. Unaided, the other three read 3.82 s, 3.84 s and
@@ -58,16 +58,24 @@
 # vibrating 2c42096b gained 0.11 s, 3949f175 1.96 s and a299e722 8.80 s. A
 # position fix delays the loss and does not prevent it.
 #
-# Fusing GNSS velocity (29) moves the same three again, to 13.44 s, 58.14 s
-# and 6.10 s, and the question left here is answered: no, velocity does not
-# make them read never. It is one integration nearer to tilt than position and
-# more than doubles the time on every log that carries it, but the mechanism
-# is unchanged -- a velocity observation constrains tilt only while the vehicle
-# accelerates, and between manoeuvres the gyroscope bias prior grows the
-# attitude block back through (20)'s -I dt. Nothing measures gravity after the
-# window closes. a299e722 gains the most by far, 12.64 s to 58.14 s, and it is
-# also the one log where the gate turns velocity down; both facts are its
-# receiver, and its entry below has the measurement.
+# Fusing GNSS velocity (29) moved the same three again, to 13.44 s, 58.14 s
+# and 6.10 s. It is one integration nearer to tilt than position and more than
+# doubled the time on every log that carries it, but it did not make any of
+# them read never: a velocity observation constrains tilt only while the
+# vehicle accelerates, and between manoeuvres the gyroscope bias prior grows
+# the attitude block back through (20)'s -I dt.
+#
+# Magnetic heading (34)-(36) is what finally answers it, and it answers it
+# differently per log rather than for the corpus. Two now read never -- 3949f175
+# from 13.44 s and a299e722 from 58.14 -- because observing yaw stops the
+# gyroscope bias prior growing the attitude block back through (20) between
+# manoeuvres, which is the mechanism every paragraph above ran into. The two
+# handled logs gain but do not reach it, 1.70 s to 3.84 and 0.82 to 3.87: a
+# magnetometer pins the rotation about gravity and nothing measures gravity
+# itself after the window closes, so what is left of the growth is the tilt's
+# and a heading cannot stop it. 2c42096b barely moves, 6.10 s to 6.16, and its
+# entry below says why -- it adopts its first heading rather than fusing one,
+# so the yaw it gains arrives once and its tilt prior is untouched.
 #
 # rejected= is the gate's verdict and discarded= is everything that never
 # reached it -- a variance of zero or less, a NaN, an altitude with no
@@ -83,7 +91,7 @@
 #
 # Velocity (29) is the first source whose reported accuracy is tight enough
 # for the gate to reach, and it is non-zero exactly once: a299e722 turns down
-# 284 of its 609 solutions. That entry has the measurement. It is the receiver
+# 278 of its 609 solutions. That entry has the measurement. It is the receiver
 # rather than the gate, and the corpus sees it because examples/replay.rs
 # passes each row's own variance straight through, which trusts a receiver
 # further than either production estimator does. Both floor it -- PX4 at
@@ -91,14 +99,14 @@
 # EKF/aid_sources/gnss/gps_control.cpp:320), ArduPilot at _gpsHorizVelNoise
 # 0.3 and _gpsVertVelNoise 0.5 (AP_NavEKF3_PosVelFusion.cpp:821-822, defaults
 # at AP_NavEKF3.cpp:23-24) -- and either floor would have absorbed every one
-# of these 284. Read at PX4-Autopilot c4e4ef98 and ardupilot 368dc0c4. The
+# of these 278. Read at PX4-Autopilot c4e4ef98 and ardupilot 368dc0c4. The
 # harness does not apply them, so the corpus says what receivers actually
 # report rather than what this repository would prefer they reported. Whether
 # that is the right policy for a corpus whose figures get compared against
 # EKF2's is #105, and this line is what moves if it is decided the other way.
 #
 # rejected_<source>= splits that total four ways, and the split is what makes
-# a moved total attributable: the corpus's 284 are all velocity's, and the
+# a moved total attributable: the corpus's 278 are all velocity's, and the
 # position gate has turned down nothing in 5348 fixes. Without the split, a
 # stage that adds a gated source arrives here as a larger number with nothing
 # saying which source grew -- the reading ba= and bg= were split to avoid.
@@ -107,7 +115,10 @@
 # itself was pinned in (#83, before the gate existed). rejected_baro= stayed at
 # zero when (30) landed and is now a live key on four of the five logs: 2026,
 # 4407 and 294 altitudes accepted and none turned down, against a gate of 10.83
-# at one degree of freedom. rejected_mag= is still structural.
+# at one degree of freedom. rejected_mag= is the same story at four times the
+# volume: 49692 headings across all five logs, every one of them accepted. No
+# key on this line is structurally zero any more, so a non-zero in any of the
+# four is now a measurement rather than a stage landing.
 #
 # The total stays beside the parts and is not redundant. data/expect.sh fails
 # a key named here and absent from the line, but never a key on the line that
@@ -170,14 +181,14 @@
 # also the one start here that would notice nothing if (6)'s levelling were
 # dropped -- the tilt it levels by is zero.
 # Source: PX4 Flight Review (CC BY 4.0).
-b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-4425-b118-7b7187331a98.ulg  https://cdn.logs.px4.io/3949f175-26b4-4425-b118-7b7187331a98.ulg  rate=250 window=500 align=static an=none alpha0=set heading=valid roll0=0.01 pitch0=0.01 yaw0=24.38 resets=0 aligned_at=0.00 attitude_lost=13.44 rejected=0 rejected_gnss_pos=0 rejected_gnss_vel=0 rejected_baro=0 rejected_mag=0 discarded=0 refused=0 invalid=0 transitions=2 status=Healthy
+b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-4425-b118-7b7187331a98.ulg  https://cdn.logs.px4.io/3949f175-26b4-4425-b118-7b7187331a98.ulg  rate=250 window=500 align=static an=none alpha0=set heading=valid roll0=0.01 pitch0=0.01 yaw0=24.38 resets=0 aligned_at=0.00 attitude_lost=never rejected=0 rejected_gnss_pos=0 rejected_gnss_vel=0 rejected_baro=0 rejected_mag=0 discarded=0 refused=0 invalid=0 transitions=2 status=Healthy
 
 # 64 s quadrotor, PX4 v1.10.0, EKF2. No GNSS topic; baro and mag only.
 # 11 SD-card dropouts totalling 2796 ms leave four holes in sensor_combined up
 # to 1.304 s. The only log that exercises Propagation::StepTooLong, and the
 # reason Config::max_predict_dt exists.
 # Source: PX4 Flight Review (CC BY 4.0).
-1f3132990f6c9c220a99e1b51aaa21d555ab80224c02cbc336d6841811fae5d2  f16771dd-fe7f-4ebe-a0bb-77ca2a5de6a7.ulg  https://cdn.logs.px4.io/f16771dd-fe7f-4ebe-a0bb-77ca2a5de6a7.ulg  rate=250 window=500 align=static an=none alpha0=set heading=valid roll0=0.84 pitch0=-0.51 yaw0=-107.33 resets=0 aligned_at=0.00 attitude_lost=1.70 rejected=0 rejected_gnss_pos=0 rejected_gnss_vel=0 rejected_baro=0 rejected_mag=0 discarded=0 refused=4 invalid=0 transitions=2 status=Healthy
+1f3132990f6c9c220a99e1b51aaa21d555ab80224c02cbc336d6841811fae5d2  f16771dd-fe7f-4ebe-a0bb-77ca2a5de6a7.ulg  https://cdn.logs.px4.io/f16771dd-fe7f-4ebe-a0bb-77ca2a5de6a7.ulg  rate=250 window=500 align=static an=none alpha0=set heading=valid roll0=0.84 pitch0=-0.51 yaw0=-107.33 resets=0 aligned_at=0.00 attitude_lost=3.84 rejected=0 rejected_gnss_pos=0 rejected_gnss_vel=0 rejected_baro=0 rejected_mag=0 discarded=0 refused=4 invalid=0 transitions=2 status=Healthy
 
 # 61 s, vendor firmware reporting v6.5.22, EKF2, airframe unknown type.
 # Logs in bursts: shortest IMU interval 2.5 ms against a true period of 20 ms.
@@ -185,7 +196,7 @@ b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-
 # window 8x, which is what forced replay's median estimator. Also uses the old
 # lat/lon/alt integer field spelling.
 #
-# It is the only log in this corpus where the gate turns anything down: 284 of
+# It is the only log in this corpus where the gate turns anything down: 278 of
 # its 609 GNSS velocity solutions are rejected once (29) is fused, spread
 # evenly through the flight at 40-60 % of each ten seconds rather than
 # clustered at one event. That is the receiver, and the check needs no filter
@@ -211,12 +222,22 @@ b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-
 # goes 0.9562 to 1.0666, straddling the gate. On main that acceptance broke a
 # run of rejections; without it the run stretches from 26.56 s to 29.06 s,
 # which is 2.5 s and exactly Timeouts::degraded_after, so Status reports
-# Degraded for 0.22 s and back. The total is unmoved at 284 either way. What
-# this line now also pins is that a receiver already contradicted by its own
-# positions sits close enough to the gate that any change upstream of it can
-# flip a solution, which is #105's argument from a second direction.
+# Degraded for 0.22 s and back. What this line pins is that a receiver already
+# contradicted by its own positions sits close enough to the gate that any
+# change upstream of it can flip a solution, which is #105's argument from a
+# second direction.
+#
+# Magnetic heading (34)-(36) made that argument a third time, and this time it
+# moved the total: 284 velocity solutions to 278. The magnetometer itself is
+# never turned down here -- 123 headings accepted, rejected_mag=0 -- but
+# observing yaw turns the estimate under the velocity innovations, and six
+# solutions that sat the wrong side of the gate now sit the right side of it.
+# transitions= and status= are unmoved, so nothing downstream noticed. Six
+# solutions in 609 is the size of the effect a fourth source has on a
+# third source's verdict, on the one receiver in this corpus close enough to
+# the gate to show it.
 # Source: PX4 Flight Review (CC BY 4.0).
-1c0ea42d6e22cef5cb8730e71a7740b4f5a35988e88e677a72351835cd42990a  a299e722-a7f0-4e2e-bcdf-ce487d556ac1.ulg  https://cdn.logs.px4.io/a299e722-a7f0-4e2e-bcdf-ce487d556ac1.ulg  rate=50 window=101 align=static an=none alpha0=set heading=valid roll0=1.19 pitch0=-2.93 yaw0=-176.42 resets=0 aligned_at=0.00 attitude_lost=58.14 rejected=284 rejected_gnss_pos=0 rejected_gnss_vel=284 rejected_baro=0 rejected_mag=0 discarded=0 refused=0 invalid=0 transitions=4 status=Healthy
+1c0ea42d6e22cef5cb8730e71a7740b4f5a35988e88e677a72351835cd42990a  a299e722-a7f0-4e2e-bcdf-ce487d556ac1.ulg  https://cdn.logs.px4.io/a299e722-a7f0-4e2e-bcdf-ce487d556ac1.ulg  rate=50 window=101 align=static an=none alpha0=set heading=valid roll0=1.19 pitch0=-2.93 yaw0=-176.42 resets=0 aligned_at=0.00 attitude_lost=never rejected=278 rejected_gnss_pos=0 rejected_gnss_vel=278 rejected_baro=0 rejected_mag=0 discarded=0 refused=0 invalid=0 transitions=4 status=Healthy
 
 # 68 s quadrotor on AUAV_X21, genuinely old firmware, LPE estimator.
 # The only log where the barometer and magnetometer are fields of
@@ -231,7 +252,7 @@ b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-
 # the dip leans into the horizontal axes in proportion to the tilt, and the
 # other four sit within 3 deg of level where that error is small.
 # Source: PX4 Flight Review (CC BY 4.0).
-81952e6059bc095717e7911c010e07f85749d6b04d332a5ffc51575a3fd0a558  7592c9b2-91f8-4b2d-a088-1c3d5e1166b0.ulg  https://cdn.logs.px4.io/7592c9b2-91f8-4b2d-a088-1c3d5e1166b0.ulg  rate=250 window=500 align=static an=none alpha0=none heading=valid roll0=2.94 pitch0=6.56 yaw0=-37.19 resets=0 aligned_at=0.00 attitude_lost=0.82 rejected=0 rejected_gnss_pos=0 rejected_gnss_vel=0 rejected_baro=0 rejected_mag=0 discarded=0 refused=0 invalid=0 transitions=2 status=Healthy
+81952e6059bc095717e7911c010e07f85749d6b04d332a5ffc51575a3fd0a558  7592c9b2-91f8-4b2d-a088-1c3d5e1166b0.ulg  https://cdn.logs.px4.io/7592c9b2-91f8-4b2d-a088-1c3d5e1166b0.ulg  rate=250 window=500 align=static an=none alpha0=none heading=valid roll0=2.94 pitch0=6.56 yaw0=-37.19 resets=0 aligned_at=0.00 attitude_lost=3.87 rejected=0 rejected_gnss_pos=0 rejected_gnss_vel=0 rejected_baro=0 rejected_mag=0 discarded=0 refused=0 invalid=0 transitions=2 status=Healthy
 
 # 7127 s quadrotor, PX4 v1.11.3, EKF2. The big one: 209 MB, 1.48M rows,
 # a 105 MB CSV. What nothing else in the corpus covers:
@@ -287,4 +308,4 @@ b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-
 # the window's average it resolves 0.20 s in, and the line describes the
 # aiding the flight actually had.
 # Source: PX4 Flight Review (CC BY 4.0).
-9289375e4280ddec891b26b870f5065f2310d2e39527e4e8706d22e537d047dd  2c42096b-fa9b-4c74-8b89-ac79bf067a1d.ulg  https://cdn.logs.px4.io/2c42096b-fa9b-4c74-8b89-ac79bf067a1d.ulg  rate=199 window=398 align=coarse an=measured alpha0=none heading=invalid roll0=0.42 pitch0=-0.89 yaw0=-22.47 resets=2 aligned_at=0.20 attitude_lost=6.10 rejected=0 rejected_gnss_pos=0 rejected_gnss_vel=0 rejected_baro=0 rejected_mag=0 discarded=35575 refused=0 invalid=0 transitions=888 status=Healthy
+9289375e4280ddec891b26b870f5065f2310d2e39527e4e8706d22e537d047dd  2c42096b-fa9b-4c74-8b89-ac79bf067a1d.ulg  https://cdn.logs.px4.io/2c42096b-fa9b-4c74-8b89-ac79bf067a1d.ulg  rate=199 window=398 align=coarse an=measured alpha0=none heading=invalid roll0=0.42 pitch0=-0.89 yaw0=-22.47 resets=3 aligned_at=0.20 attitude_lost=6.16 rejected=0 rejected_gnss_pos=0 rejected_gnss_vel=0 rejected_baro=0 rejected_mag=0 discarded=35575 refused=0 invalid=0 transitions=888 status=Healthy

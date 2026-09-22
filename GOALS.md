@@ -300,8 +300,24 @@ The options, in the order they are worth doing:
    is a small-angle quantity, and a yaw error of a radian is not small, so the linearization is
    wrong in a way no variance expresses. The answer is a yaw **reset** when a heading source
    arrives rather than gradual correction — which is precisely why ArduPilot invented the GSF
-   estimator in 6 rather than widening a prior. Open: whether tilt alone can be left to the
-   ordinary gate, which the corpus should be able to answer once propagation lands.
+   estimator in 6 rather than widening a prior. **Done** — `fuse_mag_heading` adopts the first
+   heading after an unestablished start, `Fusion::Reset` once per quantity, and fuses every one
+   after it.
+
+   **And tilt can be left to the ordinary gate, which is what the data says.** The corpus
+   answers half of it: across 49,692 headings on five logs the gate turns down none, so nothing
+   there is locked out at any tilt those vehicles reach. The simulator answers the half the
+   corpus cannot, because only it starts badly on purpose — `moving_start` begins at 14.6° of
+   pitch with a coarse attitude, has 96 of its headings refused early, and recovers to 1.720° of
+   tilt against the 1.770 it read with no magnetometer at all. No separate policy while
+   aligning, and no widened gate.
+
+   What that needed was not a gate change but an honest `R`. Leaving tilt to the ordinary gate
+   is safe *because* a heading levelled by an uncertain attitude is priced for that uncertainty,
+   equation (36′); without the term the same scenario reads 2.653° of tilt and claims an
+   attitude it does not have on 840 quantity-epochs. The lesson generalizes past the
+   magnetometer: a derived measurement whose derivation reads the state must carry the state's
+   uncertainty, or the gate is judging it against a variance that describes something else.
 4. **In-motion leveling.** Differentiate GNSS velocity for navigation-frame acceleration,
    subtract it from measured specific force, and recover gravity's direction while moving.
    Removes the stillness requirement for tilt outright. No new states; noisy under aggressive

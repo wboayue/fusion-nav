@@ -2,11 +2,12 @@
 
 > **Status: the estimation mathematics is partly implemented.** (9)–(15) propagate the nominal
 > state and (16)–(22) propagate `P`, so `predict` moves position, velocity and attitude and says
-> how little it knows about them. GNSS corrects them: the update (23)–(27), the observation
-> models for position (28) and velocity (29), the gate (37)–(38) and the injection and reset
-> (39)–(41) are built, and so is the barometric altitude of (30). The remaining observation
-> models, (31)–(36), are not, and `fuse_mag_heading` accepts with a zero test ratio.
-> Also built: the attitude and biases of (5)–(7), the
+> how little it knows about them. Every aiding source the crate carries corrects them: the
+> update (23)–(27), the observation models for position (28), velocity (29), barometric altitude
+> (30) and magnetic heading (34)–(36) with the levelling variance of (36′), the gate (37)–(38)
+> and the injection and reset (39)–(41) are built. The three-axis magnetometer, (31)–(33), is
+> not, and is [out of scope](GOALS.md#magnetometer-without-magnetic-field-states) rather than
+> pending. Also built: the attitude and biases of (5)–(7), the
 > initial covariance (8) and the bound (8′) a coarse window earns, the barometric reference `α₀` of
 > (30), the window's own acceleration
 > `ā_n` of (5′) — measured and reported though nothing levels with it yet — the geodetic origin
@@ -614,13 +615,61 @@ $`R(\hat{q})\,\delta\theta`$, and yaw is rotation about the navigation down axis
 H = \begin{bmatrix} 0 & 0 & e_3^\mathsf{T} R(\hat{q}) & 0 & 0 \end{bmatrix}
 ```
 
-with $`R_m = \sigma_\psi^2`$ scalar. Equation (36) treats yaw as the down-axis component of the
-rotation vector, which is exact at zero tilt and degrades as $`1/\cos\theta`$; at the tilt angles
-flight controllers operate at, the error is not significant, and the approximation avoids a
-singularity at 90° pitch.
+Equation (36) treats yaw as the down-axis component of the rotation vector, which is exact at
+zero tilt and degrades as $`1/\cos\theta`$; at the tilt angles flight controllers operate at, the
+error is not significant, and the approximation avoids a singularity at 90° pitch.
 
 Note that (35) wraps the angle **before** it is used, so the innovation is always in
 $`(-\pi, \pi]`$ and a heading near ±180° does not produce a spurious 2π innovation.
+
+### What the levelling costs
+
+$`R_m`$ is not $`\sigma_\psi^2`$ alone. Perturbing (35) exactly — writing
+$`\varphi = R(\hat q)\,\delta\theta`$ for the navigation-frame error and
+$`\tilde m_n = (\tilde m_{n,N}, \tilde m_{n,E}, \tilde m_{n,D})`$ with
+$`h^2 = \tilde m_{n,N}^2 + \tilde m_{n,E}^2`$ — gives
+
+```math
+y = \varphi_D - \frac{\tilde m_{n,D}}{h^2}\bigl( \varphi_N\, \tilde m_{n,N} + \varphi_E\, \tilde m_{n,E} \bigr)
+```
+
+(36) keeps the first term and drops the second. That second term is the **levelling error**: (34)
+rotates the measurement by the *estimated* attitude, so a tilt error tips the field and turns its
+horizontal part by $`\tan\delta`$ times as much — the same leak (8′) charges a coarse window's
+heading prior for, and at the 1.107 rad of dip the corpus carries it is a factor of 2.0, twice
+the sensitivity (36) keeps.
+
+Dropping it from $`H`$ and saying nothing leaves $`S`$ too small, so the filter treats a heading
+spoiled by its own tilt as evidence about yaw and gyroscope bias. It is priced in $`R_m`$ instead:
+
+**(36′)**
+
+```math
+R_m = \sigma_\psi^2 + \tan^2\!\delta \cdot \sigma_{\text{tilt}}^2,
+\qquad
+\tan\delta = \frac{\bigl| \tilde m_n \cdot e_3 \bigr|}{\bigl\lVert (I - e_3 e_3^\mathsf{T})\, \tilde m_n \bigr\rVert},
+\qquad
+\sigma_{\text{tilt}}^2 = \max\bigl( P_{\delta\theta_x \delta\theta_x},\; P_{\delta\theta_y \delta\theta_y} \bigr)
+```
+
+$`\tan\delta`$ is the ratio (8′) already defines, measured off this field rather than
+configured, and it is an angle between a field and a direction — the same number in whichever
+frame the two are expressed together, so the implementation reads it in body axes, where
+navigation down is (36)'s Jacobian row transposed. The larger of the two horizontal variances is
+taken rather than their average because the two errors are not symmetric: a $`\sigma`$ too large
+only slows the heading's correction, while one too small is a filter claiming an attitude it does
+not have.
+
+Widening $`R_m`$ rather than extending $`H`$ is deliberate, and the alternative was measured. The
+exact Jacobian *does* constrain tilt, and using it is worse than dropping the term: it corrects
+from a scalar carrying 3° of noise a quantity gravity determines an order of magnitude better,
+which took the `mission` scenario to 9.0° of tilt error and 1.26 m/s² of accelerometer bias
+against 0.58° and 0.053 for (36′). What (36′) says is that the heading is less trustworthy than
+its own noise suggests, without claiming it observes the tilt that made it so — the Schmidt
+treatment of a state a measurement depends on and does not constrain. On the `moving_start`
+scenario, whose coarse start is where an unpriced levelling error is largest, it is worth
+2.653° → 1.720 of tilt, 3.777° → 0.940 of yaw, 1.634 → 0.231 of `nees_att`, and 840 falsely-valid
+attitude quantity-epochs → 0.
 
 ## Innovation gating
 
@@ -803,7 +852,7 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | --------- | ------- | ------ | -------- |
 | (1)–(4) | state definitions | `state.rs` | `State`, `ErrorState` |
 | (5)–(8) | static initialization | `init.rs` | `measure`, `level_from_accel`, `heading_from_mag`, `nominal_state`, `classify`, `attitude_sigmas`, `initial_covariance` |
-| (8′) | what a coarse window supports | `init.rs` | `coarse_sigmas`, `window_drift`, `heading_sensitivity` |
+| (8′) | what a coarse window supports | `init.rs` | `coarse_sigmas`, `window_drift`, `heading_sensitivity` — `tan δ` shared with (36′) |
 | (5′) `ā_n` | in-motion levelling | `init.rs` | `inertial_acceleration`; the correction itself is unbuilt |
 | (30) `α₀` | barometric reference | `init.rs` | `baro_reference` |
 | (9)–(11) | bias correction, gravity | `propagate.rs` | `ImuSample`, `corrected_imu` |
@@ -816,8 +865,9 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | (28) | GNSS position | `observation/gnss.rs` | `position_jacobian`, `position_observation` |
 | (29) | GNSS velocity | `observation/gnss.rs` | `velocity_jacobian`, `velocity_observation` |
 | (30) | barometric altitude | `observation/baro.rs` | `altitude_jacobian`, `altitude_observation` |
-| (31)–(33) | magnetometer, three-axis | `observation/mag.rs` | `field_jacobian`, unbuilt and out of scope |
-| (34)–(36) | magnetometer, heading only | `observation/mag.rs` | `heading_innovation`, `heading_jacobian`, unbuilt |
+| (31)–(33) | magnetometer, three-axis | — | unbuilt and out of scope; no `field_jacobian` exists |
+| (34)–(36) | magnetometer, heading only | `observation/mag.rs` | `heading_innovation`, `heading_jacobian`, `heading_observation` |
+| (36′) | levelling variance | `observation/mag.rs` | `levelling_variance`, with `tan δ` from `init.rs`'s `heading_sensitivity` |
 | (37) `γ` | gate thresholds | `config.rs` | `Gate::at`, `Gate::new`, `Gates::at` |
 | (37)–(38) | innovation gating, test ratio | `update.rs` | `nis`, `test_ratio`, called by `update` |
 | — | per-source health tracking | `health.rs` | `SourceHealth`, `Status` |

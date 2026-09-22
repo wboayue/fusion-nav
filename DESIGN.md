@@ -4,13 +4,13 @@ How `fusion-nav` is built and why. For how to use it see [README.md](README.md);
 mathematics see [EQUATIONS.md](EQUATIONS.md); for positioning and decisions already made see
 [GOALS.md](GOALS.md).
 
-> **Status: aided by GNSS position and velocity.** The structure below is the intended one, and
-> the types and signatures exist. Implemented: initialization, equations (5)–(8), so the filter
-> starts at the attitude it levelled; nominal propagation, (9)–(15), and covariance propagation,
-> (16)–(22), so the state dead reckons and the uncertainty beside it grows; and the measurement
-> update, (23)–(30) and (37)–(41), wired to both GNSS observations and the barometer. Not
-> implemented: the magnetometer observations (31)–(36), whose `fuse_mag_heading` still changes
-> nothing.
+> **Status: aided by GNSS position and velocity, the barometer and magnetic heading.** The
+> structure below is the intended one, and the types and signatures exist. Implemented:
+> initialization, equations (5)–(8), so the filter starts at the attitude it levelled; nominal
+> propagation, (9)–(15), and covariance propagation, (16)–(22), so the state dead reckons and
+> the uncertainty beside it grows; and the measurement update, (23)–(30), (34)–(36) with the
+> levelling variance (36′), and (37)–(41), wired to every source the crate carries. Not
+> implemented, and out of scope rather than pending: three-axis magnetometer fusion, (31)–(33).
 
 ## Error-State Kalman Filter
 
@@ -166,6 +166,14 @@ Three-axis field fusion is documented for completeness but is not the default. `
 carries no magnetic-field or magnetometer-bias states, so hard- and soft-iron calibration is the
 application's responsibility; an uncalibrated magnetometer produces a heading bias the filter
 cannot detect.
+
+What the filter *can* price is the other half of that error. Reducing the field to a heading
+means rotating it by the attitude estimate, so a tilt error tips the field and turns the heading
+it yields by `tan δ` times as much — twice as much as the tilt itself, at the dip the corpus
+carries. The caller hands over a field and never sees that rotation, so the variance it supplies
+cannot describe it; the filter adds it, equation (36′). It goes into `R` rather than `H`: the
+heading becomes less trustworthy without being made to look like an observation of the tilt that
+spoiled it, which is what a scalar carrying 3° of noise must not be allowed to correct.
 
 See [magnetometer, heading only](EQUATIONS.md#magnetometer-heading-only).
 
