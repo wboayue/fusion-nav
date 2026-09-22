@@ -91,30 +91,153 @@ impl Default for ImuNoise {
     }
 }
 
-/// Chi-square gate thresholds `γ`, one per observation, from equation (37).
+/// How often a gate rejects a measurement that was fine: the percentile of the chi-square
+/// distribution its threshold sits at.
 ///
-/// The filter reports `r = ε / γ`, so these set what `r = 1` means.
+/// Named rather than continuous, because each name is an exact tabulated quantile and a
+/// continuous `p` would need an inverse normal CDF and the Wilson–Hilferty approximation at
+/// three degrees of freedom — code a reader has to check, for percentiles nobody asks for.
+/// `#[non_exhaustive]` because it is an input, constructed and rarely matched, so a new
+/// percentile costs callers nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Percentile {
+    /// 95 %: one good measurement in twenty rejected.
+    P95,
+    /// 99 %: one in a hundred.
+    P99,
+    /// 99.9 %: one in a thousand.
+    P999,
+}
+
+/// Innovation gate threshold `γ` of equation (37), for an observation of `DOF` dimensions.
+///
+/// The degrees of freedom are a property of the observation rather than a choice, so they
+/// are part of the type: a threshold for a one-dimensional observation cannot be written
+/// into a three-dimensional source's field, and [`Gate::at`] exists only for the dimensions
+/// this crate observes. The only free parameter left is the [`Percentile`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Gate<const DOF: usize>(f32);
+
+impl<const DOF: usize> Gate<DOF> {
+    /// A threshold given as a number, for a caller with a reason to leave the [`Percentile`]
+    /// table; `None` unless it is finite and strictly positive.
+    ///
+    /// Each refusal is a gate that fails silently. NaN compares false against every `ε` and
+    /// accepts everything; `+∞` does the same while reporting a test ratio of zero; zero or
+    /// less rejects everything, and zero makes the ratio of (38) a division by zero.
+    pub const fn new(threshold: f32) -> Option<Self> {
+        if threshold.is_finite() && threshold > 0.0 {
+            Some(Self(threshold))
+        } else {
+            None
+        }
+    }
+
+    /// The threshold `γ`, which a test ratio of 1 corresponds to.
+    pub const fn threshold(self) -> f32 {
+        self.0
+    }
+}
+
+impl Gate<1> {
+    /// The chi-square quantile at `percentile` for one degree of freedom: barometric
+    /// altitude, magnetic heading.
+    ///
+    /// Checked in this module's tests against the closed-form CDF, not against another table.
+    pub const fn at(percentile: Percentile) -> Self {
+        Self(match percentile {
+            Percentile::P95 => 3.841_459,
+            Percentile::P99 => 6.634_897,
+            Percentile::P999 => 10.827_566,
+        })
+    }
+}
+
+impl Gate<3> {
+    /// The chi-square quantile at `percentile` for three degrees of freedom: GNSS position
+    /// and velocity.
+    ///
+    /// Checked in this module's tests against the closed-form CDF, not against another table.
+    pub const fn at(percentile: Percentile) -> Self {
+        Self(match percentile {
+            Percentile::P95 => 7.814_728,
+            Percentile::P99 => 11.344_867,
+            Percentile::P999 => 16.266_236,
+        })
+    }
+}
+
+/// Innovation gate thresholds `γ`, one per observation, from equation (37).
+///
+/// The filter reports `r = ε / γ`, so these set what `r = 1` means. Built from a percentile,
+/// then adjusted per source where a caller has a reason:
+///
+/// ```
+/// use fusion_nav::{Gate, Gates, Percentile};
+///
+/// let mut gates = Gates::at(Percentile::P99);
+/// gates.baro_altitude = Gate::<1>::at(Percentile::P999); // a barometer that sees prop wash
+/// ```
+///
+/// A threshold of the wrong dimension does not compile:
+///
+/// ```compile_fail
+/// # use fusion_nav::{Gate, Gates, Percentile};
+/// let mut gates = Gates::default();
+/// gates.baro_altitude = Gate::<3>::at(Percentile::P99); // expected `Gate<1>`, found `Gate<3>`
+/// ```
+///
+/// Every threshold is compared against the joint `ε = yᵀ S⁻¹ y` over all of the
+/// observation's components, not one component at a time. Both production estimators test
+/// per component against the diagonal of `S` only: PX4 each axis at 5σ
+/// (`src/modules/ekf2/EKF/ekf.h:1142` at `c4e4ef98e9`), which fits its fusing the axes one by
+/// one (`EKF/position_fusion.cpp:62-68`); ArduPilot the horizontal pair as one sum against the
+/// summed variances and the vertical alone
+/// (`libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp:904-906` and `:1023` at `368dc0c428`).
+/// The joint test is what makes a [`Percentile`] mean what it names: only `ε` is chi-square
+/// with `dim(z)` degrees of freedom, so only it rejects exactly `1 − p` of good measurements,
+/// where a per-component test's rate depends on correlations nothing states. And it keeps
+/// those correlations — a yaw error couples north and east, so the region `S` describes is an
+/// ellipsoid rather than a box aligned with the navigation axes. What it costs is all or
+/// nothing: a vertical outlier rejects a good horizontal fix, which ArduPilot's split avoids.
+/// Whether the corpus shows that is #36's question, and a `Gate<2>` field would be the answer.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Gates {
-    /// GNSS position, 3 degrees of freedom.
-    pub gnss_position: f32,
-    /// GNSS velocity, 3 degrees of freedom.
-    pub gnss_velocity: f32,
-    /// Barometric altitude, 1 degree of freedom.
-    pub baro_altitude: f32,
-    /// Magnetic heading, 1 degree of freedom.
-    pub mag_heading: f32,
+    /// GNSS position.
+    pub gnss_position: Gate<3>,
+    /// GNSS velocity.
+    pub gnss_velocity: Gate<3>,
+    /// Barometric altitude.
+    pub baro_altitude: Gate<1>,
+    /// Magnetic heading.
+    pub mag_heading: Gate<1>,
+}
+
+impl Gates {
+    /// Every source gated at the same percentile, each at its own degrees of freedom.
+    pub const fn at(percentile: Percentile) -> Self {
+        Self {
+            gnss_position: Gate::<3>::at(percentile),
+            gnss_velocity: Gate::<3>::at(percentile),
+            baro_altitude: Gate::<1>::at(percentile),
+            mag_heading: Gate::<1>::at(percentile),
+        }
+    }
 }
 
 impl Default for Gates {
+    /// The 95th percentile, a placeholder the corpus has not yet been asked about.
+    ///
+    /// It is tighter than both production estimators, which gate GNSS and the barometer at
+    /// 5σ (PX4 `src/modules/ekf2/EKF/common.h:348-374` at `c4e4ef98e9`; ArduPilot
+    /// `*_I_GATE_DEFAULT 500`, in hundredths of σ, `libraries/AP_NavEKF3/AP_NavEKF3.cpp:34-36`
+    /// at `368dc0c428`). At 95 % one good fix in twenty is rejected by
+    /// construction — every 20 s at 1 Hz GNSS, each feeding the consecutive-rejection count.
+    /// No test ratio is non-zero until the update of (23)–(28) lands, so the corpus cannot say
+    /// yet; #36 replays it across the [`Percentile`]s and picks from what it reads.
     fn default() -> Self {
-        // 95th percentile of chi-square at 3 and 1 degrees of freedom.
-        Self {
-            gnss_position: 7.81,
-            gnss_velocity: 7.81,
-            baro_altitude: 3.84,
-            mag_heading: 3.84,
-        }
+        Self::at(Percentile::P95)
     }
 }
 
@@ -348,5 +471,73 @@ impl Default for Config {
             max_predict_dt: Seconds::from_secs(0.1),
             magnetic_declination: Radians::ZERO,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nalgebra::ComplexField;
+
+    /// The chi-square CDF at `x` for one or three degrees of freedom, by Simpson's rule.
+    ///
+    /// Substituting `x = t²` removes the one-dof density's singularity at zero and leaves the
+    /// same constant for both: `F(x) = √(2/π) ∫₀^√x t^(k−1) e^(−t²/2) dt`. Computed rather than
+    /// looked up, so the table is checked against the distribution and not against a copy.
+    fn chi_square_cdf(dof: i32, x: f64) -> f64 {
+        const STEPS: usize = 10_000;
+        let upper = ComplexField::sqrt(x);
+        let h = upper / STEPS as f64;
+        let density = |t: f64| t.powi(dof - 1) * ComplexField::exp(-t * t / 2.0);
+        let interior: f64 = (1..STEPS)
+            .map(|i| density(i as f64 * h) * if i % 2 == 1 { 4.0 } else { 2.0 })
+            .sum();
+        let integral = h / 3.0 * (density(0.0) + interior + density(upper));
+        ComplexField::sqrt(2.0 / core::f64::consts::PI) * integral
+    }
+
+    const PERCENTILES: [(Percentile, f64); 3] = [
+        (Percentile::P95, 0.95),
+        (Percentile::P99, 0.99),
+        (Percentile::P999, 0.999),
+    ];
+
+    #[test]
+    fn each_threshold_is_the_quantile_it_names() {
+        // The three-significant-figure values this table replaced (7.81, 3.84) miss by 1e-4,
+        // so the bound separates a quantile from a rounded one.
+        for (percentile, p) in PERCENTILES {
+            let one = Gate::<1>::at(percentile).threshold();
+            let three = Gate::<3>::at(percentile).threshold();
+            let f1 = chi_square_cdf(1, f64::from(one));
+            let f3 = chi_square_cdf(3, f64::from(three));
+            assert!((f1 - p).abs() < 1e-6, "1 dof at {p}: F({one}) = {f1}");
+            assert!((f3 - p).abs() < 1e-6, "3 dof at {p}: F({three}) = {f3}");
+        }
+    }
+
+    #[test]
+    fn a_threshold_that_would_fail_silently_is_refused() {
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.0, -0.0, -1.0] {
+            assert_eq!(Gate::<1>::new(bad), None, "{bad}");
+        }
+        assert_eq!(Gate::<3>::new(11.34).map(Gate::threshold), Some(11.34));
+        assert_eq!(
+            Gate::<1>::new(f32::MIN_POSITIVE).map(Gate::threshold),
+            Some(f32::MIN_POSITIVE)
+        );
+    }
+
+    #[test]
+    fn the_default_is_the_95th_percentile() {
+        assert_eq!(Gates::default(), Gates::at(Percentile::P95));
+        assert_eq!(
+            Gates::default().gnss_position,
+            Gate::<3>::at(Percentile::P95)
+        );
+        assert_eq!(
+            Gates::default().baro_altitude,
+            Gate::<1>::at(Percentile::P95)
+        );
     }
 }

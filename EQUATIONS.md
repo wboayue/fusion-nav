@@ -8,7 +8,8 @@
 > resets of (41), which an application asks for. Also built: the attitude and biases of (5)–(7), the
 > initial covariance (8) and the bound (8′) a coarse window earns, the barometric reference `α₀` of
 > (30), the window's own acceleration
-> `ā_n` of (5′) — measured and reported though nothing levels with it yet — the geodetic origin
+> `ā_n` of (5′) — measured and reported though nothing levels with it yet — the thresholds `γ` of
+> (37), though nothing yet compares an `ε` against them, the geodetic origin
 > (43)–(44), the angle wrap of (35), and the symmetry enforcement of (42), now called after every
 > covariance step; the [equation-to-code mapping](#equation-to-code-mapping) marks the functions
 > that do not exist yet.
@@ -628,10 +629,14 @@ The normalized innovation squared
 is compared against a threshold $`\gamma`$ from the chi-square distribution with
 $`\dim(z)`$ degrees of freedom. The measurement is rejected when $`\epsilon > \gamma`$.
 
-| dim(z) | observation | 95 % | 99 % |
-| ------ | ----------- | ---- | ---- |
-| 1 | barometric altitude, magnetic heading | 3.84 | 6.63 |
-| 3 | GNSS position, GNSS velocity, three-axis magnetometer | 7.81 | 11.34 |
+| dim(z) | observation | 95 % | 99 % | 99.9 % |
+| ------ | ----------- | ---- | ---- | ------ |
+| 1 | barometric altitude, magnetic heading | 3.8415 | 6.6349 | 10.8276 |
+| 3 | GNSS position, GNSS velocity, three-axis magnetometer | 7.8147 | 11.3449 | 16.2662 |
+
+`Gate::at` holds these, typed by $`\dim(z)`$, and `Gates::at` builds one per source from a single
+percentile. The test is joint over every component of $`z`$ rather than per axis as PX4 and
+ArduPilot gate; why, and what it costs, is on `Gates`.
 
 Rather than reporting $`\epsilon`$ directly, the filter exposes the dimensionless **test ratio**
 
@@ -806,6 +811,7 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | (30) | barometric altitude | `observation/baro.rs` | `altitude_jacobian` |
 | (31)–(33) | magnetometer, three-axis | `observation/mag.rs` | `field_jacobian` |
 | (34)–(36) | magnetometer, heading only | `observation/mag.rs` | `heading_innovation`, `heading_jacobian` |
+| (37) `γ` | gate thresholds | `config.rs` | `Gate::at`, `Gate::new`, `Gates::at` |
 | (37)–(38) | innovation gating, test ratio | `update.rs` | `gate`, `test_ratio` |
 | — | per-source health tracking | `health.rs` | `SourceHealth`, `Status` |
 | (39)–(41) | injection and reset | `update.rs` | `inject`, `reset` |

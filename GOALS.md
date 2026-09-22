@@ -178,7 +178,7 @@ a `Config` the user reads and commits.
 | accelerometer and gyroscope white noise | sample variance over the static window | `initialize` — candidate |
 | barometer measurement noise | sample variance over the static window | `initialize` — candidate |
 | `max_predict_dt` | observed IMU interval | offline |
-| gate thresholds | chi-square quantile for a chosen percentile and dimension | a constructor, not a number |
+| gate thresholds | chi-square quantile for a chosen percentile and dimension | a constructor, not a number — **done** |
 | `Timeouts` | observed per-source update intervals | offline recommendation only |
 | GNSS `R` | the receiver, floored | per measurement — **done** |
 | local gravity `γ` | the origin's latitude, by the WGS-84 gravity formula | the offline tool (#51); a constant in the filter — see the decision below |
@@ -194,8 +194,9 @@ And what stays with the user, because no amount of data yields it:
 * **Policy**: what a `DeadReckoning` status should do to the vehicle.
 * **The static window itself.** The filter can validate stillness; it cannot arrange it.
 
-Status: two rows of that table are done — `α₀`, measured from the window, and GNSS `R`, which the
-receiver supplies and the caller floors. Everything needing the offline tool is a commitment
+Status: three rows of that table are done — `α₀`, measured from the window; GNSS `R`, which the
+receiver supplies and the caller floors; and the gate thresholds, which `Gates::at` derives from a
+percentile at each source's degrees of freedom. Everything needing the offline tool is a commitment
 rather than a present fact, and this is the differentiator most likely to be judged on whether
 that tool gets written.
 
