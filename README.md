@@ -2,15 +2,15 @@
 
 Embedded-first inertial navigation using a 15-state Error-State Kalman Filter (ESKF).
 
-> **Status: dead reckoning, not yet aided.** The types and signatures below exist and compile.
+> **Status: aided by GNSS position only.** The types and signatures below exist and compile.
 > Initialization is real — the filter levels, takes a heading and a gyroscope bias, and sets its
-> covariance — and `predict` now propagates the state *and* its uncertainty, equations (9)–(22).
-> What is missing is everything that corrects them: every `fuse_*` accepts without changing the
-> estimate. So the position is an IMU-only dead-reckoned one, and the uncertainty beside it grows
-> without bound — which is what makes `Validity` honest about it: each flag goes false as its own
-> variance passes `Config::accuracy`, 3.82 s in for tilt at the default noise. `Status` answers on
-> the aiding timers, so an unaided filter reports `DeadReckoning` well before that. The design is
-> subject to change.
+> covariance — and `predict` propagates the state *and* its uncertainty, equations (9)–(22).
+> `fuse_gnss_position` and `fuse_gnss_geodetic` correct them, equations (23)–(28), through the
+> innovation gate of (37)–(38). The other three `fuse_*` still accept without changing the
+> estimate: velocity, attitude and the biases are corrected only as far as a position fix
+> reaches them through the covariance. Where no fix arrives, the uncertainty grows without bound,
+> and `Validity` says so: each flag goes false as its own variance passes `Config::accuracy`,
+> 3.82 s in for tilt at the default noise on an unaided start. The design is subject to change.
 
 `fusion-nav` estimates 3D attitude, velocity, and position by fusing IMU measurements with GNSS,
 barometric altitude, and magnetometer observations. It is `no_std`, allocation-free, and aimed at
@@ -314,6 +314,7 @@ a `Reset` steps the state, and a refusal says the measurement never reached the 
 | `NoReference` | barometer altitude with no `α₀` from initialization, or a geodetic fix that cannot place an origin |
 | `NotFinite` | a NaN or infinity in the measurement or its noise; discarded |
 | `InvalidNoise` | a zero or negative variance in the noise — no sensor has one, and `S` would be singular or worse; discarded |
+| `StateInvalid` | the filter's own covariance or correction could not support an update — `S` not positive-definite, or f32 overflow; nothing committed, and the measurement is not at fault |
 | `NotInitialized` | no state to fuse against |
 
 ### The navigation origin

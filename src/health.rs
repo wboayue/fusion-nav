@@ -3,6 +3,8 @@
 //! See [gate lockout](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#gate-lockout)
 //! for why the filter reports rather than recovers.
 
+use nalgebra::{SMatrix, SVector};
+
 use crate::units::Seconds;
 
 /// How far the estimate can be trusted: whether attitude has converged, and how well
@@ -145,6 +147,22 @@ pub enum Fusion {
     /// caller that wants that behavior floors `noise` before the call, where the policy is
     /// visible. See [`Eskf::fuse_gnss_position`](crate::Eskf::fuse_gnss_position).
     InvalidNoise,
+    /// The filter's own numbers could not support an update, so nothing was committed. The
+    /// state and covariance are unchanged, no health timer moved, and the measurement is not
+    /// at fault.
+    ///
+    /// Two ways to get here, one meaning. The innovation covariance `S = H P Hᵀ + R` of
+    /// equation (24) was not positive-definite, which with a positive `R` means `P` itself had
+    /// stopped being a covariance; or the correction of (26) and (39)–(41) overflowed f32 on
+    /// finite inputs, as (11)–(14) can. Either way a caller learns the same thing: the
+    /// estimate, not the sensor, is what needs attention.
+    ///
+    /// `State`-qualified by the rule [`Propagation::StateNotFinite`] follows, and not merged
+    /// into it: [`NotFinite`](Self::NotFinite) is always the input handed in, and this is what
+    /// the filter produced. Kept out of [`Rejected`](Self::Rejected) because the gate never gave
+    /// a verdict — a rejection says the measurement disagreed with a sound estimate, and
+    /// counting this as one would put a filter fault in the column that times out a sensor.
+    StateInvalid,
 }
 
 impl Fusion {
@@ -170,6 +188,7 @@ impl Fusion {
             Self::NoReference => Some(Refusal::NoReference),
             Self::NotFinite => Some(Refusal::NotFinite),
             Self::InvalidNoise => Some(Refusal::InvalidNoise),
+            Self::StateInvalid => Some(Refusal::StateInvalid),
             Self::Accepted { .. } | Self::Rejected { .. } | Self::Reset => None,
         }
     }
@@ -183,7 +202,8 @@ impl Fusion {
             | Self::NotInitialized
             | Self::NoReference
             | Self::NotFinite
-            | Self::InvalidNoise => None,
+            | Self::InvalidNoise
+            | Self::StateInvalid => None,
         }
     }
 }
@@ -208,6 +228,9 @@ pub enum Refusal {
     /// A variance in the measurement noise was zero or negative. See
     /// [`Fusion::InvalidNoise`].
     InvalidNoise,
+    /// The filter's own covariance or correction could not support an update. See
+    /// [`Fusion::StateInvalid`].
+    StateInvalid,
 }
 
 /// The outcome of one propagation step.
@@ -374,6 +397,52 @@ impl Validity {
     }
 }
 
+/// The innovation of one update and its variance: `ν` of equation (23) and the diagonal of
+/// `S` of equation (24), one entry per component of the observation.
+///
+/// The diagonal rather than the whole of `S`, which is what PX4 publishes too
+/// (`estimator_innovations` and `estimator_innovation_variances`): it is what a per-axis plot
+/// of `ν` against `±3√S` reads. The joint `ε = νᵀ S⁻¹ ν` the gate tests is
+/// [`test_ratio`](SourceHealth::test_ratio) times the source's threshold in
+/// [`Gates`](crate::Gates), so it is not repeated here.
+///
+/// Room for three components, the largest observation this crate makes; a scalar source fills
+/// one.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Innovation {
+    nu: [f32; 3],
+    variance: [f32; 3],
+    dimension: usize,
+}
+
+impl Innovation {
+    /// Copy `y` and the diagonal of `S` out of one update.
+    pub(crate) fn new<const M: usize>(y: &SVector<f32, M>, s: &SMatrix<f32, M, M>) -> Self {
+        let mut innovation = Self {
+            dimension: M.min(3),
+            ..Self::default()
+        };
+        for (slot, value) in innovation.nu.iter_mut().zip(y.iter()) {
+            *slot = *value;
+        }
+        for (slot, value) in innovation.variance.iter_mut().zip(s.diagonal().iter()) {
+            *slot = *value;
+        }
+        innovation
+    }
+
+    /// `ν = z − h(x̂)`, one entry per component, in the observation's own frame and units.
+    pub fn values(&self) -> &[f32] {
+        self.nu.get(..self.dimension).unwrap_or_default()
+    }
+
+    /// The diagonal of `S = H P Hᵀ + R`, the variance of each entry of
+    /// [`values`](Self::values).
+    pub fn variances(&self) -> &[f32] {
+        self.variance.get(..self.dimension).unwrap_or_default()
+    }
+}
+
 /// Health of one observation source.
 ///
 /// `#[non_exhaustive]`: read the fields, do not construct one. The set grows as the filter
@@ -390,6 +459,19 @@ pub struct SourceHealth {
     /// this at its last good value — so a consumer plotting it reads
     /// [`last_refusal`](Self::last_refusal) beside it.
     pub test_ratio: Option<f32>,
+    /// Innovation `ν` and its variance, from the most recent update the gate ran, whether it
+    /// accepted or rejected; `None` if the last measurement that set [`test_ratio`] ran no
+    /// update, and until one has.
+    ///
+    /// Published so that a consistency statistic — NIS against the gate, or a comparison with
+    /// the innovations PX4 logs — reads the filter's own number rather than recomputing it from
+    /// the measurement and the covariance, which would be a second implementation of (23) and
+    /// (24) free to disagree with this one. `None` after an acceptance that ran no update: an
+    /// adoption ([`Fusion::Reset`]), a geodetic fix spent placing the origin, and a source whose
+    /// `fuse_*` is still a stub.
+    ///
+    /// [`test_ratio`]: Self::test_ratio
+    pub innovation: Option<Innovation>,
     /// Time since a measurement from this source was last accepted, or `None` if none
     /// ever has been. Advances with the `dt` passed to
     /// [`Eskf::predict`](crate::Eskf::predict).
@@ -439,10 +521,11 @@ impl SourceHealth {
         }
     }
 
-    /// Record a measurement that passed the gate: its test ratio, a restarted fusion
-    /// clock, and the end of any run of rejections.
-    pub(crate) fn record_accepted(&mut self, test_ratio: f32) {
+    /// Record a measurement that passed the gate: its test ratio and the innovation behind
+    /// it, a restarted fusion clock, and the end of any run of rejections.
+    pub(crate) fn record_accepted(&mut self, test_ratio: f32, innovation: Option<Innovation>) {
         self.test_ratio = Some(test_ratio);
+        self.innovation = innovation;
         self.time_since_accepted = Some(Seconds::ZERO);
         self.consecutive_rejections = 0;
         self.accepted = self.accepted.saturating_add(1);
@@ -451,15 +534,15 @@ impl SourceHealth {
     /// Record a measurement adopted outright. An acceptance for every other purpose, so the
     /// timer restarts with it; see [`Fusion::Reset`].
     pub(crate) fn record_adopted(&mut self) {
-        self.record_accepted(0.0);
+        self.record_accepted(0.0, None);
         self.adopted = self.adopted.saturating_add(1);
     }
 
     /// Record a measurement the gate refused. The fusion clock keeps running, which is
     /// what lets a source that is only ever rejected time out.
-    #[allow(dead_code, reason = "used once gating is implemented")]
-    pub(crate) fn record_rejected(&mut self, test_ratio: f32) {
+    pub(crate) fn record_rejected(&mut self, test_ratio: f32, innovation: Innovation) {
         self.test_ratio = Some(test_ratio);
+        self.innovation = Some(innovation);
         self.consecutive_rejections = self.consecutive_rejections.saturating_add(1);
         self.rejected = self.rejected.saturating_add(1);
     }

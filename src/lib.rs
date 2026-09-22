@@ -10,9 +10,11 @@ mod geodetic;
 mod health;
 mod init;
 mod math;
+mod observation;
 mod propagate;
 mod state;
 mod units;
+mod update;
 
 // The prelude is the one list of public types; the root adds back the three it leaves out.
 #[doc(inline)]
@@ -79,8 +81,8 @@ pub mod prelude {
     pub use crate::frames::{Body, Enu, Ned};
     pub use crate::geodetic::{Geodetic, LocalOrigin};
     pub use crate::health::{
-        Diagnostics, Fusion, Propagation, PropagationHealth, Refusal, SourceHealth, Status,
-        Validity,
+        Diagnostics, Fusion, Innovation, Propagation, PropagationHealth, Refusal, SourceHealth,
+        Status, Validity,
     };
     pub use crate::init::{Alignment, Coarse, InitError, StaticSample};
     pub use crate::propagate::ImuSample;

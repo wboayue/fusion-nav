@@ -1,9 +1,9 @@
 //! The smallest useful integration: initialize, propagate at IMU rate, fuse what arrives.
 //!
-//! The filter levels and takes a heading from the window, then dead reckons: `predict`
-//! propagates the nominal state and its covariance, (9)–(22), so the uncertainty grows as the
-//! estimate drifts. Nothing corrects either — every `fuse_*` still accepts unconditionally.
-//! What it shows is the shape of the loop a flight controller would write.
+//! The filter levels and takes a heading from the window, then `predict` propagates the
+//! nominal state and its covariance, (9)–(22), and each GNSS fix corrects both, (23)–(41).
+//! Velocity, barometer and heading still accept without correcting anything. What it shows is
+//! the shape of the loop a flight controller would write.
 //!
 //! Run with `cargo run --example basic`. For dropouts, gate outcomes, and diagnostics,
 //! see `degradation.rs`.

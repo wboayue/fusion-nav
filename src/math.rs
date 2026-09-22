@@ -5,7 +5,8 @@
 //! each function is checkable against its definition without a filter around it.
 //!
 //! (42)'s other half, the diagonal variance floor, is not here. It only means something
-//! once a covariance shrinks, so it lands with the update that first shrinks one.
+//! once a covariance shrinks, which (27) now does, and it is the conditioning stage of #31
+//! (#40) that sets it, from a measured floor rather than an invented one.
 
 use core::f32::consts::{PI, TAU};
 
