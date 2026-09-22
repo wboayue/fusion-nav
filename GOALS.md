@@ -145,8 +145,8 @@ comparing rejection behaviour against EKF2 is a like-for-like check.
 Two gates, and they answer different questions. `data/manifest.txt` pins what real logs do, which
 is self-consistency, because no PX4 log carries truth. `data/scenarios.txt` pins accuracy against
 the simulator's analytic truth, and `data/bench.sh` asserts it in CI with no network and no PX4
-tooling. Neither tests the covariance's own distributional promise, which is a third question
-again: see [three questions, three kinds of source](#three-questions-three-kinds-of-source) for
+tooling. Neither tests the covariance's own distributional promise, which is a fourth
+question: see [three questions, three kinds of source](#three-questions-three-kinds-of-source) for
 why they do not collapse and what a ratchet cannot see.
 
 Trust in an estimator comes from reproducible numbers, not from documentation.

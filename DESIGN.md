@@ -256,7 +256,7 @@ estimators such as PX4 EKF2.
 ## Staging the implementation
 
 `EQUATIONS.md` is implemented in stages rather than in one pass, each one verifiable on its own
-before the next builds on it. Three constraints set that order, and none of them is the order the
+before the next builds on it. Four constraints set that order, and none of them is the order the
 equations are numbered in.
 
 **Verification leads the mathematics.** The seeded simulator, the scoring against its truth and
