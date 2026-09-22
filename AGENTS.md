@@ -4,16 +4,17 @@ This file provides guidance to coding agents working with code in this repositor
 
 ## Status
 
-**Dead reckoning, not yet aided.** Types and signatures compile. Initialization is real —
-equations (5)–(8), so the filter starts at the attitude and biases the window yields — and
-`predict` propagates the nominal state *and* its covariance, (9)–(22), so position, velocity and
-attitude move and the uncertainty around them grows. Nothing corrects them: every `fuse_*` accepts
-with a zero test ratio, (23)–(28) are unwritten, and nothing in propagation takes uncertainty back
-out — only the application-driven resets do. So the estimate is IMU-only dead reckoning whose
-uncertainty grows monotonically between resets, which is what makes `Status` and `Validity` honest
-about it, and what `attitude_lost=` measures per log. What is real is
-the health bookkeeping (timers, `Status`, `Diagnostics`), the typed API surface, and the replay
-harness. Anything stubbed says so in its doc comment with a `**Stub.**` paragraph — keep that
+**Aided by GNSS position.** Initialization is real — equations (5)–(8), so the filter starts at
+the attitude and biases the window yields — `predict` propagates the nominal state *and* its
+covariance, (9)–(22), and a GNSS position fix corrects both: the update of (23)–(27) in Joseph
+form, its observation model (28), the gate of (37)–(38) and the injection and reset of (39)–(41)
+all exist, in `src/update.rs` and `src/observation/gnss.rs`. So `mission` scores 0.70 m of
+horizontal RMSE where dead reckoning scored 1261, and the gate turns a fix down rather than
+taking everything offered. What is still uncorrected is what the other three `fuse_*` carry:
+velocity, height and heading accept with a zero test ratio, so between fixes — and on every axis a
+position fix reaches only through the covariance — the estimate is still dead reckoning, which is
+what `Validity` and `attitude_lost=` stay honest about. Also real: the health bookkeeping (timers,
+`Status`, `Diagnostics`), the typed API surface, and the replay harness. Anything stubbed says so in its doc comment with a `**Stub.**` paragraph — keep that
 marker accurate when landing real math, and keep the same caveat in `README.md`, `DESIGN.md`,
 `EQUATIONS.md`, `src/eskf.rs`, and the example module docs, which all repeat it —
 `src/lib.rs` inherits the README's, since it includes the file. `EQUATIONS.md`'s
@@ -74,7 +75,8 @@ cannot be corrected.
 (#21, #25) change the API underneath them. Land an API change before the stage that
 builds on it, not after. The rule has held so far: #58 landed before stage 5, the first code to read
 `Config::gates`, so the gate reads a `Gate<M>` typed by its degrees of freedom rather than a bare
-`f32`; #61 landed before stage 2, so a quaternion reaches `Attitude` only through
+`f32`, and stage 5 then decided the default percentile from replay (`P999`) in the diff that first
+made `rejected=` non-zero; #61 landed before stage 2, so a quaternion reaches `Attitude` only through
 a constructor naming its convention (`body_to_ned`, `ned_to_body`, `flu_to_enu`, `flu_to_nwu`) and
 the `q̂₀` of (5)–(7) is committed through the final shape; #59's signature landed with it, so
 `StaticSample` carries GNSS velocity and `Coarse::NotStationary` reports `ā_n`. What is left of #59
@@ -381,12 +383,21 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
   `attitude_sigmas`, `initial_covariance`, `baro_reference`, `inertial_acceleration`).
   The `initialize*` methods on `Eskf` call these and commit the result. Tests for the pure
   functions live here; tests of what the filter does with them stay in `eskf.rs`.
-- `src/propagate.rs` — `ImuSample` today; equations (9)–(22) land here.
+- `src/propagate.rs` — `ImuSample` and equations (9)–(22).
+- `src/update.rs` — the update every observation shares: (23)–(27) in Joseph form, the gate of
+  (37)–(38), the injection and reset of (39)–(41). Generic over `dim(z)` and free of `Eskf`, so it
+  is tested against a synthetic `H`. One Cholesky factorization of `S` serves the gate and the
+  gain, and the gate runs first, so a rejection computes nothing it could commit. `Eskf::apply` is
+  the one path that commits what it returns and records it. Its stack frame is the largest in the
+  crate, 6944 bytes on `thumbv6m`, which is why `reset` applies `G P Gᵀ` block-wise; the figure
+  and the #41 that would revisit it are in the doc comments.
+- `src/observation/` — one module per sensor, each forming `y`, `H` and diagonal `R_m` and
+  nothing else. `gnss.rs` holds (28); (29)–(36) are unbuilt.
 - `src/math.rs` — the primitives the equations share: `skew`, `exp_quat`, `wrap_pi`,
   `enforce_symmetry` (42). Pure, stateless, and unit-tested against their definitions. All four
-  have callers as of (16)–(22), so none carries a dead-code allowance any more. The last one in
-  `src/` is `SourceHealth::record_rejected` (`src/health.rs:458`), waiting for the gate of (37) —
-  its first caller deletes it.
+  have callers as of (16)–(22), so none carries a dead-code allowance any more. Neither does
+  anything else in `src/`: the gate of (37) took the last one when it became
+  `record_rejected`'s first caller.
 - `src/state.rs` — `State` (nominal, 16 values), `Covariance`/`CovarianceMatrix` (15×15), and
   `ErrorState`, whose discriminants define the covariance ordering `[δp δv δθ δβa δβg]`.
 - `src/units.rs` — typed scalars/vectors. Types carry the claims that cause bugs — frame,
@@ -504,8 +515,11 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
 
 ### Adding a measurement source costs more than a `fuse_*`
 
-Every source touches the same eight places, and three of them are public:
+Every source touches the same nine places, and three of them are public:
 
+- `src/observation/` gains a module forming `y`, `H` and `R_m`, and its `fuse_*` calls
+  `update::update` and `Eskf::apply`. This is the cheap part, and the only one the compiler checks:
+  a `Gate<M>` of the wrong dimension does not build.
 - `Diagnostics` gains a field and `sources()`'s return type changes length
   (`src/health.rs:473-500`) — `#[non_exhaustive]` covers the new field, but not the array length,
   so settle the source set before publishing.
