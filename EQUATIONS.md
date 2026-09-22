@@ -9,7 +9,7 @@
 > initial covariance (8) and the bound (8′) a coarse window earns, the barometric reference `α₀` of
 > (30), the window's own acceleration
 > `ā_n` of (5′) — measured and reported though nothing levels with it yet — the thresholds `γ` of
-(37), though nothing yet compares an `ε` against them, the geodetic origin
+> (37), though nothing yet compares an `ε` against them, the geodetic origin
 > (43)–(44), the angle wrap of (35), and the symmetry enforcement of (42), now called after every
 > covariance step; the [equation-to-code mapping](#equation-to-code-mapping) marks the functions
 > that do not exist yet.
