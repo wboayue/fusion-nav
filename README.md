@@ -462,6 +462,8 @@ Features deliberately deferred (wind, terrain, optical flow, airspeed, ...) are 
 
 ## Further reading
 
+* [GLOSSARY.md](https://github.com/wboayue/fusion-nav/blob/main/GLOSSARY.md) — the vocabulary the other four assume: innovation, NEES, bias,
+  specific force, consistency against accuracy, and what PX4 and ArduPilot call the same things
 * [DESIGN.md](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md) — architecture, state definition, measurement models, gating, embedded
   budget, scope
 * [EQUATIONS.md](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md) — the mathematics, numbered, with an equation-to-code map
