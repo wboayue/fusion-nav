@@ -72,8 +72,9 @@ cannot be corrected.
 
 **Sequencing hazard:** #31's stages are stacked branches, while the signature-changing issues
 (#21, #25) change the API underneath them. Land an API change before the stage that
-builds on it, not after. #58 joins them at stage 5, which is the first code to read `Config::gates`.
-The rule has held so far: #61 landed before stage 2, so a quaternion reaches `Attitude` only through
+builds on it, not after. The rule has held so far: #58 landed before stage 5, the first code to read
+`Config::gates`, so the gate reads a `Gate<M>` typed by its degrees of freedom rather than a bare
+`f32`; #61 landed before stage 2, so a quaternion reaches `Attitude` only through
 a constructor naming its convention (`body_to_ned`, `ned_to_body`, `flu_to_enu`, `flu_to_nwu`) and
 the `q̂₀` of (5)–(7) is committed through the final shape; #59's signature landed with it, so
 `StaticSample` carries GNSS velocity and `Coarse::NotStationary` reports `ā_n`. What is left of #59
@@ -508,7 +509,8 @@ Every source touches the same eight places, and three of them are public:
 - `Diagnostics` gains a field and `sources()`'s return type changes length
   (`src/health.rs:473-500`) — `#[non_exhaustive]` covers the new field, but not the array length,
   so settle the source set before publishing.
-- `Gates` gains a threshold, with its degrees of freedom stated.
+- `Gates` gains a field, a `Gate<DOF>` at the observation's dimension — the type states the degrees
+  of freedom, and `Gates::at` needs a line for the new field.
 - `Timeouts` is **global**, not per-source (`src/config.rs:84-95`): there is no per-source entry to
   add, and giving a source its own threshold is a design change. See #56.
 - `Validity` and `predicted_validity`: decide whether the source constrains a quantity, and say so.
