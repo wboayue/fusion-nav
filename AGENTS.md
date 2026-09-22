@@ -20,7 +20,10 @@ marker accurate when landing real math, and keep the same caveat in `README.md`,
 `src/lib.rs` inherits the README's, since it includes the file. `EQUATIONS.md`'s
 is the one to watch: it sits above a mapping table that separately marks functions as unbuilt, so
 the two can contradict each other, and did — the banner claimed no implementation existed while
-the table below it listed the geodetic origin and the initial covariance as built.
+the table below it listed the geodetic origin and the initial covariance as built. `GLOSSARY.md`
+repeats no caveat by design — it defines terms and defers status to the document that owns it —
+but a few entries do name what is unbuilt (ANEES, the GSF yaw estimator), and those are on the
+list.
 
 ## Backlog
 

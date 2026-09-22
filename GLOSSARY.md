@@ -28,11 +28,13 @@ the difference is the kind that costs a day.
 * **Roll, pitch, yaw** — rotations about the forward, right and down axes. **Tilt** is roll and
   pitch together, the part gravity can measure; **heading** is yaw, the part it cannot.
 * **Quaternion** — four numbers representing a rotation, used instead of Euler angles because
-  they have no gimbal lock and compose cheaply. The cost is two conventions that look alike and
-  are not: **Hamilton** vs JPL, and **scalar-first** vs scalar-last storage. This crate is
-  Hamilton, scalar-first; `Attitude`'s constructors name the convention because getting it wrong
-  produces a filter that runs and reports health while flying an attitude that is a half turn
-  out.
+  they have no gimbal lock and compose cheaply. The cost is conventions that look alike and are
+  not. **Hamilton** vs JPL and **scalar-first** vs scalar-last storage are settled here by
+  `nalgebra`'s `UnitQuaternion` — Hamilton, scalar first — and no constructor can see a caller
+  who assumed otherwise. What `Attitude`'s constructors do name is the frame and the direction
+  (`body_to_ned`, `ned_to_body`, `flu_to_enu`, `flu_to_nwu`), because a stored inverse or an ENU
+  quaternion taken as body-to-NED produces a filter that runs and reports health while flying an
+  attitude that is, in the level case, a half turn out.
 * **Specific force** — what an accelerometer actually measures: acceleration minus gravity, in
   body axes. A stationary level vehicle reads `[0, 0, −γ]`, not zero, which is what makes
   levelling from the accelerometer possible at all. See
@@ -69,14 +71,18 @@ the difference is the kind that costs a day.
   covariance non-singular while the quaternion keeps its unit norm. See
   [state definitions](EQUATIONS.md#state-definitions) and
   [DESIGN.md](DESIGN.md#error-state-kalman-filter).
-* **Predict**, **propagate** — carry the state and its covariance forward by one IMU step,
-  [equations (9)–(22)](EQUATIONS.md#nominal-state-propagation). The estimate gets worse and the
-  covariance says so.
+* **Predict**, **propagate** — carry the state and its covariance forward by one IMU step: the
+  nominal state by [equations (9)–(15)](EQUATIONS.md#nominal-state-propagation), the covariance
+  by [(20)–(22)](EQUATIONS.md#covariance-propagation), through the
+  [error-state dynamics](EQUATIONS.md#error-state-dynamics) of (16)–(19). The estimate gets worse
+  and the covariance says so.
 * **Update**, **fuse**, **correct** — fold one measurement in,
   [equations (23)–(27)](EQUATIONS.md#measurement-update).
 * **Aiding** — any measurement from outside the IMU that constrains the drift: GNSS, barometer,
   magnetometer. A filter that is *aided* is being corrected; an *unaided* one is dead reckoning,
-  whatever its covariance looked like a second ago.
+  whatever its covariance looked like a second ago. Which of those sources corrects anything
+  *yet* is an implementation status, carried by `README.md` and `EQUATIONS.md` rather than by
+  the word.
 * **Injection and reset** — the ESKF's extra step: the estimated error is added into the nominal
   state, then the error state is zeroed and the covariance rotated by the **reset Jacobian**
   `G`. This is why the error state's prior is always zero.
@@ -102,11 +108,12 @@ the difference is the kind that costs a day.
   correlations are what let a GNSS position fix correct velocity and attitude.
 * **Variance**, **σ (sigma)** — squared spread and spread. A state's σ is the square root of its
   diagonal entry in `P`; **3σ** is the interval a Gaussian falls inside 99.7 % of the time.
-* **Three noise matrices, easily confused** — `P` above; `Q`, the **process noise**, which is how
-  much uncertainty propagation adds per step (`Config::imu`); and `R`, the **measurement noise**,
+* **Three kinds of noise number, easily confused** — `Q`, the **process noise**, which is how
+  much uncertainty propagation adds per step (`Config::imu`); `R`, the **measurement noise**,
   which is how bad a *particular* measurement is and therefore arrives as an argument to each
-  `fuse_*` rather than living in `Config`. `P0` is the initial `P`, a prior on the state and not
-  a property of any sensor.
+  `fuse_*` rather than living in `Config`; and `P0`, the initial covariance
+  (`Initialization::sigma_*`), a prior on the state and not a property of any sensor. `P` is none
+  of the three: it is the estimate's own uncertainty, which the other three set and move.
 * **Noise density**, **spectral density** — the units `ImuNoise` states, `rad s⁻¹/√Hz` and
   friends. They look odd because the noise is continuous-time: variance accumulates linearly with
   time, so the σ over an interval `Δt` is the density times `√Δt`. Doubling the sample rate does
@@ -135,15 +142,16 @@ the difference is the kind that costs a day.
 * **Observation model**, `h(x)` — what the filter expects a sensor to read given its current
   state. **`H`** is that model's Jacobian: the matrix saying how a small error in each state
   moves the prediction. [Observation models](EQUATIONS.md#observation-models).
-* **Innovation**, `ν` (also **residual**) — measured minus predicted, `z − h(x̂)`,
-  [equation (23)](EQUATIONS.md#measurement-update). It is the only thing a measurement ever tells
-  the filter, and the only quantity available for checking a filter that has no truth to compare
-  against.
+* **Innovation**, `y` (also **residual**) — measured minus predicted, `z − h(x̂)`,
+  [equation (23)](EQUATIONS.md#measurement-update). `EQUATIONS.md` and the code write `y`; the
+  replay harness's per-fusion columns write `ν`, the other common spelling for the same quantity.
+  It is the only thing a measurement ever tells the filter, and the only quantity available for
+  checking a filter that has no truth to compare against.
 * **Innovation covariance**, `S` — how large the innovation should be if both the filter and the
   sensor are telling the truth: `H P Hᵀ + R`. The filter's uncertainty and the sensor's, added.
-* **Mahalanobis distance** — distance measured in σ rather than in metres, `νᵀ S⁻¹ ν` under the
+* **Mahalanobis distance** — distance measured in σ rather than in metres, `yᵀ S⁻¹ y` under the
   square root. It is what makes "is 3 m a lot?" answerable: it depends on `S`.
-* **NIS**, normalized innovation squared — that distance squared, `ε = νᵀ S⁻¹ ν`,
+* **NIS**, normalized innovation squared — that distance squared, `ε = yᵀ S⁻¹ y`,
   [equation (37)](EQUATIONS.md#innovation-gating). Under the hypothesis that the filter and the
   sensor are both honest it is **chi-square** distributed with `dim(z)` **degrees of freedom**,
   which is what turns it into a test.
@@ -152,8 +160,9 @@ the difference is the kind that costs a day.
   measurement in a hundred by construction; that is the price of catching the bad ones.
 * **Test ratio**, `r = ε / γ` — the gate's verdict as one dimensionless number, so `r > 1` means
   rejected whatever the observation's dimension, and GNSS position, barometer and heading are
-  comparable on one scale. PX4 publishes the same quantity, which is what makes replay comparison
-  like-for-like.
+  comparable on one scale, [equation (38)](EQUATIONS.md#innovation-gating). PX4 logs a quantity
+  of the same name, directly comparable but not the same construction — theirs is per axis
+  against a 5σ bar. See **innovation test ratio** below.
 * **Gate lockout** — the failure mode gating creates. If the *filter* is wrong rather than the
   measurement, every correct measurement looks inconsistent, all of them are rejected, and the
   filter dead-reckons while reporting confidence. This crate reports it and refuses to
@@ -242,29 +251,37 @@ document, the entry points there instead of repeating it.
   is **adoption**: the first fix for a quantity a coarse start never established, once, never for
   recovery. This filter does not reset itself at all
   ([rejection handling](GOALS.md#rejection-handling-report-do-not-self-recover)).
-* **Innovation test ratio** — the same name and nearly the same number. Theirs is per axis against
-  the diagonal of `S`; this crate's is joint over the whole observation, which is what makes a
-  percentile mean what it names. `Gates`'s doc comment owns the comparison and its citations.
+* **Innovation test ratio** — the same name and nearly the same number. Both test per component
+  against the diagonal of `S` and differ in how they group the components: PX4 each axis at 5σ,
+  ArduPilot the horizontal pair as one sum against the summed variances and the vertical alone.
+  This crate's is joint over the whole observation, which is what makes a percentile mean what it
+  names. `Gates`'s doc comment owns the comparison and its citations.
 * **`filter_control_status`**, **`nav_filter_status`** — their per-quantity validity bits. The
   counterpart is `Validity`, and `Eskf::predicted_validity` answers ArduPilot's
   `pred_horiz_pos_rel` question. `Status` is *not* the counterpart: it is a one-glance severity
   summary with no equivalent there. See
   [per-quantity validity](GOALS.md#per-quantity-validity-not-one-ladder).
 * **Tilt align, yaw align** — their alignment flags, latched as this crate latches
-  `Status::Aligning`. The thresholds behind `ALIGNED_TILT` and `ALIGNED_HEADING` cite what each
-  estimator uses.
+  `Status::Aligning`. `ALIGNED_TILT` takes the stricter of the two tilt-variance bars they
+  publish. `ALIGNED_HEADING` has none to take: both latch yaw on the magnetometer reset rather
+  than on a variance, so its doc comment says what the 30° is chosen against instead.
 * **GSF yaw estimator** — a Gaussian Sum Filter recovering yaw from IMU and GNSS velocity, which
   is how both fly without a magnetometer. Unbuilt here, so heading needs a magnetometer; the
   README's limitations say what that costs.
 * **Lane**, **core** — ArduPilot runs several EKF3 instances on different IMUs and switches
   between them on relative error (`libraries/AP_NavEKF3/AP_NavEKF3.h:329-337`). `Eskf` is one
   instance and does no such selection; running several and choosing is the application's.
-* **Magnetic field states** — both can estimate earth- and body-frame field states (`EK3_MAG_CAL`).
-  This crate fuses heading only and estimates no field states, which makes magnetometer
-  calibration a precondition rather than something the filter learns. See
+* **Magnetic field states** — both can estimate earth- and body-frame field states, selected by
+  ArduPilot's `EK3_MAG_CAL` (`libraries/AP_NavEKF3/AP_NavEKF3.cpp:275-281`) and PX4's
+  `EKF2_MAG_TYPE` (`src/modules/ekf2/params_magnetometer.yaml:5-23`), both of which choose
+  between heading fusion and the three-component fusion that learns the field. This crate fuses
+  heading only and estimates no field states, which makes magnetometer calibration a precondition
+  rather than something the filter learns. See
   [the decision](GOALS.md#magnetometer-without-magnetic-field-states).
-* **Barometer bias state** — they estimate one; here the barometric reference `α₀` is a constant
-  fixed at initialization, so reference drift becomes vertical error. See
+* **Barometer bias** — both track the reference rather than fixing it, and neither carries it in
+  the EKF's state vector: PX4 runs a dedicated one-state estimator per height source, ArduPilot
+  slews a `baroHgtOffset` outside the covariance. Here `α₀` is a constant fixed at
+  initialization, so reference drift becomes vertical error. See
   [the decision](GOALS.md#barometric-reference-as-a-constant).
 * **`EKF2_*`, `EK3_*` parameters** — dozens of tunables, most describing the hardware rather than
   the mission. `Config` is deliberately small, and the ambition is smaller still:
