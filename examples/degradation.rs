@@ -1,12 +1,10 @@
 //! What happens when sources stop arriving: status transitions, per-source diagnostics,
 //! and an application-driven recovery.
 //!
-//! `predict` propagates the nominal state and its covariance, (9)–(22), but every `fuse_*`
-//! still accepts unconditionally, so no measurement is ever actually gated out and the estimate
-//! here is IMU-only dead reckoning with a monotonically growing uncertainty. What is real is
-//! the attitude the window yields, that dead reckoning, and the health bookkeeping: the timers,
-//! the aggregate [`Status`], and the fact that recovery is the application's decision rather
-//! than the filter's.
+//! GNSS position is fused and gated, equations (23)–(41); velocity, barometer and heading still
+//! accept unconditionally, so between fixes the estimate is dead reckoning. What is real is the
+//! gate turning down a glitch, the health bookkeeping — the timers, the aggregate [`Status`] —
+//! and the fact that recovery is the application's decision rather than the filter's.
 //!
 //! Run with `cargo run --example degradation`. For the loop itself, see `basic.rs`.
 
@@ -18,7 +16,7 @@ const BARO_HZ: u32 = 20;
 const MAG_HZ: u32 = 50;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("fusion-nav degradation example — no filtering is performed\n");
+    println!("fusion-nav degradation example — GNSS position is the only source fused\n");
 
     let config = Config {
         magnetic_declination: Radians::from_radians(-0.06),
@@ -46,6 +44,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // --- steady state: every source arriving -------------------------------------------
     run(&mut filter, 2 * IMU_HZ, Sources::all());
     report("all sources", &filter);
+
+    // A glitch: one fix 50 m from where every fix before it put the vehicle. The gate turns
+    // it down with a test ratio far above 1, and the estimate is untouched.
+    check(
+        "gnss position glitch",
+        filter.fuse_gnss_position(
+            Position::ned(50.0, 0.0, 0.0),
+            PositionNoise::horizontal_vertical(1.5, 3.0),
+        ),
+    );
+    println!();
 
     // --- GNSS drops out ----------------------------------------------------------------
     run(&mut filter, 3 * IMU_HZ, Sources::without_gnss());
@@ -137,7 +146,8 @@ fn run(filter: &mut Eskf, ticks: u32, sources: Sources) {
         assert!(filter.predict(imu_sample(), dt).is_propagated());
 
         if sources.gnss && tick % (IMU_HZ / GNSS_HZ) == 0 {
-            let fix = Position::ned(120.0, -43.0, -60.0);
+            // The vehicle is still near where it started, which is where the fix puts it.
+            let fix = Position::ned(0.0, 0.0, 0.0);
             check(
                 "gnss position",
                 filter.fuse_gnss_position(fix, PositionNoise::horizontal_vertical(1.5, 3.0)),
@@ -145,7 +155,7 @@ fn run(filter: &mut Eskf, ticks: u32, sources: Sources) {
             check(
                 "gnss velocity",
                 filter.fuse_gnss_velocity(
-                    Velocity::ned(14.0, 0.5, -0.2),
+                    Velocity::ned(0.0, 0.0, 0.0),
                     VelocityNoise::from_speed_accuracy(0.3),
                 ),
             );

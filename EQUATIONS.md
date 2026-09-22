@@ -1,17 +1,16 @@
 # Equations
 
-> **Status: the estimation mathematics is partly implemented.** The filter dead reckons with a
-> growing covariance: (9)–(15) propagate the nominal state and (16)–(22) propagate `P`, so
-> `predict` moves position, velocity and attitude and says how little it knows about them. Nothing
-> corrects them — every `fuse_*` accepts with a zero test ratio, (23)–(28) are unwritten, and
-> nothing in propagation takes uncertainty back out; the only things that narrow a block are the
-> resets of (41), which an application asks for. Also built: the attitude and biases of (5)–(7), the
+> **Status: the estimation mathematics is partly implemented.** (9)–(15) propagate the nominal
+> state and (16)–(22) propagate `P`, so `predict` moves position, velocity and attitude and says
+> how little it knows about them. GNSS position corrects them: the update (23)–(27), its
+> observation model (28), the gate (37)–(38) and the injection and reset (39)–(41) are built. The
+> other observation models, (29)–(36), are not, and their `fuse_*` accept with a zero test ratio.
+> Also built: the attitude and biases of (5)–(7), the
 > initial covariance (8) and the bound (8′) a coarse window earns, the barometric reference `α₀` of
 > (30), the window's own acceleration
-> `ā_n` of (5′) — measured and reported though nothing levels with it yet — the thresholds `γ` of
-> (37), though nothing yet compares an `ε` against them, the geodetic origin
-> (43)–(44), the angle wrap of (35), and the symmetry enforcement of (42), now called after every
-> covariance step; the [equation-to-code mapping](#equation-to-code-mapping) marks the functions
+> `ā_n` of (5′) — measured and reported though nothing levels with it yet — the geodetic origin
+> (43)–(44), the angle wrap of (35), and the symmetry enforcement of (42), called after every
+> covariance operation; the [equation-to-code mapping](#equation-to-code-mapping) marks the functions
 > that do not exist yet.
 
 This document is the normative mathematical description of `fusion-nav`. Equations are numbered
@@ -700,7 +699,8 @@ The error state is then reset to zero and the covariance transformed by the rese
 ```
 
 The attitude block of $`G`$ is frequently approximated as $`I`$. That is acceptable for small
-corrections and should be an explicit, documented choice rather than an omission.
+corrections and should be an explicit, documented choice rather than an omission. `update.rs`
+keeps the exact block, and `reset` says why.
 
 ## Numerical conditioning
 
@@ -806,15 +806,15 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | (21) | discrete process noise | `propagate.rs` | `process_noise` |
 | (22) | covariance propagation | `propagate.rs` | `propagate_covariance`, called with (9)–(15) by `propagate` |
 | (23)–(27) | generic update, Joseph form | `update.rs` | `update` |
-| (28) | GNSS position | `observation/gnss.rs` | `position_jacobian` |
-| (29) | GNSS velocity | `observation/gnss.rs` | `velocity_jacobian` |
-| (30) | barometric altitude | `observation/baro.rs` | `altitude_jacobian` |
-| (31)–(33) | magnetometer, three-axis | `observation/mag.rs` | `field_jacobian` |
-| (34)–(36) | magnetometer, heading only | `observation/mag.rs` | `heading_innovation`, `heading_jacobian` |
+| (28) | GNSS position | `observation/gnss.rs` | `position_jacobian`, `position_observation` |
+| (29) | GNSS velocity | `observation/gnss.rs` | `velocity_jacobian`, unbuilt |
+| (30) | barometric altitude | `observation/baro.rs` | `altitude_jacobian`, unbuilt |
+| (31)–(33) | magnetometer, three-axis | `observation/mag.rs` | `field_jacobian`, unbuilt and out of scope |
+| (34)–(36) | magnetometer, heading only | `observation/mag.rs` | `heading_innovation`, `heading_jacobian`, unbuilt |
 | (37) `γ` | gate thresholds | `config.rs` | `Gate::at`, `Gate::new`, `Gates::at` |
-| (37)–(38) | innovation gating, test ratio | `update.rs` | `gate`, `test_ratio` |
+| (37)–(38) | innovation gating, test ratio | `update.rs` | `nis`, `test_ratio`, called by `update` |
 | — | per-source health tracking | `health.rs` | `SourceHealth`, `Status` |
-| (39)–(41) | injection and reset | `update.rs` | `inject`, `reset` |
+| (39)–(41) | injection and reset | `update.rs` | `inject`, `reset`, called by `update` |
 | (42) | symmetry enforcement | `math.rs` | `enforce_symmetry` |
 | (43) | local tangent plane | `geodetic.rs` | `LocalOrigin::to_ned`, `to_geodetic` |
 | (44) | origin placement | `geodetic.rs` | `LocalOrigin::placing`; committed by `Eskf::fuse_gnss_geodetic` |
@@ -853,7 +853,7 @@ Section 5, the locally-defined angular error; Section 7 is the global alternativ
 | (23)–(26) | (274), (275) | |
 | (27) | footnote 26 | Joseph form, which he recommends over his own (276) |
 | (39), (40) | (283) | |
-| (41) | (285)–(288) | including $`G = I`$ as the usual approximation |
+| (41) | (285)–(288) | the exact $`G`$; he gives $`G = I`$ as the usual approximation, which `reset` does not take |
 | $`\mathrm{Exp}(\phi)`$ | (101) | |
 
 The rest is not his. Initialization (5)–(8) follows the practice of PX4 and ArduPilot cited at

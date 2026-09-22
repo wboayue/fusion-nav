@@ -1,8 +1,9 @@
 //! Replay a recorded flight from CSV and write the estimate back out as CSV.
 //!
-//! `predict` propagates the nominal state, (9)–(15), so the estimate columns hold a dead
-//! reckoned trajectory — but every `fuse_*` still accepts unconditionally, so nothing corrects
-//! it and every test ratio comes out zero. What this establishes is the replay
+//! `predict` propagates the nominal state and its covariance, (9)–(22), and GNSS position fixes
+//! correct both, (23)–(41), so the estimate columns hold a position-aided trajectory and the
+//! GNSS position test ratios are real. The other three `fuse_*` still accept unconditionally
+//! with a ratio of zero. What this establishes is the replay
 //! harness and the normalized log format `GOALS.md` commits to. What it exercises, that `basic.rs` and
 //! `degradation.rs` cannot, is irregular `dt` taken from timestamps, per-sample variance,
 //! a source that appears partway through the log, and an initialization window found in
@@ -46,21 +47,22 @@
 //! apart or say what became of one:
 //!
 //! ```text
-//! # one row per fuse_* call. gates gnss_pos=16.266236 gnss_vel=16.266236 baro=10.827566 mag=10.827566
+//! # one row per fuse_* call. gates gnss_pos=16.266235 gnss_vel=16.266235 baro=10.827566 mag=10.827566
+//! # nu* and s* are the filter's published innovation and diag(S), empty where the gate ran no update or the source's fuse_* does not run one yet
 //! t_s,source,nu0,nu1,nu2,s0,s1,s2,ratio,outcome
-//! 2.0000,gnss_pos,,,,,,,0.0000,accepted
-//! 0.1000,baro,,,,,,,,not_initialized
+//! 0.0000,baro,,,,,,,,not_initialized
+//! 2.2000,gnss_pos,1.350874,1.096309,2.224828,1.258352,1.258354,4.004997,0.2239,accepted
 //! ```
 //!
 //! The gates ride in the header because the filter reports `r = ε / γ`: without `γ` a ratio
 //! does not go back to `ε`, and `ε` is what a consistency statistic needs.
 //!
-//! `nu*` and `s*` are empty. The filter publishes no innovation or innovation covariance,
-//! and the harness deliberately does not work them out from the measurement and the
-//! covariance itself — the update of equations (23)–(28) is about to own that quantity, and
-//! a second implementation of it would disagree eventually, while somebody chased a filter
-//! bug that did not exist. The columns are here so the shape is settled before there are
-//! values for them.
+//! `nu*` and `s*` are `SourceHealth::innovation` as the filter published it: `ν` of (23) and
+//! the diagonal of `S` of (24), padded with empty fields past the observation's dimension.
+//! They are empty where the gate ran no update — a refusal, an adoption, a stub source. The
+//! harness never works them out from the measurement and the covariance itself: that would be
+//! a second implementation of a quantity the update owns, free to disagree with it while
+//! somebody chased a filter bug that did not exist.
 //!
 //! # Scoring
 //!
@@ -114,35 +116,27 @@
 //!
 //! # What the score measures today
 //!
-//! **Stub.** (9)–(22) propagate and nothing corrects them, so every figure here is unaided
-//! dead reckoning: the tilt the window leaves behind leaks gravity into the horizontal
-//! channel, and two integrations turn it into position. That is the point — it is the
-//! baseline each stage of #31 is measured against, and the one the update of (23)–(28) has
-//! to beat.
+//! **Stub.** GNSS position is the only aiding that reaches the state, so every figure here is
+//! a position-aided filter's: velocity, attitude and the biases are corrected only through the
+//! correlations a position fix reaches. Stages 6–8 of #31 add the rest, and each is measured
+//! against this.
 //!
-//! `nees_*` is now a ratio of two quantities that both move: the error above, and the `P` of
-//! (22) that grows underneath it. It is still not a test of the covariance — nothing here
-//! shrinks one, so consistency is only ever approached from the conservative side — but it is
-//! no longer a division by the initialization prior.
+//! `nees_*` is a ratio of two quantities that both move: the error, and a `P` that (22) grows
+//! and (27) shrinks. On these scenarios it approaches 1 from below, because
+//! `ImuNoise::default()` is PX4's, an allowance for vibration, scale-factor error and coning
+//! that an analytic simulator does not produce, and it sits 17× above even `HARSH_IMU` on
+//! accelerometer noise. So a consistency key here fails in the *overconfident* direction only
+//! where a source reports an accuracy better than it delivers. `gnss_latency` is the one that
+//! does: its fixes arrive late, which the filter does not model, so each is wrong by the
+//! distance flown in the delay while `R` claims otherwise.
 //!
-//! Two boundaries on reading the consistency keys, both from the simulator rather than from
-//! the filter. `nees_*` and `in3s` cannot fail in the *overconfident* direction on these
-//! scenarios: `ImuNoise::default()` is PX4's, an allowance for vibration, scale-factor error
-//! and coning that an analytic simulator does not produce, and it sits 17× above even
-//! `HARSH_IMU` on accelerometer noise. So these scenarios gate a regression — the value
-//! moving between stages — and not the covariance's distributional promise, which needs a
-//! source reporting an accuracy better than it delivers.
-//!
-//! And five of the scenarios are one-variable departures from `mission` on `mission`'s seed,
-//! so what attributes a fault is `score(departure) − score(mission)` rather than either
-//! alone. That difference is zero today for four of the five: `gnss_outage`, `baro_drift`,
-//! `gnss_latency` and `mag_disturbance` score identically to `mission` to the last digit,
-//! because each departs in the *aiding* and no aiding reaches the state while `fuse_*` is a
-//! stub. Only `harsh_imu` separates, and propagation is what widened the gap: ten times the
-//! white noise is ten times the gyroscope-bias error the window leaves behind, which is 8.5×
-//! `mission`'s horizontal error rather than the 0.07° of tilt it used to be. The pairing is
-//! built and dormant for the other four; it starts measuring when the update of (23)–(28)
-//! lands.
+//! Five of the scenarios are one-variable departures from `mission` on `mission`'s seed, so
+//! what attributes a fault is `score(departure) − score(mission)` rather than either alone.
+//! `gnss_outage` and `gnss_latency` separate through the position fixes they change, and
+//! `harsh_imu` through propagation, though a position-aided filter no longer integrates that
+//! noise far enough for it to show much. `baro_drift` and `mag_disturbance` still score
+//! identically to `mission` to the last digit, because each departs in a source whose `fuse_*`
+//! is a stub; they start measuring at stages 7 and 8.
 //!
 //! A refused propagation step is still scored. The epoch row is written either way — the
 //! state is simply the one before it — and that stale state is what the filter published, so
@@ -2515,15 +2509,16 @@ mod tests {
 
     #[test]
     fn a_fusion_row_names_the_verdict_it_got() {
-        // One fixture per outcome the stub can actually produce. `rejected` needs the χ²
-        // gate of (37); `verdict` is exhaustive on `Fusion`, so the variant cannot be
-        // dropped silently while it waits.
+        // One fixture per outcome a log can produce. `state_invalid` is not among them: it
+        // needs a covariance that has stopped being one, which no row of input can write, so
+        // `verdict` being exhaustive on `Fusion` is what keeps its name from going missing.
         let coarse = Log::new()
             .run(0.0, 501, DT, TURNING)
             .gnss_pos(10.02, 1.0, 2.0, -3.0)
             .imu(10.02, TURNING);
         for (log, expected) in [
             (still_start().gnss_pos(2.0, 0.0, 0.0, 0.0), "accepted"),
+            (still_start().gnss_pos(2.0, 1000.0, 0.0, 0.0), "rejected"),
             (Log::new().gnss_pos(0.0, 0.0, 0.0, 0.0), "not_initialized"),
             (
                 still_start().raw("2.000000,baro,42,,,,,,4,,"),

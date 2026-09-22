@@ -59,12 +59,13 @@ $ cargo run --example replay -- \
 ```
 
 ```text
-score pos_h=1248.627 pos_v=204.617 vel=22.866 pos_h_max=3195.988 tilt=2.125 yaw=2.936 …
+score pos_h=0.702 pos_v=0.749 vel=0.647 pos_h_max=1.995 tilt=1.010 yaw=1.360 …
 ```
 
-Those are **dead reckoning's** figures: (9)–(15) propagate and nothing corrects them, so over
-185 s of unaided flight a 2° tilt error leaks gravity into the horizontal channel and integrates
-twice. They move when a stage of #31 lands.
+Those are figures for a filter aided by **GNSS position alone**: (23)–(28) correct the state at
+each fix, and velocity, barometer and heading are not fused yet. Unaided, the same 185 s read
+`pos_h=1248.627`, because a 2° tilt error leaks gravity into the horizontal channel and
+integrates twice. They move again when a stage of #31 lands.
 
 What each key means, and what it can and cannot say on these scenarios, is in the module docs of
 `examples/replay.rs`, which owns the definitions. Two things about *using* it belong here:

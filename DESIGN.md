@@ -4,12 +4,12 @@ How `fusion-nav` is built and why. For how to use it see [README.md](README.md);
 mathematics see [EQUATIONS.md](EQUATIONS.md); for positioning and decisions already made see
 [GOALS.md](GOALS.md).
 
-> **Status: dead reckoning, not yet aided.** The structure below is the intended one, and the
+> **Status: aided by GNSS position only.** The structure below is the intended one, and the
 > types and signatures exist. Implemented: initialization, equations (5)–(8), so the filter
-> starts at the attitude it levelled; nominal propagation, (9)–(15), so the state dead reckons
-> from there; and covariance propagation, (16)–(22), so the uncertainty beside it grows. Not
-> implemented: the measurement update — no observation changes the estimate, and nothing takes
-> uncertainty back out.
+> starts at the attitude it levelled; nominal propagation, (9)–(15), and covariance propagation,
+> (16)–(22), so the state dead reckons and the uncertainty beside it grows; and the measurement
+> update, (23)–(28) and (37)–(41), wired to GNSS position. Not implemented: the velocity,
+> barometer and heading observations (29)–(36), whose `fuse_*` still change nothing.
 
 ## Error-State Kalman Filter
 

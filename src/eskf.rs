@@ -17,11 +17,12 @@ use crate::update::{Update, update};
 /// A 15-state error-state Kalman filter.
 ///
 /// **Stub.** Every method below has its intended signature and does its own bookkeeping.
-/// What is implemented is initialization, (5)–(8), and propagation, (9)–(22): the state dead
-/// reckons from where [`initialize`](Self::initialize) put it and the covariance grows around
-/// it. Nothing corrects either — every `fuse_*` accepts without changing the estimate, so
-/// [`Status`] and [`validity`](Self::validity) are answers about an unaided filter that has no
-/// way back.
+/// What is implemented is initialization, (5)–(8), propagation, (9)–(22), and the update of
+/// (23)–(41) for GNSS position: the state dead reckons from where
+/// [`initialize`](Self::initialize) put it, the covariance grows around it, and
+/// [`fuse_gnss_position`](Self::fuse_gnss_position) and
+/// [`fuse_gnss_geodetic`](Self::fuse_gnss_geodetic) correct both. The other three `fuse_*`
+/// accept without changing the estimate.
 ///
 /// # Example
 ///
@@ -914,9 +915,10 @@ impl Eskf {
     /// time. `pred_horiz_pos_rel` in ArduPilot's status word is the same idea; PX4 has no
     /// equivalent.
     ///
-    /// Tilt is the exception with no aiding path: nothing but a static window brings it
-    /// in today, so it predicts exactly what it is. That changes when in-motion leveling
-    /// lands — see `GOALS.md`.
+    /// Tilt is the exception: a static window is the only thing that brings it in on a
+    /// schedule. A position fix reaches it only through (17), as the vehicle accelerates,
+    /// which no acceptance timer can promise, so it predicts exactly what it is. That changes
+    /// when in-motion leveling lands — see `GOALS.md`.
     ///
     /// **Stub.** "Expects" means aiding is arriving, not a projection forward. (16)–(22) now
     /// make the projection possible — propagate a copy of `P` to a horizon and test it there —
