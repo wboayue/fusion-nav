@@ -8,7 +8,7 @@ Embedded-first inertial navigation using a 15-state Error-State Kalman Filter (E
 > What is missing is everything that corrects them: every `fuse_*` accepts without changing the
 > estimate. So the position is an IMU-only dead-reckoned one, and the uncertainty beside it grows
 > without bound — which is what makes `Validity` honest about it: each flag goes false as its own
-> variance passes `Config::accuracy`, 3.79 s in for tilt at the default noise. `Status` answers on
+> variance passes `Config::accuracy`, 3.82 s in for tilt at the default noise. `Status` answers on
 > the aiding timers, so an unaided filter reports `DeadReckoning` well before that. The design is
 > subject to change.
 

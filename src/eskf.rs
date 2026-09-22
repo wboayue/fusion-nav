@@ -1161,10 +1161,10 @@ mod tests {
     }
 
     /// The margin [`Accuracy`]'s defaults were chosen for, measured rather than derived: a
-    /// static start with a magnetometer in the window holds its tilt for 3.79 s of unaided
-    /// propagation and its heading for 35.4 s, at [`ImuNoise`](crate::ImuNoise)'s defaults.
+    /// static start with a magnetometer in the window holds its tilt for 3.82 s of unaided
+    /// propagation and its heading for 35.8 s, at [`ImuNoise`](crate::ImuNoise)'s defaults.
     ///
-    /// Not the `σ_g² t` the white-noise density alone would give — that is 10.4 s and 657 s.
+    /// Not the `σ_g² t` the white-noise density alone would give — that is 10.4 s and 674 s.
     /// The gyroscope-bias prior reaches attitude through (20)'s `−I Δt` and accumulates as
     /// `σ_βg² t²`, which overtakes the white-noise term within two seconds and is what actually
     /// sets both figures. A test rather than a comment because [`Accuracy`] cites the numbers:
@@ -1199,8 +1199,8 @@ mod tests {
 
         let tilt = tilt_held.expect("tilt leaves the bar inside 40 s");
         let heading = heading_held.expect("heading leaves the bar inside 40 s");
-        assert!((tilt - 3.79).abs() < 0.05, "tilt held {tilt} s");
-        assert!((heading - 35.4).abs() < 0.2, "heading held {heading} s");
+        assert!((tilt - 3.82).abs() < 0.05, "tilt held {tilt} s");
+        assert!((heading - 35.8).abs() < 0.2, "heading held {heading} s");
     }
 
     #[test]
@@ -2074,7 +2074,7 @@ mod tests {
         assert!(filter.is_aligned());
         assert!(filter.validity().tilt);
 
-        // Past the 3.79 s the default bars buy, with the barometer still arriving at 2 Hz so
+        // Past the 3.82 s the default bars buy, with the barometer still arriving at 2 Hz so
         // that aiding is never stale: otherwise `degraded_after` expires on the way and
         // `Degraded` would be what the status assertion below saw.
         for step in 1..=800 {

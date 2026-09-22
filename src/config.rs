@@ -248,9 +248,13 @@ pub struct Accuracy {
 impl Default for Accuracy {
     /// Attitude clears the prior a static alignment starts from, by the margin an unaided
     /// filter takes to drift through. All four are **placeholders** for a mission nobody has
-    /// named: tilt and heading sit at [`ALIGNED_TILT`] and [`ALIGNED_HEADING`] to two
-    /// figures because a bar some estimator uses is a better starting point than none, and
-    /// position and velocity are loose enough to admit a 1 Hz GNSS solution.
+    /// named: tilt and heading are [`ALIGNED_TILT`] and [`ALIGNED_HEADING`] because a bar
+    /// some estimator uses is a better starting point than none, and position and velocity
+    /// are loose enough to admit a 1 Hz GNSS solution.
+    ///
+    /// Exactly those, not rounded near them. A mission bar a hair under the alignment bar
+    /// opens a sliver where a start aligns and is out of service at the same epoch, for a
+    /// reason nobody chose: 0.052 rad against 3°'s 0.0524 did exactly that.
     ///
     /// A bar equal to the prior it is compared against is no bar at all: with
     /// [`tilt`](Accuracy::tilt) at [`Initialization::sigma_tilt`](Initialization::sigma_tilt)
@@ -260,10 +264,10 @@ impl Default for Accuracy {
     /// again. On every static log in `data/manifest.txt` that read as a valid attitude for
     /// exactly one sample.
     ///
-    /// What these buy, measured on a static start at [`ImuNoise`]'s defaults: 3.79 s of unaided
-    /// propagation before tilt leaves the bar, 35.4 s before heading does
+    /// What these buy, measured on a static start at [`ImuNoise`]'s defaults: 3.82 s of unaided
+    /// propagation before tilt leaves the bar, 35.8 s before heading does
     /// (`an_unaided_start_holds_its_attitude_for_the_margin_the_defaults_buy`). Neither is the
-    /// `σ_g² t` the white-noise density alone gives, which would be 10.4 s and 657 s — the
+    /// `σ_g² t` the white-noise density alone gives, which would be 10.4 s and 674 s — the
     /// gyroscope-bias prior enters attitude through equation (20)'s `−I Δt` and grows as
     /// `σ_βg² t²`, overtaking the white-noise term inside two seconds.
     ///
@@ -276,8 +280,8 @@ impl Default for Accuracy {
     /// question [`Accuracy`] exists to answer. Supply your own numbers.
     fn default() -> Self {
         Self {
-            tilt: Radians::from_radians(0.052),
-            heading: Radians::from_radians(0.52),
+            tilt: ALIGNED_TILT,
+            heading: ALIGNED_HEADING,
             position: Meters::from_meters(5.0),
             velocity: MetersPerSecond::from_m_per_s(1.0),
         }
