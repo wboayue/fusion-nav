@@ -1055,7 +1055,7 @@ impl Replay {
             "summary rate={:.0} window={} align={} an={} alpha0={} heading={} \
              roll0={roll0:.2} pitch0={pitch0:.2} yaw0={yaw0:.2} resets={} \
              aligned_at={} attitude_lost={} rejected={}{} discarded={} refused={} \
-             invalid={} epochs={} \
+             invalid={} floored={} epochs={} \
              transitions={} status={:?}",
             self.interval.map_or(0.0, |interval| 1.0 / interval),
             self.window_samples,
@@ -1119,6 +1119,14 @@ impl Replay {
             self.discarded(),
             self.filter.diagnostics().propagation.refused_too_long,
             self.filter.diagnostics().propagation.refused_invalid,
+            // Equation (42′)'s diagonal floor, pinned at zero on every log because that is
+            // the claim: the floor is three to five decades below anything the filter
+            // reaches here, so it is a guard against a collapse rather than part of the
+            // arithmetic. A log that starts flooring is one whose covariance is being
+            // driven to zero by something upstream, and no other key on this line would
+            // notice — a floored variance makes the estimate *more* conservative, so it
+            // moves neither `rejected=` nor `transitions=`.
+            self.filter.diagnostics().floored,
             self.epochs,
             self.transitions.len(),
             state.status,
@@ -2478,6 +2486,38 @@ mod tests {
     fn epochs_count_every_imu_row_after_initialization() {
         let log = still_start().run(2.0, 10, DT, STILL);
         assert_eq!(key(&replay(&log).summary(), "epochs"), "10");
+    }
+
+    #[test]
+    fn the_diagonal_floor_of_42_reports_what_it_raised() {
+        // Zero is the value the manifest pins on every log, so a key wired to the wrong
+        // field reads correctly on the whole corpus. What makes this a fixture rather than
+        // a restatement is the second half: a receiver claiming 1e-12 m² — a micron of
+        // eph — is accepted, gated and fused like any other, and it drives the position
+        // variances six decades below the floor within a few fixes. Three states raised,
+        // once each, which is what tells a per-entry count from a per-covariance one.
+        let quiet = still_start().run(2.0, 10, DT, STILL);
+        assert_eq!(key(&replay(&quiet).summary(), "floored"), "0");
+
+        let certain = |fixes: usize| {
+            let mut log = still_start();
+            for i in 0..fixes {
+                let t = 2.0 + i as f64 * DT;
+                log = log
+                    .raw(&format!("{t:.6},gnss_pos,0,0,0,,,,1e-12,1e-12,1e-12"))
+                    .imu(t, STILL);
+            }
+            replay(&log).summary()
+        };
+
+        let one = certain(1);
+        assert_eq!(key(&one, "discarded"), "0", "{one}");
+        assert_eq!(key(&one, "floored"), "3", "{one}");
+
+        // Counted per raise, not per state that ever collapsed: the three position
+        // variances are floored, (16) grows them back from velocity over the step, and the
+        // next fix collapses the same three again.
+        assert_eq!(key(&certain(2), "floored"), "6");
     }
 
     #[test]

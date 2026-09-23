@@ -658,6 +658,21 @@ pub struct Diagnostics {
     /// What [`Eskf::predict`](crate::Eskf::predict) refused. Not a source, so not in
     /// [`sources`](Self::sources).
     pub propagation: PropagationHealth,
+    /// Variances raised to the floor of equation (42′), counted per entry rather than per
+    /// covariance.
+    ///
+    /// Expected to stay at zero, and it does across the whole corpus. The floor sits three
+    /// to five decades below anything the filter reaches there, so a count climbing here
+    /// says a variance is collapsing for a reason of its own — an `R` far smaller than what
+    /// the measurement actually observes, or a source fused faster than it carries
+    /// independent information — and that the floor is masking it rather than protecting
+    /// against it. It is the one number here whose interesting value is the one it does not
+    /// have.
+    ///
+    /// Not counted per state, which would say *which* variance collapsed: a count that
+    /// should be zero needs only to be non-zero to be worth reading, and the `sigma_*`
+    /// columns of `examples/replay.rs` name the state as soon as anybody looks.
+    pub floored: u32,
 }
 
 impl Diagnostics {

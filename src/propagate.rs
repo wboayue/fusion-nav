@@ -274,7 +274,7 @@ fn process_noise(noise: &ImuNoise, dt: Seconds) -> [f32; STATES] {
 /// for.
 ///
 /// The measurement, since the trade was made here: (22) takes
-/// [`Eskf::predict`](crate::Eskf::predict)'s stack frame from 160 bytes to 2008 on
+/// [`Eskf::predict`](crate::Eskf::predict)'s stack frame from 160 bytes to 2032 on
 /// `thumbv6m-none-eabi`, and from 120 to 2032 on `thumbv7em-none-eabihf`
 /// (`-Zemit-stack-sizes`, `opt-level = 3`; the figure is `predict`'s because this function
 /// inlines into it). That is the "few kilobytes rather than one" `DESIGN.md` predicts for the

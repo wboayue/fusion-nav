@@ -5,7 +5,7 @@ use crate::frames::{Body, Ned};
 use crate::geodetic::{Geodetic, LocalOrigin};
 use crate::health::{Diagnostics, Fusion, Propagation, SourceHealth, Status, Validity};
 use crate::init::{self, Alignment, Coarse, InitError, Measured, StaticSample, baro_reference};
-use crate::math::exp_quat;
+use crate::math::{exp_quat, floor_diagonal};
 use crate::observation::{baro, gnss, mag};
 use crate::propagate::{ImuSample, propagate};
 use crate::state::{Covariance, ErrorState, STATES, State};
@@ -354,8 +354,10 @@ impl Eskf {
             return Err(InitError::InvalidVariance);
         }
         self.state = state;
-        self.covariance = covariance;
+        // Diagnostics first: `commit_covariance` counts into them, and a seed sitting on the
+        // floor is a fact about this filter's life rather than the last one's.
         self.diagnostics = Diagnostics::default();
+        self.commit_covariance(covariance);
         // Nothing a seed carries is unestablished: the caller vouched for every quantity,
         // heading included, so no first measurement overwrites one.
         self.unestablished = Unestablished::default();
@@ -501,9 +503,33 @@ impl Eskf {
             return self.refuse_step(Propagation::StateNotFinite);
         }
         self.state = propagated.state;
-        self.covariance = propagated.covariance;
+        self.commit_covariance(propagated.covariance);
         self.note_alignment();
         Propagation::Propagated
+    }
+
+    /// Store a covariance, applying the diagonal floor of equation (42′) and counting what it
+    /// raised.
+    ///
+    /// One place, so that the invariant is a property of the filter rather than of each
+    /// equation that produces a `P`: **every covariance the filter holds has been floored**,
+    /// and therefore so has every covariance it publishes, tests [`Validity`] against, or
+    /// reads back into the `S` of (24). A floor applied inside (22) and (27) instead would
+    /// be two call sites protecting the two operations that shrink a variance, and would
+    /// leave the ones that *write* one — the adoption of
+    /// [`Fusion::Reset`](crate::Fusion::Reset), the `reset_*_to` methods, the initial
+    /// covariance of (8) — unprotected, each carrying a variance that came from outside the
+    /// filter.
+    ///
+    /// Symmetry stays where the algebra is, in `propagate_covariance` and `reparameterize`:
+    /// (42)'s two halves answer different faults. `½(P + Pᵀ)` repairs drift a product
+    /// introduces, so it belongs to the product; the floor bounds a value, so it belongs to
+    /// the value.
+    fn commit_covariance(&mut self, covariance: Covariance) {
+        let mut matrix = *covariance.as_matrix();
+        let raised = floor_diagonal(&mut matrix);
+        self.covariance = Covariance::from_matrix(matrix);
+        self.diagnostics.floored = self.diagnostics.floored.saturating_add(raised);
     }
 
     /// Record a refused step and hand the outcome back, as [`refuse`] does for a
@@ -541,7 +567,7 @@ impl Eskf {
                 innovation,
             } => {
                 self.state = state;
-                self.covariance = covariance;
+                self.commit_covariance(covariance);
                 source(&mut self.diagnostics).record_accepted(ratio, Some(innovation));
                 self.note_alignment();
                 Fusion::Accepted { test_ratio: ratio }
@@ -888,8 +914,10 @@ impl Eskf {
         self.state.attitude = Attitude::body_to_ned(corrected);
 
         let g_theta = corrected.to_rotation_matrix().inverse() * before;
-        self.covariance = update::reparameterize(self.covariance.as_matrix(), g_theta.into_inner());
-        self.covariance.reset_state(ErrorState::AttitudeZ, variance);
+        let mut covariance =
+            update::reparameterize(self.covariance.as_matrix(), g_theta.into_inner());
+        covariance.reset_state(ErrorState::AttitudeZ, variance);
+        self.commit_covariance(covariance);
         self.unestablished.heading = false;
     }
 
@@ -1092,7 +1120,8 @@ impl Eskf {
             return false;
         }
         self.state.position = position;
-        self.covariance.reset_block(
+        let mut covariance = self.covariance;
+        covariance.reset_block(
             [
                 ErrorState::PositionNorth,
                 ErrorState::PositionEast,
@@ -1100,6 +1129,7 @@ impl Eskf {
             ],
             noise.variance().into(),
         );
+        self.commit_covariance(covariance);
         self.unestablished.position = false;
         true
     }
@@ -1117,7 +1147,8 @@ impl Eskf {
             return false;
         }
         self.state.velocity = velocity;
-        self.covariance.reset_block(
+        let mut covariance = self.covariance;
+        covariance.reset_block(
             [
                 ErrorState::VelocityNorth,
                 ErrorState::VelocityEast,
@@ -1125,6 +1156,7 @@ impl Eskf {
             ],
             noise.variance().into(),
         );
+        self.commit_covariance(covariance);
         self.unestablished.velocity = false;
         true
     }
@@ -1152,9 +1184,11 @@ impl Eskf {
         // time as motion the window could not vouch for; see `init::coarse_sigmas`.
         let (sigma_tilt, sigma_yaw) =
             init::attitude_sigmas(&self.config.init, alignment, measured, state.gyro_bias);
-        self.covariance = init::initial_covariance(&self.config.init, sigma_tilt, sigma_yaw);
+        let covariance = init::initial_covariance(&self.config.init, sigma_tilt, sigma_yaw);
         self.state = state;
+        // Before the commit, which counts into them; see `initialize_from`.
         self.diagnostics = Diagnostics::default();
+        self.commit_covariance(covariance);
         self.unestablished = Unestablished::after(settled, measured.field.is_some());
         if settled {
             self.origin = None;
@@ -1298,6 +1332,39 @@ mod tests {
                 .is_accepted()
         );
         filter
+    }
+
+    /// The floor of (42′) exists to be unreachable, and this is the only place CI asserts
+    /// it: `data/fetch.sh --check` pins `floored=0` on all five corpus logs, and it needs a
+    /// network and PX4 tooling, so it runs locally. Three to five decades separate the
+    /// floor from anything a filter that is propagating and fusing reaches — a count here
+    /// means the floor is masking a collapse rather than preventing one, and the `sigma_*`
+    /// columns of `examples/replay.rs` say which state.
+    #[test]
+    fn an_ordinary_run_never_reaches_the_floor() {
+        let mut filter = aided();
+        for step in 0..400 {
+            assert_eq!(filter.predict(still().imu, DT), Propagation::Propagated);
+            if step % 25 == 0 {
+                assert!(
+                    filter
+                        .fuse_gnss_position(
+                            Position::ned(0.0, 0.0, 0.0),
+                            PositionNoise::horizontal_vertical(1.5, 1.5),
+                        )
+                        .is_accepted()
+                );
+                assert!(
+                    filter
+                        .fuse_baro_altitude(
+                            Altitude::from_meters(100.0),
+                            AltitudeNoise::from_sigma(2.0),
+                        )
+                        .is_accepted()
+                );
+            }
+        }
+        assert_eq!(filter.diagnostics().floored, 0);
     }
 
     fn elapsed(filter: &Eskf) -> f32 {
@@ -1957,6 +2024,39 @@ mod tests {
             filter.initialize_from(state, Covariance::from_matrix(matrix)),
             Err(InitError::InvalidVariance)
         );
+    }
+
+    #[test]
+    fn a_variance_below_the_floor_of_42_is_raised_to_it_and_counted() {
+        // A positive variance clears `initialize_from`'s check and still collapses the
+        // gain: 1e-30 (rad/s)² is a gyroscope bias the seed claims to know to 1e-15 rad/s.
+        // The floor is what the filter holds instead, and `floored` is what says so —
+        // uncounted, the covariance reads back afterwards as an excellent estimate that
+        // no measurement can move.
+        let (state, covariance) = seed();
+        let mut matrix = *covariance.as_matrix();
+        matrix[(ErrorState::GyroBiasZ.index(), ErrorState::GyroBiasZ.index())] = 1e-30;
+
+        let mut filter = Eskf::new(Config::default());
+        let _ = filter
+            .initialize_from(state, Covariance::from_matrix(matrix))
+            .expect("a strictly positive diagonal");
+
+        assert_eq!(filter.diagnostics().floored, 1);
+        assert!(
+            filter.covariance().variance(ErrorState::GyroBiasZ) > 1e-30,
+            "the seed's own variance was committed unfloored"
+        );
+
+        // Counted per entry rather than per covariance, and against this filter's life:
+        // re-initializing resets the count, and two collapsed states raise two.
+        let mut matrix = *covariance.as_matrix();
+        matrix[(ErrorState::AttitudeX.index(), ErrorState::AttitudeX.index())] = 1e-30;
+        matrix[(ErrorState::GyroBiasZ.index(), ErrorState::GyroBiasZ.index())] = 1e-30;
+        let _ = filter
+            .initialize_from(state, Covariance::from_matrix(matrix))
+            .expect("a strictly positive diagonal");
+        assert_eq!(filter.diagnostics().floored, 2);
     }
 
     #[test]

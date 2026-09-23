@@ -1,12 +1,9 @@
 //! The primitives the equations share: `[u]ₓ` and `Exp(φ)` from the operators table, the
-//! `wrap(·)` of (35), and the symmetry enforcement of (42).
+//! `wrap(·)` of (35), and both halves of (42) — the symmetry enforcement and the diagonal
+//! variance floor.
 //!
 //! Nothing here holds state or reads configuration, which is why it is a module of its own:
 //! each function is checkable against its definition without a filter around it.
-//!
-//! (42)'s other half, the diagonal variance floor, is not here. It only means something
-//! once a covariance shrinks, which (27) now does, and it is the conditioning stage of #31
-//! (#40) that sets it, from a measured floor rather than an invented one.
 
 use core::f32::consts::{PI, TAU};
 
@@ -125,9 +122,73 @@ pub(crate) fn enforce_symmetry(p: &mut CovarianceMatrix) {
     }
 }
 
+/// The smallest variance each error state may hold, in the `ErrorState` ordering
+/// `[δp δv δθ δβa δβg]`. Equation (42′).
+///
+/// One floor per group rather than one number for the matrix, because the fifteen states
+/// carry five units — m², (m/s)², rad², (m s⁻²)² and (rad/s)² — and a single "small positive
+/// value" would be a different claim in each of them. Both production estimators floor per
+/// group for that reason: PX4 `constrainStateVariances` at
+/// `src/modules/ekf2/EKF/covariance.cpp:250-289` (`c4e4ef98e9`), with `kGyroBiasVarianceMin`
+/// and `kAccelBiasVarianceMin` at `EKF/ekf.h:494-495`, and ArduPilot `ConstrainVariances` at
+/// `libraries/AP_NavEKF3/AP_NavEKF3_core.cpp:1878-1935` (`368dc0c428`), whose
+/// `POS_STATE_MIN_VARIANCE` and `VEL_STATE_MIN_VARIANCE` are `1e-4` at
+/// `AP_NavEKF3_core.h:84-85`.
+///
+/// These are PX4's values, and the corpus says they are far enough below the filter's own
+/// numbers to be unreachable: across all five logs of `data/manifest.txt` and all nine
+/// scenarios of `examples/simulate.rs`, the smallest variance any state reaches is
+/// 1.6e-5 (rad/s)² of gyroscope bias on `static`, 2.6e-4 rad² of attitude on `harsh_imu`,
+/// 5.1e-3 m² of position on `static`, 2.6e-3 (m/s)² of velocity on `a299e722` and
+/// 3.5e-3 (m s⁻²)² of accelerometer bias on `2c42096b`. Three to five decades of headroom,
+/// which is what makes [`Diagnostics::floored`](crate::Diagnostics::floored) reading zero on
+/// the corpus a guard rather than a coincidence.
+#[rustfmt::skip]
+const FLOOR: [f32; STATES] = [
+    1e-6, 1e-6, 1e-6, // δp, m²
+    1e-6, 1e-6, 1e-6, // δv, (m/s)²
+    1e-9, 1e-9, 1e-9, // δθ, rad²
+    1e-9, 1e-9, 1e-9, // δβa, (m s⁻²)²
+    1e-9, 1e-9, 1e-9, // δβg, (rad/s)²
+];
+
+/// Equation (42′): `P_ii ← max(P_ii, σ²_i)`, the diagonal variance floor. Returns how many
+/// entries it raised.
+///
+/// A variance that reaches zero is a state the filter claims to know exactly, and the claim
+/// is self-sealing: `K = P Hᵀ S⁻¹` is zero in that row, so no measurement can ever move it
+/// again, and (22) grows it back only through a `Q` the position row of (16) does not have.
+/// In `f32` that is reachable by rounding rather than by arithmetic — the Joseph form of (27)
+/// keeps `P` positive semi-definite, and semi-definite includes zero.
+///
+/// Raising a diagonal entry adds a positive semi-definite diagonal matrix to `P`, so it
+/// preserves the property (27) was chosen to protect and can only widen the `S` of (24). The
+/// floor can make the filter more uncertain than it should be and never more confident, which
+/// is why it is a constant of the arithmetic and not a [`Config`](crate::Config) field: there
+/// is no mission whose answer is a different number, only a filter whose numbers should never
+/// reach this one. [`FLOOR`] records what the corpus says about that.
+pub(crate) fn floor_diagonal(p: &mut CovarianceMatrix) -> u32 {
+    let mut raised = 0;
+
+    // The index stays below `STATES`, the dimension of `P` and the length of `FLOOR`, so
+    // neither the matrix nor the table can be indexed out of range: both panic, and nothing
+    // in `src/` may.
+    for (i, floor) in FLOOR.iter().enumerate() {
+        // NaN fails this comparison and is left alone. `predict` and `update` both refuse a
+        // covariance that is not finite, and refusing is more honest than flooring a NaN
+        // into a number that reads as an estimate.
+        if p[(i, i)] < *floor {
+            p[(i, i)] = *floor;
+            raised += 1;
+        }
+    }
+    raised
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nalgebra::SVector;
 
     /// Vectors with mixed signs, a zero component, and magnitudes either side of one.
     const VECTORS: [Vector3<f32>; 5] = [
@@ -316,5 +377,76 @@ mod tests {
         enforce_symmetry(&mut p);
         assert_eq!(p[(2, 7)], 0.5 * (before[(2, 7)] + before[(7, 2)]));
         assert_eq!(p.diagonal(), before.diagonal());
+    }
+
+    #[test]
+    fn the_floor_raises_a_collapsed_diagonal_to_its_own_floor_and_counts_every_entry() {
+        let mut p = CovarianceMatrix::zeros();
+        assert_eq!(floor_diagonal(&mut p), STATES as u32);
+        for i in 0..STATES {
+            assert_eq!(p[(i, i)], FLOOR[i], "state {i}");
+        }
+    }
+
+    #[test]
+    fn the_floor_leaves_the_variances_the_filter_actually_reaches_alone() {
+        // The smallest variance per group anywhere in the corpus or the scenarios, in the
+        // `ErrorState` ordering: gyroscope bias on `static` is the tightest at 1.6e-5.
+        #[rustfmt::skip]
+        let smallest = [
+            5.1e-3, 5.1e-3, 5.1e-3,
+            2.6e-3, 2.6e-3, 2.6e-3,
+            2.6e-4, 2.6e-4, 2.6e-4,
+            3.5e-3, 3.5e-3, 3.5e-3,
+            1.6e-5, 1.6e-5, 1.6e-5,
+        ];
+        let mut p = CovarianceMatrix::from_diagonal(&SVector::from(smallest));
+        let before = p;
+
+        assert_eq!(floor_diagonal(&mut p), 0);
+        assert_eq!(p, before);
+    }
+
+    #[test]
+    fn the_floor_is_per_group_rather_than_one_number_for_the_matrix() {
+        // Survives the mutation that replaces `FLOOR` with a single scalar: 1e-7 is below
+        // the position and velocity floors and above the attitude and bias ones, so one
+        // number cannot produce this answer whichever value it takes.
+        let mut p = CovarianceMatrix::from_diagonal_element(1e-7);
+        assert_eq!(floor_diagonal(&mut p), 6);
+
+        assert_eq!(p[(0, 0)], 1e-6);
+        assert_eq!(p[(5, 5)], 1e-6);
+        assert_eq!(p[(6, 6)], 1e-7);
+        assert_eq!(p[(14, 14)], 1e-7);
+    }
+
+    #[test]
+    fn the_floor_touches_nothing_off_the_diagonal() {
+        // Correlations are what carry a collapsed variance into the other states, so a
+        // floor that raised them would be inventing information rather than withholding a
+        // claim. Symmetry is the visible half of that: this matrix is symmetric, and
+        // flooring the diagonal has to leave it so.
+        let mut p = CovarianceMatrix::from_fn(|i, j| if i == j { 0.0 } else { 0.25 });
+        let before = p;
+
+        assert_eq!(floor_diagonal(&mut p), STATES as u32);
+        for i in 0..STATES {
+            for j in 0..STATES {
+                if i != j {
+                    assert_eq!(p[(i, j)], before[(i, j)], "({i}, {j})");
+                }
+            }
+        }
+        assert_eq!(p, p.transpose());
+    }
+
+    #[test]
+    fn the_floor_leaves_a_nan_variance_for_the_finiteness_check_to_refuse() {
+        let mut p = CovarianceMatrix::zeros();
+        p[(3, 3)] = f32::NAN;
+
+        assert_eq!(floor_diagonal(&mut p), (STATES - 1) as u32);
+        assert!(p[(3, 3)].is_nan());
     }
 }

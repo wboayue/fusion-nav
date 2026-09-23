@@ -125,6 +125,23 @@
 # nothing here names, so a source whose own key nobody added to these entries
 # would go unwatched. The sum is what notices.
 #
+# floored= counts variances raised to the diagonal floor of equation (42'), per
+# entry rather than per covariance, and it is pinned at zero because zero is
+# the claim. The floor is not part of the arithmetic: math.rs::FLOOR sits three
+# to five decades below the smallest variance any state reaches here, so a
+# non-zero says a covariance is being driven toward zero by something upstream
+# -- an R far smaller than what the measurement observes, a source fused faster
+# than it carries independent information -- and that the floor is masking it
+# rather than protecting against it. The 2 h log is what makes the zero worth
+# something: 1398114 epochs of propagation and fusion, not one entry raised.
+#
+# Nothing else on this line would notice. A floored variance makes the estimate
+# more conservative and never less, so it widens the S of (24) and moves
+# neither rejected= nor transitions=. Whole-file evidence backs the zero up:
+# each of the five replay CSVs is byte-identical to the same log replayed by
+# the filter without (42')'s floor, which is what a floor that never fires has
+# to produce.
+#
 # discarded= is also what separates two logs that alpha0= reads the same way.
 # 7592c9b2 is alpha0=none discarded=0: an LPE log with no barometer rows at
 # all. 2c42096b is alpha0=none discarded=35575: a barometer that reports
@@ -181,14 +198,14 @@
 # also the one start here that would notice nothing if (6)'s levelling were
 # dropped -- the tilt it levels by is zero.
 # Source: PX4 Flight Review (CC BY 4.0).
-b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-4425-b118-7b7187331a98.ulg  https://cdn.logs.px4.io/3949f175-26b4-4425-b118-7b7187331a98.ulg  rate=250 window=500 align=static an=none alpha0=set heading=valid roll0=0.01 pitch0=0.01 yaw0=24.38 resets=0 aligned_at=0.00 attitude_lost=never rejected=0 rejected_gnss_pos=0 rejected_gnss_vel=0 rejected_baro=0 rejected_mag=0 discarded=0 refused=0 invalid=0 transitions=2 status=Healthy
+b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-4425-b118-7b7187331a98.ulg  https://cdn.logs.px4.io/3949f175-26b4-4425-b118-7b7187331a98.ulg  rate=250 window=500 align=static an=none alpha0=set heading=valid roll0=0.01 pitch0=0.01 yaw0=24.38 resets=0 aligned_at=0.00 attitude_lost=never rejected=0 rejected_gnss_pos=0 rejected_gnss_vel=0 rejected_baro=0 rejected_mag=0 discarded=0 refused=0 invalid=0 floored=0 transitions=2 status=Healthy
 
 # 64 s quadrotor, PX4 v1.10.0, EKF2. No GNSS topic; baro and mag only.
 # 11 SD-card dropouts totalling 2796 ms leave four holes in sensor_combined up
 # to 1.304 s. The only log that exercises Propagation::StepTooLong, and the
 # reason Config::max_predict_dt exists.
 # Source: PX4 Flight Review (CC BY 4.0).
-1f3132990f6c9c220a99e1b51aaa21d555ab80224c02cbc336d6841811fae5d2  f16771dd-fe7f-4ebe-a0bb-77ca2a5de6a7.ulg  https://cdn.logs.px4.io/f16771dd-fe7f-4ebe-a0bb-77ca2a5de6a7.ulg  rate=250 window=500 align=static an=none alpha0=set heading=valid roll0=0.84 pitch0=-0.51 yaw0=-107.33 resets=0 aligned_at=0.00 attitude_lost=3.84 rejected=0 rejected_gnss_pos=0 rejected_gnss_vel=0 rejected_baro=0 rejected_mag=0 discarded=0 refused=4 invalid=0 transitions=2 status=Healthy
+1f3132990f6c9c220a99e1b51aaa21d555ab80224c02cbc336d6841811fae5d2  f16771dd-fe7f-4ebe-a0bb-77ca2a5de6a7.ulg  https://cdn.logs.px4.io/f16771dd-fe7f-4ebe-a0bb-77ca2a5de6a7.ulg  rate=250 window=500 align=static an=none alpha0=set heading=valid roll0=0.84 pitch0=-0.51 yaw0=-107.33 resets=0 aligned_at=0.00 attitude_lost=3.84 rejected=0 rejected_gnss_pos=0 rejected_gnss_vel=0 rejected_baro=0 rejected_mag=0 discarded=0 refused=4 invalid=0 floored=0 transitions=2 status=Healthy
 
 # 61 s, vendor firmware reporting v6.5.22, EKF2, airframe unknown type.
 # Logs in bursts: shortest IMU interval 2.5 ms against a true period of 20 ms.
@@ -237,7 +254,7 @@ b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-
 # third source's verdict, on the one receiver in this corpus close enough to
 # the gate to show it.
 # Source: PX4 Flight Review (CC BY 4.0).
-1c0ea42d6e22cef5cb8730e71a7740b4f5a35988e88e677a72351835cd42990a  a299e722-a7f0-4e2e-bcdf-ce487d556ac1.ulg  https://cdn.logs.px4.io/a299e722-a7f0-4e2e-bcdf-ce487d556ac1.ulg  rate=50 window=101 align=static an=none alpha0=set heading=valid roll0=1.19 pitch0=-2.93 yaw0=-176.42 resets=0 aligned_at=0.00 attitude_lost=never rejected=278 rejected_gnss_pos=0 rejected_gnss_vel=278 rejected_baro=0 rejected_mag=0 discarded=0 refused=0 invalid=0 transitions=4 status=Healthy
+1c0ea42d6e22cef5cb8730e71a7740b4f5a35988e88e677a72351835cd42990a  a299e722-a7f0-4e2e-bcdf-ce487d556ac1.ulg  https://cdn.logs.px4.io/a299e722-a7f0-4e2e-bcdf-ce487d556ac1.ulg  rate=50 window=101 align=static an=none alpha0=set heading=valid roll0=1.19 pitch0=-2.93 yaw0=-176.42 resets=0 aligned_at=0.00 attitude_lost=never rejected=278 rejected_gnss_pos=0 rejected_gnss_vel=278 rejected_baro=0 rejected_mag=0 discarded=0 refused=0 invalid=0 floored=0 transitions=4 status=Healthy
 
 # 68 s quadrotor on AUAV_X21, genuinely old firmware, LPE estimator.
 # The only log where the barometer and magnetometer are fields of
@@ -252,7 +269,7 @@ b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-
 # the dip leans into the horizontal axes in proportion to the tilt, and the
 # other four sit within 3 deg of level where that error is small.
 # Source: PX4 Flight Review (CC BY 4.0).
-81952e6059bc095717e7911c010e07f85749d6b04d332a5ffc51575a3fd0a558  7592c9b2-91f8-4b2d-a088-1c3d5e1166b0.ulg  https://cdn.logs.px4.io/7592c9b2-91f8-4b2d-a088-1c3d5e1166b0.ulg  rate=250 window=500 align=static an=none alpha0=none heading=valid roll0=2.94 pitch0=6.56 yaw0=-37.19 resets=0 aligned_at=0.00 attitude_lost=3.87 rejected=0 rejected_gnss_pos=0 rejected_gnss_vel=0 rejected_baro=0 rejected_mag=0 discarded=0 refused=0 invalid=0 transitions=2 status=Healthy
+81952e6059bc095717e7911c010e07f85749d6b04d332a5ffc51575a3fd0a558  7592c9b2-91f8-4b2d-a088-1c3d5e1166b0.ulg  https://cdn.logs.px4.io/7592c9b2-91f8-4b2d-a088-1c3d5e1166b0.ulg  rate=250 window=500 align=static an=none alpha0=none heading=valid roll0=2.94 pitch0=6.56 yaw0=-37.19 resets=0 aligned_at=0.00 attitude_lost=3.87 rejected=0 rejected_gnss_pos=0 rejected_gnss_vel=0 rejected_baro=0 rejected_mag=0 discarded=0 refused=0 invalid=0 floored=0 transitions=2 status=Healthy
 
 # 7127 s quadrotor, PX4 v1.11.3, EKF2. The big one: 209 MB, 1.48M rows,
 # a 105 MB CSV. What nothing else in the corpus covers:
@@ -308,4 +325,4 @@ b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-
 # the window's average it resolves 0.20 s in, and the line describes the
 # aiding the flight actually had.
 # Source: PX4 Flight Review (CC BY 4.0).
-9289375e4280ddec891b26b870f5065f2310d2e39527e4e8706d22e537d047dd  2c42096b-fa9b-4c74-8b89-ac79bf067a1d.ulg  https://cdn.logs.px4.io/2c42096b-fa9b-4c74-8b89-ac79bf067a1d.ulg  rate=199 window=398 align=coarse an=measured alpha0=none heading=invalid roll0=0.42 pitch0=-0.89 yaw0=-22.47 resets=3 aligned_at=0.20 attitude_lost=6.16 rejected=0 rejected_gnss_pos=0 rejected_gnss_vel=0 rejected_baro=0 rejected_mag=0 discarded=35575 refused=0 invalid=0 transitions=888 status=Healthy
+9289375e4280ddec891b26b870f5065f2310d2e39527e4e8706d22e537d047dd  2c42096b-fa9b-4c74-8b89-ac79bf067a1d.ulg  https://cdn.logs.px4.io/2c42096b-fa9b-4c74-8b89-ac79bf067a1d.ulg  rate=199 window=398 align=coarse an=measured alpha0=none heading=invalid roll0=0.42 pitch0=-0.89 yaw0=-22.47 resets=3 aligned_at=0.20 attitude_lost=6.16 rejected=0 rejected_gnss_pos=0 rejected_gnss_vel=0 rejected_baro=0 rejected_mag=0 discarded=35575 refused=0 invalid=0 floored=0 transitions=888 status=Healthy
