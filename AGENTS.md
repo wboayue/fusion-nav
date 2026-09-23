@@ -4,24 +4,46 @@ This file provides guidance to coding agents working with code in this repositor
 
 ## Status
 
-**Aided by GNSS position and velocity and by the barometer.** Initialization is real — equations
-(5)–(8), so the filter starts at the attitude and biases the window yields — `predict` propagates
-the nominal state *and* its covariance, (9)–(22), and a GNSS position, a GNSS velocity or a
-barometric altitude corrects both: the update of (23)–(27) in Joseph form, the observation models
-(28), (29) and (30), the gate of (37)–(38) and the injection and reset of (39)–(41) all exist, in
-`src/update.rs` and `src/observation/{gnss,baro}.rs`. So `mission` scores 0.240 m of horizontal
-RMSE, 0.190 m/s of velocity and 0.083 m of height where dead reckoning scored 1261, and velocity
-halves the attitude error with no attitude observation anywhere in the filter (`tilt` 1.010° →
-0.509), the correction arriving through the velocity–attitude blocks (20) builds.
-The gate turns a fix down rather than taking everything offered — on the corpus as of (29), where
-`a299e722` refuses 284 of its 609 velocity solutions, a receiver its own differenced positions
+**Every source the crate publishes is fused; no `fuse_*` is a stub.** Initialization is real —
+equations (5)–(8), so the filter starts at the attitude and biases the window yields — `predict`
+propagates the nominal state *and* its covariance, (9)–(22), and a GNSS position, a GNSS velocity,
+a barometric altitude or a magnetic heading corrects both: the update of (23)–(27) in Joseph form,
+the observation models (28), (29), (30) and (34)–(36) with the levelling variance (36′), the gate
+of (37)–(38) and the injection and reset of (39)–(41) all exist, in `src/update.rs` and
+`src/observation/{gnss,baro,mag}.rs`. So `mission` scores 0.240 m of horizontal RMSE, 0.188 m/s of
+velocity and 0.083 m of height where dead reckoning scored 1261.
+The gate turns a fix down rather than taking everything offered — on the corpus, where
+`a299e722` refuses 278 of its 609 velocity solutions, a receiver its own differenced positions
 contradict (#105 is whether the harness should floor `R` as both production estimators do); the
-barometer has never been turned down there, 6727 altitudes accepted across four logs. What is
-still uncorrected is what the last `fuse_*` carries: heading accepts with a zero test ratio, so
-between fixes — and on every axis a fix reaches only through the covariance — the estimate is
-still dead reckoning, which is what `Validity` and `attitude_lost=` stay honest about.
+barometer and the magnetometer have never been turned down there, 6727 altitudes and 49 692
+headings accepted, so `rejected_mag=0` is a measured zero rather than a structural one. Between
+fixes — and on every axis a fix reaches only through the covariance — the estimate is still dead
+reckoning, which is what `Validity` and `attitude_lost=` stay honest about.
 
-**What (30) bought, and what it cost.** Height is the key that moved — `mission` `pos_v` 0.273 m →
+**What (34)–(36) bought, and what (36′) cost to get it.** Yaw is the key that moved, and what a
+heading buys is a property of the start rather than of the filter. Where the window never observed
+yaw the magnetometer is the whole estimate: `moving_start` `yaw` 3.228° → 0.917 and `bg`
+0.004853 → 0.002660, `static` 1.715 → 0.508. Where a static window already fixed yaw and the flight
+is short it buys nothing and costs a little — `mission` `yaw` 0.644 → 0.651, `tilt` 0.519 → 0.576,
+`bg` 0.000677 → 0.001013 — because a heading carrying 3.1° of noise has nothing to tell an
+alignment that knew yaw to 0.6°, and its corrections reach tilt and gyroscope bias through (20).
+`nees_att` rose on every line (`mission` 0.0353 → 0.2005) and is still under 1 everywhere: an
+attitude that is finally observed approaches 1 from below, which is #89's to read as a bound.
+
+(36′) is what made the stage shippable rather than a refinement of it. Pricing the levelling error
+into `R` — `tan²δ · σ_tilt²`, the `tan δ` of (8′) read off the field rather than configured — is
+worth `moving_start` `tilt` 2.653° → 1.665, `yaw` 3.777 → 0.917, `nees_att` 1.634 → 0.226 and 840
+falsely-valid attitude quantity-epochs → 0. It widens `S` without claiming the heading observes the
+tilt that spoiled it, which is the Schmidt treatment of a state a measurement depends on and does
+not constrain; the alternative was measured, and the exact Jacobian took `mission` to 9.0° of tilt.
+The same `R` prices the **adoption**, where the tilt doing the levelling is worst — on
+`moving_start` the adopted yaw variance is 0.582 rather than 0.01, σ = 0.76 rad against an
+`Accuracy::heading` of 0.5236, so the heading is reported established and *invalid* rather than
+established and believed. One line loosened on a claim rather than a number: `gnss_latency`
+`false_valid` 340 → 413 and `false_valid_att` 57 → 120, the attitude covariance coming down where a
+late fix leaves the error (#52 owns the cause).
+
+**What (30) bought, and what it cost.** Height was the key that moved — `mission` `pos_v` 0.273 m →
 0.083, `flight` 0.819 → 0.414 — and `moving_start` is byte-identical on all fifteen keys, because
 a start in motion fixes no `α₀` and fuses no altitude. Two figures loosened and both are honest.
 `gnss_outage`'s `pos_h_max` went 11.93 m → 29.69 while its RMSE barely moved: 20 s into the gap
@@ -412,10 +434,12 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
   is tested against a synthetic `H`. One Cholesky factorization of `S` serves the gate and the
   gain, and the gate runs first, so a rejection computes nothing it could commit. `Eskf::apply` is
   the one path that commits what it returns and records it. Its stack frame is the largest in the
-  crate, 6888 bytes on `thumbv6m`, which is why `reset` applies `G P Gᵀ` block-wise; the figure
+  crate — `update::<3>`, 6848 bytes on `thumbv6m` and on `thumbv7em`, `Eskf::apply` itself inlining
+  away — which is why `reparameterize` applies `G P Gᵀ` block-wise; the figure
   and the #41 that would revisit it are in the doc comments.
 - `src/observation/` — one module per sensor, each forming `y`, `H` and diagonal `R_m` and
-  nothing else. `gnss.rs` holds (28) and (29) and `baro.rs` holds (30); (31)–(36) are unbuilt.
+  nothing else. `gnss.rs` holds (28) and (29), `baro.rs` holds (30), and `mag.rs` holds (34)–(36)
+  and the levelling variance (36′); (31)–(33), the three-axis magnetometer, are deliberately unbuilt.
 - `src/math.rs` — the primitives the equations share: `skew`, `exp_quat`, `wrap_pi`,
   `enforce_symmetry` (42). Pure, stateless, and unit-tested against their definitions. All four
   have callers as of (16)–(22), so none carries a dead-code allowance any more. Neither does
@@ -487,7 +511,7 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
   mutating. `is_aligned` reads the covariance against `ALIGNED_TILT` and `ALIGNED_HEADING` —
   constants, never `Config::accuracy`, which is the mission's and moves only `Validity` — so
   promotion is measured rather than timed — except heading, which no covariance can promote because
-  stillness never observes yaw; that one waits for a magnetometer. Promotion only: the flag
+  stillness never observes yaw; that one waits for the first `fuse_mag_heading`. Promotion only: the flag
   **latches**, so `Status::Aligning` reports a start that has not been resolved and never
   returns, while `Validity::tilt` stays live and does fall back. Read live it flapped
   `Healthy`/`Aligning` four times in four seconds on `7592c9b2`, because (20)'s attitude block
@@ -498,7 +522,8 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
   from the covariance against `Config::accuracy` (the one knob meant to be supplied, since
   mission accuracy is not derivable), plus "was this ever established" — the `Unestablished` flags
   a coarse start sets on position and velocity, and the one a window with no magnetometer sets on
-  heading, since stillness observes tilt but never yaw. A prior is not an estimate, and
+  heading, since stillness observes tilt but never yaw — each cleared by the adoption of the first
+  measurement of that quantity. A prior is not an estimate, and
   `sigma_yaw` (0.35 rad) sits inside `Accuracy::heading` (0.5236, 30°), so the covariance reports a yaw
   nobody measured as good. `Eskf::predicted_validity` answers the arming question instead: valid now,
   or a constraining source is being accepted. Both exist because PX4 and ArduPilot answer
@@ -518,10 +543,16 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
 - **The filter gates but never self-recovers.** On sustained rejection it reports
   `DeadReckoning`; `reset_position_to` / `reset_velocity_to` exist for the application to
   decide. Do not add automatic resets — that is a documented decision in GOALS.md. The single
-  exception, and its boundary: after a *coarse* start the first GNSS position and velocity are
-  adopted (`Fusion::Reset`, once per quantity), because those were never established and there
-  is no estimate to step away from. Never for recovery, never for a quantity that was once
-  known.
+  exception, and its boundary: the first measurement of a quantity initialization never established
+  is **adopted** (`Fusion::Reset`), once per quantity, because there is no estimate to step away
+  from. After a coarse start that is the first GNSS position and velocity; for heading it is any
+  start that observed no yaw, which includes a *static* window carrying no magnetometer, since
+  stillness observes tilt and never yaw. Only a seed escapes, having vouched for every quantity.
+  The heading adoption is the one that steps **attitude**, by up to half a circle, so it
+  reparameterizes the surviving attitude rows by (41) with the exact `R(q̂⁺)ᵀR(q̂)` rather than the
+  small-angle Jacobian an update takes, and it carries the `R` of (36′) rather than the caller's
+  σ_ψ² — a heading levelled by a coarse tilt is not worth the magnetometer's own variance. Never
+  for recovery, never for a quantity that was once known.
 - **Nothing in `src/` panics.** No `unwrap`, `expect`, `panic!` or `unreachable!` outside
   `#[cfg(test)]`. On `thumbv6m` a panic is a `udf` and the vehicle is a brick, which is why bad
   input is reported through a typed outcome rather than asserted on. The matrix arithmetic the
