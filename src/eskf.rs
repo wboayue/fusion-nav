@@ -5,10 +5,10 @@ use crate::frames::{Body, Ned};
 use crate::geodetic::{Geodetic, LocalOrigin};
 use crate::health::{Diagnostics, Fusion, Propagation, SourceHealth, Status, Validity};
 use crate::init::{self, Alignment, Coarse, InitError, Measured, StaticSample, baro_reference};
-use crate::math::exp_quat;
+use crate::math::{below_floor, exp_quat, floor_diagonal};
 use crate::observation::{baro, gnss, mag};
 use crate::propagate::{ImuSample, propagate};
-use crate::state::{Covariance, ErrorState, STATES, State};
+use crate::state::{Covariance, ErrorState, State};
 use crate::units::{
     Altitude, AltitudeNoise, Attitude, HeadingNoise, MagField, Position, PositionNoise, Radians,
     Seconds, Velocity, VelocityNoise,
@@ -339,6 +339,16 @@ impl Eskf {
     /// seed is the one path that writes a covariance in whole. A rejected seed leaves the
     /// filter uninitialized rather than poisoned.
     ///
+    /// The bar is the floor of (42′) rather than zero, because zero is the tidy member of the
+    /// class it is there to catch. A diagonal that was never populated arrives as exactly
+    /// zero from a `memset`; the same accident with an exponent left in it — dropped in
+    /// deserialization, or a variance scaled by its own units twice — arrives at 1e-30 and
+    /// does the identical damage, since `1e-30 / (1e-30 + R)` is zero in f32 and
+    /// [`validity`](Self::validity) calls the quantity good on the first read. Refusing one
+    /// and accepting the other would catch the legible failure and wave through the messy
+    /// ones. The floor is three to five decades below anything the filter itself reaches, so
+    /// no seed anybody meant is near it.
+    ///
     /// Whether the seed counts as aligned is the covariance's answer, not this one's: a
     /// confident seed reports [`Status::Healthy`] straight away, a coarse one
     /// [`Status::Aligning`] until it converges.
@@ -350,12 +360,14 @@ impl Eskf {
         if !state.is_finite() || !covariance.is_finite() {
             return Err(InitError::NotFinite);
         }
-        if (0..STATES).any(|i| covariance.as_matrix()[(i, i)] <= 0.0) {
+        if below_floor(covariance.as_matrix()) {
             return Err(InitError::InvalidVariance);
         }
         self.state = state;
-        self.covariance = covariance;
+        // Diagnostics first: `commit_covariance` counts into them, and a seed sitting on the
+        // floor is a fact about this filter's life rather than the last one's.
         self.diagnostics = Diagnostics::default();
+        self.commit_covariance(covariance);
         // Nothing a seed carries is unestablished: the caller vouched for every quantity,
         // heading included, so no first measurement overwrites one.
         self.unestablished = Unestablished::default();
@@ -501,9 +513,39 @@ impl Eskf {
             return self.refuse_step(Propagation::StateNotFinite);
         }
         self.state = propagated.state;
-        self.covariance = propagated.covariance;
+        self.commit_covariance(propagated.covariance);
         self.note_alignment();
         Propagation::Propagated
+    }
+
+    /// Store a covariance, applying the diagonal floor of equation (42′) and counting what it
+    /// raised.
+    ///
+    /// One place, so that the invariant is a property of the filter rather than of each
+    /// equation that produces a `P`: **every covariance the filter commits has been floored**,
+    /// and therefore so has every covariance it fuses against, tests [`Validity`] against, or
+    /// reads back into the `S` of (24). Committed, not held: an `Eskf` that has not
+    /// initialized holds [`Covariance::zero`](crate::Covariance::zero) and
+    /// [`covariance`](Self::covariance) will hand it over, which is the one place a caller can
+    /// read a variance of zero off this filter. Nothing acts on it — every path that would is
+    /// behind `initialized` — and initializing is itself a commit.
+    ///
+    /// A floor applied inside (22) and (27) instead would be two call sites protecting the
+    /// two operations that shrink a variance, and would leave the ones that *write* one —
+    /// the adoption of
+    /// [`Fusion::Reset`](crate::Fusion::Reset), the `reset_*_to` methods, the initial
+    /// covariance of (8) — unprotected, each carrying a variance that came from outside the
+    /// filter.
+    ///
+    /// Symmetry stays where the algebra is, in `propagate_covariance` and `reparameterize`:
+    /// (42)'s two halves answer different faults. `½(P + Pᵀ)` repairs drift a product
+    /// introduces, so it belongs to the product; the floor bounds a value, so it belongs to
+    /// the value.
+    fn commit_covariance(&mut self, covariance: Covariance) {
+        let mut matrix = *covariance.as_matrix();
+        let raised = floor_diagonal(&mut matrix);
+        self.covariance = Covariance::from_matrix(matrix);
+        self.diagnostics.floored = self.diagnostics.floored.saturating_add(raised);
     }
 
     /// Record a refused step and hand the outcome back, as [`refuse`] does for a
@@ -541,7 +583,7 @@ impl Eskf {
                 innovation,
             } => {
                 self.state = state;
-                self.covariance = covariance;
+                self.commit_covariance(covariance);
                 source(&mut self.diagnostics).record_accepted(ratio, Some(innovation));
                 self.note_alignment();
                 Fusion::Accepted { test_ratio: ratio }
@@ -888,8 +930,10 @@ impl Eskf {
         self.state.attitude = Attitude::body_to_ned(corrected);
 
         let g_theta = corrected.to_rotation_matrix().inverse() * before;
-        self.covariance = update::reparameterize(self.covariance.as_matrix(), g_theta.into_inner());
-        self.covariance.reset_state(ErrorState::AttitudeZ, variance);
+        let mut covariance =
+            update::reparameterize(self.covariance.as_matrix(), g_theta.into_inner());
+        covariance.reset_state(ErrorState::AttitudeZ, variance);
+        self.commit_covariance(covariance);
         self.unestablished.heading = false;
     }
 
@@ -1092,7 +1136,8 @@ impl Eskf {
             return false;
         }
         self.state.position = position;
-        self.covariance.reset_block(
+        let mut covariance = self.covariance;
+        covariance.reset_block(
             [
                 ErrorState::PositionNorth,
                 ErrorState::PositionEast,
@@ -1100,6 +1145,7 @@ impl Eskf {
             ],
             noise.variance().into(),
         );
+        self.commit_covariance(covariance);
         self.unestablished.position = false;
         true
     }
@@ -1117,7 +1163,8 @@ impl Eskf {
             return false;
         }
         self.state.velocity = velocity;
-        self.covariance.reset_block(
+        let mut covariance = self.covariance;
+        covariance.reset_block(
             [
                 ErrorState::VelocityNorth,
                 ErrorState::VelocityEast,
@@ -1125,6 +1172,7 @@ impl Eskf {
             ],
             noise.variance().into(),
         );
+        self.commit_covariance(covariance);
         self.unestablished.velocity = false;
         true
     }
@@ -1152,9 +1200,11 @@ impl Eskf {
         // time as motion the window could not vouch for; see `init::coarse_sigmas`.
         let (sigma_tilt, sigma_yaw) =
             init::attitude_sigmas(&self.config.init, alignment, measured, state.gyro_bias);
-        self.covariance = init::initial_covariance(&self.config.init, sigma_tilt, sigma_yaw);
+        let covariance = init::initial_covariance(&self.config.init, sigma_tilt, sigma_yaw);
         self.state = state;
+        // Before the commit, which counts into them; see `initialize_from`.
         self.diagnostics = Diagnostics::default();
+        self.commit_covariance(covariance);
         self.unestablished = Unestablished::after(settled, measured.field.is_some());
         if settled {
             self.origin = None;
@@ -1253,6 +1303,7 @@ mod tests {
     use crate::init::tests::{gravity_at, still, turning};
     use crate::observation::mag::tests::{attitude_of, measured};
     use crate::state::ErrorState;
+    use crate::state::STATES;
     use crate::units::{Acceleration, AngularRate, Radians};
 
     const DT: Seconds = Seconds::from_secs(0.01);
@@ -1298,6 +1349,39 @@ mod tests {
                 .is_accepted()
         );
         filter
+    }
+
+    /// The floor of (42′) exists to be unreachable, and this is the only place CI asserts
+    /// it: `data/fetch.sh --check` pins `floored=0` on all five corpus logs, and it needs a
+    /// network and PX4 tooling, so it runs locally. The margin between the floor and
+    /// anything a filter that is propagating and fusing reaches is measured in `math.rs`'s
+    /// `FLOOR` — a count here means the floor is masking a collapse rather than preventing
+    /// one, and the `sigma_*` columns of `examples/replay.rs` say which state.
+    #[test]
+    fn an_ordinary_run_never_reaches_the_floor() {
+        let mut filter = aided();
+        for step in 0..400 {
+            assert_eq!(filter.predict(still().imu, DT), Propagation::Propagated);
+            if step % 25 == 0 {
+                assert!(
+                    filter
+                        .fuse_gnss_position(
+                            Position::ned(0.0, 0.0, 0.0),
+                            PositionNoise::horizontal_vertical(1.5, 1.5),
+                        )
+                        .is_accepted()
+                );
+                assert!(
+                    filter
+                        .fuse_baro_altitude(
+                            Altitude::from_meters(100.0),
+                            AltitudeNoise::from_sigma(2.0),
+                        )
+                        .is_accepted()
+                );
+            }
+        }
+        assert_eq!(filter.diagnostics().floored, 0);
     }
 
     fn elapsed(filter: &Eskf) -> f32 {
@@ -1957,6 +2041,63 @@ mod tests {
             filter.initialize_from(state, Covariance::from_matrix(matrix)),
             Err(InitError::InvalidVariance)
         );
+    }
+
+    #[test]
+    fn a_seed_below_the_floor_of_42_is_refused_like_a_zero() {
+        // 1e-30 (rad/s)² is a gyroscope bias the seed claims to know to 1e-15 rad/s. It
+        // clears a `> 0` test and does exactly what a zero does — the gain is zero in f32
+        // and `validity` calls the quantity good on the first read — so the bar is the
+        // floor, not zero, and the two are one check rather than two 24 decades apart.
+        let (state, covariance) = seed();
+        let mut matrix = *covariance.as_matrix();
+        matrix[(ErrorState::GyroBiasZ.index(), ErrorState::GyroBiasZ.index())] = 1e-30;
+
+        let mut filter = Eskf::new(Config::default());
+        assert_eq!(
+            filter.initialize_from(state, Covariance::from_matrix(matrix)),
+            Err(InitError::InvalidVariance)
+        );
+        assert!(!filter.is_initialized(), "a refused seed leaves no state");
+
+        // Just above its own floor is accepted, and untouched: the bar is per state group,
+        // so a gyroscope bias at 1e-8 passes a floor of 1e-9 while a position at 1e-8 would
+        // not clear its own 1e-6.
+        let mut matrix = *covariance.as_matrix();
+        matrix[(ErrorState::GyroBiasZ.index(), ErrorState::GyroBiasZ.index())] = 1e-8;
+        let _ = filter
+            .initialize_from(state, Covariance::from_matrix(matrix))
+            .expect("above the floor");
+        assert_eq!(filter.covariance().variance(ErrorState::GyroBiasZ), 1e-8);
+        assert_eq!(filter.diagnostics().floored, 0);
+
+        let mut matrix = *covariance.as_matrix();
+        matrix[(
+            ErrorState::PositionNorth.index(),
+            ErrorState::PositionNorth.index(),
+        )] = 1e-8;
+        assert_eq!(
+            filter.initialize_from(state, Covariance::from_matrix(matrix)),
+            Err(InitError::InvalidVariance)
+        );
+    }
+
+    #[test]
+    fn a_reset_below_the_floor_is_floored_and_counted_rather_than_refused() {
+        // The seed is refused because it writes the covariance in whole; a reset writes one
+        // block against an estimate that exists, so the floor repairs it instead. This is
+        // what keeps `floored` reachable from the public API at all now that
+        // `initialize_from` turns the other path away.
+        let mut filter = aided();
+        assert_eq!(filter.diagnostics().floored, 0);
+
+        assert!(filter.reset_position_to(
+            Position::ned(10.0, 20.0, -5.0),
+            PositionNoise::from_sigma(1e-15, 1e-15, 1e-15),
+        ));
+
+        assert_eq!(filter.diagnostics().floored, 3);
+        assert!(filter.covariance().variance(ErrorState::PositionNorth) >= 1e-6);
     }
 
     #[test]

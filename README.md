@@ -392,8 +392,11 @@ false however much GNSS is accepted.
 * `diagnostics()` — per source: test ratio, time since last acceptance, consecutive rejections,
   and how many measurements were refused before the gate and why. A source that only ever refuses
   reads as "never accepted", like one that was never connected, and the refusal count is what
-  tells them apart. Also carries what `predict` refused, which is not per source. For logging and
-  tuning; not on the hot path.
+  tells them apart. Also carries what `predict` refused and `floored`, neither of which is per
+  source. For logging and tuning; not on the hot path.
+  `floored` counts variances raised to the floor of equation (42′), and is meant to stay at zero:
+  the floor is set well below anything the filter reaches, so a count climbing there says a
+  covariance is being driven toward zero by an `R` far tighter than what the measurement observes.
 * `covariance()` — the 15 × 15 covariance, indexed by name: `p.variance(ErrorState::AttitudeZ)`.
 * `baro_reference()` — the `α₀` initialization fixed, if any.
 

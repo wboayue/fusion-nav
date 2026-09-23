@@ -11,8 +11,9 @@
 > initial covariance (8) and the bound (8′) a coarse window earns, the barometric reference `α₀` of
 > (30), the window's own acceleration
 > `ā_n` of (5′) — measured and reported though nothing levels with it yet — the geodetic origin
-> (43)–(44), the angle wrap of (35), and the symmetry enforcement of (42), called after every
-> covariance operation; the [equation-to-code mapping](#equation-to-code-mapping) marks the functions
+> (43)–(44), the angle wrap of (35), and the conditioning of (42) and (42′) — symmetry after
+> each product that can drift off it, and the diagonal variance floor under every covariance the
+> filter commits; the [equation-to-code mapping](#equation-to-code-mapping) marks the functions
 > that do not exist yet.
 
 This document is the normative mathematical description of `fusion-nav`. Equations are numbered
@@ -777,7 +778,7 @@ nominal, so they transform on one side only.
 
 ## Numerical conditioning
 
-Symmetry is enforced after every covariance operation:
+Symmetry is enforced after each product that can drift off it:
 
 **(42)**
 
@@ -785,9 +786,32 @@ Symmetry is enforced after every covariance operation:
 P \leftarrow \tfrac{1}{2}\left(P + P^\mathsf{T}\right)
 ```
 
-Diagonal variances are floored at a small positive value to prevent a state from becoming
-unobservably certain and then unrecoverable. With `f32` these are not optional refinements;
-they are what keeps a 15-state filter stable over a long flight.
+and every variance is held at or above a floor of its own:
+
+**(42′)**
+
+```math
+P_{ii} \leftarrow \max\left(P_{ii},\ \underline{\sigma}^2_i\right)
+```
+
+A variance that reaches zero is a state the filter claims to know exactly, and the claim is
+self-sealing: $`K = P H^\mathsf{T} S^{-1}`$ is zero in that row, so no measurement moves it
+again. With `f32` that is reachable by rounding rather than by arithmetic — the Joseph form of
+(27) keeps $`P`$ positive semi-definite, and semi-definite includes zero — so this is not an
+optional refinement; it is what keeps a 15-state filter stable over a long flight.
+
+One floor per state group rather than one for the matrix, because the fifteen states carry
+five units — m², (m/s)², rad², (m s⁻²)², (rad/s)² — and a single small number is a different
+claim in each of them. Both production estimators floor per group for the same reason. The
+values of $`\underline{\sigma}^2`$ are `math.rs`'s `FLOOR`, which is where they are written
+down, beside the PX4 and ArduPilot citations they were taken from and the headroom the corpus
+measures against them; a second copy here would rot the moment a floor moved.
+
+The two halves answer different faults and so are applied in different places. Symmetry
+repairs the drift a product introduces, so it belongs to the product — (22) and (41). The
+floor bounds a value, so it belongs to the value: `Eskf::commit_covariance` applies it to
+every covariance the filter stores, which covers the covariances no product built, such as an
+adopted block or the (8) a window commits.
 
 ## Geodetic origin
 
@@ -890,7 +914,8 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | — | per-source health tracking | `health.rs` | `SourceHealth`, `Status` |
 | (39)–(41) | injection and reset | `update.rs` | `inject`, `reset`, `reparameterize`, called by `update` |
 | (41) | reset after an adoption | `eskf.rs` | `Eskf::reset_heading_by`, through `update.rs`'s `reparameterize` |
-| (42) | symmetry enforcement | `math.rs` | `enforce_symmetry` |
+| (42) | symmetry enforcement | `math.rs` | `enforce_symmetry`, called by `propagate_covariance` and `reparameterize` |
+| (42′) | diagonal variance floor | `math.rs` | `floor_diagonal` and `FLOOR`; applied by `Eskf::commit_covariance` |
 | (43) | local tangent plane | `geodetic.rs` | `LocalOrigin::to_ned`, `to_geodetic` |
 | (44) | origin placement | `geodetic.rs` | `LocalOrigin::placing`; committed by `Eskf::fuse_gnss_geodetic` |
 | — | skew, quaternion exponential, angle wrap | `math.rs` | `skew`, `exp_quat`, `wrap_pi` |
