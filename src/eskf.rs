@@ -512,9 +512,13 @@ impl Eskf {
     /// raised.
     ///
     /// One place, so that the invariant is a property of the filter rather than of each
-    /// equation that produces a `P`: **every covariance the filter holds has been floored**,
-    /// and therefore so has every covariance it publishes, tests [`Validity`] against, or
-    /// reads back into the `S` of (24). A floor applied inside (22) and (27) instead would
+    /// equation that produces a `P`: **every covariance the filter commits has been floored**,
+    /// and therefore so has every covariance it fuses against, tests [`Validity`] against, or
+    /// reads back into the `S` of (24). Committed, not held: an `Eskf` that has not
+    /// initialized holds [`Covariance::zero`](crate::Covariance::zero) and
+    /// [`covariance`](Self::covariance) will hand it over, which is the one place a caller can
+    /// read a variance of zero off this filter. Nothing acts on it — every path that would is
+    /// behind `initialized` — and initializing is itself a commit. A floor applied inside (22) and (27) instead would
     /// be two call sites protecting the two operations that shrink a variance, and would
     /// leave the ones that *write* one — the adoption of
     /// [`Fusion::Reset`](crate::Fusion::Reset), the `reset_*_to` methods, the initial

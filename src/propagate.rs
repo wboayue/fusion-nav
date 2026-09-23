@@ -278,10 +278,11 @@ fn process_noise(noise: &ImuNoise, dt: Seconds) -> [f32; STATES] {
 /// `thumbv6m-none-eabi`, and from 120 to 2032 on `thumbv7em-none-eabihf`
 /// (`-Zemit-stack-sizes`, `opt-level = 3`; the figure is `predict`'s because this function
 /// inlines into it). The two 2032s are current; the 160 and the 120 were measured when (22)
-/// landed and re-measuring them means taking (22) back out. That is the "few kilobytes rather than one" `DESIGN.md` predicts for the
-/// working set, comfortable on the STM32H7 class it names and a quarter of the RAM on an 8 KB
-/// Cortex-M0 part. The block-wise form is the lever if a target needs it, and #41 — stack
-/// high-water measured on hardware — is what would say so.
+/// landed and re-measuring them means taking (22) back out. That is the "few kilobytes rather
+/// than one" `DESIGN.md` predicts for the working set, comfortable on the STM32H7 class it
+/// names and a quarter of the RAM on an 8 KB Cortex-M0 part. The block-wise form is the lever
+/// if a target needs it, and #41 — stack high-water measured on hardware — is what would say
+/// so.
 ///
 /// `Q` arrives as a diagonal and is added as one, which keeps those temporaries to three
 /// rather than four.

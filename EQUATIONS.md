@@ -11,8 +11,9 @@
 > initial covariance (8) and the bound (8′) a coarse window earns, the barometric reference `α₀` of
 > (30), the window's own acceleration
 > `ā_n` of (5′) — measured and reported though nothing levels with it yet — the geodetic origin
-> (43)–(44), the angle wrap of (35), and the symmetry enforcement of (42), called after every
-> covariance operation; the [equation-to-code mapping](#equation-to-code-mapping) marks the functions
+> (43)–(44), the angle wrap of (35), and the conditioning of (42) and (42′) — symmetry after
+> each product that can drift off it, and the diagonal variance floor under every covariance the
+> filter commits; the [equation-to-code mapping](#equation-to-code-mapping) marks the functions
 > that do not exist yet.
 
 This document is the normative mathematical description of `fusion-nav`. Equations are numbered
@@ -777,7 +778,7 @@ nominal, so they transform on one side only.
 
 ## Numerical conditioning
 
-Symmetry is enforced after every covariance operation:
+Symmetry is enforced after each product that can drift off it:
 
 **(42)**
 
@@ -800,11 +801,11 @@ again. With `f32` that is reachable by rounding rather than by arithmetic — th
 optional refinement; it is what keeps a 15-state filter stable over a long flight.
 
 One floor per state group rather than one for the matrix, because the fifteen states carry
-five units and a single small number is a different claim in each of them:
-$`\underline{\sigma}^2`$ is 10⁻⁶ m² for $`\delta p`$, 10⁻⁶ (m/s)² for $`\delta v`$, and 10⁻⁹
-for $`\delta\theta`$, $`\delta\beta_a`$ and $`\delta\beta_g`$ in rad², (m s⁻²)² and (rad/s)².
-Both production estimators floor per group for the same reason; `math.rs`'s `FLOOR` cites
-where, and what the corpus says about the headroom.
+five units — m², (m/s)², rad², (m s⁻²)², (rad/s)² — and a single small number is a different
+claim in each of them. Both production estimators floor per group for the same reason. The
+values of $`\underline{\sigma}^2`$ are `math.rs`'s `FLOOR`, which is where they are written
+down, beside the PX4 and ArduPilot citations they were taken from and the headroom the corpus
+measures against them; a second copy here would rot the moment a floor moved.
 
 The two halves answer different faults and so are applied in different places. Symmetry
 repairs the drift a product introduces, so it belongs to the product — (22) and (41). The

@@ -221,8 +221,11 @@ alignment bars — which is where
 the covariance growth of (16)–(22) shows up on logs with no truth — `Status::Aligning` latches, so
 nothing else on the line moves when it happens), `rejected=` and `discarded=` (the gate's verdict, and everything that never reached it — a
 variance of zero or less, a NaN, an altitude with no reference), `refused=` and `invalid=` (steps
-refused as too long or as not a step at all — propagation, not measurements), and `epochs=`,
-`transitions=` and `status=`. It needs `pyulog`, so it is a local tool rather than a CI job:
+refused as too long or as not a step at all — propagation, not measurements), `floored=`
+(variances raised to the diagonal floor of equation (42′), pinned at zero on every log because
+that is the claim — the floor sits far below anything the filter reaches, so a non-zero says a
+covariance is being driven toward zero by something upstream and the floor is masking it), and
+`epochs=`, `transitions=` and `status=`. It needs `pyulog`, so it is a local tool rather than a CI job:
 `data/fetch.sh --venv` once, which installs the version the converter pins, and `fetch.sh`
 finds the gitignored `.venv` on its own.
 The converter declares its own dependency inline (PEP 723), so `uv run tools/ulog2replay.py`
