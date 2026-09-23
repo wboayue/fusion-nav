@@ -761,7 +761,7 @@ impl Replay {
         self.total(|health| health.refused)
     }
 
-    /// Measurements adopted outright because a coarse start left nothing to fuse them
+    /// Measurements adopted outright because initialization left nothing to fuse them
     /// against. At most one per source.
     fn resets(&self) -> u32 {
         self.total(|health| health.adopted)
@@ -986,7 +986,7 @@ impl Replay {
         }
         if self.resets() > 0 {
             println!(
-                "{} adopted outright: a coarse start had no position or velocity to fuse \
+                "{} adopted outright: initialization established no such quantity to fuse \
                  them against",
                 self.resets()
             );

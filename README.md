@@ -210,8 +210,11 @@ rather than poisoned.
 
 After a coarse start the first GNSS position and first GNSS velocity are **adopted rather than
 fused**, reported as `Fusion::Reset`. A vehicle that initialized while moving has no position or
-velocity for the gate to judge a fix against. This happens once per quantity; everything after is
-fused normally.
+velocity for the gate to judge a fix against. The first magnetic heading is adopted the same way
+whenever initialization left yaw unobserved — after any coarse start, and after a static window
+that carried no magnetometer, since stillness observes tilt and never yaw. That one steps the
+attitude, by up to half a circle. This happens once per quantity; everything after is fused
+normally.
 
 Stillness is still worth arranging where available: initialization quality dominates
 early-flight performance. See [initialization](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#initialization).
@@ -314,7 +317,7 @@ a `Reset` steps the state, and a refusal says the measurement never reached the 
 | -------- | ------- |
 | `Accepted { test_ratio }` | fused; ratio ≤ 1 |
 | `Rejected { test_ratio }` | gated out; ratio > 1, state unchanged |
-| `Reset` | adopted outright after a coarse start (once per quantity) |
+| `Reset` | adopted outright, the quantity having never been established (once per quantity); steps the state |
 | `NoReference` | barometer altitude with no `α₀` from initialization, or a geodetic fix that cannot place an origin |
 | `NotFinite` | a NaN or infinity in the measurement or its noise; discarded |
 | `InvalidNoise` | a zero or negative variance in the noise — no sensor has one, and `S` would be singular or worse; discarded |

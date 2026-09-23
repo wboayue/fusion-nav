@@ -155,15 +155,15 @@ static           1  pos_h<=0.275 pos_v<=0.152 vel<=0.193 pos_h_max<=0.988  tilt<
 mission          2  pos_h<=0.243 pos_v<=0.084 vel<=0.190 pos_h_max<=0.887  tilt<=0.582 yaw<=0.658 ba<=0.05400 bg<=0.001024 in3s>=0.9894 nees_pos<=1.0469   nees_vel<=0.4448 nees_att<=0.2026 false_valid<=0   false_valid_att<=0   scored>=36600
 harsh_imu        2  pos_h<=0.243 pos_v<=0.084 vel<=0.192 pos_h_max<=0.886  tilt<=1.160 yaw<=1.071 ba<=0.15479 bg<=0.002253 in3s>=0.9891 nees_pos<=1.0482   nees_vel<=0.4512 nees_att<=0.6048 false_valid<=0   false_valid_att<=0   scored>=36600
 gnss_outage      2  pos_h<=2.391 pos_v<=0.093 vel<=0.356 pos_h_max<=29.524 tilt<=0.606 yaw<=0.657 ba<=0.05418 bg<=0.001020 in3s>=0.9893 nees_pos<=0.8938   nees_vel<=0.4088 nees_att<=0.1951 false_valid<=0   false_valid_att<=0   scored>=36600
-moving_start     4  pos_h<=0.265 pos_v<=0.295 vel<=0.196 pos_h_max<=0.975  tilt<=1.738 yaw<=0.950 ba<=0.05570 bg<=0.002603 in3s>=0.9900 nees_pos<=1.0754   nees_vel<=0.4557 nees_att<=0.2334 false_valid<=0   false_valid_att<=0   scored>=15999
+moving_start     4  pos_h<=0.266 pos_v<=0.295 vel<=0.195 pos_h_max<=0.975  tilt<=1.682 yaw<=0.927 ba<=0.05849 bg<=0.002687 in3s>=0.9900 nees_pos<=1.0760   nees_vel<=0.4550 nees_att<=0.2286 false_valid<=0   false_valid_att<=0   scored>=15999
 baro_drift       2  pos_h<=0.246 pos_v<=2.073 vel<=0.190 pos_h_max<=0.887  tilt<=0.578 yaw<=0.656 ba<=0.05401 bg<=0.001022 in3s>=0.9295 nees_pos<=259.8456 nees_vel<=0.4450 nees_att<=0.2007 false_valid<=0   false_valid_att<=0   scored>=36600
 gnss_latency     2  pos_h<=2.220 pos_v<=0.085 vel<=0.475 pos_h_max<=3.361  tilt<=0.962 yaw<=1.367 ba<=0.05383 bg<=0.002371 in3s>=0.8609 nees_pos<=57.3319  nees_vel<=2.7390 nees_att<=0.7754 false_valid<=418 false_valid_att<=122 scored>=36600
 mag_disturbance  2  pos_h<=0.243 pos_v<=0.084 vel<=0.190 pos_h_max<=0.887  tilt<=0.583 yaw<=0.734 ba<=0.05355 bg<=0.001062 in3s>=0.9894 nees_pos<=1.0470   nees_vel<=0.4450 nees_att<=0.2029 false_valid<=0   false_valid_att<=0   scored>=36600
-flight           8  pos_h<=2.498 pos_v<=0.421 vel<=0.683 pos_h_max<=6.150  tilt<=1.033 yaw<=7.680 ba<=0.07357 bg<=0.003282 in3s>=0.9900 nees_pos<=0.6241   nees_vel<=0.2326 nees_att<=0.1787 false_valid<=0   false_valid_att<=0   scored>=600
+flight           8  pos_h<=2.502 pos_v<=0.421 vel<=0.685 pos_h_max<=6.166  tilt<=1.037 yaw<=7.679 ba<=0.07355 bg<=0.003287 in3s>=0.9900 nees_pos<=0.6243   nees_vel<=0.2326 nees_att<=0.1779 false_valid<=0   false_valid_att<=0   scored>=600
 
 # (34)-(36) are what `yaw` reads now, and what it buys depends entirely on what the start knew.
 # Where yaw was never observed the magnetometer is the whole estimate: `moving_start` goes 3.228
-# deg to 0.940 and `bg` 0.004853 to 0.002577, and `static` -- whose window carries a
+# deg to 0.917 and `bg` 0.004853 to 0.002660, and `static` -- whose window carries a
 # magnetometer but whose 60 s at rest let the gyroscope walk -- goes 1.715 to 0.508. Where a
 # static window already fixed yaw and the flight is short, it buys nothing and costs a little:
 # `mission` goes 0.644 to 0.651, `tilt` 0.519 to 0.576 and `bg` 0.000677 to 0.001013. A heading
@@ -172,7 +172,7 @@ flight           8  pos_h<=2.498 pos_v<=0.421 vel<=0.683 pos_h_max<=6.150  tilt<
 # (20) builds. Both readings are the same equation; which one a vehicle gets is a property of
 # its start, not of the filter.
 #
-# `nees_att` rose on every line -- 0.0353 to 0.2005 on `mission`, 0.1254 to 0.2310 on
+# `nees_att` rose on every line -- 0.0353 to 0.2005 on `mission`, 0.1254 to 0.2263 on
 # `moving_start` -- and that is the direction that wants watching rather than the one that
 # wants fixing. It is the move stage 5 made on `nees_pos` (0.0118 to 0.85): a key sitting three
 # orders below 1 is a covariance with nothing in it, and an attitude that is finally observed
@@ -189,7 +189,21 @@ flight           8  pos_h<=2.498 pos_v<=0.421 vel<=0.683 pos_h_max<=6.150  tilt<
 #
 # What (36') is worth is measured on `moving_start`, and it is the difference between a stage
 # that ships and one that does not. Pricing the levelling error into `R` took that line from
-# `tilt` 2.653 deg to 1.720, `yaw` 3.777 to 0.940, `nees_att` 1.634 to 0.231, and 840
+# `tilt` 2.653 deg to 1.665, `yaw` 3.777 to 0.917, `nees_att` 1.634 to 0.226, and 840
 # falsely-valid attitude quantity-epochs to zero. Without it the filter reads a heading through
 # a tilt it is unsure of, prices the result at the magnetometer's own noise, and believes the
 # answer -- which on a coarse start is a filter claiming an attitude it does not have.
+#
+# The adoption is priced by (36') as well, and that is where the term is worth the most: the
+# first heading is levelled by the worst tilt the filter ever holds. On `moving_start` the
+# adopted yaw variance is 0.582 rather than the magnetometer's own 0.01 -- sigma 0.76 rad
+# against an `Accuracy::heading` of 0.5236 -- so the heading is established and reported
+# invalid, rather than established and believed. That, with the (41) the adoption now applies
+# to the attitude rows it does not replace, is `tilt` 1.720 deg to 1.665, `yaw` 0.940 to 0.917
+# and `nees_att` 0.2310 to 0.2263.
+#
+# The two bias keys are what paid, and both ceilings loosened for it: `ba` 0.05514 to 0.05791
+# and `bg` 0.002577 to 0.002660. A yaw the filter is honestly unsure of takes more of each
+# velocity correction and leaves less for the gyroscope bias, which is the split (20)'s
+# attitude-bias block decides. Attitude accuracy and attitude consistency both improved in the
+# same diff; the biases gave up 5 % and 3 % to pay for it.

@@ -668,8 +668,17 @@ against 0.58° and 0.053 for (36′). What (36′) says is that the heading is l
 its own noise suggests, without claiming it observes the tilt that made it so — the Schmidt
 treatment of a state a measurement depends on and does not constrain. On the `moving_start`
 scenario, whose coarse start is where an unpriced levelling error is largest, it is worth
-2.653° → 1.720 of tilt, 3.777° → 0.940 of yaw, 1.634 → 0.231 of `nees_att`, and 840 falsely-valid
+2.653° → 1.665 of tilt, 3.777° → 0.917 of yaw, 1.634 → 0.226 of `nees_att`, and 840 falsely-valid
 attitude quantity-epochs → 0.
+
+$`R_m`$ prices the **adoption** as well as the update. The first heading a filter with no
+established yaw receives is taken outright rather than gated — a yaw error of a radian is not a
+small-angle quantity and no variance expresses it — and the variance it carries away is this
+$`R_m`$, not $`\sigma_\psi^2`$. It is levelled by (34) like any other, on the worst tilt the
+filter ever holds, so an adoption storing the magnetometer's own number is precisely the falsely
+valid attitude (36′) exists to remove, reintroduced where the error is largest. On `moving_start`
+the adopted variance is 0.582 rather than 0.01: $`\sigma`$ = 0.76 rad, outside `Accuracy::heading`,
+so the heading is established and honestly reported invalid.
 
 ## Innovation gating
 
@@ -757,6 +766,14 @@ The error state is then reset to zero and the covariance transformed by the rese
 The attitude block of $`G`$ is frequently approximated as $`I`$. That is acceptable for small
 corrections and should be an explicit, documented choice rather than an omission. `update.rs`
 keeps the exact block, and `reset` says why.
+
+$`I - [\tfrac{1}{2}\delta\hat{\theta}]_\times`$ is itself first order in the correction, which is
+sound for an update and not for an adoption. Where the nominal attitude is replaced rather than
+corrected — the first magnetic heading, which can turn it by half a circle — (41) still applies
+and $`G`$'s attitude block is the exact change of body frame, $`R(\hat{q}^+)^\mathsf{T} R(\hat{q})`$.
+The tilt block is near-isotropic and largely survives either choice; the attitude–bias
+cross-blocks do not, because the bias states are in physical body axes that do not turn with the
+nominal, so they transform on one side only.
 
 ## Numerical conditioning
 
@@ -871,7 +888,8 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | (37) `γ` | gate thresholds | `config.rs` | `Gate::at`, `Gate::new`, `Gates::at` |
 | (37)–(38) | innovation gating, test ratio | `update.rs` | `nis`, `test_ratio`, called by `update` |
 | — | per-source health tracking | `health.rs` | `SourceHealth`, `Status` |
-| (39)–(41) | injection and reset | `update.rs` | `inject`, `reset`, called by `update` |
+| (39)–(41) | injection and reset | `update.rs` | `inject`, `reset`, `reparameterize`, called by `update` |
+| (41) | reset after an adoption | `eskf.rs` | `Eskf::reset_heading_by`, through `update.rs`'s `reparameterize` |
 | (42) | symmetry enforcement | `math.rs` | `enforce_symmetry` |
 | (43) | local tangent plane | `geodetic.rs` | `LocalOrigin::to_ned`, `to_geodetic` |
 | (44) | origin placement | `geodetic.rs` | `LocalOrigin::placing`; committed by `Eskf::fuse_gnss_geodetic` |

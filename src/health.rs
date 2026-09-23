@@ -83,19 +83,29 @@ pub enum Fusion {
     /// The measurement was adopted outright rather than fused, because the filter had no
     /// estimate of that quantity to fuse it against.
     ///
-    /// This happens once per quantity, on the first GNSS position fix and the first GNSS
-    /// velocity after a coarse start: a vehicle that initialized while moving knows
-    /// neither where it is nor how fast it is going, and no gate can judge a measurement
-    /// against nothing. A static start and a seed both have an estimate, so their first
-    /// fix is fused normally, or, given as latitude and longitude, places the origin
-    /// under that estimate; see [`Eskf::fuse_gnss_geodetic`](crate::Eskf::fuse_gnss_geodetic).
-    /// The state becomes the measurement and its
-    /// covariance block becomes the measurement's, which is what fusing against an
-    /// infinitely uncertain prior converges to — the limit, taken exactly rather than
-    /// approached with an invented variance.
+    /// This happens once per quantity, and for three of them. Position and velocity are
+    /// adopted on the first GNSS fix after a coarse start: a vehicle that initialized
+    /// while moving knows neither where it is nor how fast it is going, and no gate can
+    /// judge a measurement against nothing. A static start and a seed both have an
+    /// estimate of those two, so their first fix is fused normally, or, given as latitude
+    /// and longitude, places the origin under that estimate; see
+    /// [`Eskf::fuse_gnss_geodetic`](crate::Eskf::fuse_gnss_geodetic).
     ///
-    /// Worth reacting to: position or velocity stepped, which a controller consuming the
-    /// estimate may care about.
+    /// Heading is the third, and it is not a coarse start's alone: stillness observes
+    /// tilt and never yaw, so a static window carrying no magnetometer leaves yaw a
+    /// prior nothing measured, and the first
+    /// [`fuse_mag_heading`](crate::Eskf::fuse_mag_heading) is adopted there too. Only a
+    /// seed escapes, having vouched for every quantity.
+    ///
+    /// The state becomes the measurement and its covariance block becomes the
+    /// measurement's, which is what fusing against an infinitely uncertain prior
+    /// converges to — the limit, taken exactly rather than approached with an invented
+    /// variance.
+    ///
+    /// Worth reacting to: position, velocity or **attitude** stepped, which a controller
+    /// consuming the estimate may care about. Heading is the largest of the three — an
+    /// adopted heading can turn the estimate by half a circle, where an adopted position
+    /// moves a quantity no controller was flying on.
     Reset,
     /// The measurement failed the gate and was discarded. The state is unchanged.
     Rejected {
@@ -122,9 +132,9 @@ pub enum Fusion {
     /// A number in the measurement or its noise is NaN or infinite. The measurement was
     /// discarded and no health timer moved.
     ///
-    /// Refused before anything else, including the adoption a coarse start allows: one
-    /// NaN in the state or covariance spreads to every quantity at the next update and
-    /// never leaves.
+    /// Refused before anything else, including the adoption of a quantity initialization
+    /// left unestablished: one NaN in the state or covariance spreads to every quantity at
+    /// the next update and never leaves.
     NotFinite,
     /// A variance in the measurement noise is zero or negative. The measurement was
     /// discarded and no health timer moved.
@@ -132,14 +142,13 @@ pub enum Fusion {
     /// `R` has to be a variance some sensor could have. Zero makes the innovation
     /// covariance `S = H P Hᵀ + R` of equation (24) singular as soon as the state it
     /// observes is itself certain, and a negative one is worse: it claims a measurement
-    /// better than perfect, and where a coarse start adopts the measurement outright it
-    /// writes that negative variance straight into `P`, which
+    /// better than perfect, and where the measurement is adopted outright it writes that
+    /// negative variance straight into `P`, which
     /// [`Validity`] then reads as an excellent estimate.
     ///
     /// Usually a floor or a unit mistake at the boundary — a receiver reporting `eph = 0`
     /// while it has no fix, or a variance arrived at by subtracting one σ² from another.
-    /// Refused alongside [`NotFinite`](Self::NotFinite), before the adoption a coarse
-    /// start allows.
+    /// Refused alongside [`NotFinite`](Self::NotFinite), before any adoption.
     ///
     /// One bad component refuses the whole measurement, so a receiver in 2D-fix mode
     /// reporting a good `eph` with `epv = 0` loses its horizontal aiding too. The filter
@@ -467,9 +476,7 @@ pub struct SourceHealth {
     /// the innovations PX4 logs — reads the filter's own number rather than recomputing it from
     /// the measurement and the covariance, which would be a second implementation of (23) and
     /// (24) free to disagree with this one. `None` after an acceptance that ran no update: an
-    /// adoption ([`Fusion::Reset`]), a geodetic fix spent placing the origin, and a source whose
-    /// `fuse_*` is still a stub — [`Eskf::fuse_mag_heading`](crate::Eskf::fuse_mag_heading) is
-    /// the one left.
+    /// adoption ([`Fusion::Reset`]) or a geodetic fix spent placing the origin.
     ///
     /// [`test_ratio`]: Self::test_ratio
     pub innovation: Option<Innovation>,
@@ -495,7 +502,8 @@ pub struct SourceHealth {
     pub last_refusal: Option<Refusal>,
     /// Measurements adopted outright rather than fused, over the filter's life.
     ///
-    /// At most one, and only after a coarse start; see [`Fusion::Reset`]. Also counted in
+    /// At most one, and only for a quantity initialization left unobserved; see
+    /// [`Fusion::Reset`]. Also counted in
     /// [`accepted`](Self::accepted), because the measurement was taken and the timer restarted
     /// — this is what tells the two apart, since an adoption steps the state and an ordinary
     /// acceptance does not.
