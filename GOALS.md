@@ -1,8 +1,9 @@
 # Goals and Differentiators
 
-> **Status: design only.** This document records the intended positioning of `fusion-nav`
-> relative to existing Rust crates and production autopilot estimators. It is a rationale
-> document, not a specification.
+> **Status: rationale, not specification.** This document records the positioning of
+> `fusion-nav` relative to existing Rust crates and production autopilot estimators, and the
+> decisions already made. What is built is [README.md](README.md); the mathematics is
+> [EQUATIONS.md](EQUATIONS.md).
 
 See [DESIGN.md](DESIGN.md) for the architecture and [EQUATIONS.md](EQUATIONS.md) for the
 mathematics.

@@ -1,20 +1,11 @@
 # Equations
 
-> **Status: the estimation mathematics is partly implemented.** (9)–(15) propagate the nominal
-> state and (16)–(22) propagate `P`, so `predict` moves position, velocity and attitude and says
-> how little it knows about them. Every aiding source the crate carries corrects them: the
-> update (23)–(27), the observation models for position (28), velocity (29), barometric altitude
-> (30) and magnetic heading (34)–(36) with the levelling variance of (36′), the gate (37)–(38)
-> and the injection and reset (39)–(41) are built. The three-axis magnetometer, (31)–(33), is
-> not, and is [out of scope](GOALS.md#magnetometer-without-magnetic-field-states) rather than
-> pending. Also built: the attitude and biases of (5)–(7), the
-> initial covariance (8) and the bound (8′) a coarse window earns, the barometric reference `α₀` of
-> (30), the window's own acceleration
-> `ā_n` of (5′) — measured and reported though nothing levels with it yet — the geodetic origin
-> (43)–(44), the angle wrap of (35), and the conditioning of (42) and (42′) — symmetry after
-> each product that can drift off it, and the diagonal variance floor under every covariance the
-> filter commits; the [equation-to-code mapping](#equation-to-code-mapping) marks the functions
-> that do not exist yet.
+> **Status: the estimation mathematics is implemented.** Every equation below is built except
+> the three-axis magnetometer, (31)–(33), which is
+> [out of scope](GOALS.md#magnetometer-without-magnetic-field-states) rather than pending, and
+> equation (5′), whose subtraction is measured and reported but not yet applied. The
+> [equation-to-code mapping](#equation-to-code-mapping) names the function implementing each,
+> and marks those two.
 
 This document is the normative mathematical description of `fusion-nav`. Equations are numbered
 so that the implementation can cite them directly; see
@@ -894,7 +885,7 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | (1)–(4) | state definitions | `state.rs` | `State`, `ErrorState` |
 | (5)–(8) | static initialization | `init.rs` | `measure`, `level_from_accel`, `heading_from_mag`, `nominal_state`, `classify`, `attitude_sigmas`, `initial_covariance` |
 | (8′) | what a coarse window supports | `init.rs` | `coarse_sigmas`, `window_drift`, `heading_sensitivity` — `tan δ` shared with (36′) |
-| (5′) `ā_n` | in-motion levelling | `init.rs` | `inertial_acceleration`; the correction itself is unbuilt |
+| (5′) `ā_n` | in-motion levelling | `init.rs` | `inertial_acceleration`; the correction itself is unbuilt — #59 |
 | (30) `α₀` | barometric reference | `init.rs` | `baro_reference` |
 | (9)–(11) | bias correction, gravity | `propagate.rs` | `ImuSample`, `corrected_imu` |
 | (12)–(15) | nominal propagation | `propagate.rs` | `propagate_nominal` |
@@ -906,7 +897,7 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | (28) | GNSS position | `observation/gnss.rs` | `position_jacobian`, `position_observation` |
 | (29) | GNSS velocity | `observation/gnss.rs` | `velocity_jacobian`, `velocity_observation` |
 | (30) | barometric altitude | `observation/baro.rs` | `altitude_jacobian`, `altitude_observation` |
-| (31)–(33) | magnetometer, three-axis | — | unbuilt and out of scope; no `field_jacobian` exists |
+| (31)–(33) | magnetometer, three-axis | — | unbuilt and [out of scope](GOALS.md#magnetometer-without-magnetic-field-states); no `field_jacobian` exists |
 | (34)–(36) | magnetometer, heading only | `observation/mag.rs` | `heading_innovation`, `heading_jacobian`, `heading_observation` |
 | (36′) | levelling variance | `observation/mag.rs` | `levelling_variance`, with `tan δ` from `init.rs`'s `heading_sensitivity` |
 | (37) `γ` | gate thresholds | `config.rs` | `Gate::at`, `Gate::new`, `Gates::at` |

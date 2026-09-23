@@ -2,17 +2,20 @@
 
 Embedded-first inertial navigation using a 15-state Error-State Kalman Filter (ESKF).
 
-> **Status: aided by GNSS position and velocity, the barometer and magnetic heading.** The
-> types and signatures below exist and compile. Initialization is real — the filter levels,
-> takes a heading and a gyroscope bias, and sets its covariance — and `predict` propagates the
-> state *and* its uncertainty, equations (9)–(22). Every `fuse_*` corrects them through the
-> innovation gate of (37)–(38): `fuse_gnss_position`, `fuse_gnss_geodetic`,
-> `fuse_gnss_velocity` and `fuse_baro_altitude` by equations (23)–(30), and `fuse_mag_heading`
-> by (34)–(36). Yaw is the one attitude component any of them observes directly; roll and
-> pitch are corrected as far as the covariance carries an observation into them. Where no
-> aiding arrives, the uncertainty grows without bound, and `Validity` says so: each flag goes
-> false as its own variance passes `Config::accuracy`, 3.82 s in for tilt at the default noise
-> on an unaided start. The design is subject to change.
+> **Status: complete and aided by GNSS position and velocity, the barometer and magnetic
+> heading.** Equations (1)–(44) are implemented, bar the three-axis magnetometer of (31)–(33),
+> which is [out of scope](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#magnetometer-without-magnetic-field-states)
+> rather than pending. Initialization levels, takes a heading and a gyroscope bias, and sets
+> its covariance; `predict` propagates the state *and* its uncertainty, (9)–(22); every
+> `fuse_*` corrects both through the innovation gate of (37)–(38) — `fuse_gnss_position`,
+> `fuse_gnss_geodetic`, `fuse_gnss_velocity` and `fuse_baro_altitude` by (23)–(30),
+> `fuse_mag_heading` by (34)–(36). Yaw is the one attitude component any of them observes
+> directly; roll and pitch are corrected as far as the covariance carries an observation into
+> them. Where no aiding arrives, the uncertainty grows without bound and `Validity` says so:
+> each flag goes false as its own variance passes `Config::accuracy`, 3.82 s in for tilt at
+> the default noise on an unaided start. Accuracy is measured rather than asserted — see
+> [data/README.md](https://github.com/wboayue/fusion-nav/blob/main/data/README.md). The API is
+> not yet frozen.
 
 `fusion-nav` estimates 3D attitude, velocity, and position by fusing IMU measurements with GNSS,
 barometric altitude, and magnetometer observations. It is `no_std`, allocation-free, and aimed at
@@ -377,12 +380,25 @@ filter wait for 1° before it calls the start resolved. A bar tighter than the p
 
 On the ground, heading may be unobservable and GNSS may not have a fix yet, so `validity` says
 no about a filter that would be navigating a second after takeoff. `predicted_validity()` answers
-instead whether each quantity is valid now **or** a source that constrains it is currently being
-accepted. Use it for arming checks. (ArduPilot's `pred_horiz_pos_rel` is the same idea.)
+a different question: whether each quantity would **still** be good `Accuracy::horizon` from now
+with nothing fusing, **or** a source that constrains it is currently being accepted. Use it for
+arming checks. (ArduPilot's `pred_horiz_pos_rel` is the second clause; neither it nor PX4
+publishes the first.)
 
-Tilt is the exception: no source aids it, only a static window establishes it today, so its
-prediction is exactly its current value. After a coarse start `predicted_validity().tilt` stays
-false however much GNSS is accepted.
+The two clauses cover the two ways an arming check goes wrong. The projection propagates `P`
+forward by the same equations `predict` runs and tests each quantity at the far end, so a tilt
+that is inside its bar now and will not be in a second reads false here and true from
+`validity()`. The aiding clause is what a projection cannot supply: before the first fix there is
+no horizontal position to propagate, and that fixes are arriving is the whole answer.
+
+Tilt is where it matters most, because nothing aids it — a static window brings it in and
+gyroscope-bias uncertainty takes it back out, on a schedule only the covariance knows. At the
+default noise an unaided start holds tilt for 3.82 s, so a horizon under that arms and one over
+it does not.
+
+`Accuracy::horizon` is the one number in the crate no data could settle: how long after arming
+you need the estimate. It defaults to 1 s. Set it to zero and `predicted_validity()` asks what
+`validity()` asks.
 
 ### Detail
 

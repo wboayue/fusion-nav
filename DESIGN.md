@@ -4,13 +4,12 @@ How `fusion-nav` is built and why. For how to use it see [README.md](README.md);
 mathematics see [EQUATIONS.md](EQUATIONS.md); for positioning and decisions already made see
 [GOALS.md](GOALS.md).
 
-> **Status: aided by GNSS position and velocity, the barometer and magnetic heading.** The
-> structure below is the intended one, and the types and signatures exist. Implemented:
-> initialization, equations (5)–(8), so the filter starts at the attitude it levelled; nominal
-> propagation, (9)–(15), and covariance propagation, (16)–(22), so the state dead reckons and
-> the uncertainty beside it grows; and the measurement update, (23)–(30), (34)–(36) with the
-> levelling variance (36′), and (37)–(41), wired to every source the crate carries. Not
-> implemented, and out of scope rather than pending: three-axis magnetometer fusion, (31)–(33).
+> **Status: complete and aided by GNSS position and velocity, the barometer and magnetic
+> heading.** The structure below is built, not intended: initialization, equations (5)–(8);
+> nominal propagation, (9)–(15), and covariance propagation, (16)–(22); the measurement update,
+> (23)–(30), (34)–(36) with the levelling variance (36′), and (37)–(41), wired to every source
+> the crate carries; and the conditioning of (42) and (42′). Not implemented, and out of scope
+> rather than pending: three-axis magnetometer fusion, (31)–(33).
 
 ## Error-State Kalman Filter
 

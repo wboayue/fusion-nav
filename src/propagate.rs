@@ -273,16 +273,16 @@ fn process_noise(noise: &ImuNoise, dt: Seconds) -> [f32; STATES] {
 /// both, at the cost of the one equation a reader of this crate is most likely to have come
 /// for.
 ///
-/// The measurement, since the trade was made here: (22) takes
-/// [`Eskf::predict`](crate::Eskf::predict)'s stack frame from 160 bytes to 2032 on
-/// `thumbv6m-none-eabi`, and from 120 to 2032 on `thumbv7em-none-eabihf`
-/// (`-Zemit-stack-sizes`, `opt-level = 3`; the figure is `predict`'s because this function
-/// inlines into it). The two 2032s are current; the 160 and the 120 were measured when (22)
-/// landed and re-measuring them means taking (22) back out. That is the "few kilobytes rather
-/// than one" `DESIGN.md` predicts for the working set, comfortable on the STM32H7 class it
-/// names and a quarter of the RAM on an 8 KB Cortex-M0 part. The block-wise form is the lever
-/// if a target needs it, and #41 — stack high-water measured on hardware — is what would say
-/// so.
+/// The measurement, since the trade was made here (`-Zemit-stack-sizes`, `opt-level = 3`):
+/// this function's own frame is 2832 bytes on `thumbv6m-none-eabi` and 2760 on
+/// `thumbv7em-none-eabihf`, and the chain that reaches it from
+/// [`Eskf::predict`](crate::Eskf::predict) — `predict` at 2032, `propagate` at 1104 — comes
+/// to 5968 and 5888. It is a frame of its own rather than part of `predict`'s because
+/// [`project`] is a second caller; with one caller it inlined, and the same three
+/// temporaries sat in `predict` instead. That is the "few kilobytes rather than one"
+/// `DESIGN.md` predicts for the working set, comfortable on the STM32H7 class it names and
+/// most of the RAM on an 8 KB Cortex-M0 part. The block-wise form is the lever if a target
+/// needs it, and #41 — stack high-water measured on hardware — is what would say so.
 ///
 /// `Q` arrives as a diagonal and is added as one, which keeps those temporaries to three
 /// rather than four.
@@ -299,6 +299,132 @@ fn propagate_covariance(p: Covariance, f: &Transition, q: [f32; STATES]) -> Cova
     // that is not symmetric is one whose innovation covariance can go indefinite later.
     enforce_symmetry(&mut next);
     Covariance::from_matrix(next)
+}
+
+/// The step [`project`] takes, and the most it will take.
+///
+/// The discretization of (20) is first order, so a step understates the growth: `δp` gains
+/// `δv` linearly over the step and the within-step growth of `δv` itself — the `½at²` of
+/// (13), and the `t³` the gyroscope-bias walk reaches position by — is what the *next* step
+/// picks up and a single long one never does. Position is the state that suffers, being the
+/// doubly integrated one.
+///
+/// So the step is fixed and the count follows from the horizon, rather than the other way
+/// round: a fixed count would make the answer's accuracy depend on the question's length.
+/// Measured against the same horizon propagated at 100 Hz, as the fraction of the position
+/// *variance* the projection reaches:
+///
+/// ```text
+///  horizon    0.2 s step   0.1 s step   0.05 s step
+///    1 s        0.985        0.993        0.997
+///    2 s        0.937        0.969        0.986
+///    5 s        0.891        0.947        0.976
+/// ```
+///
+/// 0.1 s is where that stops buying much per step: it holds the projection within 5 % of the
+/// variance, 2.5 % of the sigma, out to a 5 s horizon, against an
+/// [`Accuracy`](crate::Accuracy) bar that is a mission's choice and carries far more than
+/// 2.5 % of latitude itself. What the shortfall is not is symmetric — a first-order step
+/// always understates, so the projection reads slightly *optimistic*, and
+/// [`Eskf::predicted_validity`](crate::Eskf::predicted_validity) says so.
+const PROJECTION_STEP: Seconds = Seconds::from_secs(0.1);
+
+/// The most steps [`project`] will take, which bounds what one query costs.
+///
+/// 64 steps of [`PROJECTION_STEP`] is 6.4 s of horizon at full resolution, past any arming
+/// question this is meant to answer. A longer horizon than that is projected in 64 longer
+/// steps instead of more of them, so it costs the same and reads more optimistic still.
+const MAX_PROJECTION_STEPS: usize = 64;
+
+/// Grow `P` over `horizon` as if nothing were measured and the vehicle stayed put.
+/// Equations (16)–(22), run forward without a sample.
+///
+/// This is the arming question's half of [`Eskf::predicted_validity`]: not *is the estimate
+/// good now*, but *will it still be good in `horizon` seconds if I take off and nothing
+/// aids it*. The covariance is the only thing that can answer that, and answering it means
+/// running the same growth `predict` runs — so this builds (20) and calls (22) rather than
+/// evaluating a closed form for the diagonal. A closed form would be cheaper and would
+/// ignore the correlations (17) and (20) build, which is where most of the growth a few
+/// seconds out actually comes from; it would also be a second implementation of a number
+/// the propagator already defines.
+///
+/// The IMU input is the one the question presumes: a vehicle on the ground, not rotating,
+/// so `ω = 0` and the specific force is `−R(q̂)ᵀ g` — what a stationary accelerometer reads
+/// at the current attitude. That is what makes the tilt-to-velocity coupling of (17) the
+/// gravity leak it is in flight, rather than zero.
+///
+/// The nominal state is untouched and no timer moves. A projection is not time passing.
+///
+/// What it costs, and why that is acceptable on a query and would not be on the hot path:
+/// one `F` and one `Q`, built once because a stationary vehicle does not rotate, then one
+/// [`propagate_covariance`] per step — ten of them at the default 1 s horizon, up to
+/// [`MAX_PROJECTION_STEPS`]. So an arming check is ten times the arithmetic of an IMU epoch.
+/// The stack is a frame of 1920 bytes on `thumbv6m-none-eabi` and 1936 on
+/// `thumbv7em-none-eabihf`, which with
+/// [`Eskf::predicted_validity`](crate::Eskf::predicted_validity)'s 1888 above it and
+/// [`propagate_covariance`]'s 2832 below comes to 6640 — under `update::<3>`, so the
+/// crate's high-water mark is where it was.
+pub(crate) fn project(
+    state: &State,
+    covariance: Covariance,
+    horizon: Seconds,
+    noise: &ImuNoise,
+) -> Covariance {
+    // A horizon that is not a positive duration projects nothing rather than projecting
+    // backwards. `Q` of (21) is linear in `dt`, so a negative one *subtracts* process noise
+    // and lands variances below zero, which `Validity` reads as an estimate better than any
+    // the filter could have — the covariance is the only thing it consults. Nothing in the
+    // crate checks `Accuracy::horizon`, and this is the one place a bad one would be used.
+    let seconds = horizon.as_secs();
+    if seconds.is_nan() || seconds <= 0.0 {
+        return covariance;
+    }
+
+    let steps = projection_steps(horizon);
+    let dt = Seconds::from_secs(seconds / steps as f32);
+    let transition = transition_matrix(state, stationary_sample(state), dt);
+    let q = process_noise(noise, dt);
+
+    let mut covariance = covariance;
+    for _ in 0..steps {
+        covariance = propagate_covariance(covariance, &transition, q);
+    }
+    covariance
+}
+
+/// How many steps a horizon is worth: one per [`PROJECTION_STEP`], at least one and at most
+/// [`MAX_PROJECTION_STEPS`].
+///
+/// The count depends on [`Accuracy::horizon`](crate::Accuracy::horizon), which is fixed for
+/// the life of a filter, so it is a constant per configuration rather than a loop that runs
+/// until something converges. A horizon that is zero, negative or not a number takes one
+/// step, and one step of a horizon that is not positive grows nothing.
+fn projection_steps(horizon: Seconds) -> usize {
+    let wanted = horizon.as_secs() / PROJECTION_STEP.as_secs();
+    // NaN fails both comparisons and falls through to one step, which is what `project`'s
+    // own guard has already refused anyway.
+    if wanted >= MAX_PROJECTION_STEPS as f32 {
+        MAX_PROJECTION_STEPS
+    } else if wanted > 1.0 {
+        wanted as usize
+    } else {
+        1
+    }
+}
+
+/// What the IMU of a vehicle sitting still at `state`'s attitude reads: no rotation, and
+/// the specific force `−R(q̂)ᵀ g` that holds it up.
+///
+/// The inverse of the test (11) is written against — a level vehicle at rest reads
+/// `(0, 0, −γ)` — evaluated at an attitude that need not be level. Named because [`project`]
+/// and the measurement behind [`PROJECTION_STEPS`] have to use the same one for the
+/// comparison between them to mean anything.
+fn stationary_sample(state: &State) -> Corrected {
+    let rotation = state.attitude.quaternion().to_rotation_matrix();
+    Corrected {
+        omega: AngularRate::from_vector(Vector3::zeros()),
+        accel: Acceleration::from_vector(rotation.inverse() * -gravity()),
+    }
 }
 
 /// `g = [0, 0, γ]ᵀ`, the navigation-frame gravity vector of (11).
@@ -820,5 +946,118 @@ mod tests {
 
         let state = run(at_rest(), imu, 1_000);
         assert!(!state.is_finite(), "{state:?}");
+    }
+}
+
+#[cfg(test)]
+mod projection_steps {
+    use super::*;
+    use crate::config::Initialization;
+    use crate::init;
+    use crate::units::Radians;
+
+    fn start() -> (State, Covariance, ImuNoise) {
+        (
+            State::default(),
+            init::initial_covariance(
+                &Initialization::default(),
+                Radians::from_radians(0.02),
+                Radians::from_radians(0.35),
+            ),
+            ImuNoise::default(),
+        )
+    }
+
+    /// The same horizon propagated at 100 Hz, which is the growth `predict` would produce
+    /// over it and what [`PROJECTION_STEP`] is chosen against.
+    fn at_100_hz(state: &State, from: Covariance, noise: &ImuNoise, seconds: f32) -> Covariance {
+        let dt = Seconds::from_secs(0.01);
+        let f = transition_matrix(state, stationary_sample(state), dt);
+        let q = process_noise(noise, dt);
+        let mut p = from;
+        for _ in 0..(seconds / 0.01) as usize {
+            p = propagate_covariance(p, &f, q);
+        }
+        p
+    }
+
+    /// The figures [`PROJECTION_STEP`]'s doc comment quotes, as a test, because a step size
+    /// chosen against a measurement should fail when the measurement moves.
+    ///
+    /// Variance rather than sigma: `sqrt` is `libm`'s here and the claim is the same either
+    /// way — 0.947 of the variance is 0.973 of the sigma.
+    #[test]
+    fn a_tenth_of_a_second_step_holds_the_projection_within_five_percent_out_to_five_seconds() {
+        let (state, from, noise) = start();
+        for (seconds, floor) in [(1.0f32, 0.99f32), (2.0, 0.96), (5.0, 0.94)] {
+            let truth = at_100_hz(&state, from, &noise, seconds);
+            let projected = project(&state, from, Seconds::from_secs(seconds), &noise);
+            let ratio = projected.variance(ErrorState::PositionNorth)
+                / truth.variance(ErrorState::PositionNorth);
+            assert!(
+                (floor..=1.0).contains(&ratio),
+                "{seconds} s horizon: {ratio} of the reference position variance"
+            );
+        }
+    }
+
+    /// The direction of the error, which is the half a caller has to know: a first-order
+    /// step understates growth, so the projection is optimistic and never pessimistic. A
+    /// discretization that came out *above* the reference would mean (20) had gained a term
+    /// the fine propagation does not have.
+    #[test]
+    fn the_projection_understates_the_growth_rather_than_overstating_it() {
+        let (state, from, noise) = start();
+        let truth = at_100_hz(&state, from, &noise, 5.0);
+        let projected = project(&state, from, Seconds::from_secs(5.0), &noise);
+        for s in [
+            ErrorState::PositionNorth,
+            ErrorState::VelocityNorth,
+            ErrorState::AttitudeX,
+            ErrorState::GyroBiasX,
+        ] {
+            assert!(
+                projected.variance(s) <= truth.variance(s) * 1.0001,
+                "{s:?}: projected {} against {}",
+                projected.variance(s),
+                truth.variance(s)
+            );
+        }
+    }
+
+    /// A projection grows a covariance and never shrinks one, whatever the horizon: (22)
+    /// only adds. The zero and negative cases are the ones a caller reaches by configuring
+    /// a horizon nobody checked.
+    #[test]
+    fn a_horizon_that_is_not_positive_leaves_the_covariance_where_it_was() {
+        let (state, from, noise) = start();
+        for seconds in [0.0f32, -1.0, f32::NAN] {
+            let projected = project(&state, from, Seconds::from_secs(seconds), &noise);
+            for i in 0..STATES {
+                let (before, after) = (from.as_matrix()[(i, i)], projected.as_matrix()[(i, i)]);
+                assert!(
+                    after >= before || (after - before).abs() < 1e-9,
+                    "state {i} at {seconds} s: {before} became {after}"
+                );
+            }
+        }
+    }
+
+    /// The step count is the horizon's, bounded at both ends.
+    #[test]
+    fn the_step_count_follows_the_horizon_and_stops_at_the_cap() {
+        assert_eq!(projection_steps(Seconds::from_secs(1.0)), 10);
+        assert_eq!(projection_steps(Seconds::from_secs(0.05)), 1);
+        assert_eq!(projection_steps(Seconds::from_secs(0.0)), 1);
+        assert_eq!(projection_steps(Seconds::from_secs(-3.0)), 1);
+        assert_eq!(projection_steps(Seconds::from_secs(f32::NAN)), 1);
+        assert_eq!(
+            projection_steps(Seconds::from_secs(6.4)),
+            MAX_PROJECTION_STEPS
+        );
+        assert_eq!(
+            projection_steps(Seconds::from_secs(600.0)),
+            MAX_PROJECTION_STEPS
+        );
     }
 }
