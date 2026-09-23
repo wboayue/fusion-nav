@@ -237,9 +237,11 @@ const SOURCES: [&str; 4] = ["gnss_pos", "gnss_vel", "baro", "mag"];
 /// `nu_` key names an axis rather than a subscript.
 ///
 /// `Innovation` carries values and variances and no names for them, so this table is the only
-/// statement of what component 0 of a GNSS position is — which makes it one more place a fifth
-/// source has to reach, beside the eight `AGENTS.md` lists. The lengths are the observation
-/// dimensions of (28)–(30) and (34)–(36) and are checked against what the filter reports.
+/// statement of what component 0 of a GNSS position is — which makes it the tenth place
+/// `AGENTS.md` lists a fifth source having to reach, and the one that would otherwise be
+/// discovered by an index out of range. The lengths are the observation dimensions of
+/// (28)–(30) and (34)–(36), and are checked against what the filter publishes rather than
+/// trusted.
 const AXES: [&[&str]; 4] = [&["n", "e", "d"], &["n", "e", "d"], &["d"], &["yaw"]];
 
 /// Last test ratio per source, in `Diagnostics` order.
@@ -2051,13 +2053,21 @@ fn verdict(outcome: Fusion) -> &'static str {
 /// keeps the file self-describing: a `Config` change moves the number in the file that the
 /// ratios were produced under.
 fn write_fusion_header(out: &mut impl Write, gates: Gates) -> io::Result<()> {
+    // Through `thresholds` rather than field by field, so this header and the `γ` the
+    // consistency keys divide by cannot disagree about which gate belongs to which source.
+    // The pairing is otherwise unguarded: swapping the two `Gate<3>` fields, or the two
+    // `Gate<1>`s, compiles and passes every fixture, because one percentile gives equal
+    // thresholds within a dimension. The fixture below varies one gate alone, which is what
+    // makes a mispaired list visible — and it now covers both readers at once.
     writeln!(
         out,
-        "# one row per fuse_* call. gates gnss_pos={} gnss_vel={} baro={} mag={}",
-        gates.gnss_position.threshold(),
-        gates.gnss_velocity.threshold(),
-        gates.baro_altitude.threshold(),
-        gates.mag_heading.threshold()
+        "# one row per fuse_* call. gates {}",
+        SOURCES
+            .iter()
+            .zip(thresholds(gates))
+            .map(|(name, gamma)| format!("{name}={gamma}"))
+            .collect::<Vec<_>>()
+            .join(" ")
     )?;
     writeln!(
         out,

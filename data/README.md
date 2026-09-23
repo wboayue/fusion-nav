@@ -216,6 +216,7 @@ claim is *this receiver reports six times the accuracy its own solutions support
 filter change that moves a digit a manifest edit, and it states nothing a reader can disagree
 with. A range states the finding and survives the digit. Both endpoints go through the same
 numeric check a ceiling gets, so `none` cannot clear a bound the filter never met.
+
 The keys are `rate=` and `window=` (the IMU rate and the samples it takes to cover
 `min_duration`), `align=`, `an=` and `alpha0=` (what initialization achieved, whether a moving
 window measured the vehicle's own acceleration from GNSS velocity — `ā_n` of equation (5′), which
@@ -245,18 +246,20 @@ figure they produce:
 
 - PX4 logs **no variance at all** for the barometer or the magnetic heading, so
   `tools/ulog2replay.py` substitutes a constant. `nis_baro` and `nis_mag` therefore measure that
-  constant rather than the filter's tuning, and the corpus reads 0.0067–0.2518 and 0.0025–0.2000
-  — both conservative by roughly 2–12× in σ. Nothing here had ever tested them; that is the first
-  measurement [#50](https://github.com/wboayue/fusion-nav/issues/50) can argue from.
+  constant rather than the filter's tuning, and the corpus reads 0.0068–0.2493 and 0.0025–0.1980
+  — conservative by 2.0–12.1× in σ for the barometer and 2.2–20.0× for the magnetometer, stated
+  separately because one range across both understates the magnetometer's low end by two thirds.
+  Nothing here had ever tested them; that is the first measurement
+  [#50](https://github.com/wboayue/fusion-nav/issues/50) can argue from.
 - For GNSS the statistic tests the receiver's own `eph`/`epv`/`s_variance_m_s`, which the harness
-  passes through unfloored where both production estimators bound theirs. Position reads far below
-  1 on every log that carries it, so those figures are wider than their residuals earn;
-  `a299e722`'s velocity reads 7.5, a receiver contradicting its own differenced positions. Whether
+  passes through unfloored where both production estimators bound theirs. Position reads 0.0059,
+  0.0255 and 0.1170, so those figures are wider than their residuals earn; `a299e722`'s velocity
+  reads 7.5623, a receiver contradicting its own differenced positions. Whether
   the harness should apply the production floors is
   [#105](https://github.com/wboayue/fusion-nav/issues/105), and these are the numbers it now
   argues from rather than around.
 
-It needs `pyulog`, so it is a local tool rather than a CI job:
+`data/fetch.sh --check` needs `pyulog`, so it is a local tool rather than a CI job:
 `data/fetch.sh --venv` once, which installs the version the converter pins, and `fetch.sh`
 finds the gitignored `.venv` on its own.
 The converter declares its own dependency inline (PEP 723), so `uv run tools/ulog2replay.py`

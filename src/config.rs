@@ -202,7 +202,7 @@ impl Gate<3> {
 /// ellipsoid rather than a box aligned with the navigation axes. What it costs is all or
 /// nothing: a vertical outlier rejects a good horizontal fix, which ArduPilot's split avoids.
 /// The corpus shows no such fix. Across the 5348 GNSS positions in `data/manifest.txt`'s logs,
-/// the largest vertical `ν² / S` alone is 1.65, against 10.83 for a one-dimensional test at
+/// the largest vertical `ν² / S` alone is 1.82, against 10.83 for a one-dimensional test at
 /// [`Percentile::P999`], so a `Gate<2>` and `Gate<1>` pair would reject nothing the joint test
 /// does not. It is the data that would change this, not the argument.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -237,8 +237,15 @@ impl Default for Gates {
     ///
     /// The corpus cannot tell them apart. No log rejects a fix at any of the four, because
     /// PX4's `eph` and `epv` are far wider than the innovations they come with: the mean test
-    /// ratio at 95 % is 0.005–0.02 across the three logs carrying GNSS and the largest is 0.21,
-    /// where a consistent `R` would put the mean near 0.38.
+    /// ratio at 95 % is 0.0023–0.0449 across the three logs carrying GNSS and the largest is
+    /// 0.33, where a consistent `R` would put the mean near 0.38.
+    ///
+    /// Those figures move as the filter gains aiding, and the direction is the one to expect:
+    /// every source that tightens `P` tightens `S = H P Hᵀ + R`, so the same innovation reads
+    /// as a larger ratio. They were 0.005–0.02 and 0.21 when position was the only gated
+    /// source. `nis_gnss_pos=` on the `summary` line is the maintained form of this claim —
+    /// per log, pinned in `data/manifest.txt`, and stated as a distribution rather than as a
+    /// distance from a threshold that itself moves.
     ///
     /// The simulator, whose GNSS errors are exactly the Gaussian `R` claims, can, and it prices
     /// the tight end. On `mission`, 95 % rejects 30 of 915 good fixes and 99 % rejects 4,

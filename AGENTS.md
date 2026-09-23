@@ -606,7 +606,7 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
 
 ### Adding a measurement source costs more than a `fuse_*`
 
-Every source touches the same nine places, and three of them are public:
+Every source touches the same ten places, and three of them are public:
 
 - `src/observation/` gains a module forming `y`, `H` and `R_m`, and its `fuse_*` calls
   `update::update` and `Eskf::apply`. This is the cheap part, and the only one the compiler checks:
@@ -621,6 +621,11 @@ Every source touches the same nine places, and three of them are public:
 - `Validity` and `predicted_validity`: decide whether the source constrains a quantity, and say so.
 - A `summary` key in `examples/replay.rs`, pinned per log in `data/manifest.txt`, plus a corpus log
   that uniquely covers the source — or an honest note that none does.
+- `AXES` in `examples/replay.rs`, naming the source's innovation components, since `Innovation`
+  carries values and variances and no names for them. Twenty consistency keys are generated from
+  it and `SOURCES` together, so a source added to one and not the other is an index out of range
+  rather than a missing key — caught by an `assert_eq!` in the same file, which is the weakest
+  guard on this list.
 - The README fusion table, the `Eskf` and `prelude` doctests, and `EQUATIONS.md`'s mapping
   table.
 - `tools/ulog2replay.py`, which has to find the source in a ULog and name its variance columns.

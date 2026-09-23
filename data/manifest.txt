@@ -91,9 +91,16 @@
 #
 # It was zero on every log while GNSS position was the only gated source, and
 # at every gate #36 tried: 95 %, 99 %, 99.9 % and 5 sigma. The largest GNSS
-# position test ratio at 95 % is 0.21, and the mean is 0.005-0.02 where a
+# position test ratio at 95 % is 0.33, and the mean is 0.0023-0.0449 where a
 # consistent R would put it near 0.38 -- PX4's eph and epv are far wider than
 # the innovations they come with. Gates::default carries the rest.
+#
+# Both figures were 0.21 and 0.005-0.02 when position was the only gated
+# source, and they move for a reason worth keeping rather than a drift: every
+# source that tightens P tightens S = H P H' + R, so the same innovation reads
+# as a larger ratio. nis_gnss_pos= below is the maintained form of the claim,
+# per log rather than as a corpus range, and stated as a distribution rather
+# than as a distance from a threshold that itself moves.
 #
 # Velocity (29) is the first source whose reported accuracy is tight enough
 # for the gate to reach, and it is non-zero exactly once: a299e722 turns down
@@ -201,27 +208,32 @@
 # sources read a measured zero there.
 #
 # What the corpus says is that no source here reports an R near the size its
-# residuals earn, and the two directions are different problems. GNSS position
-# reads 0.0057-0.1182 across the three logs that carry it, so eph and epv are
-# 3-13x too wide in sigma -- the same finding Gates::default records as a mean
-# test ratio of 0.005-0.02, now stated as a distribution rather than as a
-# distance from a threshold. a299e722's velocity is the one that reads the
-# other way, 7.49-7.64, its sigma_v about 2.75x too tight; smaller than the 6x
-# its own differenced positions suggest (#105) because S is H P H' + R and the
-# state's own uncertainty dilutes a too-small R.
+# residuals earn, and the two directions are different problems. Every figure
+# quoted here is what the run printed; the bounds beside each entry carry the
+# margin, and reading them back would flatter the claim by 1 %.
 #
-# The barometer and the magnetometer read 0.0067-0.2518 and 0.0025-0.2000, and
+# GNSS position reads 0.0059, 0.0255 and 0.1170 on the three logs that carry
+# it, so S is 3-13x too wide in sigma -- and mostly R, since an aided filter's
+# H P H' sits well under a several-metre eph. a299e722's velocity is the one
+# that reads the other way, 7.5623, its sigma_v about 2.75x too tight; smaller
+# than the 6x its own differenced positions suggest (#105) because S is
+# H P H' + R and the state's own uncertainty dilutes a too-small R. The same
+# receiver-diluted reading applies to every ratio above.
+#
+# The barometer reads 0.0068-0.2493 and the magnetometer 0.0025-0.1980, and
 # those test a constant rather than a receiver: PX4 logs no variance for
 # either, so tools/ulog2replay.py substitutes one. Nothing in this corpus
 # tested whether those constants were anywhere near right until this key, and
-# the answer is that both are conservative by roughly 2-12x in sigma. That is
-# the first measurement #50 has to argue from.
+# the answer is that both are conservative: the barometer's by 2.0-12.1x in
+# sigma, the magnetometer's by 2.2-20.0x. Stated per source rather than as one
+# range, because a joint 2-12x would understate the magnetometer's low end by
+# two thirds on the very sentence #50 has to argue from.
 #
 # nis_over95_<source>= is the fraction above the 95 % chi-square quantile at
 # that source's dimension -- 0.05 for a filter whose innovations are
 # distributed the way S claims. It sits beside the mean rather than instead of
 # it because the two fail differently, and it is a structural zero everywhere
-# except a299e722's velocity at 0.65: another key whose interesting value is
+# except a299e722's velocity at 0.6503: another key whose interesting value
 # the one it does not have.
 #
 # nu_<source>_<axis>= is the mean innovation, per axis because a norm hides
