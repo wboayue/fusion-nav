@@ -339,6 +339,18 @@ impl Eskf {
     /// seed is the one path that writes a covariance in whole. A rejected seed leaves the
     /// filter uninitialized rather than poisoned.
     ///
+    /// A variance that is positive but under the floor of (42′) is neither accepted as given
+    /// nor refused, which is the third outcome and the one worth knowing about: it is raised
+    /// to the floor on commit and counted in
+    /// [`Diagnostics::floored`](crate::Diagnostics::floored). The check above catches the
+    /// warm start that arrives all zeros; a seed at 1e-30 is the same accident with an
+    /// exponent left in it — dropped in deserialization, or a variance scaled by its own
+    /// units twice — and behaves the same way, since a gain of `1e-30 / (1e-30 + R)` is zero
+    /// in f32 and [`validity`](Self::validity) calls the quantity good on the first read.
+    /// Repaired rather than refused, because a seed is the one path where the caller has
+    /// vouched for every quantity and the floor costs them nothing they meant to keep.
+    /// Reading `floored` immediately after is how a caller learns a number was overridden.
+    ///
     /// Whether the seed counts as aligned is the covariance's answer, not this one's: a
     /// confident seed reports [`Status::Healthy`] straight away, a coarse one
     /// [`Status::Aligning`] until it converges.
@@ -518,9 +530,11 @@ impl Eskf {
     /// initialized holds [`Covariance::zero`](crate::Covariance::zero) and
     /// [`covariance`](Self::covariance) will hand it over, which is the one place a caller can
     /// read a variance of zero off this filter. Nothing acts on it — every path that would is
-    /// behind `initialized` — and initializing is itself a commit. A floor applied inside (22) and (27) instead would
-    /// be two call sites protecting the two operations that shrink a variance, and would
-    /// leave the ones that *write* one — the adoption of
+    /// behind `initialized` — and initializing is itself a commit.
+    ///
+    /// A floor applied inside (22) and (27) instead would be two call sites protecting the
+    /// two operations that shrink a variance, and would leave the ones that *write* one —
+    /// the adoption of
     /// [`Fusion::Reset`](crate::Fusion::Reset), the `reset_*_to` methods, the initial
     /// covariance of (8) — unprotected, each carrying a variance that came from outside the
     /// filter.
