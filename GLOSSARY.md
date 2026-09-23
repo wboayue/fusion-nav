@@ -248,8 +248,9 @@ document, the entry points there instead of repeating it.
 * **Reset** — the trap. There, a reset is *recovery*: states are set to a measurement after an
   aiding timeout, and a counter is published so consumers can step their own state
   (`xy_reset_counter` and friends, `msg/versioned/VehicleLocalPosition.msg`). Here, `Fusion::Reset`
-  is **adoption**: the first fix for a quantity a coarse start never established, once, never for
-  recovery. This filter does not reset itself at all
+  is **adoption**: the first measurement of a quantity initialization never established — position
+  and velocity after a coarse start, heading wherever the window observed none — once per
+  quantity, never for recovery. This filter does not reset itself at all
   ([rejection handling](GOALS.md#rejection-handling-report-do-not-self-recover)).
 * **Innovation test ratio** — the same name and nearly the same number. Both test per component
   against the diagonal of `S` and differ in how they group the components: PX4 each axis at 5σ,

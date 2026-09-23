@@ -6,3 +6,4 @@
 
 pub(crate) mod baro;
 pub(crate) mod gnss;
+pub(crate) mod mag;

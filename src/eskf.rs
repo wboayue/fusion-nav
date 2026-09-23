@@ -5,28 +5,28 @@ use crate::frames::{Body, Ned};
 use crate::geodetic::{Geodetic, LocalOrigin};
 use crate::health::{Diagnostics, Fusion, Propagation, SourceHealth, Status, Validity};
 use crate::init::{self, Alignment, Coarse, InitError, Measured, StaticSample, baro_reference};
-use crate::observation::{baro, gnss};
+use crate::math::exp_quat;
+use crate::observation::{baro, gnss, mag};
 use crate::propagate::{ImuSample, propagate};
 use crate::state::{Covariance, ErrorState, STATES, State};
 use crate::units::{
-    Altitude, AltitudeNoise, HeadingNoise, MagField, Position, PositionNoise, Radians, Seconds,
-    Velocity, VelocityNoise,
+    Altitude, AltitudeNoise, Attitude, HeadingNoise, MagField, Position, PositionNoise, Radians,
+    Seconds, Velocity, VelocityNoise,
 };
-use crate::update::{Update, update};
+use crate::update::{self, Update, update};
+use nalgebra::Vector3;
 
 /// A 15-state error-state Kalman filter.
 ///
-/// **Stub.** One method below is still one: [`fuse_mag_heading`](Self::fuse_mag_heading)
-/// has its intended signature and does its own bookkeeping, and corrects nothing. Everything
-/// else is implemented — initialization, (5)–(8), propagation, (9)–(22), and the update of
-/// (23)–(41) for the two GNSS observations and the barometer: the state dead reckons from
+/// Every equation the filter needs is implemented: initialization, (5)–(8), propagation,
+/// (9)–(22), and the update of (23)–(41) for every source. The state dead reckons from
 /// where [`initialize`](Self::initialize) put it, the covariance grows around it, and
 /// [`fuse_gnss_position`](Self::fuse_gnss_position),
 /// [`fuse_gnss_geodetic`](Self::fuse_gnss_geodetic),
-/// [`fuse_gnss_velocity`](Self::fuse_gnss_velocity) and
-/// [`fuse_baro_altitude`](Self::fuse_baro_altitude) correct both.
+/// [`fuse_gnss_velocity`](Self::fuse_gnss_velocity),
 /// [`fuse_baro_altitude`](Self::fuse_baro_altitude) and
-/// [`fuse_mag_heading`](Self::fuse_mag_heading) accept without changing the estimate.
+/// [`fuse_mag_heading`](Self::fuse_mag_heading) each correct both, or are turned down by
+/// the gate of (37)–(38).
 ///
 /// # Example
 ///
@@ -791,11 +791,25 @@ impl Eskf {
     /// That first heading is the point `GOALS.md` names for a yaw **reset** rather than an
     /// ordinary update: the error-state attitude of equation (2) is a small-angle
     /// quantity, so a yaw error of a radian is wrong in a way no variance expresses, and
-    /// widening the prior does not fix it. The bookkeeping below is the same either way.
+    /// widening the prior does not fix it. It is adopted rather than gated, which is
+    /// [`Fusion::Reset`]'s documented shape — a quantity never established, with no
+    /// estimate to step away from. Gating it instead would judge the measurement against
+    /// a prior nothing ever measured: a static window with no magnetometer leaves
+    /// [`sigma_yaw`](crate::Initialization::sigma_yaw), 0.35 rad, on a yaw that is a
+    /// guess, and a correct heading more than about 64° from that guess would be
+    /// rejected — locking the filter out of the one source that can ever establish yaw.
+    /// Once per quantity, never for recovery.
     ///
-    /// **Stub.** Records an acceptance with a zero test ratio; corrects nothing, and
-    /// computes no heading from `field`, so the reset above is not yet performed: the
-    /// validity flag moves, the yaw it describes does not.
+    /// Ordinary updates thereafter, gated at [`Gates::mag_heading`](crate::Gates) with
+    /// one degree of freedom. The field is reduced to a scalar heading before the gate
+    /// sees it, so a disturbance is tested as the yaw error it is.
+    ///
+    /// The field must be calibrated: this crate corrects no hard- or soft-iron error and
+    /// carries no magnetic-field states to absorb one, so a bias in `field` is a bias in
+    /// heading. A field of exactly zero is finite, and reports the vehicle as `D_m` off
+    /// rather than producing NaN — gateable once yaw is established, and adopted where it
+    /// is not, which is the strongest reason to check a magnetometer before the first
+    /// call rather than after it.
     pub fn fuse_mag_heading(&mut self, field: MagField<Body>, noise: HeadingNoise) -> Fusion {
         if !self.initialized {
             return refuse(&mut self.diagnostics.mag_heading, Fusion::NotInitialized);
@@ -806,15 +820,77 @@ impl Eskf {
         if !noise.is_positive() {
             return refuse(&mut self.diagnostics.mag_heading, Fusion::InvalidNoise);
         }
-        let _ = (field, noise);
-        let outcome = stub_accept(&mut self.diagnostics.mag_heading);
-        // A rejected heading establishes nothing: it is the measurement the filter chose
-        // not to believe.
-        if outcome.is_accepted() {
-            self.unestablished.heading = false;
+        let observation = mag::heading_observation(
+            &self.state,
+            &self.covariance,
+            field,
+            self.config.magnetic_declination,
+            noise,
+        );
+        if self.unestablished.heading {
+            // The adoption reads the same `y` and the same `R` an ordinary update would.
+            // (36′) is what makes that worth saying: the levelling error is priced on the
+            // path where the tilt it comes from is worst.
+            self.reset_heading_by(observation.y[0], observation.r_m[0]);
+            self.diagnostics.mag_heading.record_adopted();
             self.note_alignment();
+            return Fusion::Reset;
         }
-        outcome
+        let outcome = update(
+            &self.state,
+            &self.covariance,
+            &observation,
+            self.config.gates.mag_heading,
+        );
+        self.apply(outcome, |diagnostics| &mut diagnostics.mag_heading)
+    }
+
+    /// Turn the estimate by a yaw error and give the result the measurement's variance:
+    /// the adoption behind [`Fusion::Reset`] for heading.
+    ///
+    /// `y` is the innovation of (35), so the corrected attitude is `Exp(y e₃) ⊗ q̂` —
+    /// composed on the **left**, because `e₃` is the navigation down axis, where the
+    /// `δθ` of (2) that `update` injects is a body-frame rotation composed on the right.
+    /// Tilt is untouched: a rotation about navigation down moves the tilt axis and not
+    /// the tilt angle, so the roll and pitch gravity established survive a heading the
+    /// magnetometer supplies.
+    ///
+    /// `Exp` charges its caller with a finite argument, which (35)'s wrap discharges by
+    /// construction: `y` is in `(-π, π]` whatever the field and the attitude were.
+    ///
+    /// `variance` is `R` from (36′) rather than the caller's `σ_ψ²` alone. The levelling
+    /// of (34) is done with the estimated attitude on this path too — on a coarse start,
+    /// with the worst tilt the filter ever holds — so an adoption that stored the
+    /// magnetometer's own number would report a heading good to
+    /// [`Accuracy::heading`](crate::Accuracy::heading) while carrying the window's
+    /// levelling error times `tan δ`. That is the falsely-valid attitude (36′) exists to
+    /// remove, and the adoption is where it is largest.
+    ///
+    /// The correlations go with it, which is what fusing against an infinitely uncertain
+    /// prior converges to — the same limit [`reset_position_to`](Self::reset_position_to)
+    /// takes, one component wide. The yaw axis is `AttitudeZ`, the body-frame error
+    /// component, while the rotation above is about navigation down: the two agree at zero
+    /// tilt and differ by the `1/cos θ` equation (36) already carries.
+    ///
+    /// What survives — the tilt block, the biases, and the correlations between them — is
+    /// reparameterized first, by the (41) of `update::reparameterize`. `δθ` is referenced
+    /// to the nominal's body axes, so `R(q̂⁺)ᵀ R(q̂)` is the exact change of frame this
+    /// rotation makes, and it is not the small one (41) approximates: a first heading can
+    /// turn the estimate by half a circle. The tilt block is near-isotropic and largely
+    /// survives it, but the bias blocks are in physical body axes that do **not** turn, so
+    /// their correlations with attitude transform on one side only — left unrotated, a
+    /// roll-error/gyro-bias-x correlation is read afterwards as roll-error/gyro-bias-y and
+    /// the next velocity update pushes the correction into the wrong axis.
+    fn reset_heading_by(&mut self, y: f32, variance: f32) {
+        let before = self.state.attitude.quaternion().to_rotation_matrix();
+        let mut corrected = exp_quat(Vector3::z() * y) * self.state.attitude.quaternion();
+        corrected.renormalize();
+        self.state.attitude = Attitude::body_to_ned(corrected);
+
+        let g_theta = corrected.to_rotation_matrix().inverse() * before;
+        self.covariance = update::reparameterize(self.covariance.as_matrix(), g_theta.into_inner());
+        self.covariance.reset_state(ErrorState::AttitudeZ, variance);
+        self.unestablished.heading = false;
     }
 
     /// The current estimate, including its [`Status`].
@@ -1168,13 +1244,6 @@ fn refuse(source: &mut SourceHealth, outcome: Fusion) -> Fusion {
     outcome
 }
 
-/// What every `fuse_*` stub does in place of an update: record an acceptance with a zero
-/// test ratio.
-fn stub_accept(source: &mut SourceHealth) -> Fusion {
-    source.record_accepted(0.0, None);
-    Fusion::Accepted { test_ratio: 0.0 }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1182,6 +1251,7 @@ mod tests {
     use crate::geodetic::LocalOrigin;
     use crate::health::Refusal;
     use crate::init::tests::{gravity_at, still, turning};
+    use crate::observation::mag::tests::{attitude_of, measured};
     use crate::state::ErrorState;
     use crate::units::{Acceleration, AngularRate, Radians};
 
@@ -2343,6 +2413,244 @@ mod tests {
     }
 
     #[test]
+    fn the_first_magnetic_heading_is_adopted_and_every_one_after_it_is_fused() {
+        // The exception is bounded at one, per quantity, which is the whole of what
+        // separates it from the self-recovery GOALS.md rules out.
+        let mut filter = initialized();
+        let field = measured(attitude_of(0.0, 0.0, 1.1), 0.0);
+        let noise = HeadingNoise::from_sigma(0.05);
+
+        assert!(filter.fuse_mag_heading(field, noise).is_reset());
+        assert_eq!(filter.diagnostics().mag_heading.adopted, 1);
+
+        let second = filter.fuse_mag_heading(field, noise);
+        assert!(!second.is_reset(), "adoption happens once: {second:?}");
+        assert!(matches!(second, Fusion::Accepted { .. }), "{second:?}");
+        assert_eq!(filter.diagnostics().mag_heading.adopted, 1);
+    }
+
+    #[test]
+    fn the_adopted_yaw_is_the_heading_the_field_reports() {
+        // The window levelled with no magnetometer, so yaw starts at zero against a
+        // field that says 1.1 rad. A gradual correction would leave it somewhere between
+        // the two; an adoption puts it at the measurement.
+        let mut filter = initialized();
+        assert!(
+            filter
+                .fuse_mag_heading(
+                    measured(attitude_of(0.0, 0.0, 1.1), 0.0),
+                    HeadingNoise::from_sigma(0.05),
+                )
+                .is_reset()
+        );
+        let (_, _, yaw) = filter.state().attitude.euler_angles();
+        assert!((yaw - 1.1).abs() < 1e-4, "adopted {yaw} rather than 1.1");
+    }
+
+    #[test]
+    fn the_adoption_turns_the_estimate_about_down_and_touches_nothing_else() {
+        // A heading is yaw and nothing else: the tilt gravity established and the biases
+        // the window measured are the same after it, and so are their variances. What
+        // makes this worth asserting is that the rotation is applied to the whole
+        // quaternion — about navigation down, where it moves the tilt axis and leaves
+        // the tilt angle — rather than to a yaw component.
+        let mut filter = initialized();
+        let before = filter.state();
+        let (roll, pitch, _) = before.attitude.euler_angles();
+        let tilt_variance = filter.covariance().variance(ErrorState::AttitudeX);
+
+        assert!(
+            filter
+                .fuse_mag_heading(
+                    measured(attitude_of(0.0, 0.0, -2.4), 0.0),
+                    HeadingNoise::from_sigma(0.05),
+                )
+                .is_reset()
+        );
+
+        let after = filter.state();
+        let (roll_after, pitch_after, _) = after.attitude.euler_angles();
+        assert!((roll_after - roll).abs() < 1e-5, "roll moved");
+        assert!((pitch_after - pitch).abs() < 1e-5, "pitch moved");
+        assert_eq!(after.gyro_bias, before.gyro_bias);
+        assert_eq!(after.accel_bias, before.accel_bias);
+        // Within an ulp rather than exactly: the adoption reparameterizes the attitude
+        // block by (41), and a 2.4 rad rotation of an isotropic `v I` reconstructs `v`
+        // through `v(c² + s²)`. A tolerance wide enough to hide a heading's variance
+        // landing on the tilt would be four orders of magnitude wider than this.
+        assert!(
+            (filter.covariance().variance(ErrorState::AttitudeX) - tilt_variance).abs() < 1e-9,
+            "the tilt's own uncertainty is not the heading's to replace"
+        );
+    }
+
+    #[test]
+    fn the_adoption_carries_the_attitude_correlations_into_the_new_body_axes() {
+        // (41) on the adoption path. The error state of (2) is referenced to the
+        // nominal's body axes, so turning the nominal turns the axes every attitude row
+        // is written in — and the bias states it is correlated with are in physical body
+        // axes that do not turn, so their cross-blocks transform on one side only.
+        //
+        // Propagation is what builds one: (20)'s `−I Δt` makes P_θ,βg ≈ −Δt·P_βg,βg, the
+        // same correlation that lets a velocity update correct the gyroscope bias. A
+        // quarter turn about a level vehicle's down axis maps the roll-error column onto
+        // the pitch-error one, so the correlation the x bias had with roll error is the
+        // one the y bias should hold afterwards. Skip the reparameterization and it stays
+        // where it was, and the next velocity update pushes the bias correction into the
+        // wrong axis.
+        let mut filter = initialized();
+        let holding_still = ImuSample {
+            accel: Acceleration::body(0.0, 0.0, -GRAVITY),
+            ..ImuSample::default()
+        };
+        for _ in 0..2_000 {
+            assert_eq!(
+                filter.predict(holding_still, Seconds::from_secs(0.005)),
+                Propagation::Propagated
+            );
+        }
+
+        let before = filter
+            .covariance()
+            .get(ErrorState::AttitudeX, ErrorState::GyroBiasX);
+        assert!(
+            before.abs() > 1e-9,
+            "10 s of (20) should build one: {before}"
+        );
+        assert!(
+            filter
+                .covariance()
+                .get(ErrorState::AttitudeX, ErrorState::GyroBiasY)
+                .abs()
+                < 1e-12,
+            "and nothing across the axes yet"
+        );
+
+        assert!(
+            filter
+                .fuse_mag_heading(
+                    measured(attitude_of(0.0, 0.0, core::f32::consts::FRAC_PI_2), 0.0),
+                    HeadingNoise::from_sigma(0.05),
+                )
+                .is_reset()
+        );
+
+        let after = filter.covariance();
+        assert!(
+            (after.get(ErrorState::AttitudeX, ErrorState::GyroBiasY) - before).abs()
+                < 1e-9 * before.abs().max(1.0),
+            "the quarter turn should have moved it to the y bias, got {}",
+            after.get(ErrorState::AttitudeX, ErrorState::GyroBiasY)
+        );
+        assert!(
+            after
+                .get(ErrorState::AttitudeX, ErrorState::GyroBiasX)
+                .abs()
+                < 1e-9,
+            "and off the x bias, got {}",
+            after.get(ErrorState::AttitudeX, ErrorState::GyroBiasX)
+        );
+    }
+
+    #[test]
+    fn a_refused_first_heading_establishes_nothing() {
+        // A refusal is not a measurement the filter chose to believe, so the quantity is
+        // still unestablished and the next usable field is still the one adopted.
+        let mut filter = initialized();
+        assert_eq!(
+            filter.fuse_mag_heading(
+                MagField::body(f32::NAN, 0.0, 0.44),
+                HeadingNoise::from_sigma(0.05),
+            ),
+            Fusion::NotFinite
+        );
+        assert!(!filter.validity().heading);
+        assert_eq!(filter.diagnostics().mag_heading.adopted, 0);
+
+        assert!(
+            filter
+                .fuse_mag_heading(
+                    measured(attitude_of(0.0, 0.0, 1.1), 0.0),
+                    HeadingNoise::from_sigma(0.05),
+                )
+                .is_reset(),
+            "the adoption was waiting for a usable field, not spent on a refused one"
+        );
+    }
+
+    #[test]
+    fn a_heading_far_from_an_established_yaw_is_rejected_and_changes_nothing() {
+        // Once yaw is established the gate has a prior worth testing against, and this
+        // is the disturbance case: a field turned a quarter circle against a σ of
+        // 0.05 rad is hundreds of times the threshold of (37).
+        let mut filter = initialized();
+        assert!(
+            filter
+                .fuse_mag_heading(
+                    measured(attitude_of(0.0, 0.0, 0.0), 0.0),
+                    HeadingNoise::from_sigma(0.05),
+                )
+                .is_reset()
+        );
+        let before = filter.state().attitude;
+
+        let outcome = filter.fuse_mag_heading(
+            measured(attitude_of(0.0, 0.0, core::f32::consts::FRAC_PI_2), 0.0),
+            HeadingNoise::from_sigma(0.05),
+        );
+        assert!(
+            matches!(outcome, Fusion::Rejected { test_ratio } if test_ratio > 1.0),
+            "{outcome:?}"
+        );
+        assert_eq!(filter.state().attitude, before, "a rejection costs nothing");
+        assert_eq!(filter.diagnostics().mag_heading.rejected, 1);
+    }
+
+    #[test]
+    fn an_ordinary_heading_moves_yaw_part_of_the_way_and_shrinks_its_variance() {
+        // The other side of the adoption: once established, a heading is fused rather
+        // than taken. The distance it moves is (25)'s gain with (36′) in both `P` and
+        // `R`, and the whole sum is checkable by hand — the window's tilt prior is
+        // `sigma_tilt` = 0.02 and the dip is 2.0, so the levelling is worth
+        // 2.0² · 0.02² = 0.0016 on every heading here. The adoption left yaw at
+        // 0.05² + 0.0016 = 0.0041, the second field arrives with σ = 0.02, so
+        // `R` = 0.02² + 0.0016 = 0.0020 and `K = 0.0041 / (0.0041 + 0.0020)` = 0.672:
+        // a 0.05 rad disagreement moves 0.0336.
+        //
+        // The two σ differ on purpose. Equal ones make `P` and `R` equal, `K` exactly a
+        // half, and the test blind to (36′) being dropped from either side — which is
+        // what it is here to notice. Unpriced in `R` this moves 0.0456, unpriced in both
+        // 0.0431.
+        let mut filter = initialized();
+        assert!(
+            filter
+                .fuse_mag_heading(
+                    measured(attitude_of(0.0, 0.0, 0.0), 0.0),
+                    HeadingNoise::from_sigma(0.05),
+                )
+                .is_reset()
+        );
+
+        assert!(
+            filter
+                .fuse_mag_heading(
+                    measured(attitude_of(0.0, 0.0, 0.05), 0.0),
+                    HeadingNoise::from_sigma(0.02),
+                )
+                .is_accepted()
+        );
+        let (_, _, yaw) = filter.state().attitude.euler_angles();
+        assert!(
+            (yaw - 0.0336).abs() < 1e-3,
+            "expected 0.0336 by the arithmetic above, got {yaw}"
+        );
+        assert!(
+            filter.covariance().variance(ErrorState::AttitudeZ) < 0.0041,
+            "a fused heading leaves yaw better known than the adoption did"
+        );
+    }
+
+    #[test]
     fn a_magnetometer_in_the_window_establishes_heading_at_once() {
         let mut filter = Eskf::new(Config::default());
         let _ = filter
@@ -2352,11 +2660,11 @@ mod tests {
     }
 
     #[test]
-    fn a_moving_start_needs_more_than_a_magnetometer_to_call_heading_valid() {
-        // Having observed the quantity is necessary, not sufficient. This window's halves
-        // level 0.4 rad apart, and the dip scales that into 0.78 rad of yaw — half as
-        // much again as `Accuracy::heading`. Fusing a heading establishes it and the
-        // covariance still refuses it.
+    fn a_moving_start_takes_its_heading_from_the_first_magnetometer() {
+        // This window's halves level 0.4 rad apart, and the dip scales that into 0.78 rad
+        // of yaw — half as much again as `Accuracy::heading`, so the start is worth no
+        // heading at all. The first field is adopted rather than fused: a prior nothing
+        // measured is replaced, not averaged with.
         let mut filter = Eskf::new(Config::default());
         let alignment = filter
             .initialize(&turning(0.0, 0.4, 0.0), Seconds::from_secs(0.25))
@@ -2364,19 +2672,34 @@ mod tests {
         assert!(matches!(alignment, Alignment::Coarse(..)));
         assert!(!filter.validity().heading, "the window was moving");
 
+        let field = MagField::body(0.22, 0.0, 0.44);
+        let noise = HeadingNoise::from_sigma(0.1);
+        assert!(filter.fuse_mag_heading(field, noise).is_reset());
+
+        // (36′) on the adoption path, which is where the term is worth the most: (34)
+        // levels with a tilt whose variance is 0.64 here, and the dip carries that into
+        // the heading. 0.582 rather than the measurement's own 0.01 — σ = 0.76 rad,
+        // outside `Accuracy::heading`. Storing the magnetometer's number alone is what
+        // makes the filter claim an attitude it does not have, on the one path where the
+        // tilt doing the levelling is worst.
+        let yaw_variance = filter.covariance().variance(ErrorState::AttitudeZ);
         assert!(
-            filter
-                .fuse_mag_heading(
-                    MagField::body(0.22, 0.0, 0.44),
-                    HeadingNoise::from_sigma(0.1),
-                )
-                .is_accepted()
+            (yaw_variance - 0.582).abs() < 1e-2,
+            "expected the levelling priced in, got {yaw_variance}"
         );
         assert!(
             !filter.validity().heading,
-            "established now, and the covariance says the tilt it was levelled by is not \
-             worth a heading"
+            "a heading levelled by this tilt is not good to Accuracy::heading"
         );
+        assert!(!filter.validity().tilt, "the tilt is still the window's");
+
+        // Established all the same, which is the other half of the claim: the quantity
+        // has been observed, so the next field is fused rather than adopted. Established
+        // and good are two questions and only the covariance answers the second.
+        assert!(matches!(
+            filter.fuse_mag_heading(field, noise),
+            Fusion::Accepted { .. }
+        ));
     }
 
     #[test]
@@ -2480,12 +2803,15 @@ mod tests {
             PositionNoise::horizontal_vertical(1.5, 1.5),
         );
         // ...and the magnetometer is being accepted, so heading will come in even though
-        // it is worthless at this instant.
+        // it is worthless at this instant. A σ of 0.6 rad is what makes it worthless: the
+        // first heading is adopted and carries its own variance, so a measurement wider
+        // than `Accuracy::heading` (0.5236) establishes the quantity without making it
+        // good enough to fly on. That is the gap this method exists to report.
         assert!(
             filter
                 .fuse_mag_heading(
                     MagField::body(0.22, 0.0, 0.44),
-                    HeadingNoise::from_sigma(0.22),
+                    HeadingNoise::from_sigma(0.6),
                 )
                 .is_accepted()
         );

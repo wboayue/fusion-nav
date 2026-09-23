@@ -143,21 +143,31 @@ impl Covariance {
         self.get(state, state)
     }
 
-    /// Replace a block's variances and drop its correlations with everything else.
+    /// Replace one component's variance and drop its correlations with everything else.
     ///
     /// The reset of a quantity the filter is adopting rather than correcting: the new
     /// error came from the measurement, so it carries the measurement's variance and is
     /// uncorrelated with the errors the filter accumulated before it. Zeroing the row and
     /// column is what makes the second part true; leaving them would let the old
     /// correlation pull the reset value straight back.
+    ///
+    /// One component rather than a block, because the magnetic heading of (34)–(36)
+    /// adopts yaw alone and leaves the tilt it was levelled by exactly as it was.
+    pub(crate) fn reset_state(&mut self, state: ErrorState, variance: f32) {
+        let i = state.index();
+        for k in 0..STATES {
+            self.0[(i, k)] = 0.0;
+            self.0[(k, i)] = 0.0;
+        }
+        self.0[(i, i)] = variance;
+    }
+
+    /// [`reset_state`](Self::reset_state) over a whole block, for the position and
+    /// velocity of [`Fusion::Reset`](crate::Fusion::Reset), which are adopted three
+    /// components at a time.
     pub(crate) fn reset_block(&mut self, states: [ErrorState; 3], variances: [f32; 3]) {
         for (state, variance) in states.iter().zip(variances) {
-            let i = state.index();
-            for k in 0..STATES {
-                self.0[(i, k)] = 0.0;
-                self.0[(k, i)] = 0.0;
-            }
-            self.0[(i, i)] = variance;
+            self.reset_state(*state, variance);
         }
     }
 
