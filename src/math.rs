@@ -190,6 +190,8 @@ mod tests {
     use super::*;
     use nalgebra::SVector;
 
+    use crate::state::ErrorState;
+
     /// Vectors with mixed signs, a zero component, and magnitudes either side of one.
     const VECTORS: [Vector3<f32>; 5] = [
         Vector3::new(1.0, 0.0, 0.0),
@@ -391,7 +393,9 @@ mod tests {
     #[test]
     fn the_floor_leaves_the_variances_the_filter_actually_reaches_alone() {
         // The smallest variance per group anywhere in the corpus or the scenarios, in the
-        // `ErrorState` ordering: gyroscope bias on `static` is the tightest at 1.6e-5.
+        // `ErrorState` ordering. These are [`FLOOR`]'s own evidence as literals beside the
+        // assertion that reads them, and the one place they are copied: they move when it
+        // does, which is whenever a log or a scenario is added or dropped.
         #[rustfmt::skip]
         let smallest = [
             5.1e-3, 5.1e-3, 5.1e-3,
@@ -405,6 +409,19 @@ mod tests {
 
         assert_eq!(floor_diagonal(&mut p), 0);
         assert_eq!(p, before);
+    }
+
+    #[test]
+    fn each_floor_sits_against_the_state_it_was_measured_for() {
+        // `FLOOR` is positional, and nothing else ties it to the ordering its comments
+        // name: `math.rs` reads the table by index and never mentions `ErrorState`. The
+        // length is the compiler's, so what is left to pin is which group each value
+        // belongs to. One per group, at its first component.
+        assert_eq!(FLOOR[ErrorState::PositionNorth.index()], 1e-6);
+        assert_eq!(FLOOR[ErrorState::VelocityNorth.index()], 1e-6);
+        assert_eq!(FLOOR[ErrorState::AttitudeX.index()], 1e-9);
+        assert_eq!(FLOOR[ErrorState::AccelBiasX.index()], 1e-9);
+        assert_eq!(FLOOR[ErrorState::GyroBiasX.index()], 1e-9);
     }
 
     #[test]

@@ -661,13 +661,13 @@ pub struct Diagnostics {
     /// Variances raised to the floor of equation (42′), counted per entry rather than per
     /// covariance.
     ///
-    /// Expected to stay at zero, and it does across the whole corpus. The floor sits three
-    /// to five decades below anything the filter reaches there, so a count climbing here
-    /// says a variance is collapsing for a reason of its own — an `R` far smaller than what
-    /// the measurement actually observes, or a source fused faster than it carries
-    /// independent information — and that the floor is masking it rather than protecting
-    /// against it. It is the one number here whose interesting value is the one it does not
-    /// have.
+    /// Expected to stay at zero, and it does across the whole corpus — the floor is set well
+    /// below anything the filter reaches there, and `math.rs`'s `FLOOR` is where that margin
+    /// is measured and recorded. So a count climbing here says a variance is collapsing for a
+    /// reason of its own — an `R` far smaller than what the measurement actually observes, or
+    /// a source fused faster than it carries independent information — and that the floor is
+    /// masking it rather than protecting against it. It is the one number here whose
+    /// interesting value is the one it does not have.
     ///
     /// Not counted per state, which would say *which* variance collapsed: a count that
     /// should be zero needs only to be non-zero to be worth reading, and the `sigma_*`

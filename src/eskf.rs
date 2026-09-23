@@ -1336,10 +1336,10 @@ mod tests {
 
     /// The floor of (42′) exists to be unreachable, and this is the only place CI asserts
     /// it: `data/fetch.sh --check` pins `floored=0` on all five corpus logs, and it needs a
-    /// network and PX4 tooling, so it runs locally. Three to five decades separate the
-    /// floor from anything a filter that is propagating and fusing reaches — a count here
-    /// means the floor is masking a collapse rather than preventing one, and the `sigma_*`
-    /// columns of `examples/replay.rs` say which state.
+    /// network and PX4 tooling, so it runs locally. The margin between the floor and
+    /// anything a filter that is propagating and fusing reaches is measured in `math.rs`'s
+    /// `FLOOR` — a count here means the floor is masking a collapse rather than preventing
+    /// one, and the `sigma_*` columns of `examples/replay.rs` say which state.
     #[test]
     fn an_ordinary_run_never_reaches_the_floor() {
         let mut filter = aided();

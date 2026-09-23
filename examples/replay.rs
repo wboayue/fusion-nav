@@ -1120,9 +1120,10 @@ impl Replay {
             self.filter.diagnostics().propagation.refused_too_long,
             self.filter.diagnostics().propagation.refused_invalid,
             // Equation (42′)'s diagonal floor, pinned at zero on every log because that is
-            // the claim: the floor is three to five decades below anything the filter
-            // reaches here, so it is a guard against a collapse rather than part of the
-            // arithmetic. A log that starts flooring is one whose covariance is being
+            // the claim: the floor is set well below anything the filter reaches here, so
+            // it is a guard against a collapse rather than part of the arithmetic. The
+            // margin is measured in `math.rs`'s `FLOOR`, which is the one place it is
+            // written. A log that starts flooring is one whose covariance is being
             // driven to zero by something upstream, and no other key on this line would
             // notice — a floored variance makes the estimate *more* conservative, so it
             // moves neither `rejected=` nor `transitions=`.

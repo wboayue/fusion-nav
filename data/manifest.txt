@@ -127,9 +127,12 @@
 #
 # floored= counts variances raised to the diagonal floor of equation (42'), per
 # entry rather than per covariance, and it is pinned at zero because zero is
-# the claim. The floor is not part of the arithmetic: math.rs::FLOOR sits three
-# to five decades below the smallest variance any state reaches here, so a
-# non-zero says a covariance is being driven toward zero by something upstream
+# the claim. The floor is not part of the arithmetic: it is set well below the
+# smallest variance any state reaches here, and math.rs::FLOOR is where that
+# margin is measured per state group and recorded -- this note deliberately
+# quotes no figure of its own, since adding or dropping a log moves them and a
+# second copy would go on reading as evidence. A non-zero here says a
+# covariance is being driven toward zero by something upstream
 # -- an R far smaller than what the measurement observes, a source fused faster
 # than it carries independent information -- and that the floor is masking it
 # rather than protecting against it. The 2 h log is what makes the zero worth
