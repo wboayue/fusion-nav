@@ -13,11 +13,18 @@
 # ULog, a generated scenario -- and agree on everything after it, so the comparison lives
 # here once and the pair syntax is one language a reader learns once.
 #
-# Three forms, because a corpus expectation and a benchmark ceiling want different things:
+# Four forms, because a corpus expectation and a benchmark ceiling want different things:
 #
 #   key=value    exact, string. What the corpus pins: `status=Healthy`, `rate=250`.
 #   key<=value   numeric ceiling. An error the filter must not exceed.
 #   key>=value   numeric floor. A goodness key -- `in3s`, `scored`.
+#   key=lo..hi   numeric range, both bounds inclusive. What a statistic wants.
+#
+# The range exists because pinning a statistic to its last digit says "this number" where the
+# claim is "this receiver reports six times the accuracy its own solutions support". A range
+# states the claim, and survives a filter change that moves the digit without moving the
+# finding. `nis_gnss_vel=6.0..10.0` is an assertion about a receiver; `nis_gnss_vel=7.9089` is
+# an assertion about a build.
 #
 # A key named here and absent from the line is a failure, not a skip: renaming a `score` or
 # `summary` key would otherwise silently stop checking every expectation that named it.
@@ -66,7 +73,7 @@ numeric_ok() {
 #
 # Reports every failure rather than the first, so one run names everything that moved.
 compare_pairs() {
-    local line=$1 expect=$2 label=${3:-} rc=0 pair key op want got
+    local line=$1 expect=$2 label=${3:-} rc=0 pair key op want want_lo want_hi got status
     # Both loops here split on an unquoted expansion -- this one over the expectations, the
     # one in `pair_value` over the line -- so both are open to pathname expansion. Disabled
     # for the whole function, which covers `pair_value` too, since the option is global.
@@ -74,10 +81,17 @@ compare_pairs() {
     case $- in *f*) ;; *) restore_glob=1; set -f ;; esac
     for pair in $expect; do
         case "$pair" in
+            # Arm order is load-bearing: all four forms contain an `=`, so each narrower
+            # pattern has to precede the bare `=` or that one swallows it. A range landing in
+            # the `=` arm compares `1.0..2.0` as a string and fails every value it should
+            # pass. `..` goes after `<=` and `>=` so that a `pos_h<=1..2` nobody meant to
+            # write reports its value as not a number rather than hunting for a `pos_h<` key.
             *'<='*) key=${pair%%<=*} op='<=' want=${pair##*<=} ;;
             *'>='*) key=${pair%%>=*} op='>=' want=${pair##*>=} ;;
+            *=*..*) key=${pair%%=*}  op='..' want=${pair#*=}
+                    want_lo=${want%%..*} want_hi=${want##*..} ;;
             *=*)    key=${pair%%=*}  op='='  want=${pair#*=} ;;
-            *) echo "  MALFORMED  ${label:+$label: }$pair has no =, <= or >=" >&2; rc=1; continue ;;
+            *) echo "  MALFORMED  ${label:+$label: }$pair has no =, <=, >= or .." >&2; rc=1; continue ;;
         esac
         if ! got=$(pair_value "$line" "$key"); then
             echo "  MISSING    ${label:+$label: }no \`$key=\` on the line, wanted $pair" >&2
@@ -88,8 +102,23 @@ compare_pairs() {
             [ "$got" = "$want" ] || { echo "  MISMATCH   ${label:+$label: }$key=$got, wanted $pair" >&2; rc=1; }
             continue
         fi
-        numeric_ok "$got" "$op" "$want"
-        case $? in
+        # A range holds when both of its bounds hold, so it is two `numeric_ok` calls and not
+        # a second comparator: the observed value and both endpoints go through the one
+        # numeric check, which is what keeps `nees_pos=none` from reading as zero here too.
+        # `&&` yields the left status when the left fails and the right one otherwise, so a
+        # garbage endpoint still surfaces as 2 rather than as a breach.
+        #
+        # The alternative -- rewriting `key=lo..hi` into `key>=lo` and `key<=hi` and deleting
+        # this branch -- was not taken: the diagnostic would then name a pair nobody wrote,
+        # and the contract of every message below is that it can be copied back into the file
+        # it came from.
+        if [ "$op" = '..' ]; then
+            numeric_ok "$got" '>=' "$want_lo" && numeric_ok "$got" '<=' "$want_hi"
+        else
+            numeric_ok "$got" "$op" "$want"
+        fi
+        status=$?
+        case $status in
             0) ;;
             1) echo "  BREACH     ${label:+$label: }$key=$got, wanted $pair" >&2; rc=1 ;;
             *) echo "  NOT A NUMBER ${label:+$label: }$key=$got cannot be compared against $pair" >&2; rc=1 ;;
@@ -148,6 +177,25 @@ self_test() {
     t 1 'missing key'    "$score" 'nees_vel<=1'
     t 1 'not a number'   "$score" 'nees_att<=0.05'
     t 1 'malformed pair' "$score" 'pos_h'
+
+    # #4: a two-sided bound. The first fixture is the one that catches the `..` arm placed
+    # after the bare `=`, where the pair string-compares `1.0..2.0` against `1.5` and fails.
+    t 0 'inside the range'        'score nis=1.5'  'nis=1.0..2.0'
+    t 1 'below the range'         'score nis=0.9'  'nis=1.0..2.0'
+    t 1 'above the range'         'score nis=2.1'  'nis=1.0..2.0'
+    t 0 'range bounds are inclusive at the bottom' 'score nis=1.0' 'nis=1.0..2.0'
+    t 0 'and at the top'                           'score nis=2.0' 'nis=1.0..2.0'
+    # Lexically 9.9 sits above 10.0, so a range compared as strings passes this and then
+    # passes everything else it should refuse.
+    t 0 'a range compares as numbers' 'score nis=9.9' 'nis=1.0..10.0'
+    t 0 'a range over negatives'      'score nu=-0.02' 'nu=-0.10..0.10'
+    # Both endpoints go through `numeric_ok`, so the `none` the harness prints for a block
+    # that did not invert cannot read as zero and clear a bound the filter never met.
+    t 1 'a range against none'        "$score" 'nees_att=0.0..1.0'
+    # An unterminated range is the shape a half-finished edit leaves. Read as a one-sided
+    # bound it would silently stop checking the end somebody deleted.
+    t 1 'no upper bound'              'score nis=1.5' 'nis=1.0..'
+    t 1 'no lower bound'              'score nis=1.5' 'nis=..2.0'
 
     # A value holding a glob character, checked from a directory where it matches files.
     # Both loops split on an unquoted expansion, so without `set -f` both sides expand --

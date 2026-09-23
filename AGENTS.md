@@ -344,10 +344,11 @@ test the covariance's own promise: it passes a filter that grew more accurate an
 overconfident at once, which is #89 (ANEES over N seeds), after #35 gives it a covariance that
 moves. The format is already indifferent to several seeds per scenario.
 
-The comparison itself is shared, not copied: `data/expect.sh` owns `key=value`, `key<=value` and
-`key>=value`, and both readers source it — `data/bench.sh` for `data/scenarios.txt`,
-`data/fetch.sh --check` for `data/manifest.txt`. So the pair syntax is one language, and #4's
-tolerance ranges are a manifest edit rather than a second comparator. It carries fixtures with
+The comparison itself is shared, not copied: `data/expect.sh` owns `key=value`, `key<=value`,
+`key>=value` and `key=lo..hi`, and both readers source it — `data/bench.sh` for
+`data/scenarios.txt`, `data/fetch.sh --check` for `data/manifest.txt`. So the pair syntax is one
+language, and the two-sided bound a statistic wants landed as one arm in one `case` rather than as
+a second comparator — which is what #89's ANEES band against a chi-square bound inherits. It carries fixtures with
 literal verdicts for the same reason `examples/replay.rs` does — the expectations in both files
 were produced by the harness they guard, so a comparator that waves something through turns a
 miscount into the baseline everything later is measured against.

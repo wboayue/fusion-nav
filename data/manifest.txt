@@ -5,6 +5,12 @@
 # They are what makes "the only log that exercises StepTooLong" a claim the build
 # enforces rather than a comment that quietly goes stale.
 #
+# `key=lo..hi` pins a value between two inclusive bounds. `data/expect.sh` owns
+# the syntax and the comparison, and `data/scenarios.txt` writes its ceilings in
+# the same language. The statistics below are pinned that way rather than
+# exactly, because what a nis= key claims is about a receiver and not about a
+# build, and a range is what states it.
+#
 # heading= is Validity::heading as initialization left it, not as the log
 # ended. Only a magnetometer observes the rotation about gravity, and the
 # covariance cannot say so on its own -- Initialization::sigma_yaw is 0.35 rad
