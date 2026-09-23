@@ -652,7 +652,9 @@ impl PositionNoise<Ned> {
     /// under multipath it stays small while the fix is metres wrong — so both production
     /// estimators bound it on both sides rather than trusting it. ArduPilot writes the
     /// two-sided form directly, `constrain_ftype(gpsPosAccuracy, _gpsHorizPosNoise, 100)`
-    /// at `AP_NavEKF3_PosVelFusion.cpp:807`. PX4 floors at `ekf2_gps_p_noise`
+    /// at `AP_NavEKF3_PosVelFusion.cpp:836` — the ordinary GNSS branch, not the identical
+    /// line at `:807`, which is the synthetic-zero-velocity case opened at `:789`.
+    /// PX4 floors at `ekf2_gps_p_noise`
     /// (`EKF/aid_sources/gnss/gps_control.cpp:358`) and caps at `ekf2_noaid_noise`, 10 m,
     /// but only while GNSS is the sole horizontal aid (`:363-364`) — the cap is about
     /// what the filter can afford to lean on, not about the fix.
@@ -731,6 +733,8 @@ impl VelocityNoise<Ned> {
     /// velocity goes through
     /// [`horizontal_vertical`](Self::horizontal_vertical), for the reason
     /// [`PositionNoise::clamped`] gives.
+    ///
+    /// Read at PX4-Autopilot `c4e4ef98` (v1.18.0-beta1) and ardupilot `368dc0c4`.
     pub fn clamped(horizontal: f32, vertical: f32, min_sigma: f32, max_sigma: f32) -> Self {
         let horizontal = clamp_sigma(horizontal, min_sigma, max_sigma);
         Self::from_sigma(

@@ -186,6 +186,20 @@ const PROBE: usize = 64;
 /// whose vehicle is already moving still has to replay.
 const PATIENCE: f64 = 10.0;
 
+/// What the harness hands each `fuse_*` as `R`, reported on the `summary` line.
+///
+/// `raw` means every measurement is fused with the variance its row carries, unbounded,
+/// where both production estimators floor a receiver's reported accuracy first — the
+/// parameters and lines are on `PositionNoise::clamped` and `VelocityNoise::clamped`, and
+/// `data/README.md` carries why this harness applies neither.
+///
+/// A published figure is a claim about an `R` policy as much as about the filter: EKF2's
+/// solution on the same log is fused with a floored `R`, so a comparison that does not
+/// state the difference attributes it to the estimator. Nothing else on this line would
+/// distinguish a raw run from a floored one — `rejected=`, `transitions=` and every `nis_`
+/// would simply read differently, with no key saying why.
+const R_POLICY: &str = "raw";
+
 /// Reads one estimate column out of a `State`.
 type Column = fn(&State) -> f32;
 
@@ -1316,7 +1330,7 @@ impl Replay {
         format!(
             "summary rate={:.0} window={} align={} an={} alpha0={} heading={} \
              roll0={roll0:.2} pitch0={pitch0:.2} yaw0={yaw0:.2} resets={} \
-             aligned_at={} attitude_lost={} rejected={}{} discarded={} refused={} \
+             aligned_at={} attitude_lost={} r_policy={R_POLICY} rejected={}{} discarded={} refused={} \
              invalid={} floored={} epochs={}{} \
              transitions={} status={:?}",
             self.interval.map_or(0.0, |interval| 1.0 / interval),
@@ -2735,6 +2749,34 @@ mod tests {
         let summary = replay(&log).summary();
         assert_eq!(key(&summary, "rejected"), "1", "{summary}");
         assert_eq!(key(&replay(&still_start()).summary(), "rejected"), "0");
+    }
+
+    #[test]
+    fn r_is_fused_as_the_row_reports_it_however_small() {
+        // `r_policy=raw` as a fixture rather than a restatement of its own constant: the
+        // same 1 m/s innovation twice, differing only in the variance beside it. At
+        // σ_v = 0.01 m/s the gate turns it down; at 0.5 — PX4's `ekf2_gps_v_noise`, which
+        // sits above 4885 of the corpus's 5348 velocity solutions — the same innovation is
+        // accepted. So a floor applied in `Replay::row` would flip the first assertion,
+        // which is the mutation this guards and the one `a299e722` runs 278 times.
+        let moving = |var: &str| {
+            still_start().raw(&format!(
+                "2.000000,gnss_vel,1.0,0.0,0.0,,,,{var},{var},{var}"
+            ))
+        };
+
+        let raw = replay(&moving("0.0001")).summary();
+        assert_eq!(key(&raw, "rejected"), "1", "{raw}");
+        assert_eq!(key(&raw, "rejected_gnss_vel"), "1", "{raw}");
+        assert_eq!(key(&raw, "r_policy"), "raw", "{raw}");
+
+        // `rejected=0` alone would also pass if the row never reached the gate at all —
+        // discarded for a bad variance, or refused before fusion — so the acceptance is
+        // pinned by the two keys that only a completed update can move.
+        let floored = replay(&moving("0.25")).summary();
+        assert_eq!(key(&floored, "rejected"), "0", "{floored}");
+        assert_eq!(key(&floored, "discarded"), "0", "{floored}");
+        assert_ne!(key(&floored, "nis_gnss_vel"), "none", "{floored}");
     }
 
     #[test]
