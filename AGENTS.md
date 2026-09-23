@@ -4,6 +4,12 @@ This file provides guidance to coding agents working with code in this repositor
 
 ## Status
 
+**`EQUATIONS.md` is implemented.** #31 closed with stage 9 (#110, #111): (1)–(44) are built
+except (31)–(33), the three-axis magnetometer, which is out of scope, and (5′)'s subtraction,
+which is #59's. The `**Stub.**` marker survives on those two and nowhere else, and every status
+banner says built rather than intended. What is left to do is measurement and publication, not
+mathematics — #41 (cost on hardware), #8 (the EKF2 comparison), #47 (the release), #89 (ANEES).
+
 **Every source the crate publishes is fused; no `fuse_*` is a stub.** Initialization is real —
 equations (5)–(8), so the filter starts at the attitude and biases the window yields — `predict`
 propagates the nominal state *and* its covariance, (9)–(22), and a GNSS position, a GNSS velocity,
@@ -54,32 +60,49 @@ It is still worth having — the end-of-gap error is 1.39 m against 11.93 withou
 a 20 Hz barometer averages its noise down faster than the true error falls, and the accelerometer
 bias walk is what stops the error following. `baro_drift` is the same mechanism at full size —
 `pos_v` 2.052 m, `nees_pos` 257 — and `GOALS.md` now carries that figure under
-"Barometric reference as a constant", which had recorded the cost in words only. Also real: the health bookkeeping (timers,
-`Status`, `Diagnostics`), the typed API surface, and the replay harness. Anything stubbed says so in its doc comment with a `**Stub.**` paragraph — keep that
-marker accurate when landing real math, and keep the same caveat in `README.md`, `DESIGN.md`,
-`EQUATIONS.md`, `src/eskf.rs`, and the example module docs, which all repeat it —
+"Barometric reference as a constant", which had recorded the cost in words only. **What stage 9 added.** (42′), a per-group diagonal variance floor, applied at
+`Eskf::commit_covariance` so the invariant belongs to the filter — *every covariance it commits
+has been floored* — and reaches the ones no product built: an adoption, a `reset_*_to`, the (8) a
+window commits. It is unreachable and that is measured: `floored=0` on all five corpus logs,
+1 398 114 epochs on the 2 h one, and every replay CSV byte-identical to the same log replayed
+without it. `math.rs`'s `FLOOR` owns the headroom figures and every other mention cites it.
+And `predicted_validity` stopped meaning *aiding is arriving*: `P` is projected
+`Accuracy::horizon` forward with nothing fusing and each quantity tested at the far end, **or**
+counted because a constraining source is being accepted. Tilt is what it bought — a static start
+holds tilt 3.82 s, so a 1 s horizon arms and a 6 s one does not, where before it predicted its own
+current value. `Accuracy::horizon` is the one knob no data could settle, `Accuracy` deliberately
+carries no `#[non_exhaustive]`, and #47 owns the version that ships the break.
+
+Also real: the health bookkeeping (timers,
+`Status`, `Diagnostics`), the typed API surface, and the replay harness. The `**Stub.**` marker is
+now a convention with two live users, both (5′)'s (`src/init.rs`) — keep it accurate, and keep the
+status banners in `README.md`, `DESIGN.md`, `EQUATIONS.md` and `GOALS.md` saying what is true;
 `src/lib.rs` inherits the README's, since it includes the file. `EQUATIONS.md`'s
 is the one to watch: it sits above a mapping table that separately marks functions as unbuilt, so
-the two can contradict each other, and did — the banner claimed no implementation existed while
-the table below it listed the geodetic origin and the initial covariance as built. `GLOSSARY.md`
+the two can contradict each other, and has twice — the banner once claimed no implementation
+existed while the table listed the geodetic origin as built, and stage 9's own first draft added
+(42′) to the table while leaving the banner describing symmetry alone. The example module docs
+carried the same rot: `basic.rs` and `degradation.rs` still told a reader heading and velocity
+accepted without correcting, two stages after they stopped. `GLOSSARY.md`
 repeats no caveat by design — it defines terms and defers status to the document that owns it —
 but a few entries do name what is unbuilt (ANEES, the GSF yaw estimator), and those are on the
 list.
 
 ## Backlog
 
-Two tracking issues own ordering and hold rules the individual issues do not repeat. Read the one
-covering the area before starting work in it.
+One tracking issue is still open and owns ordering for its area; read it before starting work
+there.
 
-- **#31** — implementing `EQUATIONS.md`, staged as #32–#40. Carries the stage table, what each
-  landed stage leaves its successors, and standing rules that apply to every stage. *Why* that
-  order — the simulator and `rejected=` before the math, `-D warnings` deciding what can land
-  alone — is `DESIGN.md`, "Staging the implementation".
 - **#10** — replay validation. Carries which issue answers which question, and the measured
   numbers those answers are argued from. The questions themselves — self-consistency without
   truth, accuracy with it, a correct rejection needing truth *and* hostile measurements, and the
   covariance's own honesty underneath all three — are `GOALS.md`, "Three questions, three kinds
   of source".
+
+**#31 is closed**, having landed all nine stages of `EQUATIONS.md` (#32–#40). Its closing comment
+carries what stage 9 left; *why* the order was what it was stayed in `DESIGN.md`, "Staging the
+implementation", which is the point of putting reasoning somewhere a tracker's closure cannot take
+it. What is left in that area is measurement and publication rather than mathematics.
 
 **A merge is not finished until the issues it falsified are updated.** A tracker is not a
 changelog: it carries ordering, what each stage leaves its successors, and the measured numbers a
@@ -115,9 +138,11 @@ Differentiators are cited **by number** here, in issue bodies and in `data/manif
 Never renumber them. A renumber silently repoints every citation, including closed issues that
 cannot be corrected.
 
-**Sequencing hazard:** #31's stages are stacked branches, while the signature-changing issues
-(#21, #25) change the API underneath them. Land an API change before the stage that
-builds on it, not after. The rule has held so far: #58 landed before stage 5, the first code to read
+**Sequencing hazard, and what it taught:** #31's stages were stacked branches while the
+signature-changing issues (#21, #25) changed the API underneath them, so an API change had to land
+*before* the stage that built on it. The stages are done, but the rule outlived them — #25 and #21
+are still open, and anything stacked on top of an unfrozen surface inherits the same hazard. It
+held throughout: #58 landed before stage 5, the first code to read
 `Config::gates`, so the gate reads a `Gate<M>` typed by its degrees of freedom rather than a bare
 `f32`, and stage 5 then decided the default percentile from replay (`P999`) in the diff that first
 turned a fix down at all — the corpus stayed at `rejected=0` on all five logs until (29) reached a
@@ -126,6 +151,12 @@ a constructor naming its convention (`body_to_ned`, `ned_to_body`, `flu_to_enu`,
 the `q̂₀` of (5)–(7) is committed through the final shape; #59's signature landed with it, so
 `StaticSample` carries GNSS velocity and `Coarse::NotStationary` reports `ā_n`. What is left of #59
 is equation (5′), and the attitude it needs to rotate `ā_n` into body axes now exists.
+
+The one place it did *not* hold is stage 9's own `Accuracy::horizon`, which is a field added to a
+config type in the same diff that used it. Nothing was stacked above to break, and the alternative
+was an issue whose whole content would have been "add a field stage 9 needs" — but it is a break
+against a type carrying no `#[non_exhaustive]`, and #47 is where the version that ships it gets
+decided.
 
 ## Goal: a reference to learn from
 
@@ -272,7 +303,12 @@ added that way, and each now guards a decision that would otherwise rot into a c
 catches the coarse log's 35575 barometer rows going from fused to `NoReference`, which no other key
 noticed; `heading=` is the validity verdict on the initialization window, which catches a yaw
 reported valid that no magnetometer ever observed — taken at the end of the log it would only
-restate `transitions=`). Renaming or removing a key breaks every entry at once.
+restate `transitions=`). `floored=` is the newest and the odd one: it pins behaviour that must
+**not** happen, a count of variances raised to the floor of (42′) that reads zero on every log, and
+nothing else on the line would notice if it started — a floored variance only makes the estimate
+more conservative, so it moves neither `rejected=` nor `transitions=`. A key whose interesting
+value is the one it does not have still earns its place. Renaming or removing a key breaks every
+entry at once.
 
 **Two corpora, two licences, two manifests.** The PX4 logs are CC BY 4.0 and could be redistributed;
 they are fetched rather than committed for size, not for terms. INSANE is BSD-2 with a
