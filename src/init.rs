@@ -341,8 +341,8 @@ pub enum InitError {
     },
     /// A measurement, state, or covariance carried a value that is not finite.
     NotFinite,
-    /// A seed covariance had a variance on its diagonal that no prior has: zero or
-    /// negative.
+    /// A seed covariance had a variance on its diagonal that no prior has: below the floor
+    /// of equation (42′), which includes zero and negative.
     ///
     /// Zero is the one that arrives in practice, from a warm start deserialized out of
     /// storage that never populated the diagonal. It reads as a tight prior and is not
@@ -350,8 +350,15 @@ pub enum InitError {
     /// zero for that quantity and no measurement ever corrects it, while
     /// [`Validity`](crate::Validity) compares the zero variance against
     /// [`Config::accuracy`](crate::Config::accuracy) and reports the quantity good from
-    /// the first read. A negative variance claims better than perfect. The bar is the one
-    /// every `fuse_*` puts on `R`; see [`Fusion::InvalidNoise`](crate::Fusion::InvalidNoise).
+    /// the first read. A negative variance claims better than perfect.
+    ///
+    /// The bar is the floor rather than zero because zero is only the tidiest member of
+    /// that class: the same accident with an exponent left in it arrives at 1e-30 and is
+    /// indistinguishable in f32 — the gain is still zero and the quantity still reads good
+    /// from the first epoch. A seed is the one path that writes a covariance in whole, so
+    /// it is refused here where a `reset_*_to` writing one block is floored instead. See
+    /// [`Fusion::InvalidNoise`](crate::Fusion::InvalidNoise) for the bar every `fuse_*`
+    /// puts on `R`, which is still strict positivity.
     ///
     /// Symmetry and positive-definiteness are not checked: that is a factorization on the
     /// caller's data, not a guard.
@@ -367,7 +374,7 @@ impl core::fmt::Display for InitError {
             }
             Self::NotFinite => write!(f, "initialization input was not finite"),
             Self::InvalidVariance => {
-                write!(f, "seed covariance had a variance that was not positive")
+                write!(f, "seed covariance had a variance below the floor of (42′)")
             }
         }
     }

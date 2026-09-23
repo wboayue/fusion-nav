@@ -5,10 +5,10 @@ use crate::frames::{Body, Ned};
 use crate::geodetic::{Geodetic, LocalOrigin};
 use crate::health::{Diagnostics, Fusion, Propagation, SourceHealth, Status, Validity};
 use crate::init::{self, Alignment, Coarse, InitError, Measured, StaticSample, baro_reference};
-use crate::math::{exp_quat, floor_diagonal};
+use crate::math::{below_floor, exp_quat, floor_diagonal};
 use crate::observation::{baro, gnss, mag};
 use crate::propagate::{ImuSample, propagate};
-use crate::state::{Covariance, ErrorState, STATES, State};
+use crate::state::{Covariance, ErrorState, State};
 use crate::units::{
     Altitude, AltitudeNoise, Attitude, HeadingNoise, MagField, Position, PositionNoise, Radians,
     Seconds, Velocity, VelocityNoise,
@@ -339,17 +339,15 @@ impl Eskf {
     /// seed is the one path that writes a covariance in whole. A rejected seed leaves the
     /// filter uninitialized rather than poisoned.
     ///
-    /// A variance that is positive but under the floor of (42′) is neither accepted as given
-    /// nor refused, which is the third outcome and the one worth knowing about: it is raised
-    /// to the floor on commit and counted in
-    /// [`Diagnostics::floored`](crate::Diagnostics::floored). The check above catches the
-    /// warm start that arrives all zeros; a seed at 1e-30 is the same accident with an
-    /// exponent left in it — dropped in deserialization, or a variance scaled by its own
-    /// units twice — and behaves the same way, since a gain of `1e-30 / (1e-30 + R)` is zero
-    /// in f32 and [`validity`](Self::validity) calls the quantity good on the first read.
-    /// Repaired rather than refused, because a seed is the one path where the caller has
-    /// vouched for every quantity and the floor costs them nothing they meant to keep.
-    /// Reading `floored` immediately after is how a caller learns a number was overridden.
+    /// The bar is the floor of (42′) rather than zero, because zero is the tidy member of the
+    /// class it is there to catch. A diagonal that was never populated arrives as exactly
+    /// zero from a `memset`; the same accident with an exponent left in it — dropped in
+    /// deserialization, or a variance scaled by its own units twice — arrives at 1e-30 and
+    /// does the identical damage, since `1e-30 / (1e-30 + R)` is zero in f32 and
+    /// [`validity`](Self::validity) calls the quantity good on the first read. Refusing one
+    /// and accepting the other would catch the legible failure and wave through the messy
+    /// ones. The floor is three to five decades below anything the filter itself reaches, so
+    /// no seed anybody meant is near it.
     ///
     /// Whether the seed counts as aligned is the covariance's answer, not this one's: a
     /// confident seed reports [`Status::Healthy`] straight away, a coarse one
@@ -362,7 +360,7 @@ impl Eskf {
         if !state.is_finite() || !covariance.is_finite() {
             return Err(InitError::NotFinite);
         }
-        if (0..STATES).any(|i| covariance.as_matrix()[(i, i)] <= 0.0) {
+        if below_floor(covariance.as_matrix()) {
             return Err(InitError::InvalidVariance);
         }
         self.state = state;
@@ -1305,6 +1303,7 @@ mod tests {
     use crate::init::tests::{gravity_at, still, turning};
     use crate::observation::mag::tests::{attitude_of, measured};
     use crate::state::ErrorState;
+    use crate::state::STATES;
     use crate::units::{Acceleration, AngularRate, Radians};
 
     const DT: Seconds = Seconds::from_secs(0.01);
@@ -2045,36 +2044,60 @@ mod tests {
     }
 
     #[test]
-    fn a_variance_below_the_floor_of_42_is_raised_to_it_and_counted() {
-        // A positive variance clears `initialize_from`'s check and still collapses the
-        // gain: 1e-30 (rad/s)² is a gyroscope bias the seed claims to know to 1e-15 rad/s.
-        // The floor is what the filter holds instead, and `floored` is what says so —
-        // uncounted, the covariance reads back afterwards as an excellent estimate that
-        // no measurement can move.
+    fn a_seed_below_the_floor_of_42_is_refused_like_a_zero() {
+        // 1e-30 (rad/s)² is a gyroscope bias the seed claims to know to 1e-15 rad/s. It
+        // clears a `> 0` test and does exactly what a zero does — the gain is zero in f32
+        // and `validity` calls the quantity good on the first read — so the bar is the
+        // floor, not zero, and the two are one check rather than two 24 decades apart.
         let (state, covariance) = seed();
         let mut matrix = *covariance.as_matrix();
         matrix[(ErrorState::GyroBiasZ.index(), ErrorState::GyroBiasZ.index())] = 1e-30;
 
         let mut filter = Eskf::new(Config::default());
-        let _ = filter
-            .initialize_from(state, Covariance::from_matrix(matrix))
-            .expect("a strictly positive diagonal");
-
-        assert_eq!(filter.diagnostics().floored, 1);
-        assert!(
-            filter.covariance().variance(ErrorState::GyroBiasZ) > 1e-30,
-            "the seed's own variance was committed unfloored"
+        assert_eq!(
+            filter.initialize_from(state, Covariance::from_matrix(matrix)),
+            Err(InitError::InvalidVariance)
         );
+        assert!(!filter.is_initialized(), "a refused seed leaves no state");
 
-        // Counted per entry rather than per covariance, and against this filter's life:
-        // re-initializing resets the count, and two collapsed states raise two.
+        // Just above its own floor is accepted, and untouched: the bar is per state group,
+        // so a gyroscope bias at 1e-8 passes a floor of 1e-9 while a position at 1e-8 would
+        // not clear its own 1e-6.
         let mut matrix = *covariance.as_matrix();
-        matrix[(ErrorState::AttitudeX.index(), ErrorState::AttitudeX.index())] = 1e-30;
-        matrix[(ErrorState::GyroBiasZ.index(), ErrorState::GyroBiasZ.index())] = 1e-30;
+        matrix[(ErrorState::GyroBiasZ.index(), ErrorState::GyroBiasZ.index())] = 1e-8;
         let _ = filter
             .initialize_from(state, Covariance::from_matrix(matrix))
-            .expect("a strictly positive diagonal");
-        assert_eq!(filter.diagnostics().floored, 2);
+            .expect("above the floor");
+        assert_eq!(filter.covariance().variance(ErrorState::GyroBiasZ), 1e-8);
+        assert_eq!(filter.diagnostics().floored, 0);
+
+        let mut matrix = *covariance.as_matrix();
+        matrix[(
+            ErrorState::PositionNorth.index(),
+            ErrorState::PositionNorth.index(),
+        )] = 1e-8;
+        assert_eq!(
+            filter.initialize_from(state, Covariance::from_matrix(matrix)),
+            Err(InitError::InvalidVariance)
+        );
+    }
+
+    #[test]
+    fn a_reset_below_the_floor_is_floored_and_counted_rather_than_refused() {
+        // The seed is refused because it writes the covariance in whole; a reset writes one
+        // block against an estimate that exists, so the floor repairs it instead. This is
+        // what keeps `floored` reachable from the public API at all now that
+        // `initialize_from` turns the other path away.
+        let mut filter = aided();
+        assert_eq!(filter.diagnostics().floored, 0);
+
+        assert!(filter.reset_position_to(
+            Position::ned(10.0, 20.0, -5.0),
+            PositionNoise::from_sigma(1e-15, 1e-15, 1e-15),
+        ));
+
+        assert_eq!(filter.diagnostics().floored, 3);
+        assert!(filter.covariance().variance(ErrorState::PositionNorth) >= 1e-6);
     }
 
     #[test]

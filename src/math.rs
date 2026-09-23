@@ -152,6 +152,25 @@ const FLOOR: [f32; STATES] = [
     1e-9, 1e-9, 1e-9, // δβg, (rad/s)²
 ];
 
+/// Whether any variance on the diagonal sits below its floor.
+///
+/// The same table [`floor_diagonal`] enforces, asked as a question rather than applied, for
+/// the one caller that refuses such a covariance instead of repairing it:
+/// [`Eskf::initialize_from`](crate::Eskf::initialize_from) is the only path that writes a
+/// covariance in whole, so a diagonal below the floor there is a seed that was never
+/// populated rather than a variance the filter drove down.
+///
+/// NaN is not below the floor by this test, and does not need to be: the caller checks
+/// finiteness first and reports [`InitError::NotFinite`](crate::InitError::NotFinite),
+/// which names the right fault.
+pub(crate) fn below_floor(p: &CovarianceMatrix) -> bool {
+    // The index stays below `STATES`, the dimension of `P` and the length of `FLOOR`.
+    FLOOR
+        .iter()
+        .enumerate()
+        .any(|(i, floor)| p[(i, i)] < *floor)
+}
+
 /// Equation (42′): `P_ii ← max(P_ii, σ²_i)`, the diagonal variance floor. Returns how many
 /// entries it raised.
 ///
@@ -422,6 +441,29 @@ mod tests {
         assert_eq!(FLOOR[ErrorState::AttitudeX.index()], 1e-9);
         assert_eq!(FLOOR[ErrorState::AccelBiasX.index()], 1e-9);
         assert_eq!(FLOOR[ErrorState::GyroBiasX.index()], 1e-9);
+    }
+
+    #[test]
+    fn the_below_floor_test_agrees_with_the_floor_it_names() {
+        // One table, two readings: what `floor_diagonal` would raise is exactly what
+        // `below_floor` reports. Survives the mutation that gives `below_floor` a constant
+        // of its own, which would pass every test written against one group alone.
+        for i in 0..STATES {
+            let mut p = CovarianceMatrix::from_diagonal_element(1.0);
+            p[(i, i)] = FLOOR[i] * 0.5;
+            assert!(below_floor(&p), "state {i} below its floor");
+
+            p[(i, i)] = FLOOR[i];
+            assert!(!below_floor(&p), "state {i} exactly at its floor");
+        }
+
+        assert!(!below_floor(&CovarianceMatrix::from_diagonal_element(1.0)));
+        assert!(below_floor(&CovarianceMatrix::zeros()));
+
+        // What the seed check refused before the floor existed, still refused.
+        let mut negative = CovarianceMatrix::from_diagonal_element(1.0);
+        negative[(4, 4)] = -1.0;
+        assert!(below_floor(&negative));
     }
 
     #[test]
