@@ -2770,8 +2770,13 @@ mod tests {
         assert_eq!(key(&raw, "rejected_gnss_vel"), "1", "{raw}");
         assert_eq!(key(&raw, "r_policy"), "raw", "{raw}");
 
+        // `rejected=0` alone would also pass if the row never reached the gate at all —
+        // discarded for a bad variance, or refused before fusion — so the acceptance is
+        // pinned by the two keys that only a completed update can move.
         let floored = replay(&moving("0.25")).summary();
         assert_eq!(key(&floored, "rejected"), "0", "{floored}");
+        assert_eq!(key(&floored, "discarded"), "0", "{floored}");
+        assert_ne!(key(&floored, "nis_gnss_vel"), "none", "{floored}");
     }
 
     #[test]

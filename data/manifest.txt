@@ -108,8 +108,11 @@
 # rather than the gate, and the corpus sees it because examples/replay.rs
 # passes each row's own variance straight through, which trusts a receiver
 # further than either production estimator does. Both floor it, at the
-# parameters and lines VelocityNoise::clamped cites, and either floor would
-# have absorbed every one of these 278.
+# parameters and lines VelocityNoise::clamped cites. Replayed with those
+# floors applied these 278 read 0 under PX4's treatment (the 0.5 m/s floor
+# and the separate sq(1.5f) vertical widening), 2 under that floor alone and
+# 44 under ArduPilot's per-axis 0.3/0.5; transitions= goes 4 to 2 under all
+# three.
 #
 # The harness applies neither, and #105 settled that it should not: PX4's
 # 0.5 m/s floor sits above 4885 of the corpus's 5348 velocity solutions, so

@@ -20,7 +20,8 @@ of (37)–(38) and the injection and reset of (39)–(41) all exist, in `src/upd
 velocity and 0.083 m of height where dead reckoning scored 1261.
 The gate turns a fix down rather than taking everything offered — on the corpus, where
 `a299e722` refuses 278 of its 609 velocity solutions, a receiver its own differenced positions
-contradict (#105 is whether the harness should floor `R` as both production estimators do); the
+contradict (#105 settled that the harness does *not* floor `R` as both production estimators do,
+and `r_policy=raw` pins that); the
 barometer and the magnetometer have never been turned down there, 6727 altitudes and 49 692
 headings accepted, so `rejected_mag=0` is a measured zero rather than a structural one. Between
 fixes — and on every axis a fix reaches only through the covariance — the estimate is still dead
@@ -303,11 +304,15 @@ added that way, and each now guards a decision that would otherwise rot into a c
 catches the coarse log's 35575 barometer rows going from fused to `NoReference`, which no other key
 noticed; `heading=` is the validity verdict on the initialization window, which catches a yaw
 reported valid that no magnetometer ever observed — taken at the end of the log it would only
-restate `transitions=`). `floored=` is the newest and the odd one: it pins behaviour that must
+restate `transitions=`). `floored=` is the odd one: it pins behaviour that must
 **not** happen, a count of variances raised to the floor of (42′) that reads zero on every log, and
 nothing else on the line would notice if it started — a floored variance only makes the estimate
 more conservative, so it moves neither `rejected=` nor `transitions=`. A key whose interesting
-value is the one it does not have still earns its place. Renaming or removing a key breaks every
+value is the one it does not have still earns its place. `r_policy=` is odder still and earns it
+differently: a compile-time constant rather than a count, so it cannot regress and a fixture in
+`examples/replay.rs` carries the guard instead. What it buys is that a published figure names the
+`R` policy that produced it, which #8's comparison against EKF2 has to state either way.
+Renaming or removing a key breaks every
 entry at once.
 
 **Two corpora, two licences, two manifests.** The PX4 logs are CC BY 4.0 and could be redistributed;

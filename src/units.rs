@@ -733,6 +733,8 @@ impl VelocityNoise<Ned> {
     /// velocity goes through
     /// [`horizontal_vertical`](Self::horizontal_vertical), for the reason
     /// [`PositionNoise::clamped`] gives.
+    ///
+    /// Read at PX4-Autopilot `c4e4ef98` (v1.18.0-beta1) and ardupilot `368dc0c4`.
     pub fn clamped(horizontal: f32, vertical: f32, min_sigma: f32, max_sigma: f32) -> Self {
         let horizontal = clamp_sigma(horizontal, min_sigma, max_sigma);
         Self::from_sigma(

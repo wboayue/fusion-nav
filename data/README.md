@@ -227,7 +227,9 @@ or `never`), `attitude_lost=` (seconds to the first epoch at or after it where `
 read false against `Config::accuracy` — the mission's bar, where `aligned_at=` reads the fixed
 alignment bars — which is where
 the covariance growth of (16)–(22) shows up on logs with no truth — `Status::Aligning` latches, so
-nothing else on the line moves when it happens), `rejected=` and `discarded=` (the gate's verdict, and everything that never reached it — a
+nothing else on the line moves when it happens), `r_policy=` (what the harness handed each
+`fuse_*` as `R` — `raw` on every entry, and the paragraph below the caveats says why it is not a
+floor), `rejected=` and `discarded=` (the gate's verdict, and everything that never reached it — a
 variance of zero or less, a NaN, an altitude with no reference), `refused=` and `invalid=` (steps
 refused as too long or as not a step at all — propagation, not measurements), `floored=`
 (variances raised to the diagonal floor of equation (42′), pinned at zero on every log because
@@ -269,9 +271,12 @@ for three measured reasons:
   0.900 m against a 0.5 m bound, and σ_v averages 1.78–3.59 m against 0.75. Since the barometer
   and the magnetometer already carry converter constants, flooring would leave no
   receiver-reported variance anywhere in the corpus.
-- **It costs the only rejection the corpus has.** `rejected_gnss_vel=278` on `a299e722` is the
-  single non-zero count across five logs, and either platform's floor absorbs all 278, leaving
-  the gate of (37)–(38) untested by real data.
+- **It costs most or all of the only rejection the corpus has.** `rejected_gnss_vel=278` on
+  `a299e722` is the single non-zero count across five logs. Replayed with the floors applied it
+  reads 0 under PX4's treatment — the 0.5 m/s floor *and* the separate `sq(1.5f)` vertical
+  widening — 2 under that floor alone, and 44 under ArduPilot's per-axis 0.3/0.5, which is the one
+  policy that would leave the gate of (37)–(38) still exercised by real data. `transitions=` goes
+  4 to 2 under all three, so this is not the only key a floor would move.
 - **It moves the accuracy gate.** `examples/simulate.rs` draws GNSS velocity noise at σ = 0.15 m/s
   and `data/bench.sh` scores every scenario through this same harness, so a floor would hand every
   simulated fix an `R` 11× too wide and move the ceilings in `data/scenarios.txt` — distrusting a
