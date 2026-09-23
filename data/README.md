@@ -232,7 +232,31 @@ refused as too long or as not a step at all — propagation, not measurements), 
 (variances raised to the diagonal floor of equation (42′), pinned at zero on every log because
 that is the claim — the floor sits far below anything the filter reaches, so a non-zero says a
 covariance is being driven toward zero by something upstream and the floor is masking it), and
-`epochs=`, `transitions=` and `status=`. It needs `pyulog`, so it is a local tool rather than a CI job:
+`epochs=`, `transitions=` and `status=`, followed by four families of consistency statistic, one
+set per source: `nis_` (mean normalized innovation squared per degree of freedom, 1 when `S`
+describes its own innovations), `nis_over95_` (the fraction above the 95 % χ² quantile, 0.05 when
+it does), `nu_` per axis (mean innovation, 0 when nothing is biased) and `acf1_` (lag-1
+autocorrelation of the normalized innovation, 0 when successive measurements are independent).
+Each is built from `ν` and diag(`S`) as the filter published them, and from `ε = r γ` with `γ` off
+`Config::gates`, so none re-derives (23) or (24) — it is the gate's own `ε`, not a copy of it.
+
+**What those four are testing is not always this filter**, and two caveats belong beside every
+figure they produce:
+
+- PX4 logs **no variance at all** for the barometer or the magnetic heading, so
+  `tools/ulog2replay.py` substitutes a constant. `nis_baro` and `nis_mag` therefore measure that
+  constant rather than the filter's tuning, and the corpus reads 0.0067–0.2518 and 0.0025–0.2000
+  — both conservative by roughly 2–12× in σ. Nothing here had ever tested them; that is the first
+  measurement [#50](https://github.com/wboayue/fusion-nav/issues/50) can argue from.
+- For GNSS the statistic tests the receiver's own `eph`/`epv`/`s_variance_m_s`, which the harness
+  passes through unfloored where both production estimators bound theirs. Position reads far below
+  1 on every log that carries it, so those figures are wider than their residuals earn;
+  `a299e722`'s velocity reads 7.5, a receiver contradicting its own differenced positions. Whether
+  the harness should apply the production floors is
+  [#105](https://github.com/wboayue/fusion-nav/issues/105), and these are the numbers it now
+  argues from rather than around.
+
+It needs `pyulog`, so it is a local tool rather than a CI job:
 `data/fetch.sh --venv` once, which installs the version the converter pins, and `fetch.sh`
 finds the gitignored `.venv` on its own.
 The converter declares its own dependency inline (PEP 723), so `uv run tools/ulog2replay.py`
