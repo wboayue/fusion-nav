@@ -3,9 +3,11 @@
 Embedded-first inertial navigation using a 15-state Error-State Kalman Filter (ESKF).
 
 > **Status: complete and aided by GNSS position and velocity, the barometer and magnetic
-> heading.** Equations (1)–(44) are implemented, bar the three-axis magnetometer of (31)–(33),
-> which is [out of scope](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#magnetometer-without-magnetic-field-states)
-> rather than pending. Initialization levels, takes a heading and a gyroscope bias, and sets
+> heading.** Equations (1)–(44) are implemented, bar two: the three-axis magnetometer of
+> (31)–(33), which is
+> [out of scope](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#magnetometer-without-magnetic-field-states)
+> rather than pending, and (5′), whose in-motion levelling term is measured and reported but not
+> yet subtracted. Initialization levels, takes a heading and a gyroscope bias, and sets
 > its covariance; `predict` propagates the state *and* its uncertainty, (9)–(22); every
 > `fuse_*` corrects both through the innovation gate of (37)–(38) — `fuse_gnss_position`,
 > `fuse_gnss_geodetic`, `fuse_gnss_velocity` and `fuse_baro_altitude` by (23)–(30),
@@ -397,8 +399,9 @@ default noise an unaided start holds tilt for 3.82 s, so a horizon under that ar
 it does not.
 
 `Accuracy::horizon` is the one number in the crate no data could settle: how long after arming
-you need the estimate. It defaults to 1 s. Set it to zero and `predicted_validity()` asks what
-`validity()` asks.
+you need the estimate. It defaults to 1 s. Set it to zero and nothing is projected, leaving the
+aiding clause on its own — the current answer widened by what is being accepted, which is what
+`predicted_validity()` meant before it could project at all.
 
 ### Detail
 

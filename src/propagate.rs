@@ -301,7 +301,7 @@ fn propagate_covariance(p: Covariance, f: &Transition, q: [f32; STATES]) -> Cova
     Covariance::from_matrix(next)
 }
 
-/// The step [`project`] takes, and the most it will take.
+/// The step [`project`] takes, which is also the longest it takes: the count rounds up.
 ///
 /// The discretization of (20) is first order, so a step understates the growth: `δp` gains
 /// `δv` linearly over the step and the within-step growth of `δv` itself — the `½at²` of
@@ -331,15 +331,22 @@ const PROJECTION_STEP: Seconds = Seconds::from_secs(0.1);
 
 /// The most steps [`project`] will take, which bounds what one query costs.
 ///
-/// 64 steps of [`PROJECTION_STEP`] is 6.4 s of horizon at full resolution, past any arming
-/// question this is meant to answer. A longer horizon than that is projected in 64 longer
-/// steps instead of more of them, so it costs the same and reads more optimistic still.
+/// 64 steps of [`PROJECTION_STEP`] is 6.4 s of horizon at the step the accuracy above was
+/// measured at, past any arming question this is meant to answer. A longer horizon is
+/// projected in 64 longer steps rather than more of them, so it costs the same and leaves
+/// that measured range — gracefully rather than without bound, because the count stays fixed
+/// while `dt` stretches. Position variance against the same 100 Hz reference: 0.950 at 6.4 s,
+/// 0.935 at 10 s, 0.913 at 30 s, 0.907 at 60 s, 0.902 at 120 s. So a horizon of minutes is
+/// answered about 10 % optimistic in the variance, 5 % in the sigma, rather than 5 % — worth
+/// knowing if [`Accuracy::horizon`](crate::Accuracy::horizon) is set out there, and not worth
+/// a longer loop on an arming query to fix.
 const MAX_PROJECTION_STEPS: usize = 64;
 
 /// Grow `P` over `horizon` as if nothing were measured and the vehicle stayed put.
 /// Equations (16)–(22), run forward without a sample.
 ///
-/// This is the arming question's half of [`Eskf::predicted_validity`]: not *is the estimate
+/// This is the arming question's half of [`Eskf::predicted_validity`](crate::Eskf::predicted_validity):
+/// not *is the estimate
 /// good now*, but *will it still be good in `horizon` seconds if I take off and nothing
 /// aids it*. The covariance is the only thing that can answer that, and answering it means
 /// running the same growth `predict` runs — so this builds (20) and calls (22) rather than
@@ -397,8 +404,12 @@ pub(crate) fn project(
 ///
 /// The count depends on [`Accuracy::horizon`](crate::Accuracy::horizon), which is fixed for
 /// the life of a filter, so it is a constant per configuration rather than a loop that runs
-/// until something converges. A horizon that is zero, negative or not a number takes one
-/// step, and one step of a horizon that is not positive grows nothing.
+/// until something converges.
+///
+/// A horizon that is zero, negative or not a number lands on one step, and that is not what
+/// makes it safe: one step of a *negative* horizon subtracts `Q` and lands variances below
+/// zero. [`project`] refuses such a horizon before it gets here, and this function has no
+/// opinion on the matter — which is worth knowing before calling it from anywhere else.
 fn projection_steps(horizon: Seconds) -> usize {
     let wanted = horizon.as_secs() / PROJECTION_STEP.as_secs();
     // NaN fails both comparisons and falls through to one step, which is what `project`'s
@@ -406,7 +417,15 @@ fn projection_steps(horizon: Seconds) -> usize {
     if wanted >= MAX_PROJECTION_STEPS as f32 {
         MAX_PROJECTION_STEPS
     } else if wanted > 1.0 {
-        wanted as usize
+        // Rounded up, not truncated: truncating leaves the last step carrying the remainder,
+        // so a 1.5 s horizon would take one 1.5 s step and the step size the measurement was
+        // made at would be an aspiration rather than a bound.
+        let whole = wanted as usize;
+        if wanted > whole as f32 {
+            whole + 1
+        } else {
+            whole
+        }
     } else {
         1
     }
@@ -417,7 +436,7 @@ fn projection_steps(horizon: Seconds) -> usize {
 ///
 /// The inverse of the test (11) is written against — a level vehicle at rest reads
 /// `(0, 0, −γ)` — evaluated at an attitude that need not be level. Named because [`project`]
-/// and the measurement behind [`PROJECTION_STEPS`] have to use the same one for the
+/// and the measurement behind [`PROJECTION_STEP`] have to use the same one for the
 /// comparison between them to mean anything.
 fn stationary_sample(state: &State) -> Corrected {
     let rotation = state.attitude.quaternion().to_rotation_matrix();

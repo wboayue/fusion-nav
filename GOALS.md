@@ -231,9 +231,10 @@ nothing else: alignment is settled by two production estimators agreeing, so it 
 whether each quantity will be good if the vehicle leaves the ground now, rather than whether it
 is good while sitting still with half its states unobservable. ArduPilot's `pred_horiz_pos_rel`
 is the same idea and PX4 has no equivalent, which makes it the one place the status model here is
-ahead of both. It still means *aiding is arriving*: (16)–(22) make the projection possible — a
-copy of `P` propagated forward and tested there — and what is missing now is the horizon, which is
-a mission number rather than a derivable one.
+ahead of both — and the projection widens that gap, since neither publishes one. A copy of `P` is
+propagated `Accuracy::horizon` forward with nothing fusing and tested there, **or** the quantity
+counts because a source constraining it is being accepted. The horizon is the one number in the
+crate no data could settle, which is why it is configuration; see differentiator 7's boundary.
 
 ## Open design questions
 

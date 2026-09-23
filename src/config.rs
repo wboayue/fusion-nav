@@ -393,9 +393,14 @@ pub struct Accuracy {
     /// into a minute of dead reckoning.
     ///
     /// Read as a duration of *unaided* flight: the covariance is propagated this far with
-    /// nothing fusing and each quantity tested at the far end. A value that is not a
-    /// positive duration projects nothing, so `predicted_validity` then asks exactly what
-    /// [`validity`](crate::Eskf::validity) asks.
+    /// nothing fusing and each quantity tested at the far end. A value that is not a positive
+    /// duration projects nothing, which leaves `predicted_validity` its other clause — the
+    /// current answer widened by whatever source is being accepted — rather than reducing it
+    /// to [`validity`](crate::Eskf::validity).
+    ///
+    /// Out past 6.4 s the projection takes longer steps rather than more of them and drifts
+    /// further onto the optimistic side; `propagate.rs`'s `MAX_PROJECTION_STEPS` measures by
+    /// how much.
     pub horizon: Seconds,
 }
 

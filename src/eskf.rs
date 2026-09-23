@@ -3055,27 +3055,48 @@ mod tests {
     }
 
     #[test]
-    fn a_horizon_of_zero_asks_what_validity_asks() {
-        // The documented boundary: with nothing to project, the prediction is the current
-        // answer widened only by the aiding clause. This is also what a caller who never
-        // set a horizon would get if the default were zero, so it has to be honest rather
-        // than accidental.
-        let config = Config {
+    fn a_horizon_of_zero_projects_nothing_and_leaves_the_aiding_clause_alone() {
+        // The documented boundary, and it is *not* "predicted_validity becomes validity":
+        // the aiding clause is unconditional, so a zero horizon leaves the optimistic half
+        // exactly where it was. Asserting the equality instead would pass on a start with no
+        // fresh source and say nothing, which is the shape of test this one replaces.
+        let zero_horizon = Config {
             accuracy: Accuracy {
                 horizon: Seconds::from_secs(0.0),
                 ..Accuracy::default()
             },
             ..Config::default()
         };
-        let mut filter = Eskf::new(config);
-        let _ = filter
+
+        // With nothing being accepted, the two do agree: there is no aiding to widen by.
+        let mut quiet = Eskf::new(zero_horizon);
+        let _ = quiet
             .initialize(&window_with_mag(), Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
-
-        let (now, predicted) = (filter.validity(), filter.predicted_validity());
+        let (now, predicted) = (quiet.validity(), quiet.predicted_validity());
         assert_eq!(now.tilt, predicted.tilt);
         assert_eq!(now.heading, predicted.heading);
-        assert_eq!(now.vertical_position, predicted.vertical_position);
+
+        // With a source being accepted they do not, however short the horizon. A heading at
+        // σ 0.6 rad is wider than `Accuracy::heading` (0.5236), so it establishes yaw without
+        // making it good: invalid now, and predicted valid because the magnetometer is there.
+        let mut aided = Eskf::new(zero_horizon);
+        let _ = aided
+            .initialize(&moving_window_at(100.0), Seconds::from_secs(0.25))
+            .expect("moving, not unusable");
+        assert!(
+            aided
+                .fuse_mag_heading(
+                    MagField::body(0.22, 0.0, 0.44),
+                    HeadingNoise::from_sigma(0.6),
+                )
+                .is_accepted()
+        );
+        assert!(!aided.validity().heading, "0.6 rad is outside the bar");
+        assert!(
+            aided.predicted_validity().heading,
+            "a zero horizon must not take the aiding clause away"
+        );
     }
 
     fn zurich() -> Geodetic {
