@@ -7,7 +7,7 @@ use crate::health::{Diagnostics, Fusion, Propagation, SourceHealth, Status, Vali
 use crate::init::{self, Alignment, Coarse, InitError, Measured, StaticSample, baro_reference};
 use crate::math::{below_floor, exp_quat, floor_diagonal};
 use crate::observation::{baro, gnss, mag};
-use crate::propagate::{ImuSample, propagate};
+use crate::propagate::{ImuSample, project, propagate};
 use crate::state::{Covariance, ErrorState, State};
 use crate::units::{
     Altitude, AltitudeNoise, Attitude, HeadingNoise, MagField, Position, PositionNoise, Radians,
@@ -997,7 +997,8 @@ impl Eskf {
     /// it lazily would make the answer depend on whether anyone asked.
     fn note_alignment(&mut self) {
         if self.initialized && !self.aligned {
-            self.aligned = self.tilt_within(ALIGNED_TILT) && self.heading_within(ALIGNED_HEADING);
+            self.aligned = self.tilt_within(&self.covariance, ALIGNED_TILT)
+                && self.heading_within(&self.covariance, ALIGNED_HEADING);
         }
     }
 
@@ -1006,6 +1007,18 @@ impl Eskf {
     /// Also carried on [`State::validity`](crate::State::validity), which is where most
     /// callers will meet it.
     pub fn validity(&self) -> Validity {
+        self.validity_of(&self.covariance)
+    }
+
+    /// [`validity`](Self::validity)'s question asked of any covariance, not only the one the
+    /// filter is holding.
+    ///
+    /// One definition, two covariances: the current one, and the one
+    /// [`predicted_validity`](Self::predicted_validity) projects to its horizon. Reading the
+    /// verdict off one and re-deriving the geometry for the other would be two
+    /// implementations of a single claim — the mistake `false_valid` made in the replay
+    /// harness, where a 2-D norm stood in for the per-axis test this actually performs.
+    fn validity_of(&self, p: &Covariance) -> Validity {
         if !self.initialized {
             return Validity::NONE;
         }
@@ -1014,20 +1027,20 @@ impl Eskf {
         let velocity = accuracy.velocity.as_m_per_s();
 
         Validity {
-            tilt: self.tilt_within(accuracy.tilt),
-            heading: self.heading_within(accuracy.heading),
+            tilt: self.tilt_within(p, accuracy.tilt),
+            heading: self.heading_within(p, accuracy.heading),
             // A quantity nothing ever established is not valid however tight the prior on
             // it looks: nobody set that number.
             horizontal_position: !self.unestablished.position
-                && self.within(ErrorState::PositionNorth, position)
-                && self.within(ErrorState::PositionEast, position),
+                && within(p, ErrorState::PositionNorth, position)
+                && within(p, ErrorState::PositionEast, position),
             vertical_position: !self.unestablished.position
-                && self.within(ErrorState::PositionDown, position),
+                && within(p, ErrorState::PositionDown, position),
             horizontal_velocity: !self.unestablished.velocity
-                && self.within(ErrorState::VelocityNorth, velocity)
-                && self.within(ErrorState::VelocityEast, velocity),
+                && within(p, ErrorState::VelocityNorth, velocity)
+                && within(p, ErrorState::VelocityEast, velocity),
             vertical_velocity: !self.unestablished.velocity
-                && self.within(ErrorState::VelocityDown, velocity),
+                && within(p, ErrorState::VelocityDown, velocity),
         }
     }
 
@@ -1035,21 +1048,17 @@ impl Eskf {
     ///
     /// Shared by [`validity`](Self::validity) and the alignment latch, which ask it against
     /// different bars; one definition is what keeps the two claims the same shape.
-    fn tilt_within(&self, bar: Radians) -> bool {
+    fn tilt_within(&self, p: &Covariance, bar: Radians) -> bool {
         let sigma = bar.as_radians();
-        self.within(ErrorState::AttitudeX, sigma) && self.within(ErrorState::AttitudeY, sigma)
+        within(p, ErrorState::AttitudeX, sigma) && within(p, ErrorState::AttitudeY, sigma)
     }
 
     /// Whether heading has been established and is within `bar`.
     ///
     /// A heading nothing observed fails whatever its variance: stillness never observes yaw,
     /// and a prior on a yaw nobody measured is not an estimate of one.
-    fn heading_within(&self, bar: Radians) -> bool {
-        !self.unestablished.heading && self.within(ErrorState::AttitudeZ, bar.as_radians())
-    }
-
-    fn within(&self, state: ErrorState, sigma: f32) -> bool {
-        self.covariance.variance(state) <= sigma * sigma
+    fn heading_within(&self, p: &Covariance, bar: Radians) -> bool {
+        !self.unestablished.heading && within(p, ErrorState::AttitudeZ, bar.as_radians())
     }
 
     /// Which parts of the estimate the filter expects to be good **if the vehicle left
@@ -1061,25 +1070,40 @@ impl Eskf {
     /// that would in fact be navigating a second after takeoff. A vehicle that refused to
     /// arm on that answer would never arm at all.
     ///
-    /// So a quantity counts here if it is already valid, or if a source that constrains
-    /// it is currently being accepted — the aiding is there, and using it is a matter of
-    /// time. `pred_horiz_pos_rel` in ArduPilot's status word is the same idea; PX4 has no
-    /// equivalent.
+    /// So a quantity counts here if it survives the horizon, **or** if a source that
+    /// constrains it is currently being accepted. The two halves answer the two ways an
+    /// arming check can be wrong. The projection is the pessimistic half: `P` is propagated
+    /// [`Accuracy::horizon`](crate::Accuracy::horizon) forward with nothing fusing, by the
+    /// (16)–(22) `predict` itself runs, and each quantity is tested at the far end — so a
+    /// tilt that is inside its bar now and will not be in a second reads false here and
+    /// true from [`validity`](Self::validity). The aiding clause is the optimistic half,
+    /// and it is what a projection cannot supply: before the first fix, horizontal position
+    /// has no estimate to propagate and the fact that fixes are arriving is the whole
+    /// answer. `pred_horiz_pos_rel` in ArduPilot's status word is that clause; PX4 has no
+    /// equivalent, and neither publishes the projection.
     ///
-    /// Tilt is the exception: a static window is the only thing that brings it in on a
-    /// schedule. A position fix reaches it only through (17), as the vehicle accelerates,
-    /// which no acceptance timer can promise, so it predicts exactly what it is. That changes
-    /// when in-motion leveling lands — see `GOALS.md`.
+    /// Tilt is where the projection earns its place, because nothing aids it: a static
+    /// window brings it in and (20)'s gyroscope-bias term takes it back out, on a schedule
+    /// the covariance knows and no acceptance timer does. At [`ImuNoise`](crate::ImuNoise)'s
+    /// defaults an unaided start holds tilt for 3.82 s, so a horizon under that arms and one
+    /// over it does not — an answer, where before there was only the current value repeated.
     ///
-    /// **Stub.** "Expects" means aiding is arriving, not a projection forward. (16)–(22) now
-    /// make the projection possible — propagate a copy of `P` to a horizon and test it there —
-    /// and what is still missing is the horizon itself, which is a number nothing in the crate
-    /// can derive: how long after arming the vehicle needs the estimate. Stage 9 owns it.
+    /// The projection reads slightly optimistic and the amount is measured: a first-order
+    /// step understates growth, and `propagate.rs`'s `PROJECTION_STEP` holds that within
+    /// 2.5 % of the sigma out to a 5 s horizon. It costs one `F` and up to 64 covariance
+    /// propagations, which is an arming-rate query and not something to poll at IMU rate.
     pub fn predicted_validity(&self) -> Validity {
-        let now = self.validity();
         if !self.initialized {
-            return now;
+            return Validity::NONE;
         }
+        let horizon = project(
+            &self.state,
+            self.covariance,
+            self.config.accuracy.horizon,
+            &self.config.imu,
+        );
+        let ahead = self.validity_of(&horizon);
+
         let fresh =
             |source: SourceHealth| source.accepted_within(self.config.timeouts.degraded_after);
         let d = &self.diagnostics;
@@ -1087,14 +1111,15 @@ impl Eskf {
         let height = position || fresh(d.baro_altitude);
 
         Validity {
-            // Gravity is not an aiding source the filter tracks, so tilt speaks for
-            // itself.
-            tilt: now.tilt,
-            heading: now.heading || fresh(d.mag_heading),
-            horizontal_position: now.horizontal_position || position,
-            vertical_position: now.vertical_position || height,
-            horizontal_velocity: now.horizontal_velocity || velocity,
-            vertical_velocity: now.vertical_velocity || velocity,
+            // Gravity is not an aiding source the filter tracks, so tilt has only the
+            // projection to speak for it -- which is the one quantity where that is the
+            // whole answer rather than half of it.
+            tilt: ahead.tilt,
+            heading: ahead.heading || fresh(d.mag_heading),
+            horizontal_position: ahead.horizontal_position || position,
+            vertical_position: ahead.vertical_position || height,
+            horizontal_velocity: ahead.horizontal_velocity || velocity,
+            vertical_velocity: ahead.vertical_velocity || velocity,
         }
     }
 
@@ -1279,6 +1304,16 @@ impl Unestablished {
             heading: !(settled && observed_field),
         }
     }
+}
+
+/// Whether one error state's variance is within `sigma`, one standard deviation on that axis.
+///
+/// A free function rather than a method, because the covariance it reads is an argument: the
+/// filter asks this of the one it holds and of the one
+/// [`Eskf::predicted_validity`] projects, and a method taking `&self` would quietly answer
+/// for the wrong one.
+fn within(p: &Covariance, state: ErrorState, sigma: f32) -> bool {
+    p.variance(state) <= sigma * sigma
 }
 
 /// Record a refusal against the source that produced it, and hand the outcome back to the
@@ -2990,6 +3025,77 @@ mod tests {
         assert!(
             !predicted.horizontal_position,
             "and says nothing about where it is"
+        );
+    }
+
+    #[test]
+    fn the_horizon_is_what_separates_predicted_validity_from_the_current_one() {
+        // The projection's whole point, on the quantity nothing aids. A static start levels
+        // tilt and holds it for 3.82 s unaided
+        // (`an_unaided_start_holds_its_attitude_for_the_margin_the_defaults_buy`), so a
+        // horizon inside that arms and one outside it does not -- while `validity` says the
+        // same thing at both, because it is answering about now.
+        let ask = |seconds: f32| {
+            let config = Config {
+                accuracy: Accuracy {
+                    horizon: Seconds::from_secs(seconds),
+                    ..Accuracy::default()
+                },
+                ..Config::default()
+            };
+            let mut filter = Eskf::new(config);
+            let _ = filter
+                .initialize(&window_with_mag(), Seconds::from_secs(0.25))
+                .expect("a 2 s window of stillness");
+            (filter.validity().tilt, filter.predicted_validity().tilt)
+        };
+
+        assert_eq!(ask(1.0), (true, true), "a second is inside the 3.82 s hold");
+        assert_eq!(ask(6.0), (true, false), "six seconds is outside it");
+    }
+
+    #[test]
+    fn a_horizon_of_zero_projects_nothing_and_leaves_the_aiding_clause_alone() {
+        // The documented boundary, and it is *not* "predicted_validity becomes validity":
+        // the aiding clause is unconditional, so a zero horizon leaves the optimistic half
+        // exactly where it was. Asserting the equality instead would pass on a start with no
+        // fresh source and say nothing, which is the shape of test this one replaces.
+        let zero_horizon = Config {
+            accuracy: Accuracy {
+                horizon: Seconds::from_secs(0.0),
+                ..Accuracy::default()
+            },
+            ..Config::default()
+        };
+
+        // With nothing being accepted, the two do agree: there is no aiding to widen by.
+        let mut quiet = Eskf::new(zero_horizon);
+        let _ = quiet
+            .initialize(&window_with_mag(), Seconds::from_secs(0.25))
+            .expect("a 2 s window of stillness");
+        let (now, predicted) = (quiet.validity(), quiet.predicted_validity());
+        assert_eq!(now.tilt, predicted.tilt);
+        assert_eq!(now.heading, predicted.heading);
+
+        // With a source being accepted they do not, however short the horizon. A heading at
+        // σ 0.6 rad is wider than `Accuracy::heading` (0.5236), so it establishes yaw without
+        // making it good: invalid now, and predicted valid because the magnetometer is there.
+        let mut aided = Eskf::new(zero_horizon);
+        let _ = aided
+            .initialize(&moving_window_at(100.0), Seconds::from_secs(0.25))
+            .expect("moving, not unusable");
+        assert!(
+            aided
+                .fuse_mag_heading(
+                    MagField::body(0.22, 0.0, 0.44),
+                    HeadingNoise::from_sigma(0.6),
+                )
+                .is_accepted()
+        );
+        assert!(!aided.validity().heading, "0.6 rad is outside the bar");
+        assert!(
+            aided.predicted_validity().heading,
+            "a zero horizon must not take the aiding clause away"
         );
     }
 

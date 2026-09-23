@@ -1,10 +1,11 @@
 //! What happens when sources stop arriving: status transitions, per-source diagnostics,
 //! and an application-driven recovery.
 //!
-//! GNSS position is fused and gated, equations (23)–(41); velocity, barometer and heading still
-//! accept unconditionally, so between fixes the estimate is dead reckoning. What is real is the
-//! gate turning down a glitch, the health bookkeeping — the timers, the aggregate [`Status`] —
-//! and the fact that recovery is the application's decision rather than the filter's.
+//! Every source is fused and gated, equations (23)–(41), so between fixes the estimate is dead
+//! reckoning because nothing is arriving rather than because nothing corrects. What this shows
+//! is the gate turning down a glitch, the health bookkeeping — the timers, the aggregate
+//! [`Status`] — and the fact that recovery is the application's decision rather than the
+//! filter's.
 //!
 //! Run with `cargo run --example degradation`. For the loop itself, see `basic.rs`.
 

@@ -1135,10 +1135,15 @@ impl Replay {
     }
 
     /// Per-quantity validity now, and predicted at takeoff.
+    ///
+    /// The second column names the horizon it asked over, because that is a `Config` choice
+    /// and the answer means nothing without it: `predicted_validity` projects the covariance
+    /// that far with nothing fusing, so the same log reads differently at 1 s and at 6 s.
     fn report_validity(&self) {
         let validity = self.filter.state().validity;
         let predicted = self.filter.predicted_validity();
-        println!("\nvalidity at end of log        now  at takeoff");
+        let horizon = self.filter.config().accuracy.horizon.as_secs();
+        println!("\nvalidity at end of log        now  +{horizon:.1} s unaided");
         for quantity in &QUANTITIES {
             let mark = |flag| if flag { "yes" } else { " no" };
             println!(

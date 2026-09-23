@@ -383,6 +383,25 @@ pub struct Accuracy {
     pub position: Meters,
     /// Velocity, horizontally and vertically.
     pub velocity: MetersPerSecond,
+    /// How far ahead [`Eskf::predicted_validity`](crate::Eskf::predicted_validity) asks:
+    /// how long after arming the vehicle needs the estimate to still be good.
+    ///
+    /// The one number in this crate that no data could settle. Every other default here was
+    /// measured or could be, by replaying what real vehicles do; this one is a statement
+    /// about the mission ahead rather than about any sensor, and a multirotor that will be
+    /// under a GNSS fix within a second disagrees completely with a fixed-wing hand-launched
+    /// into a minute of dead reckoning.
+    ///
+    /// Read as a duration of *unaided* flight: the covariance is propagated this far with
+    /// nothing fusing and each quantity tested at the far end. A value that is not a positive
+    /// duration projects nothing, which leaves `predicted_validity` its other clause — the
+    /// current answer widened by whatever source is being accepted — rather than reducing it
+    /// to [`validity`](crate::Eskf::validity).
+    ///
+    /// Out past 6.4 s the projection takes longer steps rather than more of them and drifts
+    /// further onto the optimistic side; `propagate.rs`'s `MAX_PROJECTION_STEPS` measures by
+    /// how much.
+    pub horizon: Seconds,
 }
 
 impl Default for Accuracy {
@@ -418,12 +437,20 @@ impl Default for Accuracy {
     /// — and [`Aligning`](crate::Status::Aligning) reads the alignment bars rather than these.
     /// So these are a claim about which outputs a controller may still use, which is the
     /// question [`Accuracy`] exists to answer. Supply your own numbers.
+    ///
+    /// [`horizon`](Accuracy::horizon) is 1 s, and it is a placeholder in a stronger sense
+    /// than the other four: they are bars some estimator uses, while no estimator publishes
+    /// this one at all. A second is the shortest horizon that is not simply
+    /// [`validity`](crate::Eskf::validity) asked twice — long enough that the gyroscope-bias
+    /// term of (20) has started to tell on tilt, short enough that a vehicle expecting a
+    /// GNSS fix on takeoff is not failed for the gap before it.
     fn default() -> Self {
         Self {
             tilt: ALIGNED_TILT,
             heading: ALIGNED_HEADING,
             position: Meters::from_meters(5.0),
             velocity: MetersPerSecond::from_m_per_s(1.0),
+            horizon: Seconds::from_secs(1.0),
         }
     }
 }

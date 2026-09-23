@@ -76,8 +76,9 @@ pub(crate) enum Update {
 /// it here.
 ///
 /// The frame is the largest in the crate: `update::<3>` is 6848 bytes on both
-/// `thumbv6m-none-eabi` and `thumbv7em-none-eabihf` at `opt-level = 3`, against 3920 for
-/// `propagate`. Most of it is (27), whose `I − KH`, its two products and `K R Kᵀ` are each a
+/// `thumbv6m-none-eabi` and `thumbv7em-none-eabihf` at `opt-level = 3`, against 2832 for
+/// `propagate_covariance`, the largest single frame propagation reaches. Most of it is (27),
+/// whose `I − KH`, its two products and `K R Kᵀ` are each a
 /// 900-byte 15 × 15. That is comfortable on the STM32H7 class `DESIGN.md` names and most of
 /// the RAM of an 8 KB Cortex-M0 part. #41, stack high-water on hardware, is what would say a
 /// less obvious form is worth writing.
