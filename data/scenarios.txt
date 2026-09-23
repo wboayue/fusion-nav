@@ -6,8 +6,10 @@
 # rather than how self-consistent -- `data/manifest.txt` is the other half, on real logs with
 # no truth.
 #
-# `key<=v` is a ceiling, `key>=v` a floor; `data/expect.sh` owns the syntax and the comparison,
-# and `data/manifest.txt` writes its expectations in the same language.
+# `key<=v` is a ceiling, `key>=v` a floor, `key=lo..hi` a two-sided bound; `data/expect.sh` owns
+# the syntax and the comparison, and `data/manifest.txt` writes its expectations in the same
+# language. Nothing here is two-sided yet: a ceiling is what an error wants, and the band a
+# statistic wants is #89's ANEES against a chi-square bound rather than any key on this line.
 #
 # Each bound is the measured value plus 1 %, rounded outward -- except `scored`, which is a count
 # of matched truth rows rather than a float comparison and is pinned exactly, because slack there

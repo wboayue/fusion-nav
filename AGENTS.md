@@ -344,10 +344,11 @@ test the covariance's own promise: it passes a filter that grew more accurate an
 overconfident at once, which is #89 (ANEES over N seeds), after #35 gives it a covariance that
 moves. The format is already indifferent to several seeds per scenario.
 
-The comparison itself is shared, not copied: `data/expect.sh` owns `key=value`, `key<=value` and
-`key>=value`, and both readers source it — `data/bench.sh` for `data/scenarios.txt`,
-`data/fetch.sh --check` for `data/manifest.txt`. So the pair syntax is one language, and #4's
-tolerance ranges are a manifest edit rather than a second comparator. It carries fixtures with
+The comparison itself is shared, not copied: `data/expect.sh` owns `key=value`, `key<=value`,
+`key>=value` and `key=lo..hi`, and both readers source it — `data/bench.sh` for
+`data/scenarios.txt`, `data/fetch.sh --check` for `data/manifest.txt`. So the pair syntax is one
+language, and the two-sided bound a statistic wants landed as one arm in one `case` rather than as
+a second comparator — which is what #89's ANEES band against a chi-square bound inherits. It carries fixtures with
 literal verdicts for the same reason `examples/replay.rs` does — the expectations in both files
 were produced by the harness they guard, so a comparator that waves something through turns a
 miscount into the baseline everything later is measured against.
@@ -605,7 +606,7 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
 
 ### Adding a measurement source costs more than a `fuse_*`
 
-Every source touches the same nine places, and three of them are public:
+Every source touches the same ten places, and three of them are public:
 
 - `src/observation/` gains a module forming `y`, `H` and `R_m`, and its `fuse_*` calls
   `update::update` and `Eskf::apply`. This is the cheap part, and the only one the compiler checks:
@@ -620,6 +621,11 @@ Every source touches the same nine places, and three of them are public:
 - `Validity` and `predicted_validity`: decide whether the source constrains a quantity, and say so.
 - A `summary` key in `examples/replay.rs`, pinned per log in `data/manifest.txt`, plus a corpus log
   that uniquely covers the source — or an honest note that none does.
+- `AXES` in `examples/replay.rs`, naming the source's innovation components, since `Innovation`
+  carries values and variances and no names for them. Twenty consistency keys are generated from
+  it and `SOURCES` together, so a source added to one and not the other is an index out of range
+  rather than a missing key — caught by an `assert_eq!` in the same file, which is the weakest
+  guard on this list.
 - The README fusion table, the `Eskf` and `prelude` doctests, and `EQUATIONS.md`'s mapping
   table.
 - `tools/ulog2replay.py`, which has to find the source in a ULog and name its variance columns.
