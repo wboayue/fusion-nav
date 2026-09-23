@@ -254,10 +254,35 @@ figure they produce:
 - For GNSS the statistic tests the receiver's own `eph`/`epv`/`s_variance_m_s`, which the harness
   passes through unfloored where both production estimators bound theirs. Position reads 0.0059,
   0.0255 and 0.1170, so those figures are wider than their residuals earn; `a299e722`'s velocity
-  reads 7.5623, a receiver contradicting its own differenced positions. Whether
-  the harness should apply the production floors is
-  [#105](https://github.com/wboayue/fusion-nav/issues/105), and these are the numbers it now
-  argues from rather than around.
+  reads 7.5623, a receiver contradicting its own differenced positions.
+
+**Unfloored is the policy, and it is deliberate.** Both production estimators bound a receiver's
+reported accuracy before fusing, and this crate ships the same facility for an integrator who
+wants it — `PositionNoise::clamped` and `VelocityNoise::clamped`, whose doc comments carry both
+platforms' parameters, `file:line` and the shas they were read at. The harness applies neither,
+for three measured reasons:
+
+- **A floor erases the figure rather than bounding it.** PX4's `ekf2_gps_v_noise`, 0.5 m/s, sits
+  above 4885 of the corpus's 5348 velocity solutions — every solution on two logs and 90 % on the
+  third, honest receivers included — so it is the operative value rather than a backstop. The
+  position floors are a measured no-op in the other direction: reported σ_h never falls below
+  0.900 m against a 0.5 m bound, and σ_v averages 1.78–3.59 m against 0.75. Since the barometer
+  and the magnetometer already carry converter constants, flooring would leave no
+  receiver-reported variance anywhere in the corpus.
+- **It costs the only rejection the corpus has.** `rejected_gnss_vel=278` on `a299e722` is the
+  single non-zero count across five logs, and either platform's floor absorbs all 278, leaving
+  the gate of (37)–(38) untested by real data.
+- **It moves the accuracy gate.** `examples/simulate.rs` draws GNSS velocity noise at σ = 0.15 m/s
+  and `data/bench.sh` scores every scenario through this same harness, so a floor would hand every
+  simulated fix an `R` 11× too wide and move the ceilings in `data/scenarios.txt` — distrusting a
+  receiver the simulator defines as honest.
+
+The policy belongs to the corpus rather than to one log: a source added later reports its own
+accuracy the same way and is fused the same way. What it costs is that a figure here is not
+directly comparable with EKF2's on the same log, which fuses a floored `R` — a comparison states
+that difference or matches the policy, and
+[#8](https://github.com/wboayue/fusion-nav/issues/8) owns which. `r_policy=` on the `summary` line
+carries the verdict, so a published figure travels with the policy that produced it.
 
 `data/fetch.sh --check` needs `pyulog`, so it is a local tool rather than a CI job:
 `data/fetch.sh --venv` once, which installs the version the converter pins, and `fetch.sh`

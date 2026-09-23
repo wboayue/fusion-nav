@@ -665,7 +665,11 @@ length of `sources()`'s array.
   because the accuracy of a fix is a property of that fix. Passed as `PositionNoise` and friends,
   built from σ or variance as the source reports it. GNSS supplies its own (`eph`/`epv`,
   `s_variance_m_s` — a σ despite the name — squared into the replay CSV's variance columns by
-  `tools/ulog2replay.py`). PX4 logs no barometer or
+  `tools/ulog2replay.py`). The harness fuses each row's variance **unfloored**, where both
+  production estimators bound a receiver's first — a decision rather than an oversight, reported
+  as `r_policy=` on the `summary` line and argued in `data/README.md`; the clamping facility is
+  `PositionNoise::clamped` / `VelocityNoise::clamped`, which own the PX4 and ArduPilot citations.
+  PX4 logs no barometer or
   magnetic-heading variance, so the converter substitutes constants and says so; the honest
   source for those is bench characterization of the residual after calibration, which is a
   different activity from calibration itself (this crate does no calibration — that is the
