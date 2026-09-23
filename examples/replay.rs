@@ -233,6 +233,15 @@ const SIGMAS: [(ErrorState, &str); 15] = [
 /// row it came from. The constants below index this and `RATIOS` alike.
 const SOURCES: [&str; 4] = ["gnss_pos", "gnss_vel", "baro", "mag"];
 
+/// What each source's innovation components are, in the order the filter publishes them, so a
+/// `nu_` key names an axis rather than a subscript.
+///
+/// `Innovation` carries values and variances and no names for them, so this table is the only
+/// statement of what component 0 of a GNSS position is — which makes it one more place a fifth
+/// source has to reach, beside the eight `AGENTS.md` lists. The lengths are the observation
+/// dimensions of (28)–(30) and (34)–(36) and are checked against what the filter reports.
+const AXES: [&[&str]; 4] = [&["n", "e", "d"], &["n", "e", "d"], &["d"], &["yaw"]];
+
 /// Last test ratio per source, in `Diagnostics` order.
 const RATIOS: [&str; 4] = ["r_gnss_pos", "r_gnss_vel", "r_baro", "r_mag"];
 const GNSS_POS: usize = 0;
@@ -295,6 +304,194 @@ fn run() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Each source's gate threshold, indexed by the same constants as [`SOURCES`].
+///
+/// One function serving two readings. Applied to the configured gates it gives the `γ` that
+/// turns a published test ratio back into `ε = r γ`, equation (38) read backwards. Applied to
+/// `Gates::at(Percentile::P95)` it gives the 95 % chi-square quantile at each source's degrees
+/// of freedom — the bound `nis_over95_` counts against, taken from the table `src/config.rs`
+/// already checks against the closed-form CDF rather than written out a second time here.
+fn thresholds(gates: Gates) -> [f32; SOURCES.len()] {
+    [
+        gates.gnss_position.threshold(),
+        gates.gnss_velocity.threshold(),
+        gates.baro_altitude.threshold(),
+        gates.mag_heading.threshold(),
+    ]
+}
+
+/// One axis of one source's innovations, and the statistics defined on that series.
+///
+/// `ν` is summed as it arrives, because a mean needs no history. `x = ν/√S_ii` is kept,
+/// because the lag-1 autocorrelation written as `Σxₜxₜ₊₁ − (n−1)x̄²` over `Σx² − n x̄²` loses
+/// its significant digits exactly where `nu_` reports an offset worth having — the case the
+/// statistic exists to find. The two-pass definition has no such subtraction. The cost is
+/// bounded and small: the longest series in the corpus is the 2 h log's 35 631 magnetometer
+/// rows, 143 KB, in a host-side example that already allocates per row.
+#[derive(Default)]
+struct Series {
+    nu_sum: f64,
+    normalized: Vec<f32>,
+}
+
+impl Series {
+    /// `ν` and the `S_ii` the filter published beside it.
+    fn push(&mut self, nu: f32, variance: f32) {
+        self.nu_sum += f64::from(nu);
+        self.normalized.push(nu / variance.sqrt());
+    }
+
+    fn len(&self) -> usize {
+        self.normalized.len()
+    }
+
+    /// Mean `ν`, in the observation's own units. `None` where the source gated nothing.
+    ///
+    /// Zero for a well-modelled source. A standing offset is what a declination error, an
+    /// uncorrected lever arm and measurement latency each leave behind, and none of them
+    /// moves the NIS mean nearly as legibly.
+    fn nu_mean(&self) -> Option<f64> {
+        (self.len() > 0).then(|| self.nu_sum / self.len() as f64)
+    }
+
+    /// Lag-1 autocorrelation of the normalized innovation: `Σ(xₜ−x̄)(xₜ₊₁−x̄) / Σ(xₜ−x̄)²`.
+    ///
+    /// Zero for a white sequence, which is what an innovation is when the filter's model of
+    /// the measurement is right. `None` below two samples, and on a series that does not
+    /// vary at all, where the ratio is 0/0 rather than zero.
+    fn autocorrelation(&self) -> Option<f64> {
+        if self.len() < 2 {
+            return None;
+        }
+        let mean = self.normalized.iter().map(|&x| f64::from(x)).sum::<f64>() / self.len() as f64;
+        let centered: Vec<f64> = self
+            .normalized
+            .iter()
+            .map(|&x| f64::from(x) - mean)
+            .collect();
+        let variance: f64 = centered.iter().map(|x| x * x).sum();
+        let lagged: f64 = centered.windows(2).map(|pair| pair[0] * pair[1]).sum();
+        (variance > 0.0).then(|| lagged / variance)
+    }
+}
+
+/// The innovation-consistency statistics of #5, accumulated per source as the replay runs.
+///
+/// Every number here is built from what the filter published — `ν` and diag(`S`) on
+/// [`SourceHealth::innovation`], the test ratio beside them — and never from the measurement
+/// and the covariance, which would be a second implementation of (23) and (24) free to
+/// disagree with the first. `AGENTS.md`, *one statistic, one implementation*.
+///
+/// What these say that `rejected_` cannot: a rejection count of zero is equally consistent
+/// with an `R` that is right and with one a hundred times too wide, and three of the four
+/// gated sources have never been turned down by a corpus log. A NIS mean is what tells those
+/// apart. For the barometer and the magnetometer it tests a constant `tools/ulog2replay.py`
+/// invented, PX4 logging no variance for either; for GNSS it tests the receiver's own
+/// `eph`/`epv`/`s_variance_m_s`. `data/README.md` carries that caveat beside the keys.
+struct Consistency {
+    /// Per source, per axis, trimmed to the observation's dimension by what is pushed.
+    axes: [[Series; 3]; SOURCES.len()],
+    /// `Σε` and the dimension the filter reported, per source.
+    epsilon: [f64; SOURCES.len()],
+    dimension: [usize; SOURCES.len()],
+    /// Rows whose `ε` exceeded the 95 % chi-square quantile at that source's dimension.
+    over95: [u32; SOURCES.len()],
+    /// `γ` as configured, and the 95 % bound, both from [`thresholds`].
+    gamma: [f32; SOURCES.len()],
+    bound95: [f32; SOURCES.len()],
+}
+
+impl Consistency {
+    fn new(gates: Gates) -> Self {
+        Self {
+            axes: Default::default(),
+            epsilon: [0.0; SOURCES.len()],
+            dimension: [0; SOURCES.len()],
+            over95: [0; SOURCES.len()],
+            gamma: thresholds(gates),
+            bound95: thresholds(Gates::at(Percentile::P95)),
+        }
+    }
+
+    /// Record one measurement the gate ran an update for.
+    ///
+    /// Rejections are included, and that is the decision this population turns on: their `ε`
+    /// is computed before the gate has a verdict, so it is as real as an acceptance's, and
+    /// leaving them out censors exactly the tail the statistic is measuring. What it costs is
+    /// that a rejected fix leaves the state where an accepted one would not, so every later
+    /// `ε` on that source is conditioned on the refusal — a NIS mean over a gated source
+    /// describes the filter that ran, not the one that would have run.
+    fn record(&mut self, source: usize, ratio: f32, innovation: &Innovation) {
+        let epsilon = ratio * self.gamma[source];
+        self.epsilon[source] += f64::from(epsilon);
+        self.dimension[source] = innovation.values().len();
+        if epsilon > self.bound95[source] {
+            self.over95[source] += 1;
+        }
+        for (axis, (&nu, &variance)) in innovation
+            .values()
+            .iter()
+            .zip(innovation.variances())
+            .enumerate()
+        {
+            self.axes[source][axis].push(nu, variance);
+        }
+    }
+
+    /// Measurements this source contributed, which is what every mean divides by.
+    fn rows(&self, source: usize) -> usize {
+        self.axes[source][0].len()
+    }
+
+    /// Mean `ε` per degree of freedom: 1 for a filter whose `S` describes its own
+    /// innovations, below 1 where the reported `R` is wider than the measurement earns, above
+    /// it where the source claims an accuracy it does not deliver.
+    fn nis(&self, source: usize) -> Option<f64> {
+        let dimension = self.dimension[source];
+        (self.rows(source) > 0 && dimension > 0)
+            .then(|| self.epsilon[source] / self.rows(source) as f64 / dimension as f64)
+    }
+
+    /// The fraction of measurements whose `ε` sat above the 95 % bound — 0.05 for a filter
+    /// whose innovations are distributed the way `S` claims.
+    ///
+    /// Beside the mean rather than instead of it, because the two fail differently: a mean
+    /// near 1 built from a body of tiny residuals and a handful of large ones describes no
+    /// distribution at all, and it is the tail that the gate's own percentile rests on.
+    fn over95_fraction(&self, source: usize) -> Option<f64> {
+        (self.rows(source) > 0).then(|| f64::from(self.over95[source]) / self.rows(source) as f64)
+    }
+
+    /// Lag-1 autocorrelation for a source, averaged over its axes.
+    ///
+    /// Per source rather than per axis, which is the one aggregate here that hides something
+    /// and is worth the hiding: what this tests is whether successive measurements are
+    /// independent, and that is a property of the source's own sampling and internal
+    /// filtering — a 1 Hz receiver smooths its solution in time, and the smoothing arrives on
+    /// every axis of the fix at once. If an axis ever separates from its siblings, the key
+    /// splits the way `rejected=` did.
+    ///
+    /// `None` where no axis had two samples to correlate.
+    fn autocorrelation(&self, source: usize) -> Option<f64> {
+        let per_axis: Vec<f64> = self.axes[source]
+            .iter()
+            .take(self.dimension[source])
+            .filter_map(Series::autocorrelation)
+            .collect();
+        (!per_axis.is_empty()).then(|| per_axis.iter().sum::<f64>() / per_axis.len() as f64)
+    }
+}
+
+/// A statistic, or the word for not having one.
+///
+/// `none` rather than `0.0000` follows `nees_text`: a zero is a reading, and a source that
+/// gated nothing has not produced one. It also keeps an empty source from quietly clearing a
+/// range in `data/manifest.txt`, since `data/expect.sh` refuses a value that is not a number
+/// where a bound was asked for.
+fn measured(value: Option<f64>, places: usize) -> String {
+    value.map_or_else(|| "none".to_string(), |value| format!("{value:.places$}"))
+}
+
 /// The two output streams.
 ///
 /// Two files rather than a `row_kind` column: an epoch row and a fusion row share no
@@ -344,6 +541,8 @@ struct Replay {
     /// Timestamp of the first IMU row, so the wait for stillness can be bounded.
     first_imu: Option<f64>,
     ratios: [Option<f32>; 4],
+    /// The innovation-consistency statistics of #5, fed from `observe`.
+    consistency: Consistency,
     initialized_at: Option<f64>,
     alignment: Option<Alignment>,
     mag_at_init: bool,
@@ -398,6 +597,7 @@ struct Replay {
 impl Replay {
     fn new(config: Config, scoring: Option<Scoring>) -> Self {
         Self {
+            consistency: Consistency::new(config.gates),
             filter: Eskf::new(config),
             window: [StaticSample::default(); WINDOW],
             filled: 0,
@@ -649,6 +849,18 @@ impl Replay {
         let innovation = outcome
             .test_ratio()
             .and_then(|_| self.filter.diagnostics().sources()[source].1.innovation);
+        // The consistency statistics take the same rows the columns do, and the predicate is
+        // the innovation rather than the ratio, which is a narrower claim than it looks. An
+        // adoption already fails both — `Fusion::Reset` publishes no ratio — so the two agree
+        // on every path this harness drives. They part on `fuse_gnss_geodetic`, which spends
+        // its first fix placing the origin and reports `Accepted { test_ratio: 0.0 }` with
+        // nothing beside it: a population keyed on the ratio would average in an `ε = 0` that
+        // no update produced. Nothing here calls it, so this forecloses that rather than
+        // fixing it, and the reason to choose it anyway is that `ε` is defined on the
+        // innovation and the ratio is a proxy for having one.
+        if let (Some(ratio), Some(innovation)) = (outcome.test_ratio(), innovation.as_ref()) {
+            self.consistency.record(source, ratio, innovation);
+        }
         writeln!(
             out.fusions,
             "{t:.4},{},{},{},{}",
@@ -700,6 +912,54 @@ impl Replay {
             .zip(self.filter.diagnostics().sources())
             .map(|(name, (_, health))| format!(" rejected_{name}={}", health.rejected))
             .collect()
+    }
+
+    /// The innovation-consistency keys of #5, as ` key=value` pairs.
+    ///
+    /// Grouped by statistic rather than by source, so the manifest reads as four claims
+    /// across the corpus rather than four unrelated numbers per sensor. Each family answers
+    /// something `rejected_` cannot: `nis_` whether the reported `R` is the size the residuals
+    /// say it is, `nis_over95_` whether the tail agrees with the mean that the gate's own
+    /// percentile is chosen against, `nu_` whether a standing offset is being fused as noise,
+    /// `acf1_` whether successive innovations are independent the way (24) assumes.
+    ///
+    /// `none` where a source gated nothing, and for `acf1_` below two samples — the
+    /// `nees_text` convention, a word rather than a zero, because a zero is a reading and this
+    /// is the absence of one. A word also keeps a manifest range from clearing itself on an
+    /// empty source: `data/expect.sh` refuses a non-number where a bound is asked for.
+    ///
+    /// Fixed decimals throughout and never scientific notation, which the comparator's number
+    /// pattern does not admit — a `1e-7` would arrive there as `NOT A NUMBER`.
+    fn consistency_keys(&self) -> String {
+        let per_source = |name: &str, places: usize, of: &dyn Fn(usize) -> Option<f64>| -> String {
+            SOURCES
+                .iter()
+                .enumerate()
+                .map(|(source, spelling)| {
+                    format!(" {name}_{spelling}={}", measured(of(source), places))
+                })
+                .collect()
+        };
+
+        let nis = per_source("nis", 4, &|source| self.consistency.nis(source));
+        let over95 = per_source("nis_over95", 4, &|source| {
+            self.consistency.over95_fraction(source)
+        });
+        let acf1 = per_source("acf1", 4, &|source| {
+            self.consistency.autocorrelation(source)
+        });
+        let nu: String = SOURCES
+            .iter()
+            .enumerate()
+            .flat_map(|(source, spelling)| {
+                AXES[source].iter().enumerate().map(move |(axis, name)| {
+                    let mean = self.consistency.axes[source][axis].nu_mean();
+                    format!(" nu_{spelling}_{name}={}", measured(mean, 6))
+                })
+            })
+            .collect();
+
+        format!("{nis}{over95}{nu}{acf1}")
     }
 
     /// Keep the first moment the filter reported itself aligned, and only the first.
@@ -1055,7 +1315,7 @@ impl Replay {
             "summary rate={:.0} window={} align={} an={} alpha0={} heading={} \
              roll0={roll0:.2} pitch0={pitch0:.2} yaw0={yaw0:.2} resets={} \
              aligned_at={} attitude_lost={} rejected={}{} discarded={} refused={} \
-             invalid={} floored={} epochs={} \
+             invalid={} floored={} epochs={}{} \
              transitions={} status={:?}",
             self.interval.map_or(0.0, |interval| 1.0 / interval),
             self.window_samples,
@@ -1129,6 +1389,11 @@ impl Replay {
             // moves neither `rejected=` nor `transitions=`.
             self.filter.diagnostics().floored,
             self.epochs,
+            // The four consistency families of #5. They read the rows the gate judged, which
+            // no count on this line describes: `rejected_` says how often the gate refused
+            // and nothing about whether the `R` it was judging against is the size the
+            // residuals say it is. See `consistency_keys`.
+            self.consistency_keys(),
             self.transitions.len(),
             state.status,
         )
@@ -1797,7 +2062,7 @@ fn write_fusion_header(out: &mut impl Write, gates: Gates) -> io::Result<()> {
     writeln!(
         out,
         "# nu* and s* are the filter's published innovation and diag(S), empty where the \
-         gate ran no update or the source's fuse_* does not run one yet"
+         gate ran no update: an adoption, a refusal, a call before initialization"
     )?;
     writeln!(out, "t_s,source,nu0,nu1,nu2,s0,s1,s2,ratio,outcome")
 }
@@ -1916,14 +2181,25 @@ mod tests {
         accuracy: Accuracy,
         scoring: Option<Scoring>,
     ) -> Result<(Replay, String), String> {
-        let mut replay = Replay::new(
+        drive_with(
+            log,
             Config {
                 magnetic_declination: Radians::from_radians(-0.06),
                 accuracy,
                 ..Config::default()
             },
             scoring,
-        );
+        )
+    }
+
+    /// [`drive`] against a whole `Config`, for the fixtures whose subject is a tuning knob
+    /// rather than the log.
+    fn drive_with(
+        log: &Log,
+        config: Config,
+        scoring: Option<Scoring>,
+    ) -> Result<(Replay, String), String> {
+        let mut replay = Replay::new(config, scoring);
         let mut fusions = Vec::new();
         {
             let mut out = Sinks {
@@ -2486,6 +2762,185 @@ mod tests {
             );
         }
         assert_eq!(SOURCES.len(), Diagnostics::default().sources().len());
+    }
+
+    #[test]
+    fn a_series_computes_its_three_statistics_from_its_definitions() {
+        // `ν` of 1, −1, 2 against a variance of 4, so `x` is 0.5, −0.5, 1.0 and every
+        // number below can be done on paper: mean `ν` is 2/3, and the lag-1 autocorrelation
+        // is Σ(xₜ−x̄)(xₜ₊₁−x̄) / Σ(xₜ−x̄)² = (−25/36)/(42/36) = −25/42.
+        let mut series = Series::default();
+        for nu in [1.0, -1.0, 2.0] {
+            series.push(nu, 4.0);
+        }
+        assert_eq!(series.len(), 3);
+        assert!((series.nu_mean().expect("three samples") - 2.0 / 3.0).abs() < 1e-9);
+        let acf1 = series.autocorrelation().expect("three samples");
+        assert!((acf1 - (-25.0 / 42.0)).abs() < 1e-6, "acf1 was {acf1}");
+
+        // Below two samples there is no pair to correlate, and a series that does not vary
+        // has a zero denominator rather than a zero correlation. Both are `none` on the
+        // line, not a number a range could clear.
+        let mut one = Series::default();
+        one.push(1.0, 4.0);
+        assert_eq!(one.autocorrelation(), None);
+        let mut flat = Series::default();
+        flat.push(1.0, 4.0);
+        flat.push(1.0, 4.0);
+        assert_eq!(flat.autocorrelation(), None);
+    }
+
+    #[test]
+    fn every_source_carries_all_four_consistency_keys() {
+        // Generated from `SOURCES` and `AXES` the way `rejected_` is, so the same silence a
+        // missing `SOURCES` entry buys applies here. `AXES` is the only statement of what
+        // component 0 of a fix is called, so its lengths are checked against the dimensions
+        // the filter actually publishes rather than trusted.
+        // The barometer needs a reading inside the window as well as after it: with no `α₀`
+        // its `fuse_*` returns `NoReference`, the gate never runs, and the source publishes
+        // no dimension to check `AXES` against.
+        let log = Log::new()
+            .baro(0.0, 42.0)
+            .run(0.0, 100, DT, STILL)
+            .gnss_pos(2.0, 1.0, 2.0, -3.0)
+            .gnss_vel(2.0, 0.1, 0.0, 0.0)
+            .baro(2.0, 42.5)
+            .mag(2.0)
+            .mag(2.1);
+        let replay = replay(&log);
+        let summary = replay.summary();
+        for (source, spelling) in SOURCES.iter().enumerate() {
+            for family in ["nis", "nis_over95", "acf1"] {
+                assert!(
+                    summary.contains(&format!(" {family}_{spelling}=")),
+                    "no {family}_{spelling}= on the line: {summary}"
+                );
+            }
+            for axis in AXES[source] {
+                assert!(
+                    summary.contains(&format!(" nu_{spelling}_{axis}=")),
+                    "no nu_{spelling}_{axis}= on the line: {summary}"
+                );
+            }
+            assert_eq!(
+                AXES[source].len(),
+                replay.consistency.dimension[source],
+                "{spelling} publishes a different dimension than AXES names"
+            );
+        }
+        assert_eq!(AXES.len(), SOURCES.len());
+    }
+
+    #[test]
+    fn nis_is_recovered_with_the_gate_the_filter_was_configured_with() {
+        // `ε = r γ`, so a harness that wrote its own `γ` instead of reading `Config::gates`
+        // would be wrong by the ratio of two percentiles and no other fixture here would
+        // notice: they all replay at the default. Nothing in this log is near either gate,
+        // so both runs accept the same measurements and follow the same trajectory, and the
+        // only thing that changed is the number `r` was divided by on the way out.
+        let log = still_start()
+            .gnss_pos(2.0, 1.0, 2.0, -3.0)
+            .gnss_pos(2.2, 1.1, 2.1, -3.1)
+            .gnss_pos(2.4, 0.9, 1.9, -2.9);
+        let at = |percentile| {
+            let config = Config {
+                magnetic_declination: Radians::from_radians(-0.06),
+                gates: Gates::at(percentile),
+                ..Config::default()
+            };
+            let (replay, _) = drive_with(&log, config, None).expect("fixture replays");
+            let summary = replay.summary();
+            assert_eq!(key(&summary, "rejected"), "0", "{summary}");
+            key(&summary, "nis_gnss_pos").to_string()
+        };
+        assert_eq!(at(Percentile::P999), at(Percentile::P95));
+    }
+
+    #[test]
+    fn an_adopted_measurement_contributes_no_epsilon() {
+        // A window with no magnetometer leaves yaw unobserved, so the first heading is
+        // adopted rather than fused: `Fusion::Reset`, ratio 0, no innovation.
+        //
+        // This pins a property rather than guarding a branch, which is worth the sentence
+        // because the other fixtures here do the opposite. #5 asked whether a NIS mean
+        // should exclude adoptions or average them in as zeros; the answer is that it
+        // cannot average them in, since an adoption publishes no innovation and therefore
+        // no dimension to record a row against. No mutation of the predicate in `observe`
+        // puts an adopted row into a population. What this is for is the reader who asks
+        // #5's question and wants it answered by something that runs.
+        let one_fused = replay(&still_start().mag(2.0).mag(2.1));
+        let summary = one_fused.summary();
+        assert_eq!(key(&summary, "resets"), "1", "{summary}");
+        assert_eq!(one_fused.consistency.rows(MAG), 1, "{summary}");
+
+        // The same start with one more heading. Two fusions and still one adoption, so the
+        // population grows by exactly the measurement that was fused.
+        let two_fused = replay(&still_start().mag(2.0).mag(2.1).mag(2.2));
+        assert_eq!(key(&two_fused.summary(), "resets"), "1");
+        assert_eq!(two_fused.consistency.rows(MAG), 2);
+    }
+
+    #[test]
+    fn a_rejected_measurement_does_contribute_its_epsilon() {
+        // The gate's verdict is not the statistic's: `ε` is computed before the gate has
+        // one, and a rejection is the largest `ε` a source produces. Dropping those would
+        // censor the tail `nis_over95_` exists to count and flatter every NIS mean on a
+        // source that is being turned down — which on the corpus is the one source whose
+        // reported accuracy is in question.
+        let clean = still_start().gnss_pos(2.0, 1.0, 2.0, -3.0);
+        let with_outlier = still_start()
+            .gnss_pos(2.0, 1.0, 2.0, -3.0)
+            .gnss_pos(2.2, 1000.0, 0.0, 0.0);
+
+        let clean = replay(&clean);
+        let with_outlier = replay(&with_outlier);
+        assert_eq!(key(&with_outlier.summary(), "rejected"), "1");
+        assert_eq!(clean.consistency.rows(GNSS_POS), 1);
+        assert_eq!(with_outlier.consistency.rows(GNSS_POS), 2);
+
+        // A kilometre off a metre-scale `S`, so it lands far above the 95 % bound and drags
+        // the mean with it. Both keys move; neither would if the row were dropped.
+        let nis = |replay: &Replay| {
+            key(&replay.summary(), "nis_gnss_pos")
+                .parse::<f64>()
+                .expect("a number")
+        };
+        assert!(
+            nis(&with_outlier) > nis(&clean),
+            "{} against {}",
+            nis(&with_outlier),
+            nis(&clean)
+        );
+        assert_eq!(
+            key(&with_outlier.summary(), "nis_over95_gnss_pos"),
+            "0.5000"
+        );
+        assert_eq!(key(&clean.summary(), "nis_over95_gnss_pos"), "0.0000");
+    }
+
+    #[test]
+    fn a_source_that_gated_nothing_reads_none_rather_than_zero() {
+        // A still start with no aiding at all. Zero would be a reading — a filter whose
+        // innovations were perfectly consistent reads a NIS near 1, and one whose `R` is
+        // enormous reads near 0 — so a source that produced no measurement has to say so in
+        // a word. It also keeps an empty source from clearing a manifest range, since
+        // `data/expect.sh` refuses a non-number where a bound is asked for.
+        let summary = replay(&still_start()).summary();
+        for source in SOURCES {
+            assert_eq!(key(&summary, &format!("nis_{source}")), "none", "{summary}");
+            assert_eq!(
+                key(&summary, &format!("nis_over95_{source}")),
+                "none",
+                "{summary}"
+            );
+            assert_eq!(
+                key(&summary, &format!("acf1_{source}")),
+                "none",
+                "{summary}"
+            );
+        }
+        assert_eq!(key(&summary, "nu_gnss_pos_n"), "none", "{summary}");
+        assert_eq!(key(&summary, "nu_mag_yaw"), "none", "{summary}");
     }
 
     #[test]
