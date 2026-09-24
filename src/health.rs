@@ -236,8 +236,11 @@ impl Fusion {
 ///
 /// Each half is a [`Fusion`] with its own gate in [`Gates`](crate::Gates) and its own
 /// [`SourceHealth`] in [`Diagnostics`]: [`gnss_position`](Diagnostics::gnss_position) for
-/// the horizontal pair, [`gnss_height`](Diagnostics::gnss_height) for the vertical. A
-/// refusal or an adoption applies to the fix as a whole and reads the same in both.
+/// the horizontal pair, [`gnss_height`](Diagnostics::gnss_height) for the vertical. The
+/// halves can disagree: a number unusable in one half refuses that half alone, so a 2D fix
+/// with `epv = 0` reads `horizontal: Accepted` beside `height: InvalidNoise`. What reads the
+/// same in both is what concerns the fix as a whole — an adoption, an origin placed, a filter
+/// not initialized, and any refusal on those paths, which write all three axes at once.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GnssFusion {
     /// North and east, gated at [`Gates::gnss_position`](crate::Gates::gnss_position).

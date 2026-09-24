@@ -899,6 +899,10 @@ impl Replay {
     }
 
     /// Sum one `SourceHealth` count over every source.
+    ///
+    /// A count of verdicts, not of measurements: a GNSS fix is two sources, `gnss_pos` and
+    /// `gnss_hgt`, so one refused, rejected or adopted whole counts twice here. The
+    /// per-source keys are where the two halves are told apart.
     fn total(&self, count: fn(&SourceHealth) -> u32) -> u32 {
         self.filter
             .diagnostics()
@@ -908,7 +912,7 @@ impl Replay {
             .sum()
     }
 
-    /// Measurements the gate turned down, over every source.
+    /// Verdicts the gate turned down, over every source; see [`Replay::total`].
     fn rejections(&self) -> u32 {
         self.total(|health| health.rejected)
     }
@@ -1029,7 +1033,7 @@ impl Replay {
         }
     }
 
-    /// Measurements the filter could not judge at all, over every source.
+    /// Verdicts the filter could not reach at all, over every source; see [`Replay::total`].
     ///
     /// The gate's verdict is [`Replay::rejections`]; this is everything that never reached
     /// it — a variance of zero or less, a NaN in the measurement, an altitude with no
@@ -1046,7 +1050,8 @@ impl Replay {
     }
 
     /// Measurements adopted outright because initialization left nothing to fuse them
-    /// against. At most one per source.
+    /// against. At most one per source, so a GNSS fix adopted whole counts twice; see
+    /// [`Replay::total`].
     fn resets(&self) -> u32 {
         self.total(|health| health.adopted)
     }

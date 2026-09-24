@@ -1358,12 +1358,6 @@ fn within(p: &Covariance, state: ErrorState, sigma: f32) -> bool {
     p.variance(state) <= sigma * sigma
 }
 
-/// Record a refusal against the source that produced it, and hand the outcome back to the
-/// caller.
-///
-/// One place maps an outcome to what `Diagnostics` stores, so a `fuse_*` that grows another
-/// guard cannot forget to count it. A refusal moves no timer; see
-/// [`SourceHealth::record_refused`].
 /// Why one half of a GNSS fix cannot be judged, or `None` if it can: the checks every
 /// `fuse_*` makes of a whole measurement, made of the components that half reads.
 fn screen(values: &[f32], variances: &[f32]) -> Option<Fusion> {
@@ -1376,6 +1370,12 @@ fn screen(values: &[f32], variances: &[f32]) -> Option<Fusion> {
     None
 }
 
+/// Record a refusal against the source that produced it, and hand the outcome back to the
+/// caller.
+///
+/// One place maps an outcome to what `Diagnostics` stores, so a `fuse_*` that grows another
+/// guard cannot forget to count it. A refusal moves no timer; see
+/// [`SourceHealth::record_refused`].
 fn refuse(source: &mut SourceHealth, outcome: Fusion) -> Fusion {
     if let Some(refusal) = outcome.refusal() {
         source.record_refused(refusal);
