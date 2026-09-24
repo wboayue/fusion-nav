@@ -154,13 +154,13 @@
 # `pos_h` 9.14 to 3.03, `yaw` 12.96 deg to 7.59. A heading the window observed, stage 8's, is
 # the other half -- this one corrects the consequence and leaves the 0.6 rad in place.
 static           1  pos_h<=0.275 pos_v<=0.152 vel<=0.193 pos_h_max<=0.988  tilt<=0.631 yaw<=0.514 ba<=0.07963 bg<=0.000999 in3s>=0.9817 nees_pos<=2.0627   nees_vel<=0.4577 nees_att<=0.1343 false_valid<=0   false_valid_att<=0   scored>=11600
-mission          2  pos_h<=0.243 pos_v<=0.084 vel<=0.190 pos_h_max<=0.887  tilt<=0.582 yaw<=0.658 ba<=0.05400 bg<=0.001024 in3s>=0.9894 nees_pos<=1.0469   nees_vel<=0.4448 nees_att<=0.2026 false_valid<=0   false_valid_att<=0   scored>=36600
-harsh_imu        2  pos_h<=0.243 pos_v<=0.084 vel<=0.192 pos_h_max<=0.886  tilt<=1.160 yaw<=1.071 ba<=0.15479 bg<=0.002253 in3s>=0.9891 nees_pos<=1.0482   nees_vel<=0.4512 nees_att<=0.6048 false_valid<=0   false_valid_att<=0   scored>=36600
-gnss_outage      2  pos_h<=2.391 pos_v<=0.093 vel<=0.356 pos_h_max<=29.524 tilt<=0.606 yaw<=0.657 ba<=0.05418 bg<=0.001020 in3s>=0.9893 nees_pos<=0.8938   nees_vel<=0.4088 nees_att<=0.1951 false_valid<=0   false_valid_att<=0   scored>=36600
-moving_start     4  pos_h<=0.266 pos_v<=0.295 vel<=0.195 pos_h_max<=0.975  tilt<=1.682 yaw<=0.927 ba<=0.05849 bg<=0.002687 in3s>=0.9900 nees_pos<=1.0760   nees_vel<=0.4550 nees_att<=0.2286 false_valid<=0   false_valid_att<=0   scored>=15999
+mission          2  pos_h<=0.247 pos_v<=0.084 vel<=0.190 pos_h_max<=0.887  tilt<=0.582 yaw<=0.658 ba<=0.05400 bg<=0.001024 in3s>=0.9894 nees_pos<=1.0645   nees_vel<=0.4448 nees_att<=0.2026 false_valid<=0   false_valid_att<=0   scored>=36600
+harsh_imu        2  pos_h<=0.247 pos_v<=0.084 vel<=0.192 pos_h_max<=0.886  tilt<=1.160 yaw<=1.071 ba<=0.15479 bg<=0.002253 in3s>=0.9891 nees_pos<=1.0658   nees_vel<=0.4512 nees_att<=0.6048 false_valid<=0   false_valid_att<=0   scored>=36600
+gnss_outage      2  pos_h<=2.391 pos_v<=0.093 vel<=0.356 pos_h_max<=29.524 tilt<=0.606 yaw<=0.657 ba<=0.05418 bg<=0.001020 in3s>=0.9893 nees_pos<=0.9114   nees_vel<=0.4088 nees_att<=0.1951 false_valid<=0   false_valid_att<=0   scored>=36600
+moving_start     4  pos_h<=0.266 pos_v<=0.300 vel<=0.195 pos_h_max<=0.975  tilt<=1.682 yaw<=0.927 ba<=0.05849 bg<=0.002687 in3s>=0.9900 nees_pos<=1.0934   nees_vel<=0.4550 nees_att<=0.2286 false_valid<=0   false_valid_att<=0   scored>=15999
 baro_drift       2  pos_h<=0.246 pos_v<=2.073 vel<=0.190 pos_h_max<=0.887  tilt<=0.578 yaw<=0.656 ba<=0.05401 bg<=0.001022 in3s>=0.9295 nees_pos<=259.8456 nees_vel<=0.4450 nees_att<=0.2007 false_valid<=0   false_valid_att<=0   scored>=36600
 gnss_latency     2  pos_h<=2.220 pos_v<=0.085 vel<=0.475 pos_h_max<=3.361  tilt<=0.962 yaw<=1.367 ba<=0.05383 bg<=0.002371 in3s>=0.8609 nees_pos<=57.3319  nees_vel<=2.7390 nees_att<=0.7754 false_valid<=418 false_valid_att<=122 scored>=36600
-mag_disturbance  2  pos_h<=0.243 pos_v<=0.084 vel<=0.190 pos_h_max<=0.887  tilt<=0.583 yaw<=0.734 ba<=0.05355 bg<=0.001062 in3s>=0.9894 nees_pos<=1.0470   nees_vel<=0.4450 nees_att<=0.2029 false_valid<=0   false_valid_att<=0   scored>=36600
+mag_disturbance  2  pos_h<=0.247 pos_v<=0.084 vel<=0.190 pos_h_max<=0.887  tilt<=0.583 yaw<=0.734 ba<=0.05355 bg<=0.001062 in3s>=0.9894 nees_pos<=1.0646   nees_vel<=0.4450 nees_att<=0.2029 false_valid<=0   false_valid_att<=0   scored>=36600
 flight           8  pos_h<=2.502 pos_v<=0.421 vel<=0.685 pos_h_max<=6.166  tilt<=1.037 yaw<=7.679 ba<=0.07355 bg<=0.003287 in3s>=0.9900 nees_pos<=0.6243   nees_vel<=0.2326 nees_att<=0.1779 false_valid<=0   false_valid_att<=0   scored>=600
 
 # (34)-(36) are what `yaw` reads now, and what it buys depends entirely on what the start knew.
@@ -209,3 +209,14 @@ flight           8  pos_h<=2.502 pos_v<=0.421 vel<=0.685 pos_h_max<=6.166  tilt<
 # velocity correction and leaves less for the gyroscope bias, which is the split (20)'s
 # attitude-bias block decides. Attitude accuracy and attitude consistency both improved in the
 # same diff; the biases gave up 5 % and 3 % to pay for it.
+#
+# Splitting (28)'s gate into a horizontal `Gate<2>` and a vertical `Gate<1>` (`GnssFusion`) is a
+# loosening everywhere GNSS is fused, and a small one: `mission` `pos_h` 0.240 to 0.244 and
+# `nees_pos` 1.0365 to 1.0539, with `harsh_imu`, `mag_disturbance`, `gnss_outage` and
+# `moving_start` moving by the same few tenths of a percent. It is the price of two tests where
+# there was one. Each half is gated at P999 and so turns down one good half in a thousand, where
+# the joint test turned down one fix: `mission` rejected 1 fix and now rejects 2 horizontal
+# halves and 2 heights, out of 915. Whenever both halves are accepted the two sequential updates
+# are the joint one, `R` being diagonal. What it buys is on real data rather than here: a height
+# the estimate disagrees with no longer costs the horizontal fix beside it (`src/config.rs`,
+# `Gates`).

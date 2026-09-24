@@ -347,7 +347,7 @@ The keys are `rate=` and `window=` (the IMU rate and the samples it takes to cov
 `min_duration`), `align=`, `an=` and `alpha0=` (what initialization achieved, whether a moving
 window measured the vehicle's own acceleration from GNSS velocity — `ā_n` of equation (5′), which
 only a moving start reports — and whether it fixed a barometric reference), `heading=` (`Validity::heading` **as initialization left it** — not as the
-log ended, which would only restate `transitions=`), `resets=` (measurements adopted outright),
+log ended, which would only restate `transitions=`), `resets=` (adoptions, per source, so a GNSS fix adopted whole counts in both its halves),
 `aligned_at=` (seconds from the end of the window to the first epoch `Eskf::is_aligned` read true,
 or `never`), `attitude_lost=` (seconds to the first epoch at or after it where `Validity::attitude`
 read false against `Config::accuracy` — the mission's bar, where `aligned_at=` reads the fixed
@@ -356,7 +356,8 @@ the covariance growth of (16)–(22) shows up on logs with no truth — `Status:
 nothing else on the line moves when it happens), `r_policy=` (what the harness handed each
 `fuse_*` as `R` — `raw` on every entry, and the paragraph below the caveats says why it is not a
 floor), `rejected=` and `discarded=` (the gate's verdict, and everything that never reached it — a
-variance of zero or less, a NaN, an altitude with no reference), `refused=` and `invalid=` (steps
+variance of zero or less, a NaN, an altitude with no reference; both count verdicts, so a GNSS
+fix judged or refused whole counts once per half), `refused=` and `invalid=` (steps
 refused as too long or as not a step at all — propagation, not measurements), `floored=`
 (variances raised to the diagonal floor of equation (42′), pinned at zero on every log because
 that is the claim — the floor sits far below anything the filter reaches, so a non-zero says a

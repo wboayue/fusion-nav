@@ -662,7 +662,7 @@ Every source touches the same ten places, and three of them are public:
   `update::update` and `Eskf::apply`. This is the cheap part, and the only one the compiler checks:
   a `Gate<M>` of the wrong dimension does not build.
 - `Diagnostics` gains a field and `sources()`'s return type changes length
-  (`src/health.rs:473-500`) — `#[non_exhaustive]` covers the new field, but not the array length,
+  (`src/health.rs:698-751`) — `#[non_exhaustive]` covers the new field, but not the array length,
   so settle the source set before publishing.
 - `Gates` gains a field, a `Gate<DOF>` at the observation's dimension — the type states the degrees
   of freedom, and `Gates::at` needs a line for the new field.

@@ -3,7 +3,7 @@
 use crate::config::{ALIGNED_HEADING, ALIGNED_TILT, Config};
 use crate::frames::{Body, Ned};
 use crate::geodetic::{Geodetic, LocalOrigin};
-use crate::health::{Diagnostics, Fusion, Propagation, SourceHealth, Status, Validity};
+use crate::health::{Diagnostics, Fusion, GnssFusion, Propagation, SourceHealth, Status, Validity};
 use crate::init::{self, Alignment, Coarse, InitError, Measured, StaticSample, baro_reference};
 use crate::math::{below_floor, exp_quat, floor_diagonal};
 use crate::observation::{baro, gnss, mag};
@@ -620,37 +620,73 @@ impl Eskf {
     /// belongs with it rather than in [`Config`]. A caller handing over a raw `eph` is
     /// therefore trusting the receiver further than either production autopilot does.
     ///
-    /// A fix inconsistent with the estimate at [`Gates::gnss_position`](crate::Gates) is
-    /// [`Fusion::Rejected`] and changes nothing but the source's health. The test is joint
-    /// over all three axes; see [`Gates`](crate::Gates) for why.
+    /// The fix is two measurements, gated and reported apart: north and east at
+    /// [`Gates::gnss_position`](crate::Gates), then down at
+    /// [`Gates::gnss_height`](crate::Gates), against the state the first left. A half
+    /// inconsistent with the estimate is [`Fusion::Rejected`] and changes nothing but its
+    /// own health, so a height the estimate disagrees with costs no horizontal aiding; see
+    /// [`GnssFusion`] for the measurement behind that. A half whose numbers are unusable is
+    /// refused alone for the same reason — a 2D fix reporting `epv = 0` still fuses its
+    /// horizontal position.
+    ///
+    /// The adoption after a coarse start is the exception, and takes the fix whole: it writes
+    /// all three axes onto the covariance, so any unusable number refuses both halves.
     pub fn fuse_gnss_position(
         &mut self,
         position: Position<Ned>,
         noise: PositionNoise<Ned>,
-    ) -> Fusion {
+    ) -> GnssFusion {
         if !self.initialized {
-            return refuse(&mut self.diagnostics.gnss_position, Fusion::NotInitialized);
-        }
-        if !position.is_finite() || !noise.is_finite() {
-            return refuse(&mut self.diagnostics.gnss_position, Fusion::NotFinite);
-        }
-        if !noise.is_positive() {
-            return refuse(&mut self.diagnostics.gnss_position, Fusion::InvalidNoise);
+            return self.refuse_gnss(Fusion::NotInitialized);
         }
         if self.unestablished.position {
+            if !position.is_finite() || !noise.is_finite() {
+                return self.refuse_gnss(Fusion::NotFinite);
+            }
+            if !noise.is_positive() {
+                return self.refuse_gnss(Fusion::InvalidNoise);
+            }
             let adopted = self.reset_position_to(position, noise);
             debug_assert!(adopted, "the fix cleared the same checks just above");
             self.diagnostics.gnss_position.record_adopted();
-            return Fusion::Reset;
+            self.diagnostics.gnss_height.record_adopted();
+            return GnssFusion::both(Fusion::Reset);
         }
-        let observation = gnss::position_observation(&self.state, position, noise);
-        let outcome = update(
-            &self.state,
-            &self.covariance,
-            &observation,
-            self.config.gates.gnss_position,
-        );
-        self.apply(outcome, |diagnostics| &mut diagnostics.gnss_position)
+
+        let (z, r) = (position.vector(), noise.variance());
+        let horizontal = match screen(&[z[0], z[1]], &[r[0], r[1]]) {
+            Some(refusal) => refuse(&mut self.diagnostics.gnss_position, refusal),
+            None => {
+                let observation = gnss::horizontal_observation(&self.state, position, noise);
+                let outcome = update(
+                    &self.state,
+                    &self.covariance,
+                    &observation,
+                    self.config.gates.gnss_position,
+                );
+                self.apply(outcome, |diagnostics| &mut diagnostics.gnss_position)
+            }
+        };
+        let height = match screen(&[z[2]], &[r[2]]) {
+            Some(refusal) => refuse(&mut self.diagnostics.gnss_height, refusal),
+            None => {
+                let observation = gnss::height_observation(&self.state, position, noise);
+                let outcome = update(
+                    &self.state,
+                    &self.covariance,
+                    &observation,
+                    self.config.gates.gnss_height,
+                );
+                self.apply(outcome, |diagnostics| &mut diagnostics.gnss_height)
+            }
+        };
+        GnssFusion { horizontal, height }
+    }
+
+    /// Refuse both halves of a GNSS fix for one reason.
+    fn refuse_gnss(&mut self, outcome: Fusion) -> GnssFusion {
+        refuse(&mut self.diagnostics.gnss_position, outcome);
+        GnssFusion::both(refuse(&mut self.diagnostics.gnss_height, outcome))
     }
 
     /// Fuse a GNSS fix given as latitude, longitude and height. Equations (43), (44),
@@ -676,29 +712,34 @@ impl Eskf {
     /// would put the navigation frame in the Gulf of Guinea for the rest of the flight.
     ///
     /// `noise` is as for [`fuse_gnss_position`](Self::fuse_gnss_position), floor
-    /// included.
+    /// included, and so is the split into two gated halves.
     ///
-    /// A fix or noise that is not a number is refused with [`Fusion::NotFinite`]. A fix
+    /// A fix that is not a number is refused with [`Fusion::NotFinite`], both halves, since
+    /// no conversion survives one; so is a noise that is not, where the fix would place the
+    /// origin, which writes all three axes. A fix
     /// with a latitude beyond ±90° cannot place an origin, nor can one near a pole that no
     /// origin puts at the estimate (see [`LocalOrigin::placing`]): with none held it is
     /// refused with [`Fusion::NoReference`], and the next usable fix places it instead.
-    pub fn fuse_gnss_geodetic(&mut self, fix: Geodetic, noise: PositionNoise<Ned>) -> Fusion {
+    pub fn fuse_gnss_geodetic(&mut self, fix: Geodetic, noise: PositionNoise<Ned>) -> GnssFusion {
         if !self.initialized {
-            return refuse(&mut self.diagnostics.gnss_position, Fusion::NotInitialized);
+            return self.refuse_gnss(Fusion::NotInitialized);
         }
-        if !fix.is_finite() || !noise.is_finite() {
-            return refuse(&mut self.diagnostics.gnss_position, Fusion::NotFinite);
-        }
-        if !noise.is_positive() {
-            return refuse(&mut self.diagnostics.gnss_position, Fusion::InvalidNoise);
+        if !fix.is_finite() {
+            return self.refuse_gnss(Fusion::NotFinite);
         }
         if let Some(origin) = self.origin {
             return self.fuse_gnss_position(origin.to_ned(fix), noise);
         }
+        if !noise.is_finite() {
+            return self.refuse_gnss(Fusion::NotFinite);
+        }
+        if !noise.is_positive() {
+            return self.refuse_gnss(Fusion::InvalidNoise);
+        }
 
         if self.unestablished.position {
             let Some(origin) = LocalOrigin::new(fix) else {
-                return refuse(&mut self.diagnostics.gnss_position, Fusion::NoReference);
+                return self.refuse_gnss(Fusion::NoReference);
             };
             self.origin = Some(origin);
             return self.fuse_gnss_position(Position::zero(), noise);
@@ -707,7 +748,7 @@ impl Eskf {
         // Equation (44): the origin under the estimate, and the fix's error as the
         // position's.
         let Some(origin) = LocalOrigin::placing(fix, self.state.position) else {
-            return refuse(&mut self.diagnostics.gnss_position, Fusion::NoReference);
+            return self.refuse_gnss(Fusion::NoReference);
         };
         self.origin = Some(origin);
         let placed = self.reset_position_to(self.state.position, noise);
@@ -716,7 +757,8 @@ impl Eskf {
             "the estimate and the fix's noise are both already checked"
         );
         self.diagnostics.gnss_position.record_accepted(0.0, None);
-        Fusion::Accepted { test_ratio: 0.0 }
+        self.diagnostics.gnss_height.record_accepted(0.0, None);
+        GnssFusion::both(Fusion::Accepted { test_ratio: 0.0 })
     }
 
     /// Fuse a GNSS velocity solution. Equation (29).
@@ -1108,7 +1150,7 @@ impl Eskf {
             |source: SourceHealth| source.accepted_within(self.config.timeouts.degraded_after);
         let d = &self.diagnostics;
         let (position, velocity) = (fresh(d.gnss_position), fresh(d.gnss_velocity));
-        let height = position || fresh(d.baro_altitude);
+        let height = fresh(d.gnss_height) || fresh(d.baro_altitude);
 
         Validity {
             // Gravity is not an aiding source the filter tracks, so tilt has only the
@@ -1314,6 +1356,18 @@ impl Unestablished {
 /// for the wrong one.
 fn within(p: &Covariance, state: ErrorState, sigma: f32) -> bool {
     p.variance(state) <= sigma * sigma
+}
+
+/// Why one half of a GNSS fix cannot be judged, or `None` if it can: the checks every
+/// `fuse_*` makes of a whole measurement, made of the components that half reads.
+fn screen(values: &[f32], variances: &[f32]) -> Option<Fusion> {
+    if !values.iter().chain(variances).all(|v| v.is_finite()) {
+        return Some(Fusion::NotFinite);
+    }
+    if !variances.iter().all(|v| *v > 0.0) {
+        return Some(Fusion::InvalidNoise);
+    }
+    None
 }
 
 /// Record a refusal against the source that produced it, and hand the outcome back to the
@@ -1778,7 +1832,7 @@ mod tests {
         let noise = PositionNoise::horizontal_vertical(1.5, 1.5);
         assert_eq!(
             filter.fuse_gnss_position(Position::ned(120.0, -40.0, -75.0), noise),
-            Fusion::Reset
+            GnssFusion::both(Fusion::Reset)
         );
         // The second fix has an estimate to be judged against, so it is fused, not adopted.
         assert!(
@@ -2323,7 +2377,7 @@ mod tests {
         let fix = Position::ned(120.0, -40.0, -75.0);
         let outcome = filter.fuse_gnss_position(fix, PositionNoise::horizontal_vertical(1.5, 1.5));
 
-        assert_eq!(outcome, Fusion::Reset);
+        assert_eq!(outcome, GnssFusion::both(Fusion::Reset));
         assert!(outcome.is_accepted(), "the measurement was used");
         assert!(outcome.is_reset(), "and it stepped the state");
         assert_eq!(filter.state().position, fix);
@@ -2335,7 +2389,11 @@ mod tests {
         // Once is once: there is now an estimate for a gate to judge against, and the same
         // fix again is fused against it rather than adopted a second time.
         let outcome = filter.fuse_gnss_position(fix, PositionNoise::horizontal_vertical(1.5, 1.5));
-        assert!(matches!(outcome, Fusion::Accepted { .. }), "{outcome:?}");
+        assert!(
+            matches!(outcome.horizontal, Fusion::Accepted { .. })
+                && matches!(outcome.height, Fusion::Accepted { .. }),
+            "{outcome:?}"
+        );
         assert_eq!(filter.diagnostics().gnss_position.adopted, 1);
     }
 
@@ -2348,7 +2406,7 @@ mod tests {
             PositionNoise::horizontal_vertical(1.0, 1.0),
         );
 
-        let Fusion::Accepted { test_ratio } = outcome else {
+        let Fusion::Accepted { test_ratio } = outcome.horizontal else {
             panic!("expected an acceptance, got {outcome:?}");
         };
         assert!(test_ratio > 0.0 && test_ratio <= 1.0);
@@ -2372,7 +2430,10 @@ mod tests {
         let (state, covariance) = (filter.state(), *filter.covariance());
         let timer = filter.diagnostics().gnss_position.time_since_accepted;
 
-        let outcome = filter.fuse_gnss_position(Position::ned(1000.0, 0.0, 0.0), noise);
+        // A kilometre out in both halves, so neither changes anything.
+        let both = filter.fuse_gnss_position(Position::ned(1000.0, 0.0, 1000.0), noise);
+        assert!(matches!(both.height, Fusion::Rejected { .. }), "{both:?}");
+        let outcome = both.horizontal;
         assert!(matches!(outcome, Fusion::Rejected { test_ratio } if test_ratio > 1.0));
         assert_eq!(filter.state(), state);
         assert_eq!(filter.covariance(), &covariance);
@@ -2394,11 +2455,61 @@ mod tests {
             Position::ned(0.1, 0.0, 0.0),
             PositionNoise::horizontal_vertical(1.0, 1.0),
         );
-        assert_eq!(outcome, Fusion::StateInvalid);
-        assert_eq!(filter.state(), state);
+        assert_eq!(outcome.horizontal, Fusion::StateInvalid);
         let health = filter.diagnostics().gnss_position;
         assert_eq!(health.last_refusal, Some(Refusal::StateInvalid));
         assert_eq!((health.accepted, health.rejected), (0, 0));
+        // The broken variance is north's, which a height update never reads, so the height
+        // half is judged against a block that is still a covariance.
+        assert!(outcome.height.is_accepted(), "{outcome:?}");
+        assert_eq!(
+            filter.state().position.vector()[0],
+            state.position.vector()[0]
+        );
+    }
+
+    #[test]
+    fn a_height_the_estimate_disagrees_with_costs_no_horizontal_aiding() {
+        // The failure the split exists for: a receiver 50 m off in height on a 1 m σ,
+        // with a horizontal fix that agrees.
+        let mut filter = initialized();
+        let outcome = filter.fuse_gnss_position(
+            Position::ned(0.2, -0.1, -50.0),
+            PositionNoise::horizontal_vertical(1.0, 1.0),
+        );
+        assert!(
+            matches!(outcome.horizontal, Fusion::Accepted { .. }),
+            "{outcome:?}"
+        );
+        assert!(
+            matches!(outcome.height, Fusion::Rejected { .. }),
+            "{outcome:?}"
+        );
+        let d = filter.diagnostics();
+        assert_eq!((d.gnss_position.accepted, d.gnss_position.rejected), (1, 0));
+        assert_eq!((d.gnss_height.accepted, d.gnss_height.rejected), (0, 1));
+        assert!(
+            filter.state().position.vector()[2].abs() < 1e-3,
+            "height untouched"
+        );
+    }
+
+    #[test]
+    fn a_2d_fix_with_no_usable_height_still_fuses_its_horizontal_position() {
+        let mut filter = initialized();
+        let outcome = filter.fuse_gnss_position(
+            Position::ned(0.2, -0.1, 0.0),
+            PositionNoise::<Ned>::from_variance(1.0, 1.0, 0.0),
+        );
+        assert!(
+            matches!(outcome.horizontal, Fusion::Accepted { .. }),
+            "{outcome:?}"
+        );
+        assert_eq!(outcome.height, Fusion::InvalidNoise);
+        assert_eq!(
+            filter.diagnostics().gnss_height.last_refusal,
+            Some(Refusal::InvalidNoise)
+        );
     }
 
     #[test]
@@ -3162,11 +3273,11 @@ mod tests {
         let nonsense = Geodetic::from_degrees(f64::NAN, 8.5, 488.0);
         assert_eq!(
             filter.fuse_gnss_geodetic(nonsense, noise),
-            Fusion::NotFinite
+            GnssFusion::both(Fusion::NotFinite)
         );
         assert_eq!(
             filter.fuse_gnss_geodetic(zurich(), PositionNoise::from_sigma(f32::NAN, 1.5, 1.5)),
-            Fusion::NotFinite
+            GnssFusion::both(Fusion::NotFinite)
         );
         assert!(filter.state().position.is_finite());
         assert!(filter.fuse_gnss_geodetic(zurich(), noise).is_reset());
@@ -3178,10 +3289,12 @@ mod tests {
         assert!(filter.set_baro_reference(Altitude::from_meters(52.0)));
         let nan = f32::NAN;
         assert_eq!(
-            filter.fuse_gnss_position(
-                Position::ned(nan, 0.0, 0.0),
-                PositionNoise::horizontal_vertical(1.5, 1.5)
-            ),
+            filter
+                .fuse_gnss_position(
+                    Position::ned(nan, 0.0, 0.0),
+                    PositionNoise::horizontal_vertical(1.5, 1.5)
+                )
+                .horizontal,
             Fusion::NotFinite
         );
         assert_eq!(
@@ -3212,9 +3325,9 @@ mod tests {
         assert_eq!(
             filter.fuse_gnss_position(
                 Position::ned(1.0, 2.0, 3.0),
-                PositionNoise::<Ned>::from_variance(0.0, 1.0, 1.0),
+                PositionNoise::<Ned>::from_variance(0.0, 1.0, -1.0),
             ),
-            Fusion::InvalidNoise,
+            GnssFusion::both(Fusion::InvalidNoise),
             "zero variance claims a perfect measurement and makes S singular"
         );
         assert_eq!(
@@ -3240,7 +3353,7 @@ mod tests {
         );
         assert_eq!(
             filter.fuse_gnss_geodetic(zurich(), PositionNoise::<Ned>::from_variance(1.0, 1.0, 0.0)),
-            Fusion::InvalidNoise
+            GnssFusion::both(Fusion::InvalidNoise)
         );
         assert_eq!(filter.origin(), None, "and no origin was placed on the way");
 
@@ -3259,7 +3372,7 @@ mod tests {
         let fix = Position::ned(120.0, -40.0, -75.0);
         assert_eq!(
             filter.fuse_gnss_position(fix, PositionNoise::<Ned>::from_variance(-1.0, -1.0, -1.0)),
-            Fusion::InvalidNoise
+            GnssFusion::both(Fusion::InvalidNoise)
         );
         assert_eq!(filter.state().position, Position::zero(), "nothing adopted");
         assert!(!filter.validity().horizontal_position);
@@ -3327,7 +3440,7 @@ mod tests {
         let mut filter = coarse();
         let outcome =
             filter.fuse_gnss_geodetic(zurich(), PositionNoise::horizontal_vertical(1.5, 1.5));
-        assert_eq!(outcome, Fusion::Reset);
+        assert_eq!(outcome, GnssFusion::both(Fusion::Reset));
         assert_eq!(filter.origin().map(|o| o.geodetic()), Some(zurich()));
         assert_eq!(filter.state().position, Position::zero());
     }
@@ -3353,7 +3466,7 @@ mod tests {
         let off_the_earth = Geodetic::from_degrees(91.0, 0.0, 0.0);
         assert_eq!(
             filter.fuse_gnss_geodetic(off_the_earth, PositionNoise::horizontal_vertical(1.5, 1.5)),
-            Fusion::NoReference
+            GnssFusion::both(Fusion::NoReference)
         );
         assert_eq!(filter.origin(), None);
         assert!(

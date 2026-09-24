@@ -41,16 +41,17 @@
 //! The sigma columns are what make the result plottable as estimate ± 3σ against truth; the
 //! test ratios are directly comparable with the innovation ratios PX4 publishes.
 //!
-//! `<out>.fusion.csv` holds one row per `fuse_*` call — the resolution the epoch file cannot
-//! reach, since it keeps only the *last* ratio per source and so cannot tell two fusions
-//! apart or say what became of one:
+//! `<out>.fusion.csv` holds one row per verdict — a `fuse_*` call, or each half of a GNSS
+//! fix — the resolution the epoch file cannot reach, since it keeps only the *last* ratio per
+//! source and so cannot tell two fusions apart or say what became of one:
 //!
 //! ```text
-//! # one row per fuse_* call. gates gnss_pos=16.266235 gnss_vel=16.266235 baro=10.827566 mag=10.827566
-//! # nu* and s* are the filter's published innovation and diag(S), empty where the gate ran no update or the source's fuse_* does not run one yet
+//! # one row per verdict. gates gnss_pos=13.815511 gnss_hgt=10.827566 gnss_vel=16.266235 baro=10.827566 mag=10.827566
+//! # nu* and s* are the filter's published innovation and diag(S), empty where the gate ran no update: an adoption, a refusal, a call before initialization
 //! t_s,source,nu0,nu1,nu2,s0,s1,s2,ratio,outcome
 //! 0.0000,baro,,,,,,,,not_initialized
-//! 2.2000,gnss_pos,1.350874,1.096309,2.224828,1.258352,1.258354,4.004997,0.2239,accepted
+//! 2.2000,gnss_pos,1.350874,1.096309,,1.258352,1.258354,,0.1741,accepted
+//! 2.2000,gnss_hgt,2.224828,,,4.004997,,,0.1142,accepted
 //! ```
 //!
 //! The gates ride in the header because the filter reports `r = ε / γ`: without `γ` a ratio
@@ -245,7 +246,11 @@ const SIGMAS: [(ErrorState, &str); 15] = [
 
 /// Source names as the input spells them, in `Diagnostics` order, so a fusion row names the
 /// row it came from. The constants below index this and `RATIOS` alike.
-const SOURCES: [&str; 4] = ["gnss_pos", "gnss_vel", "baro", "mag"];
+///
+/// `gnss_hgt` is the one name no input row carries: a `gnss_pos` row is one fix and two
+/// verdicts, the horizontal half under `gnss_pos` and the height under `gnss_hgt`, because
+/// the filter gates them apart (`GnssFusion`).
+const SOURCES: [&str; 5] = ["gnss_pos", "gnss_hgt", "gnss_vel", "baro", "mag"];
 
 /// What each source's innovation components are, in the order the filter publishes them, so a
 /// `nu_` key names an axis rather than a subscript.
@@ -256,14 +261,15 @@ const SOURCES: [&str; 4] = ["gnss_pos", "gnss_vel", "baro", "mag"];
 /// discovered by an index out of range. The lengths are the observation dimensions of
 /// (28)–(30) and (34)–(36), and are checked against what the filter publishes rather than
 /// trusted.
-const AXES: [&[&str]; 4] = [&["n", "e", "d"], &["n", "e", "d"], &["d"], &["yaw"]];
+const AXES: [&[&str]; 5] = [&["n", "e"], &["d"], &["n", "e", "d"], &["d"], &["yaw"]];
 
 /// Last test ratio per source, in `Diagnostics` order.
-const RATIOS: [&str; 4] = ["r_gnss_pos", "r_gnss_vel", "r_baro", "r_mag"];
+const RATIOS: [&str; 5] = ["r_gnss_pos", "r_gnss_hgt", "r_gnss_vel", "r_baro", "r_mag"];
 const GNSS_POS: usize = 0;
-const GNSS_VEL: usize = 1;
-const BARO: usize = 2;
-const MAG: usize = 3;
+const GNSS_HGT: usize = 1;
+const GNSS_VEL: usize = 2;
+const BARO: usize = 3;
+const MAG: usize = 4;
 
 fn main() {
     if let Err(e) = run() {
@@ -330,6 +336,7 @@ fn run() -> Result<(), Box<dyn Error>> {
 fn thresholds(gates: Gates) -> [f32; SOURCES.len()] {
     [
         gates.gnss_position.threshold(),
+        gates.gnss_height.threshold(),
         gates.gnss_velocity.threshold(),
         gates.baro_altitude.threshold(),
         gates.mag_heading.threshold(),
@@ -556,7 +563,7 @@ struct Replay {
     previous_imu: Option<f64>,
     /// Timestamp of the first IMU row, so the wait for stillness can be bounded.
     first_imu: Option<f64>,
-    ratios: [Option<f32>; 4],
+    ratios: [Option<f32>; SOURCES.len()],
     /// The innovation-consistency statistics of #5, fed from `observe`.
     consistency: Consistency,
     initialized_at: Option<f64>,
@@ -595,8 +602,8 @@ struct Replay {
     /// attitude instead — the trap `heading=` documents, which this capture is what avoids.
     attitude_at_init: Option<Attitude>,
     epochs: u32,
-    /// Rows written to the fusion file: every `fuse_*` call the log made, whatever its
-    /// outcome.
+    /// Rows written to the fusion file: every verdict the log met, whatever it was — one per
+    /// `fuse_*` call, two per GNSS fix.
     fusions: u32,
     /// When the worst refused step happened. The count and the size of the gap come from
     /// `diagnostics()`; the filter reads no clock, so the log timestamp is the harness's to
@@ -626,7 +633,7 @@ impl Replay {
             pending_velocity: None,
             previous_imu: None,
             first_imu: None,
-            ratios: [None; 4],
+            ratios: [None; SOURCES.len()],
             initialized_at: None,
             alignment: None,
             mag_at_init: false,
@@ -669,7 +676,8 @@ impl Replay {
                     Position::ned(r.value(0)?, r.value(1)?, r.value(2)?),
                     PositionNoise::from_variance(r.variance(0)?, r.variance(1)?, r.variance(2)?),
                 );
-                self.observe(r.t, GNSS_POS, outcome, out)?;
+                self.observe(r.t, GNSS_POS, outcome.horizontal, out)?;
+                self.observe(r.t, GNSS_HGT, outcome.height, out)?;
             }
             "gnss_vel" => {
                 let velocity = Velocity::ned(r.value(0)?, r.value(1)?, r.value(2)?);
@@ -891,6 +899,10 @@ impl Replay {
     }
 
     /// Sum one `SourceHealth` count over every source.
+    ///
+    /// A count of verdicts, not of measurements: a GNSS fix is two sources, `gnss_pos` and
+    /// `gnss_hgt`, so one refused, rejected or adopted whole counts twice here. The
+    /// per-source keys are where the two halves are told apart.
     fn total(&self, count: fn(&SourceHealth) -> u32) -> u32 {
         self.filter
             .diagnostics()
@@ -900,7 +912,7 @@ impl Replay {
             .sum()
     }
 
-    /// Measurements the gate turned down, over every source.
+    /// Verdicts the gate turned down, over every source; see [`Replay::total`].
     fn rejections(&self) -> u32 {
         self.total(|health| health.rejected)
     }
@@ -1021,7 +1033,7 @@ impl Replay {
         }
     }
 
-    /// Measurements the filter could not judge at all, over every source.
+    /// Verdicts the filter could not reach at all, over every source; see [`Replay::total`].
     ///
     /// The gate's verdict is [`Replay::rejections`]; this is everything that never reached
     /// it — a variance of zero or less, a NaN in the measurement, an altitude with no
@@ -1038,7 +1050,8 @@ impl Replay {
     }
 
     /// Measurements adopted outright because initialization left nothing to fuse them
-    /// against. At most one per source.
+    /// against. At most one per source, so a GNSS fix adopted whole counts twice; see
+    /// [`Replay::total`].
     fn resets(&self) -> u32 {
         self.total(|health| health.adopted)
     }
@@ -2075,7 +2088,7 @@ fn write_fusion_header(out: &mut impl Write, gates: Gates) -> io::Result<()> {
     // makes a mispaired list visible — and it now covers both readers at once.
     writeln!(
         out,
-        "# one row per fuse_* call. gates {}",
+        "# one row per verdict. gates {}",
         SOURCES
             .iter()
             .zip(thresholds(gates))
@@ -3084,9 +3097,10 @@ mod tests {
             .imu(10.04, TURNING);
         let summary = replay(&log).summary();
         assert_eq!(key(&summary, "align"), "coarse");
+        // Three: the fix is adopted whole, and counted by both of the sources it feeds.
         assert_eq!(
             key(&summary, "resets"),
-            "2",
+            "3",
             "the second pair is fused, not adopted"
         );
     }
@@ -3127,9 +3141,10 @@ mod tests {
     // ---- the fusion file ----
 
     #[test]
-    fn every_fuse_call_writes_one_row_whatever_it_returned() {
-        // Three aiding rows before the window closes and three after. The summary counts
-        // only what was accepted or refused; this is the record that they happened at all.
+    fn every_verdict_writes_one_row_whatever_it_was() {
+        // Three aiding rows before the window closes and three after, and a GNSS fix is two
+        // verdicts, so eight. The summary counts only what was accepted or refused; this is
+        // the record that they happened at all.
         let mut log = Log::new();
         for i in 0..100 {
             let t = i as f64 * DT;
@@ -3146,7 +3161,7 @@ mod tests {
             .gnss_vel(2.0, 0.5, 0.0, 0.0)
             .mag(2.0)
             .imu(2.0, STILL);
-        assert_eq!(fusion_rows(&log).len(), 6);
+        assert_eq!(fusion_rows(&log).len(), 8);
     }
 
     #[test]
@@ -3160,18 +3175,18 @@ mod tests {
             .imu(10.02, TURNING);
         for (log, expected) in [
             (still_start().gnss_pos(2.0, 0.0, 0.0, 0.0), "accepted"),
-            (still_start().gnss_pos(2.0, 1000.0, 0.0, 0.0), "rejected"),
+            (still_start().gnss_pos(2.0, 1000.0, 0.0, 1000.0), "rejected"),
             (Log::new().gnss_pos(0.0, 0.0, 0.0, 0.0), "not_initialized"),
             (
                 still_start().raw("2.000000,baro,42,,,,,,4,,"),
                 "no_reference",
             ),
             (
-                still_start().raw("2.000000,gnss_pos,0,0,0,,,,0,2.25,5.625"),
+                still_start().raw("2.000000,gnss_pos,0,0,0,,,,0,2.25,0"),
                 "invalid_noise",
             ),
             (
-                still_start().raw("2.000000,gnss_pos,nan,0,0,,,,2.25,2.25,5.625"),
+                still_start().raw("2.000000,gnss_pos,nan,0,nan,,,,2.25,2.25,5.625"),
                 "not_finite",
             ),
             (coarse, "reset"),
@@ -3189,19 +3204,30 @@ mod tests {
     fn a_gated_fix_carries_the_innovation_the_filter_published() {
         // A still start sits at the origin, so `ν` is the fix itself. `S` is `H P Hᵀ + R`,
         // so each entry is at least the row's own variance.
+        // Two rows, one per half, each padded past its own dimension.
         let log = still_start().gnss_pos(2.0, 1.0, 2.0, -3.0);
-        let row = fusion_rows(&log).pop().expect("a fusion row");
-        let fields: Vec<&str> = row.split(',').collect();
-        assert_eq!(
-            &fields[2..5],
-            &["1.000000", "2.000000", "-3.000000"],
-            "ν: {row}"
-        );
-        for (s, r) in fields[5..8].iter().zip([2.25, 2.25, 5.625]) {
-            let s: f32 = s.parse().unwrap_or_else(|_| panic!("S missing: {row}"));
-            assert!(s > r, "S below R: {row}");
+        let rows = fusion_rows(&log);
+        let halves = &rows[rows.len() - 2..];
+        for (row, (source, nu, r)) in halves.iter().zip([
+            ("gnss_pos", ["1.000000", "2.000000", ""], &[2.25, 2.25][..]),
+            ("gnss_hgt", ["-3.000000", "", ""], &[5.625][..]),
+        ]) {
+            let fields: Vec<&str> = row.split(',').collect();
+            assert_eq!(fields[1], source, "{row}");
+            assert_eq!(&fields[2..5], &nu, "ν: {row}");
+            for (s, r) in fields[5..8].iter().zip(r) {
+                let s: f32 = s.parse().unwrap_or_else(|_| panic!("S missing: {row}"));
+                assert!(s > *r, "S below R: {row}");
+            }
+            assert_eq!(
+                fields[5 + r.len()..8]
+                    .iter()
+                    .filter(|f| f.is_empty())
+                    .count(),
+                3 - r.len()
+            );
+            assert_eq!(fields[9], "accepted", "{row}");
         }
-        assert_eq!(fields[9], "accepted", "{row}");
     }
 
     #[test]
@@ -3216,11 +3242,11 @@ mod tests {
         // testing only refusals.
         let log = still_start()
             .gnss_pos(2.0, 1.0, 2.0, -3.0)
-            .raw("2.100000,gnss_pos,1,2,-3,,,,0,2.25,5.625")
+            .raw("2.100000,gnss_pos,1,2,-3,,,,0,2.25,0")
             .mag(2.2);
         let rows = fusion_rows(&log);
-        let tail = &rows[rows.len() - 2..];
-        for (row, verdict) in tail.iter().zip(["invalid_noise", "reset"]) {
+        let tail = &rows[rows.len() - 3..];
+        for (row, verdict) in tail.iter().zip(["invalid_noise", "invalid_noise", "reset"]) {
             let fields: Vec<&str> = row.split(',').collect();
             assert_eq!(&fields[2..8], &["", "", "", "", "", ""], "ν and S: {row}");
             assert_eq!(fields[9], verdict, "{row}");
@@ -3694,6 +3720,6 @@ mod tests {
             row.split(',').count(),
             "header:\n{header}\nrow:\n{row}"
         );
-        assert_eq!(header.split(',').count(), 2 + 15 + 15 + 4);
+        assert_eq!(header.split(',').count(), 2 + 15 + 15 + 5);
     }
 }

@@ -294,6 +294,11 @@ Call `predict(imu, dt)` on every IMU sample. The result is `#[must_use]`:
 | ------ | ----------- |
 | `fuse_gnss_geodetic(fix, noise)` | latitude, longitude, height; converted about the filter's origin |
 | `fuse_gnss_position(position, noise)` | NED position about the filter's origin, for a caller that converts itself |
+
+Both GNSS position calls return a `GnssFusion`, a `Fusion` for each half of the fix —
+`horizontal` and `height` — because the two are gated apart: a height the estimate disagrees with
+is rejected without costing the horizontal fix beside it, and `diagnostics()` carries each half
+as its own source, `gnss_position` and `gnss_height`. `is_accepted()` on it asks for both.
 | `fuse_gnss_velocity(velocity, noise)` | NED velocity |
 | `fuse_baro_altitude(altitude, noise)` | altitude, relative to `α₀` |
 | `fuse_mag_heading(field, noise)` | body-frame field, reduced to a heading and fused as one scalar |

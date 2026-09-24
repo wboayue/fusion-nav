@@ -750,7 +750,7 @@ def innovation_figure(source, entry, gate, status_runs):
 
 
 #: The epoch file's ratio columns, which the reference file spells alike.
-RATIOS = ["r_gnss_pos", "r_gnss_vel", "r_baro", "r_mag"]
+RATIOS = ["r_gnss_pos", "r_gnss_hgt", "r_gnss_vel", "r_baro", "r_mag"]
 
 
 def ratio_figure(epochs, reference):

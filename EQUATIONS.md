@@ -687,12 +687,16 @@ $`\dim(z)`$ degrees of freedom. The measurement is rejected when $`\epsilon > \g
 
 | dim(z) | observation | 95 % | 99 % | 99.9 % |
 | ------ | ----------- | ---- | ---- | ------ |
-| 1 | barometric altitude, magnetic heading | 3.8415 | 6.6349 | 10.8276 |
-| 3 | GNSS position, GNSS velocity, three-axis magnetometer | 7.8147 | 11.3449 | 16.2662 |
+| 1 | barometric altitude, GNSS height, magnetic heading | 3.8415 | 6.6349 | 10.8276 |
+| 2 | GNSS horizontal position | 5.9915 | 9.2103 | 13.8155 |
+| 3 | GNSS velocity, three-axis magnetometer | 7.8147 | 11.3449 | 16.2662 |
 
 `Gate::at` holds these, typed by $`\dim(z)`$, and `Gates::at` builds one per source from a single
 percentile. The test is joint over every component of $`z`$ rather than per axis as PX4 and
-ArduPilot gate; why, and what it costs, is on `Gates`.
+ArduPilot gate; why, and what it costs, is on `Gates`. A GNSS position fix is the one
+observation applied as two: (28)'s north–east rows and its down row, each gated on its own
+(`GnssFusion`), because a joint test lets a height the estimate disagrees with reject a good
+horizontal fix — ArduPilot's split, and PX4's two aid sources.
 
 Rather than reporting $`\epsilon`$ directly, the filter exposes the dimensionless **test ratio**
 
@@ -894,7 +898,7 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | (21) | discrete process noise | `propagate.rs` | `process_noise` |
 | (22) | covariance propagation | `propagate.rs` | `propagate_covariance`, called with (9)–(15) by `propagate` |
 | (23)–(27) | generic update, Joseph form | `update.rs` | `update` |
-| (28) | GNSS position | `observation/gnss.rs` | `position_jacobian`, `position_observation` |
+| (28) | GNSS position, as a horizontal and a height half | `observation/gnss.rs` | `horizontal_jacobian`, `horizontal_observation`, `height_jacobian`, `height_observation` |
 | (29) | GNSS velocity | `observation/gnss.rs` | `velocity_jacobian`, `velocity_observation` |
 | (30) | barometric altitude | `observation/baro.rs` | `altitude_jacobian`, `altitude_observation` |
 | (31)–(33) | magnetometer, three-axis | — | unbuilt and [out of scope](GOALS.md#magnetometer-without-magnetic-field-states); no `field_jacobian` exists |

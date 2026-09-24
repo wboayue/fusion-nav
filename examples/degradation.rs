@@ -46,9 +46,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     run(&mut filter, 2 * IMU_HZ, Sources::all());
     report("all sources", &filter);
 
-    // A glitch: one fix 50 m from where every fix before it put the vehicle. The gate turns
-    // it down with a test ratio far above 1, and the estimate is untouched.
-    check(
+    // A glitch: one fix 50 m north of where every fix before it put the vehicle. The gate
+    // turns the horizontal half down with a test ratio far above 1 and leaves the estimate
+    // untouched there; the height half agrees, and is fused.
+    check_gnss(
         "gnss position glitch",
         filter.fuse_gnss_position(
             Position::ned(50.0, 0.0, 0.0),
@@ -149,7 +150,7 @@ fn run(filter: &mut Eskf, ticks: u32, sources: Sources) {
         if sources.gnss && tick % (IMU_HZ / GNSS_HZ) == 0 {
             // The vehicle is still near where it started, which is where the fix puts it.
             let fix = Position::ned(0.0, 0.0, 0.0);
-            check(
+            check_gnss(
                 "gnss position",
                 filter.fuse_gnss_position(fix, PositionNoise::horizontal_vertical(1.5, 3.0)),
             );
@@ -199,6 +200,12 @@ fn check(source: &str, outcome: Fusion) {
         Fusion::Reset => println!("  {source} adopted outright — nothing to fuse it against"),
         other => println!("  {source} refused: {other:?}"),
     }
+}
+
+/// A GNSS fix is two measurements, each with its own verdict.
+fn check_gnss(source: &str, outcome: GnssFusion) {
+    check(&format!("{source} (horizontal)"), outcome.horizontal);
+    check(&format!("{source} (height)"), outcome.height);
 }
 
 fn report(label: &str, filter: &Eskf) {

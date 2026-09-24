@@ -52,8 +52,11 @@ fn main() -> Result<(), InitError> {
                 Geodetic::from_degrees(47.397_742, 8.545_594, 488.0),
                 PositionNoise::horizontal_vertical(1.5, 3.0),
             );
-            if let Some(test_ratio) = outcome.test_ratio() {
-                assert!(test_ratio <= 1.0, "gnss position rejected");
+            // Two verdicts: the horizontal half and the height are gated apart.
+            for half in [outcome.horizontal, outcome.height] {
+                if let Some(test_ratio) = half.test_ratio() {
+                    assert!(test_ratio <= 1.0, "gnss position rejected");
+                }
             }
 
             filter.fuse_gnss_velocity(

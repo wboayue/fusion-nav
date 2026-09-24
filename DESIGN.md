@@ -130,6 +130,14 @@ origin: the fix and the estimate are then relative to the same point by construc
 `fuse_gnss_position` is for a caller whose positions were never geodetic — a local RTK base,
 motion capture — and is right only if the caller's origin is the filter's.
 
+A fix is fused as two measurements rather than one: (28)'s north–east rows under a `Gate<2>`,
+then its down row under a `Gate<1>`, each with its own `Fusion` in the `GnssFusion` returned and
+its own `SourceHealth`. A receiver's height is the half that wanders and the half another source
+disputes, and one joint test turns every such dispute into lost horizontal aiding — on
+`2c42096b`, with its barometer fused, 3945 of 4616 fixes, every one of them vertical. PX4 runs
+GNSS position and GNSS height as separate aid sources and ArduPilot gates them apart; `Gates`
+carries the citations and the measurement.
+
 The first fix places the origin, under the estimate where there is one, and at the fix itself
 after a start whose window did not show the vehicle at rest, where it is adopted rather than
 fused. See

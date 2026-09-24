@@ -256,7 +256,8 @@ document, the entry points there instead of repeating it.
   against the diagonal of `S` and differ in how they group the components: PX4 each axis at 5σ,
   ArduPilot the horizontal pair as one sum against the summed variances and the vertical alone.
   This crate's is joint over the whole observation, which is what makes a percentile mean what it
-  names. `Gates`'s doc comment owns the comparison and its citations.
+  names — except a GNSS fix, whose horizontal pair and height are two observations, as they are
+  in both platforms. `Gates`'s doc comment owns the comparison and its citations.
 * **`filter_control_status`**, **`nav_filter_status`** — their per-quantity validity bits. The
   counterpart is `Validity`, and `Eskf::predicted_validity` answers ArduPilot's
   `pred_horiz_pos_rel` question. `Status` is *not* the counterpart: it is a one-glance severity
