@@ -109,18 +109,27 @@ def read_header_and_rows(path):
         raise ReportError(f"{path}: no header row")
 
 
-def count_rows(path):
+def count_rows(path, source=None, source_column="source"):
     """Data rows, for choosing a decimation stride before reading values.
 
     A second pass over the file rather than a guess from its size: the largest
     corpus log is 444 MB and 1.4 M epochs, where a stride off by a factor of two
     is a visibly wrong figure, and counting newlines costs about a second.
+
+    `source` counts only that row kind, and it is not optional for a filtered
+    read. Counting the whole file and then reading one source out of it divides
+    by every other source's rows as well: on the 2 h log that made the stride for
+    the 1 Hz GNSS rows 371x too large, leaving 38 fixes out of 7000 and a gap
+    detector that saw an outage nearly everywhere.
     """
-    total = 0
-    with open(path) as handle:
-        for line in handle:
-            if line[:1] not in ("#", "") and not line.startswith("t_s"):
-                total += 1
+    total, kind = 0, None
+    stream = read_header_and_rows(path)
+    _, columns = next(stream)
+    if source is not None and source_column in columns:
+        kind = columns.index(source_column)
+    for _, cells in stream:
+        if kind is None or cells[kind] == source:
+            total += 1
     return total
 
 
@@ -185,7 +194,7 @@ def read_series(path, wanted, points, source=None, source_column="source"):
     `source` restricts to one row kind, which is how the union-schema input and
     reference files are read without holding a blank cell per column per row.
     """
-    rows = count_rows(path)
+    rows = count_rows(path, source, source_column)
     stream = read_header_and_rows(path)
     notes, columns = next(stream)
     index = {name: columns.index(name) for name in wanted if name in columns}
@@ -204,6 +213,23 @@ def read_series(path, wanted, points, source=None, source_column="source"):
         if values:
             decimator.add(float(cells[0]), values)
     return notes, decimator.done()
+
+
+def read_times(path, source, source_column="source"):
+    """Every timestamp for one row kind, undecimated.
+
+    Gaps have to be found before decimation: a decimated series cannot tell an
+    outage from its own stride, and reading one column of a 1 Hz source costs a
+    few thousand floats even on the 2 h log.
+    """
+    stream = read_header_and_rows(path)
+    _, columns = next(stream)
+    kind = columns.index(source_column) if source_column in columns else None
+    return [
+        float(cells[0])
+        for _, cells in stream
+        if kind is None or cells[kind] == source
+    ]
 
 
 def read_status(path, points):
@@ -389,11 +415,36 @@ def shade_status(axes, runs):
             axes.axvspan(start, end, color=shade, alpha=0.18, linewidth=0)
 
 
-def shade_gaps(axes, times, floor):
-    """Shade intervals where a source went quiet for longer than `floor`."""
-    for a, b in zip(times, times[1:]):
-        if b - a > floor:
-            axes.axvspan(a, b, color="#8899aa", alpha=0.18, linewidth=0)
+def gap_threshold(times, multiple=5.0):
+    """How long a silence has to be, for this source, to count as an outage.
+
+    Relative to the source's own cadence rather than an absolute number of
+    seconds, which means different things at 1 Hz and at 10 Hz. At a fixed 2 s
+    the 2 h log shaded 1219 intervals -- true, its receiver really does miss
+    that many fixes, and useless, because the plot became grey.
+    """
+    intervals = [b - a for a, b in zip(times, times[1:]) if b > a]
+    if not intervals:
+        return None
+    return multiple * float(np.median(intervals))
+
+
+def find_gaps(times, floor):
+    """The `(start, end)` silences longer than `floor`.
+
+    Found once and passed to both the figure and its caption, rather than
+    counted as a side effect of drawing: a caption is an argument, so it is
+    built before the figure it describes and a count filled in during the draw
+    reads zero.
+    """
+    if not floor or not times:
+        return []
+    return [(a, b) for a, b in zip(times, times[1:]) if b - a > floor]
+
+
+def shade_gaps(axes, gaps):
+    for start, end in gaps:
+        axes.axvspan(start, end, color="#8899aa", alpha=0.25, linewidth=0)
 
 
 def track_figure(epochs, reference, fixes):
@@ -452,8 +503,7 @@ def sigma_figure(epochs, gaps, status_runs):
     def build(fig):
         axes = fig.add_subplot(111)
         shade_status(axes, status_runs)
-        if gaps is not None:
-            shade_gaps(axes, gaps, 2.0)
+        shade_gaps(axes, gaps)
         for title, _unit, _columns, sigmas in STATE_GROUPS:
             for sigma in sigmas:
                 series = epochs.get(sigma)
@@ -664,7 +714,7 @@ def build_report(args):
     fixes = None
     if "v0" in input_series and "v1" in input_series:
         fixes = (input_series["v0"][1], input_series["v1"][1])
-    gaps = input_series["v0"][0] if "v0" in input_series else None
+    gaps = read_times(args.input, "gnss_pos") if "v0" in input_series else None
 
     blocks = []
 
@@ -723,12 +773,18 @@ def build_report(args):
         blocks.append(png_block(png, caption))
 
     blocks.append("<h2>Covariance over time</h2>")
+    floor = gap_threshold(gaps) if gaps else None
+    outages = find_gaps(gaps, floor)
     png, caption = figure(
-        sigma_figure(epochs, gaps, status_runs),
-        "Every published standard deviation on one log axis. Grey bands are "
-        "intervals longer than 2 s with no GNSS row in the input, where the "
-        "position and velocity sigmas should grow and then collapse on the fix "
-        "that ends the gap.")
+        sigma_figure(epochs, outages, status_runs),
+        "Every published standard deviation on one log axis."
+        + (f" Grey bands are the {len(outages)} GNSS outages longer than "
+           f"{floor:.1f} s &mdash; five times this receiver's median fix "
+           "interval, so an outage is judged against its own cadence rather than "
+           "a fixed number of seconds &mdash; where the position and velocity "
+           "sigmas should grow and then collapse on the fix that ends the gap."
+           if floor else " This log carries no GNSS, so there is no outage to "
+           "shade."))
     blocks.append(png_block(png, caption))
 
     blocks.append("<h2>Innovations</h2>")
