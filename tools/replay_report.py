@@ -84,6 +84,15 @@ STATE_GROUPS = [
 
 DEGREES = {"roll", "pitch", "yaw"}
 
+#: Shorter names for the sigma figure, whose panels are a fifth of a page tall
+#: and whose full titles overlap each other down the shared axis.
+SHORT_LABELS = {
+    "Position NED": "Position",
+    "Velocity NED": "Velocity",
+    "Accelerometer bias": "Accel bias",
+    "Gyroscope bias": "Gyro bias",
+}
+
 
 # ----------------------------------------------------------------- readers
 
@@ -656,13 +665,17 @@ def sigma_figure(epochs, reference, gaps, status_runs):
         plots = fig.subplots(len(STATE_GROUPS), 1, sharex=True, squeeze=False)
         for row, (title, unit, _columns, sigmas) in enumerate(STATE_GROUPS):
             plot = plots[row][0]
+            # Attitude sigmas are radians in both files, while the state panel
+            # plots roll/pitch/yaw and its band in degrees. Converted here too,
+            # so the two panels read in one unit and the label is true.
+            scale = 180.0 / math.pi if title == "Attitude" else 1.0
             shade_status(plot, status_runs)
             shade_gaps(plot, gaps)
             for sigma in sigmas:
                 series = positive(epochs.get(sigma))
                 if series is not None:
-                    plot.plot(series[0], series[1], linewidth=0.8, label=sigma,
-                              alpha=0.9)
+                    plot.plot(series[0], series[1] * scale, linewidth=0.8,
+                              label=sigma, alpha=0.9)
             # EKF2's own, dashed and unlabelled so the legend stays ours. These
             # are what exercise the n_states-keyed covariance map: the bias
             # states sit at one index in both eras, and only these move.
@@ -670,18 +683,19 @@ def sigma_figure(epochs, reference, gaps, status_runs):
             for sigma in sigmas:
                 series = positive(reference.get(EKF2_SIGMAS.get(sigma)))
                 if series is not None:
-                    plot.plot(series[0], series[1], "--", linewidth=0.8,
+                    plot.plot(series[0], series[1] * scale, "--", linewidth=0.8,
                               color="#3a7ca5", alpha=0.7,
                               label="EKF2" if not drawn else None)
                     drawn = True
             if title == "Attitude":
                 total = positive(reference.get("sigma_att_total"))
                 if total is not None:
-                    plot.plot(total[0], total[1], "--", linewidth=0.9,
+                    plot.plot(total[0], total[1] * scale, "--", linewidth=0.9,
                               color="#c05a2f", alpha=0.85,
                               label="EKF2 sigma_att_total")
             plot.set_yscale("log")
-            plot.set_ylabel(f"{title} ({unit})", fontsize=6)
+            plot.set_ylabel(f"{SHORT_LABELS.get(title, title)} ({unit})",
+                            fontsize=7)
             plot.grid(alpha=0.25, which="both")
             plot.legend(loc="upper right", fontsize=6, ncol=4)
         plots[-1][0].set_xlabel("t (s)")
