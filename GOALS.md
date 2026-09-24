@@ -456,9 +456,10 @@ no drift configured at all, where what the barometer cannot separate from a heig
 accelerometer bias walk.
 
 **Why it is reopened.** A constant fixed at rest is not the only way `α₀` gets set. A start in
-motion fixes none, and the obvious remedy (#115) reads it from the estimate at the first fix, as
-PX4 does at `:79`. That reference inherits the fix's height error, one number shared by every
-barometer reading, and nothing in the covariance says so. On `moving_start` it takes `nees_pos`
+motion fixes none, and the obvious remedy (#115) reads it from the estimate once the first fix
+has established position. PX4 reads its offset from the estimate too, at `:79`, over the first
+barometer samples after a start or reset. That reference inherits the estimate's height error,
+one number shared by every barometer reading, and nothing in the covariance says so. On `moving_start` it takes `nees_pos`
 from 1.08 to 112.59. Adding the reference's variance to `R`, PX4's `:86`, gets it to 14.58 and no
 further: `σ_pos_d` falls from 1.80 m to 0.16 m within ten seconds while the height error stays at
 1.1 m, because N readings with a common error average `S` down as though their errors were
@@ -466,8 +467,9 @@ independent. No `R` holds an error the readings share. `baro_drift`'s 257.52 is 
 with the error arriving slowly instead of all at once.
 
 Nor does a tracker outside the covariance settle it on the data there is. On `2c42096b`, a
-grounded two-hour log whose barometer climbs 13.6 m, EKF2's height climbs about 12 m with it: an
-offset tracked against an altitude the barometer itself dominates cannot see the barometer drift.
+grounded two-hour log whose barometer climbs about 12 m from start to end, EKF2's height climbs
+the same 12 m: an offset tracked against an altitude the barometer itself dominates cannot see the
+barometer drift.
 
 What #119 proposes is the option this decision did not weigh: the offset as a **consider state**.
 Its variance and its correlation with the 15 states are carried in the covariance, and no update
