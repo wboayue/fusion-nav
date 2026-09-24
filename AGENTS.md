@@ -252,7 +252,23 @@ data/fetch.sh --verify            # checksums only, no network
 data/fetch.sh --check             # convert each .ulg and replay it, assert expectations
 data/fetch.sh --add <url> [name]  # download once, append a manifest line to commit
 uv run tools/ulog2replay.py log.ulg -o log.csv [--reference]   # ULog -> replay CSV
+uv run tools/replay_report.py in.csv out.csv [truth.csv] \
+    --reference ref.csv --summary summary.txt -o report.html   # one HTML per log
 ```
+
+`--reference` writes EKF2's own solution beside the replay input, never into it. Its state/covariance
+index map is keyed on `n_states`, because EKF2's covariance layout changed while the entry count did
+not — both eras report 24 entries meaning different things, so no field spelling distinguishes them.
+Three of the five corpus logs therefore supply no attitude σ at all, two supply no origin, and the
+LPE log is refused outright. `data/README.md`, "What `--reference` writes, and what it cannot", owns
+those boundaries and the bias-scaling factor; the map itself lives in `tools/ulog2replay.py` and
+nowhere else, so a consumer reads column names and never the layout.
+
+The report tool computes no statistic: it plots the per-fusion rows and prints the `summary` and
+`score` keys. It refuses a set of files that do not describe one run — `epochs=` against the epoch
+row count, `rejected_<source>=` against the fusion CSV's tally, and the reference's IMU interval
+against `rate=`, that last one guarding the only quantity the converter and the harness both
+estimate.
 
 **`uv` is the package manager and the runner for the Python tools under `tools/`.** The converter
 declares `pyulog` inline (PEP 723), so `uv run tools/ulog2replay.py` resolves it with no
