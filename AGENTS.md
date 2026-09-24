@@ -7,8 +7,14 @@ This file provides guidance to coding agents working with code in this repositor
 **`EQUATIONS.md` is implemented.** #31 closed with stage 9 (#110, #111): (1)–(44) are built
 except (31)–(33), the three-axis magnetometer, which is out of scope, and (5′)'s subtraction,
 which is #59's. The `**Stub.**` marker survives on those two and nowhere else, and every status
-banner says built rather than intended. What is left to do is measurement and publication, not
-mathematics — #41 (cost on hardware), #8 (the EKF2 comparison), #47 (the release), #89 (ANEES).
+banner says built rather than intended. What is left is mostly measurement and publication —
+#41 (cost on hardware), #8 (the EKF2 comparison), #47 (the release), #89 (ANEES) — plus three
+defects the consistency keys of #112 surfaced on `2c42096b`, all one mechanism: a coarse start
+fixes no `α₀`, so 35575 barometer rows are refused (#115); every corpus source is correlated
+(`acf1_` 0.17–0.99) while (24) fuses it as white, so `σ_pos_d` sits under the receiver's `epv` at
+4603 of 4604 fixes (#117); and that overconfidence is the lockout precondition "report, do not
+self-recover" accepted, which #116 revisits. Order: #115 (cheapest, and removes the 13 m height
+caveat #8 would otherwise publish), #89 (the gate #117's remedy is judged by), #117, then #8.
 
 **Every source the crate publishes is fused; no `fuse_*` is a stub.** Initialization is real —
 equations (5)–(8), so the filter starts at the attitude and biases the window yields — `predict`
