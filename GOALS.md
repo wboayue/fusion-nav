@@ -425,10 +425,13 @@ weather, with ground effect, with sensor warm-up. Both production estimators tre
 something to track rather than something to fix. PX4 runs a dedicated bias estimator per height
 source, a one-state filter fusing `measurement - altitude` with variance
 `measurement_var + P(z,z)`, seeded from a low-passed barometer reading and reset whenever height
-resets. ArduPilot slews a `baroHgtOffset` toward `baro + z` with a 0.1 gain clamped to ±5 m, and
-separately corrects its origin height with a filter that models baro drift rate explicitly.
+resets, and it adds that estimator's variance to the barometer's `R`
+(`src/modules/ekf2/EKF/aid_sources/barometer/baro_height_control.cpp:79`, `:86` and `:112` at
+`c4e4ef98e9`). ArduPilot slews a `baroHgtOffset` toward `baro + z` with a 0.1 gain clamped to
+±5 m, and separately corrects its origin height with a filter that models baro drift rate
+explicitly.
 
-**Decided:** `fusion-nav` carries a constant. `α₀` is averaged over the quasi-static
+**Decided, and reopened by #119:** `fusion-nav` carries a constant. `α₀` is averaged over the quasi-static
 initialization window and fixed there — `StaticSample::baro` in, `Eskf::baro_reference` out,
 equation (30). Estimating the drift needs either a 16th state, which contradicts the bounded
 15-state positioning, or a tracker living outside the covariance, which is a second estimator to
@@ -441,9 +444,9 @@ accept the error over a flight short enough that it stays small.
 
 **What it costs, measured.** The `baro_drift` scenario is this paragraph with a number on it: the
 baseline flown with the reference walking 0.02 m/s, 3.7 m over 185 s. Against `mission`, which it
-matches on every other key, `pos_v` is 2.052 m to `mission`'s 0.083 — twenty-five times the error,
+matches on every other key, `pos_v` is 2.053 m to `mission`'s 0.083 — twenty-five times the error,
 and less than the full 3.7 m only because GNSS height drags the estimate back. The consistency
-keys are the more interesting half: `nees_pos` goes 1.04 to 257.27 and `in3s` 1.0000 to 0.9389.
+keys are the more interesting half: `nees_pos` goes 1.05 to 257.52 and `in3s` 0.9994 to 0.9389.
 The error grows twenty-five-fold and the covariance does not move, because no state in the vector
 models the thing that is wrong — so the filter is metres out while reporting the same
 uncertainty it would on a perfect sensor, and `Validity` is derived from that covariance. An
@@ -452,10 +455,28 @@ The same mechanism at a tenth the size is what takes `static`'s `nees_pos` from 
 no drift configured at all, where what the barometer cannot separate from a height is the
 accelerometer bias walk.
 
-This is the decision most likely to be revisited. Two independent production implementations
-concluded a constant was not enough, which is evidence, and if validation shows vertical drift
-dominating the error budget on long flights, ArduPilot's offset tracker is the cheaper of the two
-answers: it leaves the 15 states alone. See
+**Why it is reopened.** A constant fixed at rest is not the only way `α₀` gets set. A start in
+motion fixes none, and the obvious remedy (#115) reads it from the estimate at the first fix, as
+PX4 does at `:79`. That reference inherits the fix's height error, one number shared by every
+barometer reading, and nothing in the covariance says so. On `moving_start` it takes `nees_pos`
+from 1.08 to 112.59. Adding the reference's variance to `R`, PX4's `:86`, gets it to 14.58 and no
+further: `σ_pos_d` falls from 1.80 m to 0.16 m within ten seconds while the height error stays at
+1.1 m, because N readings with a common error average `S` down as though their errors were
+independent. No `R` holds an error the readings share. `baro_drift`'s 257.52 is the same defect
+with the error arriving slowly instead of all at once.
+
+Nor does a tracker outside the covariance settle it on the data there is. On `2c42096b`, a
+grounded two-hour log whose barometer climbs 13.6 m, EKF2's height climbs about 12 m with it: an
+offset tracked against an altitude the barometer itself dominates cannot see the barometer drift.
+
+What #119 proposes is the option this decision did not weigh: the offset as a **consider state**.
+Its variance and its correlation with the 15 states are carried in the covariance, and no update
+ever corrects it, so the state vector, `Covariance` and every public type stay as they are. It
+does not claim to know the offset, only that the barometer cannot be believed past it. That is
+the property the constant lacks and the gate and `Validity` both read. What it gives up against a
+16th estimated state is calibration: with GNSS height fused, an estimated offset would learn what
+a consider state ignores. The decision to make is between those two, with the constant kept only
+if #119's measurements come out against both. See
 [barometric altitude](EQUATIONS.md#barometric-altitude).
 
 ### Local gravity as a constant, derived offline
