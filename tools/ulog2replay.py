@@ -90,6 +90,43 @@ EKF2_RATIOS = [
     ("hdg_test_ratio", "mag_test_ratio"),
 ]
 
+# EKF2 lays its state vector out the same way in every version that logs one --
+# quat[0:4], vel[4:7], pos[7:10], gyro bias[10:13], accel bias[13:16] -- so only
+# the covariance indexing and the bias units move across releases.
+EKF2_STATE_BG = 10
+EKF2_STATE_BA = 13
+
+# Where each quantity sits on the 24-entry covariance diagonal, keyed on
+# n_states. Both eras report 24 entries meaning different things, which is why
+# this is keyed on a count rather than on a field name: no spelling distinguishes
+# them. Read at PX4-Autopilot c4e4ef98.
+#
+# n_states=25 -- the covariance is error-state, mapped by State:: in
+#   EKF/python/ekf_derivation/generated/state.h:44-54, and the bias states are
+#   rates. Three commits got it there: 84b6b472b4 ("change delta angle and delta
+#   velocity bias states to accel and gyro bias"), 0d6c2c8ce9 ("EKF2:
+#   Error-State Kalman Filter"), and 68980b59e2, which added the terrain state
+#   that makes the count 25 against a 24-entry covariance.
+# n_states=24 -- the covariance is indexed like the state vector instead, so four
+#   quaternion entries at [0..3] push vel to [4..6] and pos to [7..9], and the
+#   bias states are a delta angle in rad and a delta velocity in m/s over one
+#   filter update. `att` is None because a quaternion covariance becomes a
+#   rotation-vector one only through the full 4x4 block, and the log carries the
+#   diagonal alone.
+# Anything else is a different filter -- an LPE log reports n_states=10 -- and is
+#   refused rather than mapped.
+EKF2_LAYOUTS = {
+    25: {"att": 0, "vel": 3, "pos": 6, "bg": 9, "ba": 12, "bias_is_rate": True},
+    24: {"att": None, "vel": 4, "pos": 7, "bg": 10, "ba": 13, "bias_is_rate": False},
+}
+
+REFERENCE_TOPICS = [
+    "vehicle_local_position",
+    "vehicle_attitude",
+    "estimator_states",
+    "estimator_status",
+]
+
 
 class ConversionError(Exception):
     pass
@@ -124,6 +161,32 @@ def ecef(lat, lon, alt):
         (n + alt) * math.cos(phi) * math.sin(lam),
         (n * (1.0 - WGS84_E2) + alt) * s,
     )
+
+
+def euler_zyx(q0, q1, q2, q3):
+    """Roll, pitch and yaw from a Hamilton scalar-first body-to-NED quaternion.
+
+    The same convention and the same ZYX order the replay output and the truth
+    format use, so the columns diff against theirs by name. PX4's
+    `vehicle_attitude.q` is already this convention, so nothing is reframed here.
+    """
+    sin_pitch = max(-1.0, min(1.0, 2.0 * (q0 * q2 - q3 * q1)))
+    return (
+        math.atan2(2.0 * (q0 * q1 + q2 * q3), 1.0 - 2.0 * (q1 * q1 + q2 * q2)),
+        math.asin(sin_pitch),
+        math.atan2(2.0 * (q0 * q3 + q1 * q2), 1.0 - 2.0 * (q2 * q2 + q3 * q3)),
+    )
+
+
+def median(values):
+    """Median of a sequence, or None when it is empty."""
+    ordered = sorted(values)
+    if not ordered:
+        return None
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
+    return 0.5 * (ordered[middle - 1] + ordered[middle])
 
 
 def pick(ulog, names):
@@ -391,7 +454,12 @@ def convert(path, baro_variance, mag_variance):
     convert_gnss(ulog, rows, used)
     convert_baro(ulog, rows, used, baro_variance, sensor_combined)
     convert_mag(ulog, rows, used, mag_variance, sensor_combined)
-    return rows, used, note
+    # The IMU sample interval, for --reference's bias scaling only. Taken here
+    # because this is where `sensor_combined` is already open, and nothing in the
+    # replay output depends on it.
+    t = stamps(sensor_combined)
+    imu_dt = median([(b - a) * 1e-6 for a, b in zip(t, t[1:]) if b > a])
+    return rows, used, note, imu_dt
 
 
 def write_rows(rows, out, note):
@@ -415,15 +483,179 @@ def write_rows(rows, out, note):
     return len(rows), t0
 
 
-def write_reference(ulog, out, t0):
-    """EKF2's own solution and innovation ratios, for a side-by-side diff.
+def ekf2_update_period(ulog, imu_dt):
+    """EKF2's mean filter update period, and a sentence saying where it came from.
 
-    One union schema with blank cells, matching how the replay input handles
-    sources with different arities.
+    Wanted only to turn a pre-84b6b472b4 delta-angle/delta-velocity bias into a
+    rate, and it has to be the quantity PX4 divides by, which is `_dt_ekf_avg`:
+    `getGyroBias() { return _state.delta_ang_bias / _dt_ekf_avg; }` with the
+    variance over `sq(_dt_ekf_avg)` (EKF/ekf.h:239-244 at ae3070bbf1^).
+    `_dt_ekf_avg` is a running mean of the realized step, seeded at the target
+    (`0.99f * _dt_ekf_avg + 0.01f * input`, EKF/ekf.cpp:289).
+
+    So it is a **mean**, not an integer multiple of the IMU interval, and the
+    down-sampler is built to hold that mean: it fires when the accumulated
+    `delta_ang_dt` reaches `_target_dt - _imu_collection_time_adj`, then moves
+    the adjustment by `0.01f * (delta_ang_dt - _target_dt)` -- a feedback term
+    whose comment says it is there "so that we meet the average EKF update rate
+    requirement" (EKF/imu_down_sampler.cpp:36-43 at ae3070bbf1^). On a 250 Hz
+    IMU against a 10 ms target it alternates two-sample and three-sample steps
+    and averages 10 ms; it does not settle at 12.
+
+    Hence `max(target, imu_dt)`: the loop holds the mean at the target while a
+    sample is shorter than it, and nothing can subdivide a sample longer than
+    it. The second case is real -- a 50 Hz log runs a 20 ms period against a
+    10 ms target -- and so is the first: rounding a 4 ms IMU up to 12 ms scales
+    every bias and bias sigma in that log 20 % low.
+
+    The topic's own publication interval is no use for any of this: on two
+    corpus logs `estimator_status` publishes at 5 Hz and on a third
+    `estimator_states` publishes at 1 Hz.
     """
+    micros = ulog.initial_parameters.get("EKF2_PREDICT_US")
+    if micros:
+        target = float(micros) * 1e-6
+        provenance = f"EKF2_PREDICT_US {int(micros)} us"
+    else:
+        # FILTER_UPDATE_PERIOD_MS{10} at EKF/estimator_interface.h:267, read at
+        # ae3070bbf1^ -- the commit that replaced the constant with the
+        # parameter. Every pre-2022 log predates it and carries no parameter.
+        target = 0.010
+        provenance = "no EKF2_PREDICT_US; FILTER_UPDATE_PERIOD_MS 10 ms"
+    if not imu_dt or imu_dt <= 0:
+        return target, provenance
+    period = max(target, imu_dt)
+    held = "the mean the down-sampler holds" if period == target else "one IMU sample, longer than the target"
+    return period, f"{provenance}; {held}, against a {imu_dt * 1e3:.3f} ms IMU interval"
+
+
+# One row per source topic, since EKF2 publishes these at three different rates
+# and resampling them onto one grid would be interpolation, which is a statistic
+# and not a converter's business. Union schema with blank cells, the way the
+# replay input handles sources of different arities.
+REFERENCE_COLUMNS = [
+    "pos_n", "pos_e", "pos_d", "vel_n", "vel_e", "vel_d",
+    "roll", "pitch", "yaw", "att_reset",
+    "ba_x", "ba_y", "ba_z", "bg_x", "bg_y", "bg_z",
+    "sigma_pos_n", "sigma_pos_e", "sigma_pos_d",
+    "sigma_vel_n", "sigma_vel_e", "sigma_vel_d",
+    "sigma_att_n", "sigma_att_e", "sigma_att_d", "sigma_att_total",
+    "sigma_ba_x", "sigma_ba_y", "sigma_ba_z",
+    "sigma_bg_x", "sigma_bg_y", "sigma_bg_z",
+    "r_gnss_pos", "r_gnss_vel", "r_baro", "r_mag",
+]
+
+
+def reference_local(local, rows):
+    """EKF2's position and velocity, from `vehicle_local_position`."""
+    t = stamps(local)
+    names = ["pos_n", "pos_e", "pos_d", "vel_n", "vel_e", "vel_d"]
+    columns = [column(local, f) for f in ("x", "y", "z", "vx", "vy", "vz")]
+    for k in range(len(t)):
+        rows.append((t[k], "ekf2_local", {n: c[k] for n, c in zip(names, columns)}))
+
+
+def reference_attitude(attitude, rows):
+    """EKF2's attitude, from `vehicle_attitude`.
+
+    Available on every corpus log where the states topic and its covariance are
+    not, which makes this the one comparison the whole corpus can support. Tilt
+    is the half that compares cleanly: both filters level off gravity, and across
+    the corpus EKF2's roll and pitch sit within 0.28 deg of what this crate's
+    static window reports.
+
+    `att_reset` carries `quat_reset_counter` where the topic has it, because
+    without it a reset reads as divergence. On 3949f175 EKF2's yaw moves 41.60
+    deg to 16.66 between t=2 s and t=4 s, so a yaw differenced at one instant
+    measures which side of that step each filter was on. The residue after it is
+    a declination difference -- the replay harness overrides declination to a
+    fixed -0.06 rad while EKF2 reads the world magnetic model at an origin two
+    corpus logs do not have -- so absolute yaw is not a like-for-like number and
+    tilt is.
+    """
+    t = stamps(attitude)
+    q = [column(attitude, "q", i) for i in range(4)]
+    resets = attitude.data.get("quat_reset_counter")
+    for k in range(len(t)):
+        roll, pitch, yaw = euler_zyx(q[0][k], q[1][k], q[2][k], q[3][k])
+        values = {"roll": roll, "pitch": pitch, "yaw": yaw}
+        if resets is not None:
+            values["att_reset"] = resets[k]
+        rows.append((t[k], "ekf2_att", values))
+
+
+def reference_states(states, layout, period, rows):
+    """EKF2's biases and covariance diagonal, from whichever topic carries them.
+
+    Biases are scaled to rates on the era that logs deltas, so the column means
+    the same thing on every log. Sigmas are standard deviations, matching the
+    replay output's.
+
+    The attitude ones are in **NED**, and the name says so because the frames do
+    not match. PX4 stores the error-state attitude covariance in the navigation
+    frame -- `getRotVarNed` returns the diagonal as stored while `getRotVarBody`
+    rotates it by `R_to_earth' (.) R_to_earth` (EKF/ekf_helper.cpp:926-937 at
+    c4e4ef98) -- while this crate's `delta_theta` is a local body-frame
+    perturbation, equation (36) giving the navigation-frame error as
+    `R(q) delta_theta`. Rotating either diagonal into the other frame needs the
+    off-diagonals no log carries, so `sigma_att_total`, the square root of the
+    trace, is emitted beside them: a trace is invariant under rotation, which
+    makes it the one attitude scalar comparable to the replay output's
+    `sigma_att_x/y/z` without an off-diagonal on either side.
+
+    Not emitted, deliberately: a tilt or yaw sigma. PX4's `getTiltVariance` sums
+    two NED variances where (36') takes the larger of two body-frame ones, and
+    its `getYawVar` has no counterpart in the replay output, which publishes the
+    body diagonal only. Naming either of those pairs alike would be a comparison
+    of two different quantities.
+    """
+    t = stamps(states)
+    bias = {
+        "ba": [column(states, "states", EKF2_STATE_BA + i) for i in range(3)],
+        "bg": [column(states, "states", EKF2_STATE_BG + i) for i in range(3)],
+    }
+    cov = [column(states, "covariances", i) for i in range(24)]
+    scale = 1.0 if layout["bias_is_rate"] else 1.0 / period
+
+    for k in range(len(t)):
+        values = {}
+        for kind, axes in (("ba", "xyz"), ("bg", "xyz")):
+            for i, axis in enumerate(axes):
+                values[f"{kind}_{axis}"] = bias[kind][i][k] * scale
+                variance = cov[layout[kind] + i][k]
+                values[f"sigma_{kind}_{axis}"] = math.sqrt(max(0.0, variance)) * scale
+        for kind, axes in (("pos", "ned"), ("vel", "ned")):
+            for i, axis in enumerate(axes):
+                variance = cov[layout[kind] + i][k]
+                values[f"sigma_{kind}_{axis}"] = math.sqrt(max(0.0, variance))
+        if layout["att"] is not None:
+            att = [max(0.0, cov[layout["att"] + i][k]) for i in range(3)]
+            for axis, variance in zip("ned", att):
+                values[f"sigma_att_{axis}"] = math.sqrt(variance)
+            values["sigma_att_total"] = math.sqrt(sum(att))
+        rows.append((t[k], "ekf2_states", values))
+
+
+def reference_ratios(status, ratio_fields, rows):
+    """EKF2's aggregate innovation test ratios, from `estimator_status`."""
+    t = stamps(status)
+    names = ["r_gnss_pos", "r_gnss_vel", "r_baro", "r_mag"]
+    columns = [column(status, f) if f else None for f in ratio_fields]
+    for k in range(len(t)):
+        rows.append((
+            t[k],
+            "ekf2_ratio",
+            {n: c[k] for n, c in zip(names, columns) if c is not None},
+        ))
+
+
+def write_reference(ulog, out, t0, imu_dt, source_name):
+    """EKF2's own solution and innovation ratios, for a side-by-side diff."""
     local = pick(ulog, ["vehicle_local_position"])
+    attitude = pick(ulog, ["vehicle_attitude"])
     status = pick(ulog, ["estimator_status"])
-    if local is None and status is None:
+    states = pick(ulog, ["estimator_states", "estimator_status"])
+    if local is None and status is None and attitude is None:
         print("warning: no EKF2 topics; reference not written", file=sys.stderr)
         return False
 
@@ -437,34 +669,117 @@ def write_reference(ulog, out, t0):
                 file=sys.stderr,
             )
 
-    reference = []
-    if local is not None:
-        t = stamps(local)
-        columns = [column(local, f) for f in ("x", "y", "z", "vx", "vy", "vz")]
-        for k in range(len(t)):
-            reference.append((t[k], "ekf2_state", [c[k] for c in columns], []))
-    if status is not None and ratio_fields:
-        t = stamps(status)
-        columns = [column(status, f) if f else None for f in ratio_fields]
-        for k in range(len(t)):
-            reference.append(
-                (t[k], "ekf2_ratio", [], [c[k] if c is not None else None for c in columns])
+    layout, n_states, period, provenance = None, None, None, None
+    if states is not None and "states[0]" in states.data:
+        n_states = int(states.data["n_states"][0])
+        layout = EKF2_LAYOUTS.get(n_states)
+        if layout is None:
+            print(
+                f"warning: `{states.name}` reports n_states={n_states}, which is "
+                "neither of the two EKF2 layouts; states and covariance omitted",
+                file=sys.stderr,
             )
-    reference.sort(key=lambda r: r[0])
+        else:
+            period, provenance = ekf2_update_period(ulog, imu_dt)
+
+    rows = []
+    if local is not None:
+        reference_local(local, rows)
+    if attitude is not None:
+        reference_attitude(attitude, rows)
+    if layout is not None:
+        reference_states(states, layout, period, rows)
+    if status is not None and ratio_fields:
+        reference_ratios(status, ratio_fields, rows)
+    rows.sort(key=lambda r: r[0])
 
     with open(out, "w", newline="") as handle:
-        handle.write("# EKF2's own solution, for comparison. Never filter input.\n")
-        handle.write(f"# Ratio fields: {ratio_fields}\n")
-        handle.write("# Same timebase as the replay CSV: rebased to its first sample.\n")
-        handle.write("t_s,source,pos_n,pos_e,pos_d,vel_n,vel_e,vel_d,")
-        handle.write("r_gnss_pos,r_gnss_vel,r_baro,r_mag\n")
-        for timestamp, source, values, ratios in reference:
-            values = list(values) + [None] * (6 - len(values))
-            ratios = list(ratios) + [None] * (4 - len(ratios))
+        for line in reference_note(local, attitude, states, layout, n_states,
+                                   period, provenance, ratio_fields, source_name):
+            handle.write(f"# {line}\n")
+        handle.write("t_s,source," + ",".join(REFERENCE_COLUMNS) + "\n")
+        for timestamp, source, values in rows:
             cells = [f"{(timestamp - t0) * 1e-6:.6f}", source]
-            cells += ["" if v is None else f"{v:.6g}" for v in values + ratios]
+            for name in REFERENCE_COLUMNS:
+                value = values.get(name)
+                cells.append("" if value is None else f"{value:.6g}")
             handle.write(",".join(cells) + "\n")
     return True
+
+
+def reference_note(local, attitude, states, layout, n_states, period, provenance,
+                   ratio_fields, source_name):
+    """The `#` header: what each row kind came from, and every caveat on it."""
+    kinds = []
+    if local is not None:
+        kinds.append("ekf2_local=vehicle_local_position")
+    if attitude is not None:
+        kinds.append("ekf2_att=vehicle_attitude")
+    if layout is not None:
+        kinds.append(f"ekf2_states={states.name}")
+    if ratio_fields:
+        kinds.append("ekf2_ratio=estimator_status")
+
+    note = [
+        "EKF2's own solution, for comparison. Never filter input.",
+        # Names the log, so a consumer pairing this with a replay can refuse a
+        # reference from a different flight. The replay input's own header says
+        # `Converted from <name>.ulg`, and the two have to agree.
+        f"Converted from {source_name} by tools/ulog2replay.py",
+        "Rows: " + ", ".join(kinds),
+    ]
+    if ratio_fields:
+        note.append("Ratio fields: " + ", ".join(f or "(missing)" for f in ratio_fields))
+    if layout is None:
+        if n_states is not None:
+            note.append(f"No states or covariance: n_states={n_states} is not an EKF2 layout.")
+    else:
+        note.append(f"EKF2 layout: n_states={n_states}.")
+        if layout["bias_is_rate"]:
+            note.append("Bias states are rates as logged; nothing scaled.")
+        else:
+            note.append(
+                f"Bias states are delta-angle/delta-velocity, scaled to rates by a "
+                f"{period:.4f} s filter update period ({provenance})."
+            )
+        if layout["att"] is None:
+            note.append(
+                "sigma_att_* are blank: this era logs a quaternion covariance "
+                "diagonal, and four entries become a rotation-vector sigma only "
+                "through the full 4x4 block."
+            )
+        else:
+            note.append(
+                "sigma_att_n/e/d are NED, the frame PX4 stores the error-state "
+                "attitude covariance in; the replay output's sigma_att_x/y/z are "
+                "body-frame, and rotating either needs off-diagonals no log "
+                "carries. Compare sigma_att_total, a trace being invariant."
+            )
+    note.append(ekf2_origin_note(local))
+    note.append("Same timebase as the replay CSV: rebased to its first sample.")
+    return note
+
+
+def ekf2_origin_note(local):
+    """EKF2's local-position origin, which #8 needs before it can align tracks.
+
+    A `#` line rather than a column because it does not move: it is one geodetic
+    point per log, and the replay harness already parses a `#` header for the
+    truth file's scenario and seed. Two corpus logs report `xy_global` false with
+    the reference fields all zero, so their x/y/z are origin-relative with no
+    origin -- which is a fact about those logs and has to be said, not filled in.
+    """
+    if local is None:
+        return "EKF2 origin: none (no vehicle_local_position)"
+    if "xy_global" not in local.data or "ref_lat" not in local.data:
+        return "EKF2 origin: none (vehicle_local_position carries no reference fields)"
+    if not any(local.data["xy_global"]):
+        return "EKF2 origin: none (xy_global false)"
+    index = next(k for k, flag in enumerate(local.data["xy_global"]) if flag)
+    lat = local.data["ref_lat"][index]
+    lon = local.data["ref_lon"][index]
+    alt = local.data["ref_alt"][index]
+    return f"EKF2 origin: {lat:.9g} {lon:.9g} {alt:.9g}"
 
 
 def main():
@@ -490,7 +805,7 @@ def main():
 
     output = args.output or args.ulog.with_suffix(".csv")
     try:
-        rows, used, dropout_note = convert(
+        rows, used, dropout_note, imu_dt = convert(
             args.ulog, args.baro_variance, args.mag_variance
         )
         note = [
@@ -512,7 +827,11 @@ def main():
                 if isinstance(args.reference, Path)
                 else output.with_suffix(".reference.csv")
             )
-            if write_reference(ULog(str(args.ulog)), target, t0):
+            # A second open, with its own topic filter: the replay pass and this
+            # one want disjoint topics, and the largest corpus log is 219 MB.
+            # Do not fold them into one unfiltered open.
+            reference = ULog(str(args.ulog), REFERENCE_TOPICS)
+            if write_reference(reference, target, t0, imu_dt, args.ulog.name):
                 print(f"reference -> {target}", file=sys.stderr)
     except ConversionError as e:
         print(f"ulog2replay: {e}", file=sys.stderr)

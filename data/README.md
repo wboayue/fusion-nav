@@ -11,8 +11,9 @@ file cannot reach, since it keeps only the most recent ratio and so cannot tell 
 or say what became of either. The per-source gates ride in that file's header, because the filter
 reports `r = ε / γ` and a ratio without its `γ` does not go back to `ε`.
 
-`nu*` and `s*` are empty for now: the filter publishes no innovation or innovation covariance, and
-the harness does not work them out for itself — see the rule below.
+`nu*` and `s*` carry the filter's own published innovation and the diagonal of `S`. They are empty
+only where the gate ran no update — an adoption, a refusal, or a call before initialization — and
+the harness never works them out for itself; see the rule below.
 
 ## One statistic, one implementation
 
@@ -26,10 +27,18 @@ the harness, because that is the one CI runs. Where a statistic is only meaningf
 against the reference — distance from EKF2, the corpus table — it lives in Python and is defined
 there once.
 
-The same rule is why `nu*` and `s*` above stay empty rather than being computed here from the
-measurement and the covariance. The update of equations (23)–(28) is about to own that quantity,
-and two implementations of it would eventually disagree — discovered, as these things are, while
+The same rule is why `nu*` and `s*` above are published by the filter rather than computed here
+from the measurement and the covariance. The update of equations (23)–(28) owns that quantity, and
+two implementations of it would eventually disagree — discovered, as these things are, while
 somebody chases a filter bug that does not exist.
+
+`tools/replay_report.py` is the rule applied to a whole document: it plots the per-fusion rows and
+prints the `summary` and `score` keys beside them, and computes no statistic of its own. Its NIS
+histogram is `ε = r γ` recovered from what the filter published, the way the harness's own
+`nis_is_recovered_with_the_gate_the_filter_was_configured_with` recovers it — never `ν` and
+diag(`S`), which would need the off-diagonals the fusion CSV does not carry and so would be a
+second implementation and a wrong one. Lag-1 autocorrelation is not plotted at all, because
+`acf1_` is already on the `summary` line and pinned per log.
 
 ## Simulated flights
 
@@ -201,8 +210,125 @@ $ uv run tools/ulog2replay.py data/logs/<log-id>.ulg -o data/logs/<log-id>.csv -
 $ cargo run --example replay -- data/logs/<log-id>.csv
 ```
 
-`--reference` writes EKF2's own solution and innovation test ratios to a second file, for a
-side-by-side diff.
+### What `--reference` writes, and what it cannot
+
+`--reference` writes EKF2's own solution to a second file on the replay timebase, for a
+side-by-side diff. It is never filter input. Four row kinds, each at its own publication rate
+rather than resampled onto a common grid — interpolation is a statistic, and not a converter's:
+`ekf2_local` (position and velocity), `ekf2_att` (attitude, and `quat_reset_counter` where the
+topic carries it), `ekf2_states` (biases and the covariance diagonal as standard deviations), and
+`ekf2_ratio` (the four aggregate innovation test ratios). Column names match the epoch file's, so
+a diff is by name.
+
+EKF2's state vector has been laid out the same way in every version that logs one, but **its
+covariance has not**, and the two eras both report 24 entries meaning different things — so no
+field spelling distinguishes them and `tools/ulog2replay.py` keys the index map on `n_states`.
+That table is the only place the map lives, with the PX4 commits that moved it cited above it.
+What it means per log:
+
+| `n_states` | covariance | bias states | corpus |
+|---|---|---|---|
+| 25 | error-state | rad/s and m/s² | `3949f175` |
+| 24 | indexed like the state vector, four quaternion entries first | delta-angle and delta-velocity per filter update | `a299e722`, `2c42096b`, `f16771dd` |
+| anything else | refused | refused | `7592c9b2`, an LPE log reporting 10 |
+
+Three boundaries follow, and they are properties of the logs rather than of the converter:
+
+- **The 24-state era supplies no attitude σ**, on three of the five corpus logs. Four quaternion
+  variances become a rotation-vector σ only through the full 4×4 block, and the log carries the
+  diagonal alone. The cells are blank rather than filled.
+- **Where there is one, it is in NED.** PX4 stores the error-state attitude covariance in the
+  navigation frame — `getRotVarNed` returns the diagonal as stored while `getRotVarBody` rotates
+  it by `Rᵀ(·)R`, `EKF/ekf_helper.cpp:926-937` at `c4e4ef98` — while this crate's `δθ` is a local
+  body-frame perturbation and (36) gives the navigation-frame error as `R(q̂) δθ`. The columns are
+  named `sigma_att_n/e/d` for that reason, and `sigma_att_total` is emitted beside them: a trace
+  is invariant under rotation, so it is the one attitude scalar comparable to the epoch file's
+  `sigma_att_x/y/z` with no off-diagonal needed on either side. A tilt or a yaw σ is deliberately
+  *not* emitted — PX4's `getTiltVariance` sums two NED variances where (36′) takes the larger of
+  two body-frame ones, and naming those alike would compare two different quantities.
+- **Two of five logs report no origin** (`xy_global` false, the reference fields all zero), so
+  EKF2's `x,y,z` there are origin-relative with no origin and cannot be aligned to this filter's.
+  The origin is a `#` header line, not a column, since it is one geodetic point per log.
+
+The delta-angle era is scaled to rates so the column means the same thing on every log, and the
+scale factor is stated in the header with where it came from. It has to be the quantity PX4 itself
+divides by, which is `_dt_ekf_avg` — `getGyroBias() { return _state.delta_ang_bias / _dt_ekf_avg; }`
+with the variance over `sq(_dt_ekf_avg)`, `EKF/ekf.h:239-244` at `ae3070bbf1^` — and that is a
+running **mean** of the realized step, not an integer multiple of anything.
+
+It is **not** the topic's publication interval: `estimator_status` publishes at 5 Hz on two corpus
+logs and `estimator_states` at 1 Hz on a third. It is `max(target, imu_dt)`, where `target` is
+`EKF2_PREDICT_US` when the log carries it and otherwise the `FILTER_UPDATE_PERIOD_MS{10}` that
+preceded that parameter (`EKF/estimator_interface.h:267` at `ae3070bbf1^`). The down-sampler is
+built to hold that mean rather than to round up to a sample boundary: it fires when the
+accumulated `delta_ang_dt` reaches `_target_dt - _imu_collection_time_adj` and then moves the
+adjustment by `0.01f * (delta_ang_dt - _target_dt)`, a feedback term whose own comment says it is
+there "so that we meet the average EKF update rate requirement"
+(`EKF/imu_down_sampler.cpp:36-43` at `ae3070bbf1^`). On a 250 Hz IMU against a 10 ms target it
+alternates two- and three-sample steps and averages 10 ms; it does not settle at 12.
+
+Both halves of the `max` are load-bearing. Rounding a 4 ms IMU up to 12 ms scales every bias and
+bias σ in that log 20 % low, and a 50 Hz log genuinely does run a 20 ms period against a 10 ms
+target, because nothing can subdivide a sample longer than the target.
+
+That `imu_dt` is the one place the converter computes something the harness also computes — the
+IMU interval, which the `summary` line publishes as `rate=` and `manifest.txt` pins. Two
+estimators of one quantity is what *one statistic, one implementation* forbids, and the failure
+would be silent, moving a published bias figure with nothing to point at. So it is guarded the way
+`write_truth_header` and `TRUTH_COLUMNS` are: the converter writes the interval it used into the
+header, and `replay_report.py` refuses a set of files whose interval and `rate=` disagree.
+
+Reading the columns back is what verifies them — a wrong index is silence, not a failure. On
+`2c42096b`, 35583 samples over 2 h, this filter's gyro-bias estimate and EKF2's scaled
+delta-angle bias agree to 5.3e-4 rad/s (0.03 °/s), which is what confirms the units and the index
+map. The rounding itself rests on PX4 source rather than on that number: it moves `2c42096b` by
+0.5 %, and the log where it would matter carries 58 bias samples against a velocity source this
+filter rejects 278 of 609 solutions from, so its own bias wanders by ±0.01 rad/s and cannot
+adjudicate anything.
+
+Roll and pitch agree with EKF2 within 0.28° on all five logs at the end of the initialization
+window, which is what confirms the quaternion convention, the ZYX order and the timebase
+rebasing at once. **Absolute yaw does not compare at an instant** and should not be read as
+divergence: EKF2 resets yaw in the first seconds — on `3949f175` it moves 41.60° to 16.66°
+between t = 2 s and t = 4 s, which is what `ekf2_att`'s `att_reset` column is for — and the
+residue after its reset is a declination difference, this harness overriding declination to a
+fixed −0.06 rad while EKF2 reads the world magnetic model at an origin two corpus logs do not
+have.
+
+### Per-log reports
+
+`tools/replay_report.py` renders one replay into a single self-contained HTML file: horizontal
+track against EKF2 and the raw fixes, every state with its ±3σ band and `Status` shaded behind it,
+all the σ on one log axis with GNSS gaps shaded, per-axis normalized innovations with the gate and
+its rejections, the NIS histogram and QQ plot against χ², and the published keys.
+
+```console
+$ cargo run --release --example replay -- data/logs/<log-id>.csv target/replay.csv > target/<id>.summary
+$ uv run tools/replay_report.py data/logs/<log-id>.csv target/replay.csv \
+      --reference data/logs/<log-id>.reference.csv --summary target/<id>.summary \
+      -o target/report/<log-id>.html
+```
+
+One HTML file with the PNGs inlined, and no JavaScript, for the same reason `README.md` carries no
+mermaid: it renders wherever it lands. The 2 h log takes 16 s and produces 2.1 MB, decimating
+1.4 M epochs to about 4000 points per trace with a min/max envelope per bucket, so a transient
+survives the stride. Sources, their gates and their degrees of freedom are discovered from the
+files, so adding a measurement source to the crate needs no edit in that tool.
+
+`--summary` is how the report reads the statistics rather than recomputing them, and a captured
+stdout has nothing in it tying it to the CSVs beside it — the hazard `Scoring::open` already
+refuses for a truth file from the wrong scenario, where the timestamps line up often enough that
+nothing else notices. So the tool refuses a mismatched set, on three reads: `epochs=` against the
+epoch CSV's row count, each `rejected_<source>=` against that source's `rejected` rows in the
+fusion CSV, and the reference's IMU interval against `rate=`.
+
+Two caveats are printed beside the distribution plots rather than left to a reader, because both
+are measured and both look like filter faults. **No source in this corpus is white** — `acf1_`
+runs 0.5736–0.9885 on GNSS position, 0.1712–0.8511 on the barometer and 0.1793–0.9851 on the
+magnetometer — because a 1 Hz receiver filters its own solution in time and a 250 Hz magnetometer
+is sampled far faster than the field it reads changes. And **`R` for the barometer and the
+magnetometer is a converter constant**, so their distribution tests those constants; only GNSS
+tests a receiver's own reported accuracy.
 
 `data/fetch.sh --check` converts and replays the whole pinned corpus and asserts the per-log
 expectations recorded beside each checksum against the `summary` line the replay example prints,
@@ -300,6 +426,11 @@ to convert with holds a different one. The two paths only produce the same CSV f
 pyulog, and a converter that changed underneath the corpus would move the expectations below with
 nothing in the repository to blame. `tools/ulog2replay.py` holds the pin; `fetch.sh` reads it from
 there.
+
+`tools/replay_report.py` pins its own dependencies the same way and nothing enforces those, which
+is not an oversight to correct. The enforcement exists because converter output reaches
+`manifest.txt`, where a silent change has no diff to point at; a report reaches nobody's
+expectations, and a matplotlib that renders a line differently moves no pinned number.
 
 `data/fetch.sh --add <url> [name]` downloads a log once and appends a manifest line to commit; the
 files stay out of the repo, the checksums do not. Each entry should cover something no other log

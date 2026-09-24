@@ -252,7 +252,24 @@ data/fetch.sh --verify            # checksums only, no network
 data/fetch.sh --check             # convert each .ulg and replay it, assert expectations
 data/fetch.sh --add <url> [name]  # download once, append a manifest line to commit
 uv run tools/ulog2replay.py log.ulg -o log.csv [--reference]   # ULog -> replay CSV
+uv run tools/replay_report.py in.csv out.csv [truth.csv] \
+    --reference ref.csv --summary summary.txt -o report.html   # one HTML per log
 ```
+
+`--reference` writes EKF2's own solution beside the replay input, never into it. Its state/covariance
+index map is keyed on `n_states`, because EKF2's covariance layout changed while the entry count did
+not — both eras report 24 entries meaning different things, so no field spelling distinguishes them.
+Three of the five corpus logs therefore supply no attitude σ at all, two supply no origin, and the
+LPE log is refused outright. `data/README.md`, "What `--reference` writes, and what it cannot", owns
+those boundaries and the bias-scaling factor; the map itself lives in `tools/ulog2replay.py` and
+nowhere else, so a consumer reads column names and never the layout.
+
+The report tool computes no statistic: it plots the per-fusion rows and prints the `summary` and
+`score` keys. It refuses a set of files that do not describe one run — `epochs=` against the epoch
+row count, `rejected_<source>=` against the fusion CSV's tally, the source `.ulg` both the
+reference and the replay input name, the scenario and seed in a truth file's header, and the
+reference's IMU interval against `rate=` — that last one guarding the only quantity the converter
+and the harness both estimate.
 
 **`uv` is the package manager and the runner for the Python tools under `tools/`.** The converter
 declares `pyulog` inline (PEP 723), so `uv run tools/ulog2replay.py` resolves it with no
@@ -392,6 +409,26 @@ The same pass caught a prefix match that read `pos_h_max` where `pos_h` was aske
 missing numeric check that let `nees_pos=none` read as zero and clear every ceiling. Each took one
 `sed` and one run. Where the mutation is not obvious, the fixture's comment says which one it
 survives — that is the sentence a later reader needs, not the assertion, which they can see.
+
+**An artifact nobody looked at is unverified, whatever the pipeline says.** The rule above, one
+level out: a passing test says nothing about a guard never exercised, and a passing pipeline says
+nothing about an output nobody opened. `tools/replay_report.py` landed with every guard
+mutation-tested, `fetch.sh --check` green on all five logs and CI green on nine jobs, and four of
+its figures were wrong — a track built by pairing two columns decimated independently, so 3217 of
+3994 buckets drew a position the vehicle never held; a gap detector fed decimated timestamps,
+shading 6700 s of a 7127 s log as outage; a caption reporting a count filled in during a draw that
+had not happened, since a caption is an argument; and an attitude σ panel labelled in degrees
+while plotting radians. None of it errored. A wrong plot renders, sizes and times exactly like a
+right one, so **the only detector is opening it** — one figure per section, on a log that
+exercises that section, before the work is called done.
+
+**Evidence has to be able to come out the other way.** Before a number is offered as confirmation,
+ask what it would read if the thing were broken. The corrected EKF2 bias scaling was argued from
+35583 samples on `2c42096b` agreeing to 5.3e-4 rad/s — and that log's update period moved 0.5 %
+under the correction, so the figure was identical either way and could not have caught the 20 %
+error it was cited as ruling out. `f16771dd`, where the period moved 12 ms → 10 ms, was the log
+that could have. A statistic that reads the same whether or not the code is right is not weak
+evidence, it is none, and quoting it is worse than quoting nothing because it reads as checked.
 
 **One statistic, one implementation.** The Rust replay harness is the only thing that *computes* a
 statistic; it emits per-fusion rows and scalar keys on the `summary` and `score` lines. The Python
