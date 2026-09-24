@@ -454,7 +454,7 @@ it did not before, grep for the claims that rested on its absence — "shows no"
 **Compare figures in the same measure.** The barometer's 13.6 m on `2c42096b` was its min–max
 range; EKF2's ~12 m was start to end. Set side by side, they said EKF2 followed most of the drift
 when it followed all of it (start to end, the barometer climbs ~12 m too). That survived a GOALS
-rewrite and five issue comments before review caught it. Name the statistic — range, start to
+rewrite, a manifest note and three issue comments before review caught it. Name the statistic — range, start to
 end, RMS, mean — whenever two numbers are put next to each other.
 
 **Know what a log is before reading its figures as accuracy.** `2c42096b` is a grounded,
