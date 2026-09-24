@@ -363,10 +363,10 @@ b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-
 # a 105 MB CSV. It never flies: peak GNSS speed 0.38 m/s, every fix within
 # 6.2 m of the origin on each axis -- a vehicle vibrating in place for two
 # hours, with the outages below suggesting a poor sky view, while its
-# barometer climbs 13.6 m and its GNSS height wanders 27 m. So its
-# expectations pin behaviour -- what the filter does with two height
-# sources that disagree -- and none of its figures is a flight-accuracy
-# result or a number to tune toward.
+# barometer climbs about 12 m from start to end and its GNSS height
+# wanders over a 27 m range. So its expectations pin behaviour -- what the
+# filter does with two height sources that disagree -- and none of its
+# figures is a flight-accuracy result or a number to tune toward.
 # What nothing else in the corpus covers:
 #   - Duration. At 7127 s an f32 timestamp has a 0.49 ms ULP, so a 5 ms step
 #     reads as 5.371 ms; this is the regression guard for parsing t_s as f64.
