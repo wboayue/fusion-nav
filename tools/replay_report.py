@@ -232,6 +232,39 @@ def read_times(path, source, source_column="source"):
     ]
 
 
+def read_path(path, x_name, y_name, points, source=None, source_column="source"):
+    """Two columns sampled from the *same* rows, for a parametric plot.
+
+    Not the min/max envelope `read_series` uses, and the distinction is not a
+    nicety. An envelope keeps each column's extremes independently, so its point
+    k for north and its point k for east come from different epochs: on the 2 h
+    log the two disagreed in 3217 of 3994 buckets, and pairing them drew a
+    zigzag of positions the vehicle never occupied, over a true track whose
+    consecutive steps have a median of 0.59 mm.
+
+    A uniform stride keeps each sample a real position. It can cut a corner
+    between samples, which for a path is the honest failure: a reset displaces
+    every later sample and still shows.
+    """
+    rows = count_rows(path, source, source_column)
+    stride = max(1, math.ceil(rows / points)) if rows else 1
+    stream = read_header_and_rows(path)
+    _, columns = next(stream)
+    if x_name not in columns or y_name not in columns:
+        return None
+    xi, yi = columns.index(x_name), columns.index(y_name)
+    kind = columns.index(source_column) if source_column in columns else None
+    x, y, index = [], [], 0
+    for _, cells in stream:
+        if kind is not None and source is not None and cells[kind] != source:
+            continue
+        if index % stride == 0 and cells[xi] and cells[yi]:
+            x.append(float(cells[xi]))
+            y.append(float(cells[yi]))
+        index += 1
+    return (np.array(x), np.array(y)) if x else None
+
+
 def read_status(path, points):
     """Contiguous `(start, end, status)` runs, for shading a time axis."""
     stream = read_header_and_rows(path)
@@ -709,12 +742,10 @@ def build_report(args):
     if keys:
         check_provenance(keys, epoch_rows, sources, reference_notes)
 
-    _, input_series = read_series(args.input, ["v0", "v1"], args.points,
-                                  source="gnss_pos")
-    fixes = None
-    if "v0" in input_series and "v1" in input_series:
-        fixes = (input_series["v0"][1], input_series["v1"][1])
-    gaps = read_times(args.input, "gnss_pos") if "v0" in input_series else None
+    # `gnss_pos` carries north in v0 and east in v1, the replay input's union
+    # schema. Paired from one row, never from two decimated columns.
+    fixes = read_path(args.input, "v0", "v1", args.points, source="gnss_pos")
+    gaps = read_times(args.input, "gnss_pos") if fixes is not None else None
 
     blocks = []
 
@@ -740,18 +771,22 @@ def build_report(args):
         + "</table>"
     )
 
-    if "pos_n" in epochs and "pos_e" in epochs:
+    ours_track = read_path(args.replay, "pos_n", "pos_e", args.points)
+    if ours_track is not None:
         blocks.append("<h2>Horizontal track</h2>")
         reference_track = None
-        if "pos_n" in reference and "pos_e" in reference:
-            reference_track = (reference["pos_n"][1], reference["pos_e"][1])
+        if args.reference:
+            reference_track = read_path(args.reference, "pos_n", "pos_e",
+                                        args.points, source="ekf2_local")
         png, caption = figure(
-            track_figure((epochs["pos_n"][1], epochs["pos_e"][1]), reference_track,
-                         fixes),
+            track_figure(ours_track, reference_track, fixes),
             "Estimate, EKF2's own solution where the log carries one, and the raw "
             "GNSS fixes the filter was offered. EKF2's track is relative to its "
             "own origin, which is not this filter's: two corpus logs report no "
-            "origin at all.",
+            "origin at all. Every track here is sampled at a uniform stride, so "
+            "each point is a position that was actually held &mdash; the "
+            "min/max envelope the time series use pairs two columns from "
+            "different epochs and draws a path nobody travelled.",
             width=7.5, height=7.0)
         blocks.append(png_block(png, caption))
 
