@@ -569,6 +569,10 @@ struct Replay {
     initialized_at: Option<f64>,
     alignment: Option<Alignment>,
     mag_at_init: bool,
+    /// Whether the window itself fixed `α₀`, so `alpha0=` can say where the reference came
+    /// from: a window taken at rest, or the first altitude read against the estimate once
+    /// position was established. The filter reports only that it holds one.
+    alpha0_from_window: bool,
     /// When `Eskf::is_aligned` first read true, in log time.
     ///
     /// The filter's own latch rather than `Validity::attitude`: the two read different bars
@@ -637,6 +641,7 @@ impl Replay {
             initialized_at: None,
             alignment: None,
             mag_at_init: false,
+            alpha0_from_window: false,
             aligned_at: None,
             attitude_lost: None,
             heading_at_init: false,
@@ -751,6 +756,7 @@ impl Replay {
         // The filter's own rule: one magnetometer sample anywhere in the window observes
         // heading, and none at all leaves yaw a prior until a heading is fused.
         self.mag_at_init = window.iter().any(|s| s.mag.is_some());
+        self.alpha0_from_window = self.filter.baro_reference().is_some();
         let state = self.filter.state();
         self.note_alignment(t, self.filter.is_aligned(), state.validity);
         self.heading_at_init = state.validity.heading;
@@ -1204,7 +1210,7 @@ impl Replay {
                         reference.as_meters()
                     ),
                     None => "no barometric reference (no barometer in the window, or it was \
-                             taken in motion), altitude fusion refused"
+                             taken in motion), altitude refused until a fix establishes position"
                         .to_string(),
                 };
                 let alignment = match self.alignment {
@@ -1365,13 +1371,14 @@ impl Replay {
             } else {
                 "none"
             },
-            // Only a static start establishes the barometric reference, so a coarse log
-            // fuses no altitude at all unless the application names one. Pinned here
-            // because nothing else in this line would notice barometric aiding vanishing.
-            if self.filter.baro_reference().is_some() {
-                "set"
-            } else {
-                "none"
+            // Where the barometric reference came from: the window, or the estimate once a
+            // fix established position. Pinned here because nothing else in this line would
+            // notice barometric aiding vanishing, nor a coarse log's reference moving from
+            // one source to the other.
+            match (self.filter.baro_reference(), self.alpha0_from_window) {
+                (Some(_), true) => "window",
+                (Some(_), false) => "estimate",
+                (None, _) => "none",
             },
             // `Validity::heading` as initialization left it, not as the log ended.
             // Nothing pins the rotation about gravity except a magnetometer, and the
@@ -2517,7 +2524,7 @@ mod tests {
         // reference: it has no scatter to give the reference a variance from.
         let log = still_start_with_baro(&[41.5, 42.5, 42.0]);
         let replay = replay(&log);
-        assert_eq!(key(&replay.summary(), "alpha0"), "set");
+        assert_eq!(key(&replay.summary(), "alpha0"), "window");
         let reference = replay.filter.baro_reference().expect("α₀ established");
         assert!(
             (reference.as_meters() - 42.0).abs() < 1e-3,
@@ -2526,11 +2533,36 @@ mod tests {
         );
     }
 
+    /// Airborne from the first sample, so the harness starts coarse at `PATIENCE`.
+    fn coarse_start() -> Log {
+        Log::new().run(0.0, 501, DT, TURNING)
+    }
+
     #[test]
-    fn a_window_without_a_barometer_refuses_altitude() {
-        // The LPE corpus log (`7592c9b2…`) yields no barometer rows at all; this is that
-        // path, and `alpha0=` is the only key that would notice it.
+    fn a_window_without_a_barometer_takes_the_reference_from_the_estimate() {
         let log = still_start().baro(2.0, 42.0);
+        let replay = replay(&log);
+        assert_eq!(key(&replay.summary(), "alpha0"), "estimate");
+        assert_eq!(key(&replay.summary(), "discarded"), "0");
+    }
+
+    #[test]
+    fn a_coarse_start_sets_the_reference_at_the_first_altitude_after_a_fix() {
+        // `2c42096b`'s shape: a coarse start, a fix, then the barometer.
+        let log = coarse_start()
+            .gnss_pos(10.02, 1.0, 2.0, -3.0)
+            .baro(10.04, 42.0)
+            .imu(10.04, TURNING);
+        let replay = replay(&log);
+        assert_eq!(key(&replay.summary(), "alpha0"), "estimate");
+        assert_eq!(key(&replay.summary(), "discarded"), "0");
+    }
+
+    #[test]
+    fn a_coarse_start_with_no_fix_refuses_altitude() {
+        // Nothing establishes position, so there is no estimate to read `α₀` against, and
+        // `alpha0=` is the only key that would notice the barometer going unused.
+        let log = coarse_start().baro(10.02, 42.0).imu(10.02, TURNING);
         let replay = replay(&log);
         assert_eq!(key(&replay.summary(), "alpha0"), "none");
         let (_, baro) = replay
@@ -2725,11 +2757,13 @@ mod tests {
     /// and nothing on this line noticed.
     #[test]
     fn everything_that_never_reached_the_gate_is_discarded() {
+        let no_reference = coarse_start()
+            .raw("10.020000,baro,42,,,,,,4,,")
+            .imu(10.02, TURNING);
+        let summary = replay(&no_reference).summary();
+        assert_eq!(key(&summary, "discarded"), "1", "no reference: {summary}");
+        assert_eq!(key(&summary, "rejected"), "0", "{summary}");
         for (row, what) in [
-            (
-                "2.000000,baro,42,,,,,,4,,",
-                "no reference to be relative to",
-            ),
             (
                 "2.000000,gnss_pos,0,0,0,,,,0,2.25,5.625",
                 "a variance of zero",
@@ -3192,7 +3226,9 @@ mod tests {
             (still_start().gnss_pos(2.0, 1000.0, 0.0, 1000.0), "rejected"),
             (Log::new().gnss_pos(0.0, 0.0, 0.0, 0.0), "not_initialized"),
             (
-                still_start().raw("2.000000,baro,42,,,,,,4,,"),
+                coarse_start()
+                    .raw("10.020000,baro,42,,,,,,4,,")
+                    .imu(10.02, TURNING),
                 "no_reference",
             ),
             (
