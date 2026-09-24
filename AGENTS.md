@@ -13,12 +13,13 @@ defects the consistency keys of #112 surfaced on `2c42096b`, all one mechanism: 
 fixes no `α₀`, so 35575 barometer rows are refused (#115); every corpus source is correlated
 (`acf1_` 0.17–0.99) while (24) fuses it as white, so `σ_pos_d` sits under the receiver's `epv` at
 4603 of 4604 fixes (#117); and that overconfidence is the lockout precondition "report, do not
-self-recover" accepted, which #116 revisits. #118 gated GNSS height apart from horizontal
+self-recover" accepted, which #116 replaces with recovery on by default behind per-correction
+`Config` opt-outs. #118 gated GNSS height apart from horizontal
 position, which removed the lockout fusing that barometer caused. #115's `α₀` from the estimate
 is parked on `115-coarse-baro`: it bakes the first fix's height error into a constant no state
 carries (`moving_start` `nees_pos` 112.59, or 14.58 with the variance in `R`). It is blocked on
-#119, the barometric offset as a consider state, which reopens GOALS' "Barometric reference as a
-constant". Order: #119, then #115, then #89 (the gate the remedies are judged by), #117, then #8.
+#119, the barometric offset as a consider state; GOALS' "Barometric reference as a constant" is
+reopened for it (#120), so what #119 has left is the implementation. Order: #119, then #115, then #89 (the gate the remedies are judged by), #117, then #8.
 
 **Every source the crate publishes is fused; no `fuse_*` is a stub.** Initialization is real —
 equations (5)–(8), so the filter starts at the attitude and biases the window yields — `predict`
