@@ -443,6 +443,26 @@ error it was cited as ruling out. `f16771dd`, where the period moved 12 ms → 1
 that could have. A statistic that reads the same whether or not the code is right is not weak
 evidence, it is none, and quoting it is worse than quoting nothing because it reads as checked.
 
+**An absence is measured only on what was fused.** `Gates`' doc comment dismissed the cost of a
+joint GNSS gate because "the corpus shows no such fix" — true, because `2c42096b`'s barometer was
+being discarded. The first change that fused it (#115) rejected 3945 of its 4616 fixes, every one
+on height, and #118 had to split the gate. A claim that the corpus shows *no* X is conditional on
+every source that could produce X reaching the filter. When a change makes a source reach a log
+it did not before, grep for the claims that rested on its absence — "shows no", "never",
+"none", `rejected_<source>=0` — and re-measure them in the same diff.
+
+**Compare figures in the same measure.** The barometer's 13.6 m on `2c42096b` was its min–max
+range; EKF2's ~12 m was start to end. Set side by side, they said EKF2 followed most of the drift
+when it followed all of it (start to end, the barometer climbs ~12 m too). That survived a GOALS
+rewrite and five issue comments before review caught it. Name the statistic — range, start to
+end, RMS, mean — whenever two numbers are put next to each other.
+
+**Know what a log is before reading its figures as accuracy.** `2c42096b` is a grounded,
+vibrating vehicle under a poor sky view for two hours, not a flight. Its numbers pin *behaviour*
+(what the filter does when two height sources disagree), and tuning toward them would be fitting
+a bench test. Check peak speed and extent from the CSV before a log's figures argue for a change,
+and say what the log is in its manifest note, as that entry now does.
+
 **One statistic, one implementation.** The Rust replay harness is the only thing that *computes* a
 statistic; it emits per-fusion rows and scalar keys on the `summary` and `score` lines. The Python
 tools read those and aggregate, plot, or compare against the EKF2 reference — they never recompute
@@ -459,6 +479,13 @@ the one the filter asserted, diverging from it precisely as the estimate approac
 the only regime where such a count says anything. Reading the verdict and re-deriving the geometry
 is still two implementations of one claim. It applies to every scoring statistic still to land:
 NIS against the gates (#5), distance from EKF2 (#8), and scoring a rejection as correct (#60).
+
+**Look at `tools/replay_report.py` before drawing a figure.** It renders one run per log, with
+EKF2's reference beside it, and nothing else in the repository draws corpus figures. A bespoke
+page that bins or averages the replay CSVs is a second implementation of statistics the harness
+owns. Comparing *runs* (before and after a change on one log) is what it does not do. Until it
+does, render one report per run and set them side by side; a cross-run mode belongs in the tool,
+not in a page.
 
 **Say which file a published number came from.** A score is a claim about a specific run, and
 `examples/replay.rs` refuses a truth file whose `#` header names a different scenario or seed than
@@ -735,6 +762,16 @@ length of `sources()`'s array.
 - **`P0`, initial state uncertainty** — `Initialization::sigma_*`. A prior on the *state*, not on
   any measurement; `sigma_yaw` >> `sigma_tilt` because gravity pins tilt and yaw inherits the
   magnetometer's error.
+
+A fourth thing is often mistaken for `R`: **an error the readings share.** Inflating `R` cannot
+represent it, because (24) treats each reading's error as independent, so N readings average `S`
+down by about N however large `R` is. Measured on #115: `α₀` read from the estimate carries the
+fix's height error into every barometer reading, and adding that variance to `R` (PX4's
+`baro_height_control.cpp:86`) takes `moving_start`'s `nees_pos` from 112.59 only to 14.58, while
+`σ_pos_d` still falls 1.80 m → 0.16 m under a constant 1.1 m error. A shared error belongs in the
+covariance with its correlations: #119's consider state, or a state. (36′) is `R` inflation too,
+and it works because velocity fusion keeps correcting the tilt it prices. Before pricing an
+error into `R`, ask whether it persists across readings.
 
 A window taken **at rest** also fixes `α₀`, the barometric reference (`StaticSample::baro` →
 `Eskf::baro_reference`, equation (30)); one taken in motion keeps whatever reference the flight
