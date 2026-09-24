@@ -666,14 +666,16 @@ Every source touches the same ten places, and three of them are public:
   so settle the source set before publishing.
 - `Gates` gains a field, a `Gate<DOF>` at the observation's dimension — the type states the degrees
   of freedom, and `Gates::at` needs a line for the new field.
+- A source is a verdict, not a sensor: a GNSS fix is two, `gnss_position` and `gnss_height`, gated
+  apart (#118), so a sensor whose components fail independently wants a source per component.
 - `Timeouts` is **global**, not per-source (`src/config.rs:84-95`): there is no per-source entry to
   add, and giving a source its own threshold is a design change. See #56.
 - `Validity` and `predicted_validity`: decide whether the source constrains a quantity, and say so.
 - A `summary` key in `examples/replay.rs`, pinned per log in `data/manifest.txt`, plus a corpus log
   that uniquely covers the source — or an honest note that none does.
 - `AXES` in `examples/replay.rs`, naming the source's innovation components, since `Innovation`
-  carries values and variances and no names for them. Twenty consistency keys are generated from
-  it and `SOURCES` together, so a source added to one and not the other is an index out of range
+  carries values and variances and no names for them. Twenty-three consistency keys are generated
+  from it and `SOURCES` together, so a source added to one and not the other is an index out of range
   rather than a missing key — caught by an `assert_eq!` in the same file, which is the weakest
   guard on this list.
 - The README fusion table, the `Eskf` and `prelude` doctests, and `EQUATIONS.md`'s mapping
