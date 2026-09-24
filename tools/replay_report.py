@@ -232,6 +232,37 @@ def read_times(path, source, source_column="source"):
     ]
 
 
+def read_notes(path):
+    """Just the `#` header lines of a file, without reading its rows."""
+    if not path:
+        return []
+    notes, _ = next(read_header_and_rows(path))
+    return notes
+
+
+def read_resets(path):
+    """Times at which EKF2's `quat_reset_counter` changed.
+
+    Undecimated and cheap, and worth marking: EKF2 resets yaw in the first
+    seconds of a flight, and without the marks that step reads as divergence
+    from this filter rather than as an event in theirs.
+    """
+    stream = read_header_and_rows(path)
+    _, columns = next(stream)
+    if "att_reset" not in columns or "source" not in columns:
+        return []
+    counter, kind = columns.index("att_reset"), columns.index("source")
+    times, previous = [], None
+    for _, cells in stream:
+        if cells[kind] != "ekf2_att" or not cells[counter]:
+            continue
+        value = cells[counter]
+        if previous is not None and value != previous:
+            times.append(float(cells[0]))
+        previous = value
+    return times
+
+
 def read_path(path, x_name, y_name, points, source=None, source_column="source"):
     """Two columns sampled from the *same* rows, for a parametric plot.
 
@@ -347,6 +378,60 @@ def numeric(keys, name):
         return None
 
 
+def converted_from(notes):
+    """The `.ulg` a `# Converted from <name>.ulg` header names, or None."""
+    for note in notes or []:
+        found = re.search(r"Converted from (\S+\.ulg)", note)
+        if found:
+            return found.group(1)
+    return None
+
+
+def scenario_of(notes):
+    """The backticked scenario name and seed a simulated file's header carries.
+
+    The same two fields `scenario_of` in examples/replay.rs reads, and for the
+    same reason: a truth file from the wrong scenario has timestamps that line
+    up often enough that nothing else notices.
+    """
+    for note in notes or []:
+        if "fusion-nav" not in note:
+            continue
+        name = re.search(r"`([^`]+)`", note)
+        seed = re.search(r"seed (\d+)", note)
+        if name:
+            stem = name.group(1)
+            if stem.endswith(".csv"):
+                stem = stem[:-4]
+            return stem, (seed.group(1) if seed else None)
+    return None
+
+
+def check_pairing(input_notes, reference_notes, truth_notes):
+    """Refuse a reference or a truth file that belongs to a different run.
+
+    Kept separate from `check_provenance` because it needs no `--summary`: these
+    are claims the files make about themselves, and the report should not plot a
+    second flight over the first just because nobody captured a summary line.
+    """
+    problems = []
+
+    source, reference_source = converted_from(input_notes), converted_from(reference_notes)
+    if source and reference_source and source != reference_source:
+        problems.append(
+            f"the reference was converted from `{reference_source}` but the "
+            f"replay input from `{source}`"
+        )
+
+    run, truth = scenario_of(input_notes), scenario_of(truth_notes)
+    if run and truth and run != truth:
+        problems.append(
+            f"the truth file is for `{truth[0]}` seed {truth[1]}, but the log is "
+            f"`{run[0]}` seed {run[1]}"
+        )
+    return problems
+
+
 def check_provenance(keys, epoch_rows, sources, reference_notes):
     """Refuse a set of files that do not describe the same run.
 
@@ -380,22 +465,19 @@ def check_provenance(keys, epoch_rows, sources, reference_notes):
     rate = numeric(keys, "rate")
     period = reference_period(reference_notes)
     if rate and period:
-        # The converter rounds EKF2's update period up to a whole IMU sample, so
-        # the interval it used has to be the one the harness measured. These are
-        # two estimators of one quantity and nothing else would notice them
+        # The converter states the IMU interval it derived EKF2's mean update
+        # period from, and the harness measures the same quantity as `rate=`.
+        # Two estimators of one number, and nothing else would notice them
         # drifting apart -- it would move a published bias figure silently.
         used = reference_interval(reference_notes)
         if used and abs(used - 1.0 / rate) > 0.1 / rate:
             problems.append(
-                f"the reference scaled biases by a {used * 1e3:.3f} ms IMU "
-                f"interval but the summary reports rate={rate:g} "
-                f"({1e3 / rate:.3f} ms)"
+                f"the reference derived EKF2's update period from a "
+                f"{used * 1e3:.3f} ms IMU interval but the summary reports "
+                f"rate={rate:g} ({1e3 / rate:.3f} ms)"
             )
 
-    if problems:
-        raise ReportError(
-            "these files do not describe the same run:\n  - " + "\n  - ".join(problems)
-        )
+    return problems
 
 
 def reference_period(notes):
@@ -499,7 +581,7 @@ def track_figure(epochs, reference, fixes):
     return build
 
 
-def state_figure(group, epochs, reference, truth, status_runs):
+def state_figure(group, epochs, reference, truth, status_runs, resets=()):
     title, unit, columns, sigmas = group
 
     def build(fig):
@@ -524,6 +606,8 @@ def state_figure(group, epochs, reference, truth, status_runs):
                 if series is not None:
                     plot.plot(series[0], series[1] * scale, "-", color=colour,
                               linewidth=0.9, alpha=0.85, label=label)
+            for when in resets:
+                plot.axvline(when, color="#3a7ca5", linestyle=":", linewidth=1.0)
             plot.set_ylabel(f"{column} ({unit})", fontsize=8)
             plot.grid(alpha=0.25)
             if row == 0:
@@ -532,30 +616,91 @@ def state_figure(group, epochs, reference, truth, status_runs):
     return build
 
 
-def sigma_figure(epochs, gaps, status_runs):
+#: EKF2's sigma column for each of ours, where the two are the same quantity.
+#: Attitude is absent on purpose: PX4's diagonal is NED and the epoch file's is
+#: body, and only `sigma_att_total` compares, which is plotted on its own.
+EKF2_SIGMAS = {
+    "sigma_pos_n": "sigma_pos_n", "sigma_pos_e": "sigma_pos_e",
+    "sigma_pos_d": "sigma_pos_d", "sigma_vel_n": "sigma_vel_n",
+    "sigma_vel_e": "sigma_vel_e", "sigma_vel_d": "sigma_vel_d",
+    "sigma_ba_x": "sigma_ba_x", "sigma_ba_y": "sigma_ba_y",
+    "sigma_ba_z": "sigma_ba_z", "sigma_bg_x": "sigma_bg_x",
+    "sigma_bg_y": "sigma_bg_y", "sigma_bg_z": "sigma_bg_z",
+}
+
+
+def positive(series):
+    """Drop non-positive samples, which a log axis cannot show.
+
+    EKF2 publishes a zero covariance entry before its own filter has
+    initialized, and for states it is not estimating. That is "not reported",
+    not "very small", so it is dropped rather than floored -- flooring it to a
+    small constant stretched the shared axis over twelve decades and flattened
+    every real trace onto one line.
+    """
+    if series is None:
+        return None
+    t, y = series
+    keep = y > 0.0
+    return (t[keep], y[keep]) if keep.any() else None
+
+
+def sigma_figure(epochs, reference, gaps, status_runs):
+    """One panel per state group, ours solid and EKF2's dashed.
+
+    Split by group rather than shared, because a position sigma in metres and a
+    gyro-bias sigma in rad/s on one log axis is 27 traces across six decades and
+    legible as none of them.
+    """
     def build(fig):
-        axes = fig.add_subplot(111)
-        shade_status(axes, status_runs)
-        shade_gaps(axes, gaps)
-        for title, _unit, _columns, sigmas in STATE_GROUPS:
+        plots = fig.subplots(len(STATE_GROUPS), 1, sharex=True, squeeze=False)
+        for row, (title, unit, _columns, sigmas) in enumerate(STATE_GROUPS):
+            plot = plots[row][0]
+            shade_status(plot, status_runs)
+            shade_gaps(plot, gaps)
             for sigma in sigmas:
-                series = epochs.get(sigma)
-                if series is None:
-                    continue
-                axes.plot(series[0], np.maximum(series[1], 1e-12), linewidth=0.8,
-                          label=sigma, alpha=0.85)
-        axes.set_yscale("log")
-        axes.set_xlabel("t (s)")
-        axes.set_ylabel("sigma (SI, log scale)")
-        axes.grid(alpha=0.25, which="both")
-        axes.legend(loc="upper right", fontsize=6, ncol=3)
+                series = positive(epochs.get(sigma))
+                if series is not None:
+                    plot.plot(series[0], series[1], linewidth=0.8, label=sigma,
+                              alpha=0.9)
+            # EKF2's own, dashed and unlabelled so the legend stays ours. These
+            # are what exercise the n_states-keyed covariance map: the bias
+            # states sit at one index in both eras, and only these move.
+            drawn = False
+            for sigma in sigmas:
+                series = positive(reference.get(EKF2_SIGMAS.get(sigma)))
+                if series is not None:
+                    plot.plot(series[0], series[1], "--", linewidth=0.8,
+                              color="#3a7ca5", alpha=0.7,
+                              label="EKF2" if not drawn else None)
+                    drawn = True
+            if title == "Attitude":
+                total = positive(reference.get("sigma_att_total"))
+                if total is not None:
+                    plot.plot(total[0], total[1], "--", linewidth=0.9,
+                              color="#c05a2f", alpha=0.85,
+                              label="EKF2 sigma_att_total")
+            plot.set_yscale("log")
+            plot.set_ylabel(f"{title} ({unit})", fontsize=6)
+            plot.grid(alpha=0.25, which="both")
+            plot.legend(loc="upper right", fontsize=6, ncol=4)
+        plots[-1][0].set_xlabel("t (s)")
     return build
 
 
+def innovation_axes(entry):
+    """A source's dimension: how many `nu` columns it actually fills.
+
+    Read from the rows rather than from a table of sources here, and used for
+    the subplot count *and* the figure height. Taking the height from
+    `len(row)` instead reads the schema's width, which is always 3, and lays a
+    one-axis source out over six inches.
+    """
+    return max((sum(1 for cell in row if cell) for row in entry["nu"]), default=0)
+
+
 def innovation_figure(source, entry, gate, status_runs):
-    axes_count = max(
-        (sum(1 for cell in row if cell) for row in entry["nu"]), default=0
-    )
+    axes_count = innovation_axes(entry)
 
     def build(fig):
         plots = fig.subplots(max(1, axes_count), 1, sharex=True, squeeze=False)
@@ -586,6 +731,40 @@ def innovation_figure(source, entry, gate, status_runs):
             if axis == 0:
                 label = f"{source}, gate gamma = {gate:.3f}" if gate else source
                 plot.set_title(label + f" ({len(rejected)} rejected)", fontsize=9)
+        plots[-1][0].set_xlabel("t (s)")
+    return build
+
+
+#: The epoch file's ratio columns, which the reference file spells alike.
+RATIOS = ["r_gnss_pos", "r_gnss_vel", "r_baro", "r_mag"]
+
+
+def ratio_figure(epochs, reference):
+    """Test ratios, ours over EKF2's.
+
+    The like-for-like comparison GOALS.md differentiator 6 names: both report
+    `r = eps / gamma`, so 1 is each filter's own gate whatever its dimension or
+    its thresholds, and the two are directly comparable without knowing either.
+    """
+    present = [r for r in RATIOS if r in epochs or r in reference]
+
+    def build(fig):
+        plots = fig.subplots(max(1, len(present)), 1, sharex=True, squeeze=False)
+        for row, name in enumerate(present):
+            plot = plots[row][0]
+            ours = epochs.get(name)
+            if ours is not None:
+                plot.plot(ours[0], ours[1], "-", linewidth=0.8, color="#1b1b1b",
+                          label="fusion-nav")
+            theirs = reference.get(name)
+            if theirs is not None:
+                plot.plot(theirs[0], theirs[1], "-", linewidth=0.8,
+                          color="#3a7ca5", alpha=0.85, label="EKF2")
+            plot.axhline(1.0, color="#d94f4f", linewidth=0.8, linestyle="--")
+            plot.set_ylabel(name, fontsize=8)
+            plot.grid(alpha=0.25)
+            if row == 0:
+                plot.legend(loc="upper right", fontsize=7, ncol=2)
         plots[-1][0].set_xlabel("t (s)")
     return build
 
@@ -717,30 +896,47 @@ def build_report(args):
                      "bg_x", "bg_y", "bg_z"]
     for _title, _unit, _columns, sigmas in STATE_GROUPS:
         epoch_columns.extend(sigmas)
+    epoch_columns.extend(RATIOS)
     _, epochs = read_series(args.replay, epoch_columns, args.points)
 
     gates, sources = read_fusion(fusion_path(args.replay))
 
-    reference, reference_notes = {}, []
+    reference, reference_notes, resets = {}, [], []
     if args.reference:
         reference_notes, local = read_series(
             args.reference, ["pos_n", "pos_e", "pos_d", "vel_n", "vel_e", "vel_d"],
             args.points, source="ekf2_local")
         _, attitude = read_series(args.reference, ["roll", "pitch", "yaw"],
                                   args.points, source="ekf2_att")
+        # Every remaining reference column is read here, which is what makes a
+        # wrong entry in EKF2_LAYOUTS visible: the bias *states* sit at the same
+        # index in both eras, so only these sigmas exercise the era-specific map.
         _, states = read_series(
             args.reference,
-            ["ba_x", "ba_y", "ba_z", "bg_x", "bg_y", "bg_z"],
+            ["ba_x", "ba_y", "ba_z", "bg_x", "bg_y", "bg_z",
+             "sigma_pos_n", "sigma_pos_e", "sigma_pos_d",
+             "sigma_vel_n", "sigma_vel_e", "sigma_vel_d",
+             "sigma_att_n", "sigma_att_e", "sigma_att_d", "sigma_att_total",
+             "sigma_ba_x", "sigma_ba_y", "sigma_ba_z",
+             "sigma_bg_x", "sigma_bg_y", "sigma_bg_z"],
             args.points, source="ekf2_states")
-        reference = {**local, **attitude, **states}
+        _, ratios = read_series(args.reference, RATIOS, args.points,
+                                source="ekf2_ratio")
+        reference = {**local, **attitude, **states, **ratios}
+        resets = read_resets(args.reference)
 
-    truth = {}
+    truth, truth_notes = {}, []
     if args.truth:
-        _, truth = read_series(args.truth, epoch_columns, args.points)
+        truth_notes, truth = read_series(args.truth, epoch_columns, args.points)
 
+    problems = check_pairing(read_notes(args.input), reference_notes, truth_notes)
     keys = read_summary(args.summary) if args.summary else {}
     if keys:
-        check_provenance(keys, epoch_rows, sources, reference_notes)
+        problems += check_provenance(keys, epoch_rows, sources, reference_notes)
+    if problems:
+        raise ReportError(
+            "these files do not describe the same run:\n  - " + "\n  - ".join(problems)
+        )
 
     # `gnss_pos` carries north in v0 and east in v1, the replay input's union
     # schema. Paired from one row, never from two decimated columns.
@@ -796,13 +992,17 @@ def build_report(args):
         if group[2][0] not in epochs:
             continue
         png, caption = figure(
-            state_figure(group, epochs, reference, truth, status_runs),
+            state_figure(group, epochs, reference, truth, status_runs,
+                         resets if title == "Attitude" else ()),
             f"{html.escape(title)}, with the filter's own +/-3 sigma band. "
             "Background shading is <code>Status</code>: amber Aligning, yellow "
             "Degraded, red DeadReckoning."
             + (" EKF2's attitude is plotted from the same quaternion convention; "
                "its sigma is in NED where this filter's is body-frame, so the "
-               "band is this filter's only."
+               "band is this filter's only. Blue dotted verticals are EKF2's own "
+               "<code>quat_reset_counter</code> changing &mdash; a step across "
+               "one of those is an event in their filter, not divergence from "
+               "this one."
                if title == "Attitude" else ""),
             height=6.2)
         blocks.append(png_block(png, caption))
@@ -811,8 +1011,13 @@ def build_report(args):
     floor = gap_threshold(gaps) if gaps else None
     outages = find_gaps(gaps, floor)
     png, caption = figure(
-        sigma_figure(epochs, outages, status_runs),
-        "Every published standard deviation on one log axis."
+        sigma_figure(epochs, reference, outages, status_runs),
+        "Every published standard deviation, one panel per state group, with "
+        "EKF2's own dashed where the two are the same quantity &mdash; attitude "
+        "excepted, whose diagonals are in different frames, so only its "
+        "frame-invariant <code>sigma_att_total</code> is drawn. A sigma EKF2 "
+        "reports as exactly zero is absent rather than floored: that is a state "
+        "it is not estimating, not one it knows perfectly."
         + (f" Grey bands are the {len(outages)} GNSS outages longer than "
            f"{floor:.1f} s &mdash; five times this receiver's median fix "
            "interval, so an outage is judged against its own cadence rather than "
@@ -828,10 +1033,27 @@ def build_report(args):
             continue
         png, caption = figure(
             innovation_figure(source, entry, gates.get(source), status_runs),
-            f"Per-axis normalized innovation for <code>{html.escape(source)}</code>. "
-            "Red verticals are gate rejections. This is the per-axis quantity the "
-            "<code>nu_*</code> summary keys average, not the aggregate NIS below.",
-            height=2.0 + 1.5 * max(1, len(entry['nu'][0])))
+            f"Per-axis normalized innovation for <code>{html.escape(source)}</code>, "
+            "&nu;<sub>i</sub>&nbsp;/&nbsp;&radic;S<sub>ii</sub>. Red verticals are "
+            "gate rejections. Note this is <em>not</em> what the <code>nu_*</code> "
+            "summary keys report: those average raw &nu; in the observation's own "
+            "units, metres or radians, so the printed value and this cloud are "
+            "different quantities and will not match.",
+            height=2.0 + 1.5 * innovation_axes(entry))
+        blocks.append(png_block(png, caption))
+
+    if any(r in epochs or r in reference for r in RATIOS):
+        blocks.append("<h2>Test ratios</h2>")
+        png, caption = figure(
+            ratio_figure(epochs, reference),
+            "Gate test ratios, this filter against EKF2's aggregate ones. Both "
+            "publish <code>r = &epsilon; / &gamma;</code>, so the red line at 1 "
+            "is each filter's own gate and the two compare without knowing "
+            "either's thresholds or dimensions &mdash; the like-for-like check "
+            "GOALS.md differentiator 6 names. They are not the same statistic "
+            "underneath: EKF2's are aggregates over its own aiding, and its "
+            "height ratio includes a barometer this filter may not be fusing.",
+            height=8.0)
         blocks.append(png_block(png, caption))
 
     blocks.append("<h2>Innovation distribution</h2>")

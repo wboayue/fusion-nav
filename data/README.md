@@ -251,15 +251,27 @@ Three boundaries follow, and they are properties of the logs rather than of the 
   The origin is a `#` header line, not a column, since it is one geodetic point per log.
 
 The delta-angle era is scaled to rates so the column means the same thing on every log, and the
-scale factor is stated in the header with where it came from. The factor is EKF2's filter update
-period, which is **not** the topic's publication interval — `estimator_status` publishes at 5 Hz
-on two corpus logs and `estimator_states` at 1 Hz on a third. It is `EKF2_PREDICT_US` where the
-log carries it, else the `FILTER_UPDATE_PERIOD_MS{10}` that preceded that parameter
-(`EKF/estimator_interface.h:267` at `ae3070bbf1^`), rounded up to a whole IMU sample because the
-down-sampler integrates until the target is reached. The rounding is not a refinement: a 50 Hz log
-runs a 20 ms period against a 10 ms target, so the bare target is wrong by 2× there.
+scale factor is stated in the header with where it came from. It has to be the quantity PX4 itself
+divides by, which is `_dt_ekf_avg` — `getGyroBias() { return _state.delta_ang_bias / _dt_ekf_avg; }`
+with the variance over `sq(_dt_ekf_avg)`, `EKF/ekf.h:239-244` at `ae3070bbf1^` — and that is a
+running **mean** of the realized step, not an integer multiple of anything.
 
-That rounding is the one place the converter computes something the harness also computes — the
+It is **not** the topic's publication interval: `estimator_status` publishes at 5 Hz on two corpus
+logs and `estimator_states` at 1 Hz on a third. It is `max(target, imu_dt)`, where `target` is
+`EKF2_PREDICT_US` when the log carries it and otherwise the `FILTER_UPDATE_PERIOD_MS{10}` that
+preceded that parameter (`EKF/estimator_interface.h:267` at `ae3070bbf1^`). The down-sampler is
+built to hold that mean rather than to round up to a sample boundary: it fires when the
+accumulated `delta_ang_dt` reaches `_target_dt - _imu_collection_time_adj` and then moves the
+adjustment by `0.01f * (delta_ang_dt - _target_dt)`, a feedback term whose own comment says it is
+there "so that we meet the average EKF update rate requirement"
+(`EKF/imu_down_sampler.cpp:36-43` at `ae3070bbf1^`). On a 250 Hz IMU against a 10 ms target it
+alternates two- and three-sample steps and averages 10 ms; it does not settle at 12.
+
+Both halves of the `max` are load-bearing. Rounding a 4 ms IMU up to 12 ms scales every bias and
+bias σ in that log 20 % low, and a 50 Hz log genuinely does run a 20 ms period against a 10 ms
+target, because nothing can subdivide a sample longer than the target.
+
+That `imu_dt` is the one place the converter computes something the harness also computes — the
 IMU interval, which the `summary` line publishes as `rate=` and `manifest.txt` pins. Two
 estimators of one quantity is what *one statistic, one implementation* forbids, and the failure
 would be silent, moving a published bias figure with nothing to point at. So it is guarded the way

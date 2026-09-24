@@ -484,17 +484,33 @@ def write_rows(rows, out, note):
 
 
 def ekf2_update_period(ulog, imu_dt):
-    """EKF2's filter update period, and a sentence saying where it came from.
+    """EKF2's mean filter update period, and a sentence saying where it came from.
 
     Wanted only to turn a pre-84b6b472b4 delta-angle/delta-velocity bias into a
-    rate. The topic's own publication interval is no use for it -- on two corpus
-    logs `estimator_status` publishes at 5 Hz and on a third `estimator_states`
-    publishes at 1 Hz -- so the target comes from PX4 and the realized period
-    from the down-sampler, which integrates IMU samples until the target is
-    reached (EKF/imu_down_sampler.cpp at c4e4ef98). The realized period is
-    therefore the target rounded up to a whole IMU sample, and the rounding is
-    not a refinement: a 50 Hz log runs a 20 ms period against a 10 ms target, so
-    a bias scaled by the target alone is wrong by 2x.
+    rate, and it has to be the quantity PX4 divides by, which is `_dt_ekf_avg`:
+    `getGyroBias() { return _state.delta_ang_bias / _dt_ekf_avg; }` with the
+    variance over `sq(_dt_ekf_avg)` (EKF/ekf.h:239-244 at ae3070bbf1^).
+    `_dt_ekf_avg` is a running mean of the realized step, seeded at the target
+    (`0.99f * _dt_ekf_avg + 0.01f * input`, EKF/ekf.cpp:289).
+
+    So it is a **mean**, not an integer multiple of the IMU interval, and the
+    down-sampler is built to hold that mean: it fires when the accumulated
+    `delta_ang_dt` reaches `_target_dt - _imu_collection_time_adj`, then moves
+    the adjustment by `0.01f * (delta_ang_dt - _target_dt)` -- a feedback term
+    whose comment says it is there "so that we meet the average EKF update rate
+    requirement" (EKF/imu_down_sampler.cpp:36-43 at ae3070bbf1^). On a 250 Hz
+    IMU against a 10 ms target it alternates two-sample and three-sample steps
+    and averages 10 ms; it does not settle at 12.
+
+    Hence `max(target, imu_dt)`: the loop holds the mean at the target while a
+    sample is shorter than it, and nothing can subdivide a sample longer than
+    it. The second case is real -- a 50 Hz log runs a 20 ms period against a
+    10 ms target -- and so is the first: rounding a 4 ms IMU up to 12 ms scales
+    every bias and bias sigma in that log 20 % low.
+
+    The topic's own publication interval is no use for any of this: on two
+    corpus logs `estimator_status` publishes at 5 Hz and on a third
+    `estimator_states` publishes at 1 Hz.
     """
     micros = ulog.initial_parameters.get("EKF2_PREDICT_US")
     if micros:
@@ -508,9 +524,9 @@ def ekf2_update_period(ulog, imu_dt):
         provenance = "no EKF2_PREDICT_US; FILTER_UPDATE_PERIOD_MS 10 ms"
     if not imu_dt or imu_dt <= 0:
         return target, provenance
-    # The 1e-9 keeps an exactly-integral ratio from rounding to the next sample.
-    period = math.ceil(target / imu_dt - 1e-9) * imu_dt
-    return period, f"{provenance} rounded up to the {imu_dt * 1e3:.3f} ms IMU interval"
+    period = max(target, imu_dt)
+    held = "the mean the down-sampler holds" if period == target else "one IMU sample, longer than the target"
+    return period, f"{provenance}; {held}, against a {imu_dt * 1e3:.3f} ms IMU interval"
 
 
 # One row per source topic, since EKF2 publishes these at three different rates
@@ -633,7 +649,7 @@ def reference_ratios(status, ratio_fields, rows):
         ))
 
 
-def write_reference(ulog, out, t0, imu_dt):
+def write_reference(ulog, out, t0, imu_dt, source_name):
     """EKF2's own solution and innovation ratios, for a side-by-side diff."""
     local = pick(ulog, ["vehicle_local_position"])
     attitude = pick(ulog, ["vehicle_attitude"])
@@ -679,7 +695,7 @@ def write_reference(ulog, out, t0, imu_dt):
 
     with open(out, "w", newline="") as handle:
         for line in reference_note(local, attitude, states, layout, n_states,
-                                   period, provenance, ratio_fields):
+                                   period, provenance, ratio_fields, source_name):
             handle.write(f"# {line}\n")
         handle.write("t_s,source," + ",".join(REFERENCE_COLUMNS) + "\n")
         for timestamp, source, values in rows:
@@ -692,7 +708,7 @@ def write_reference(ulog, out, t0, imu_dt):
 
 
 def reference_note(local, attitude, states, layout, n_states, period, provenance,
-                   ratio_fields):
+                   ratio_fields, source_name):
     """The `#` header: what each row kind came from, and every caveat on it."""
     kinds = []
     if local is not None:
@@ -706,6 +722,10 @@ def reference_note(local, attitude, states, layout, n_states, period, provenance
 
     note = [
         "EKF2's own solution, for comparison. Never filter input.",
+        # Names the log, so a consumer pairing this with a replay can refuse a
+        # reference from a different flight. The replay input's own header says
+        # `Converted from <name>.ulg`, and the two have to agree.
+        f"Converted from {source_name} by tools/ulog2replay.py",
         "Rows: " + ", ".join(kinds),
     ]
     if ratio_fields:
@@ -811,7 +831,7 @@ def main():
             # one want disjoint topics, and the largest corpus log is 219 MB.
             # Do not fold them into one unfiltered open.
             reference = ULog(str(args.ulog), REFERENCE_TOPICS)
-            if write_reference(reference, target, t0, imu_dt):
+            if write_reference(reference, target, t0, imu_dt, args.ulog.name):
                 print(f"reference -> {target}", file=sys.stderr)
     except ConversionError as e:
         print(f"ulog2replay: {e}", file=sys.stderr)

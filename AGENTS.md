@@ -266,9 +266,10 @@ nowhere else, so a consumer reads column names and never the layout.
 
 The report tool computes no statistic: it plots the per-fusion rows and prints the `summary` and
 `score` keys. It refuses a set of files that do not describe one run — `epochs=` against the epoch
-row count, `rejected_<source>=` against the fusion CSV's tally, and the reference's IMU interval
-against `rate=`, that last one guarding the only quantity the converter and the harness both
-estimate.
+row count, `rejected_<source>=` against the fusion CSV's tally, the source `.ulg` both the
+reference and the replay input name, the scenario and seed in a truth file's header, and the
+reference's IMU interval against `rate=` — that last one guarding the only quantity the converter
+and the harness both estimate.
 
 **`uv` is the package manager and the runner for the Python tools under `tools/`.** The converter
 declares `pyulog` inline (PEP 723), so `uv run tools/ulog2replay.py` resolves it with no
