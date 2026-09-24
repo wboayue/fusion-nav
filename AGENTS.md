@@ -71,8 +71,7 @@ And `predicted_validity` stopped meaning *aiding is arriving*: `P` is projected
 `Accuracy::horizon` forward with nothing fusing and each quantity tested at the far end, **or**
 counted because a constraining source is being accepted. Tilt is what it bought — a static start
 holds tilt 3.82 s, so a 1 s horizon arms and a 6 s one does not, where before it predicted its own
-current value. `Accuracy::horizon` is the one knob no data could settle, `Accuracy` deliberately
-carries no `#[non_exhaustive]`, and #47 owns the version that ships the break.
+current value. `Accuracy::horizon` is the one knob no data could settle.
 
 Also real: the health bookkeeping (timers,
 `Status`, `Diagnostics`), the typed API surface, and the replay harness. The `**Stub.**` marker is
@@ -139,10 +138,19 @@ Differentiators are cited **by number** here, in issue bodies and in `data/manif
 Never renumber them. A renumber silently repoints every citation, including closed issues that
 cannot be corrected.
 
+**Nothing is released, so nothing is a break.** The crate is `0.0.0` and has never been
+published; no integrator holds a struct literal, a match arm or a signature that a change could
+break. Design each type for the most usable, idiomatic shape it can have — rename, restructure,
+add fields and variants, change signatures — and never pick a worse API to avoid a break, bundle
+changes to "take the break once", or defer an API improvement to a version. Compatibility starts
+at #47's first published version, and the attributes and semver policy exist to protect *that*
+surface, not this one.
+
 **Sequencing hazard, and what it taught:** #31's stages were stacked branches while the
 signature-changing issues (#21, #25) changed the API underneath them, so an API change had to land
-*before* the stage that built on it. The stages are done, but the rule outlived them — #25 and #21
-are still open, and anything stacked on top of an unfrozen surface inherits the same hazard. It
+*before* the stage that built on it. The hazard is rebase cost between branches, not users: the
+stages are done, but #25 and #21 are still open, and a branch stacked on a surface another branch
+is changing inherits it. It
 held throughout: #58 landed before stage 5, the first code to read
 `Config::gates`, so the gate reads a `Gate<M>` typed by its degrees of freedom rather than a bare
 `f32`, and stage 5 then decided the default percentile from replay (`P999`) in the diff that first
@@ -152,12 +160,6 @@ a constructor naming its convention (`body_to_ned`, `ned_to_body`, `flu_to_enu`,
 the `q̂₀` of (5)–(7) is committed through the final shape; #59's signature landed with it, so
 `StaticSample` carries GNSS velocity and `Coarse::NotStationary` reports `ā_n`. What is left of #59
 is equation (5′), and the attitude it needs to rotate `ā_n` into body axes now exists.
-
-The one place it did *not* hold is stage 9's own `Accuracy::horizon`, which is a field added to a
-config type in the same diff that used it. Nothing was stacked above to break, and the alternative
-was an issue whose whole content would have been "add a field stage 9 needs" — but it is a break
-against a type carrying no `#[non_exhaustive]`, and #47 is where the version that ships it gets
-decided.
 
 ## Goal: a reference to learn from
 
@@ -694,9 +696,9 @@ breaks, which is what the attribute refuses.
 
 An outcome is matched, and a wildcard arm is the integrator bug the typed outcomes exist to
 prevent — an application that silently ignores a refusal the filter grew flies on a stale state
-and reports nothing. So adding a variant stays a breaking change on purpose, raised by the
-compiler at every call site. Land it in the freeze window above rather than after the stage that
-builds on it.
+and reports nothing. So after the first release, adding a variant is a breaking change on
+purpose, raised by the compiler at every call site. Before it, a variant is free: add it when the
+design wants it.
 
 Neither attribute substitutes for settling the API: `#[non_exhaustive]` does nothing for the
 length of `sources()`'s array.
