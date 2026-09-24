@@ -84,8 +84,8 @@ pub mod prelude {
     pub use crate::frames::{Body, Enu, Ned};
     pub use crate::geodetic::{Geodetic, LocalOrigin};
     pub use crate::health::{
-        Diagnostics, Fusion, Innovation, Propagation, PropagationHealth, Refusal, SourceHealth,
-        Status, Validity,
+        Diagnostics, Fusion, GnssFusion, Innovation, Propagation, PropagationHealth, Refusal,
+        SourceHealth, Status, Validity,
     };
     pub use crate::init::{Alignment, Coarse, InitError, StaticSample};
     pub use crate::propagate::ImuSample;

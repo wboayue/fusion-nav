@@ -142,7 +142,7 @@ impl<const DOF: usize> Gate<DOF> {
 
 impl Gate<1> {
     /// The chi-square quantile at `percentile` for one degree of freedom: barometric
-    /// altitude, magnetic heading.
+    /// altitude, GNSS height, magnetic heading.
     ///
     /// Checked in this module's tests against the closed-form CDF, not against another table.
     pub const fn at(percentile: Percentile) -> Self {
@@ -154,9 +154,23 @@ impl Gate<1> {
     }
 }
 
+impl Gate<2> {
+    /// The chi-square quantile at `percentile` for two degrees of freedom: the horizontal half
+    /// of a GNSS position fix.
+    ///
+    /// `−2 ln(1 − p)` exactly, since two degrees of freedom is the one case with a closed-form
+    /// CDF, `F(x) = 1 − e^(−x/2)`; checked against it in this module's tests.
+    pub const fn at(percentile: Percentile) -> Self {
+        Self(match percentile {
+            Percentile::P95 => 5.991_465,
+            Percentile::P99 => 9.210_34,
+            Percentile::P999 => 13.815_511,
+        })
+    }
+}
+
 impl Gate<3> {
-    /// The chi-square quantile at `percentile` for three degrees of freedom: GNSS position
-    /// and velocity.
+    /// The chi-square quantile at `percentile` for three degrees of freedom: GNSS velocity.
     ///
     /// Checked in this module's tests against the closed-form CDF, not against another table.
     pub const fn at(percentile: Percentile) -> Self {
@@ -199,16 +213,23 @@ impl Gate<3> {
 /// with `dim(z)` degrees of freedom, so only it rejects exactly `1 − p` of good measurements,
 /// where a per-component test's rate depends on correlations nothing states. And it keeps
 /// those correlations — a yaw error couples north and east, so the region `S` describes is an
-/// ellipsoid rather than a box aligned with the navigation axes. What it costs is all or
-/// nothing: a vertical outlier rejects a good horizontal fix, which ArduPilot's split avoids.
-/// The corpus shows no such fix. Across the 5348 GNSS positions in `data/manifest.txt`'s logs,
-/// the largest vertical `ν² / S` alone is 1.82, against 10.83 for a one-dimensional test at
-/// [`Percentile::P999`], so a `Gate<2>` and `Gate<1>` pair would reject nothing the joint test
-/// does not. It is the data that would change this, not the argument.
+/// ellipsoid rather than a box aligned with the navigation axes.
+///
+/// A GNSS position fix is the exception, split into a horizontal `Gate<2>` and a vertical
+/// `Gate<1>` as ArduPilot splits it, because the joint test's cost is all or nothing: a
+/// height the estimate disagrees with rejects a good horizontal fix. That cost is measured.
+/// `2c42096b` is a stationary vehicle whose barometer and receiver drift ~20 m apart in
+/// height; with both fused under one `Gate<3>` it rejects 3945 of its 4616 fixes, and the
+/// horizontal pair alone fails a `Gate<2>` at [`Percentile::P999`] on none of them. The
+/// split keeps the joint test within each half, so north and east are still tested as the
+/// ellipse `S` describes; what it gives up is the north–down and east–down correlation, which
+/// a position fix barely carries. See [`GnssFusion`](crate::GnssFusion).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Gates {
-    /// GNSS position.
-    pub gnss_position: Gate<3>,
+    /// GNSS position, horizontal: north and east.
+    pub gnss_position: Gate<2>,
+    /// GNSS position, vertical: the height half of the same fix.
+    pub gnss_height: Gate<1>,
     /// GNSS velocity.
     pub gnss_velocity: Gate<3>,
     /// Barometric altitude.
@@ -221,7 +242,8 @@ impl Gates {
     /// Every source gated at the same percentile, each at its own degrees of freedom.
     pub const fn at(percentile: Percentile) -> Self {
         Self {
-            gnss_position: Gate::<3>::at(percentile),
+            gnss_position: Gate::<2>::at(percentile),
+            gnss_height: Gate::<1>::at(percentile),
             gnss_velocity: Gate::<3>::at(percentile),
             baro_altitude: Gate::<1>::at(percentile),
             mag_heading: Gate::<1>::at(percentile),
@@ -233,7 +255,9 @@ impl Default for Gates {
     /// The 99.9th percentile: the tightest gate that costs nothing measurable on good data.
     ///
     /// GNSS position was replayed at 95 %, 99 %, 99.9 % and a 5σ equivalent (`γ` = 31.81 at
-    /// three degrees of freedom, the two-sided tail of 5σ in one).
+    /// three degrees of freedom, the two-sided tail of 5σ in one), tested as one joint
+    /// three-axis `Gate<3>` rather than the split [`Gates`] describes. The figures below are
+    /// that test's; the percentile applies to both halves of the split unchanged.
     ///
     /// The corpus cannot tell them apart. No log rejects a fix at any of the four, because
     /// PX4's `eph` and `epv` are far wider than the innovations they come with: the mean test
@@ -560,9 +584,12 @@ mod tests {
         for (percentile, p) in PERCENTILES {
             let one = Gate::<1>::at(percentile).threshold();
             let three = Gate::<3>::at(percentile).threshold();
+            let two = Gate::<2>::at(percentile).threshold();
             let f1 = chi_square_cdf(1, f64::from(one));
+            let f2 = 1.0 - ComplexField::exp(-f64::from(two) / 2.0);
             let f3 = chi_square_cdf(3, f64::from(three));
             assert!((f1 - p).abs() < 1e-6, "1 dof at {p}: F({one}) = {f1}");
+            assert!((f2 - p).abs() < 1e-6, "2 dof at {p}: F({two}) = {f2}");
             assert!((f3 - p).abs() < 1e-6, "3 dof at {p}: F({three}) = {f3}");
         }
     }
@@ -584,7 +611,7 @@ mod tests {
         assert_eq!(Gates::default(), Gates::at(Percentile::P999));
         assert_eq!(
             Gates::default().gnss_position,
-            Gate::<3>::at(Percentile::P999)
+            Gate::<2>::at(Percentile::P999)
         );
         assert_eq!(
             Gates::default().baro_altitude,

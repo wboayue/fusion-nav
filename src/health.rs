@@ -150,11 +150,12 @@ pub enum Fusion {
     /// while it has no fix, or a variance arrived at by subtracting one σ² from another.
     /// Refused alongside [`NotFinite`](Self::NotFinite), before any adoption.
     ///
-    /// One bad component refuses the whole measurement, so a receiver in 2D-fix mode
-    /// reporting a good `eph` with `epv = 0` loses its horizontal aiding too. The filter
-    /// reports rather than repairs: PX4 and ArduPilot clamp such a value into range, and a
-    /// caller that wants that behavior floors `noise` before the call, where the policy is
-    /// visible. See [`Eskf::fuse_gnss_position`](crate::Eskf::fuse_gnss_position).
+    /// One bad component refuses the measurement it belongs to. A GNSS fix is two, so a
+    /// receiver in 2D-fix mode reporting a good `eph` with `epv = 0` keeps its horizontal
+    /// aiding and has its height refused; see [`GnssFusion`]. The filter reports rather than
+    /// repairs: PX4 and ArduPilot clamp such a value into range, and a caller that wants that
+    /// behavior floors `noise` before the call, where the policy is visible. See
+    /// [`Eskf::fuse_gnss_position`](crate::Eskf::fuse_gnss_position).
     InvalidNoise,
     /// The filter's own numbers could not support an update, so nothing was committed. The
     /// state and covariance are unchanged, no health timer moved, and the measurement is not
@@ -214,6 +215,56 @@ impl Fusion {
             | Self::InvalidNoise
             | Self::StateInvalid => None,
         }
+    }
+}
+
+/// What one GNSS position fix did: its horizontal and vertical halves, each gated and
+/// reported on its own.
+///
+/// A fix carries two measurements that fail independently. A receiver's height wanders
+/// further than its horizontal position, and it disagrees with a barometer about height
+/// without either saying anything about north or east — so a single verdict over all three
+/// axes turns a height disagreement into lost horizontal aiding. `2c42096b` is a stationary
+/// vehicle whose barometer and receiver drift ~20 m apart in height over the first hour;
+/// fusing both under one joint test rejects 3945 of its 4616 fixes, and every one of them
+/// passes a test of the horizontal pair alone. Both production estimators split the same way: PX4 runs GNSS
+/// position as a two-dimensional source and GNSS height as a one-dimensional one
+/// (`_aid_src_gnss_pos` and `_aid_src_gnss_hgt`, `src/modules/ekf2/EKF/ekf.h:621-622` at
+/// `c4e4ef98e9`), and ArduPilot tests the horizontal pair and the height separately
+/// (`libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp:904-906` and `:1023` at
+/// `368dc0c428`).
+///
+/// Each half is a [`Fusion`] with its own gate in [`Gates`](crate::Gates) and its own
+/// [`SourceHealth`] in [`Diagnostics`]: [`gnss_position`](Diagnostics::gnss_position) for
+/// the horizontal pair, [`gnss_height`](Diagnostics::gnss_height) for the vertical. A
+/// refusal or an adoption applies to the fix as a whole and reads the same in both.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GnssFusion {
+    /// North and east, gated at [`Gates::gnss_position`](crate::Gates::gnss_position).
+    pub horizontal: Fusion,
+    /// Down, gated at [`Gates::gnss_height`](crate::Gates::gnss_height).
+    pub height: Fusion,
+}
+
+impl GnssFusion {
+    /// The same outcome for both halves: a refusal, an adoption, an origin placed.
+    pub(crate) const fn both(fusion: Fusion) -> Self {
+        Self {
+            horizontal: fusion,
+            height: fusion,
+        }
+    }
+
+    /// Whether the filter took both halves, by fusing or adopting them. See
+    /// [`Fusion::is_accepted`].
+    pub const fn is_accepted(self) -> bool {
+        self.horizontal.is_accepted() && self.height.is_accepted()
+    }
+
+    /// Whether the fix replaced the position estimate rather than correcting it. Both halves
+    /// or neither: a fix is adopted whole.
+    pub const fn is_reset(self) -> bool {
+        self.horizontal.is_reset()
     }
 }
 
@@ -647,8 +698,10 @@ impl PropagationHealth {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[non_exhaustive]
 pub struct Diagnostics {
-    /// GNSS position updates.
+    /// GNSS position updates, horizontal: north and east. See [`GnssFusion`].
     pub gnss_position: SourceHealth,
+    /// GNSS position updates, vertical: the height half of the same fix.
+    pub gnss_height: SourceHealth,
     /// GNSS velocity updates.
     pub gnss_velocity: SourceHealth,
     /// Barometric altitude updates.
@@ -677,9 +730,10 @@ pub struct Diagnostics {
 
 impl Diagnostics {
     /// Every source, for iteration.
-    pub const fn sources(&self) -> [(&'static str, SourceHealth); 4] {
+    pub const fn sources(&self) -> [(&'static str, SourceHealth); 5] {
         [
             ("gnss_position", self.gnss_position),
+            ("gnss_height", self.gnss_height),
             ("gnss_velocity", self.gnss_velocity),
             ("baro_altitude", self.baro_altitude),
             ("mag_heading", self.mag_heading),
@@ -689,6 +743,7 @@ impl Diagnostics {
     /// Advance every source's fusion clock.
     pub(crate) fn advance(&mut self, dt: Seconds) {
         self.gnss_position.advance(dt);
+        self.gnss_height.advance(dt);
         self.gnss_velocity.advance(dt);
         self.baro_altitude.advance(dt);
         self.mag_heading.advance(dt);
