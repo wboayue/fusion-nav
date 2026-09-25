@@ -1179,9 +1179,10 @@ def self_test():
     expect("no estimator", layout_label(None), "none")
     expect("v1.15 velocity index", EKF2_LAYOUTS[(24, 23)]["vel"], 3)
     rows = []
-    v115 = Fixture("estimator_states", timestamp=[0],
+    v115 = Fixture("estimator_states", timestamp=[0], n_states=[24],
                    **{f"states[{i}]": [0.0] for i in range(24)},
                    **{f"covariances[{i}]": [float(i)] for i in range(23)})
+    expect("v1.15 key", ekf2_states(FixtureLog(v115))[1], (24, 23))
     reference_states(v115, EKF2_LAYOUTS[(24, 23)], None, rows)
     expect("v1.15 sigma_vel_n", rows[0][2]["sigma_vel_n"], math.sqrt(3.0))
     expect("v1.15 sigma_ba_z", rows[0][2]["sigma_ba_z"], math.sqrt(14.0))
