@@ -492,12 +492,16 @@ def read_path(path, x_name, y_name, points, source=None, source_column="source")
     return (np.array(x), np.array(y)) if x else None
 
 
-def read_runs(path, column, source=None, until=None, source_column="source"):
+def read_runs(path, column, source=None, since=None, until=None,
+              source_column="source"):
     """Contiguous `(start, end, value)` runs of one column, for shading a time axis.
 
     `until` extends the last run to a time the file itself does not reach: the
     reference writes a `vehicle_mode` row per change, so its last regime has no
-    row marking where it ends.
+    row marking where it ends. `since` clips the other end: that first row is
+    the first `vehicle_status` sample, which on every corpus log lands 0.11 to
+    0.34 s before the replay's first epoch, and a shade there would stretch the
+    time axis below zero.
     """
     _, columns, stream = rows_of(path, source, source_column)
     if column not in columns:
@@ -515,6 +519,9 @@ def read_runs(path, column, source=None, until=None, source_column="source"):
             current[1] = t
     if runs and until is not None:
         runs[-1][1] = max(runs[-1][1], until)
+    if since is not None:
+        runs = [[max(start, since), end, value] for start, end, value in runs
+                if end > since]
     return runs
 
 
@@ -1207,8 +1214,9 @@ def build_report(args):
         reference = {**local, **states, **ratios}
         resets = read_resets(args.reference)
         reference_q = read_columns(args.reference, QUATERNION, source="ekf2_att")
-        end = float(ours_q[0][-1]) if ours_q else None
-        mode_runs = read_runs(args.reference, "mode", source="vehicle_mode", until=end)
+        start, end = (float(ours_q[0][0]), float(ours_q[0][-1])) if ours_q else (None, None)
+        mode_runs = read_runs(args.reference, "mode", source="vehicle_mode",
+                              since=start, until=end)
 
     truth, truth_notes, truth_q = {}, [], None
     if args.truth:
@@ -1512,6 +1520,17 @@ def self_test():
     t, y = envelope(np.arange(6.0), np.array([0.0, 9.0, 1.0, 5.0, 2.0, -4.0]), 3)
     near("envelope values", y, (0.0, 9.0, 5.0, -4.0))
     near("envelope times", t, (0.0, 1.0, 3.0, 5.0))
+
+    # A mode row written before the replay's first epoch is clipped to it, and
+    # the last regime runs to the end of the replay.
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as handle:
+        handle.write("t_s,source,mode\n-0.2,vehicle_mode,fw\n1.0,ekf2_att,\n"
+                     "5.0,vehicle_mode,to_mc\n")
+    runs = read_runs(handle.name, "mode", source="vehicle_mode", since=0.5, until=9.0)
+    Path(handle.name).unlink()
+    if runs != [[0.5, 5.0, "fw"], [5.0, 9.0, "to_mc"]]:
+        failures.append(f"read_runs since/until: got {runs}")
 
     for failure in failures:
         print(f"FAIL {failure}", file=sys.stderr)
