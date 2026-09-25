@@ -67,26 +67,45 @@ pub struct ImuNoise {
 }
 
 impl Default for ImuNoise {
-    /// PX4 EKF2's defaults, which ArduPilot's EK3 independently agrees with to within a
-    /// factor of two on every term.
+    /// PX4 EKF2's white noise and ArduPilot EK3's bias walks, the walks converted to the
+    /// densities these fields hold.
     ///
     /// These are deliberately far above what an IMU datasheet or an Allan variance plot
     /// gives for the sensor alone, because the process noise of a real airframe absorbs
     /// what the model leaves out: vibration, scale-factor and cross-axis error, timing
     /// jitter, and the coning and sculling a first-order propagation does not capture.
+    /// Datasheet-grade figures would make the covariance claim a precision the estimate
+    /// does not have, and an overconfident covariance gates out measurements that were fine.
     ///
-    /// Datasheet-grade figures — 10 to 15 times tighter on every term — would make the
-    /// covariance claim a precision the estimate does not have, and an overconfident
-    /// covariance gates out measurements that were fine. Two independent production
-    /// estimators agreeing is not the same evidence as a replay of our own, so these
-    /// remain subject to the validation in `GOALS.md`, but they are the right order of
-    /// magnitude to start from.
+    /// Both estimators add a bias walk as `(σ Δt)²` per prediction step, so their σ is
+    /// per-step at their own rate and the density it implies is `σ √Δt`: PX4 at
+    /// `src/modules/ekf2/EKF/covariance.cpp:152-153,166-167` with a 10 ms step
+    /// (`module.yaml:22`, `EKF2_PREDICT_US`), at `c4e4ef98e9`; ArduPilot at
+    /// `libraries/AP_NavEKF3/AP_NavEKF3_core.cpp:1065,1071` with a 12 ms step
+    /// (`AP_NavEKF3_core.cpp:36`, `EKF_TARGET_DT`), at `368dc0c428`, its bias states being
+    /// `b Δt`. PX4's 1.0e-3 rad s⁻² and 3.0e-3 m s⁻³ (`params_gyro_bias.yaml:19`,
+    /// `params_accel_bias.yaml:19`) come to 1.0e-4 and 3.0e-4; ArduPilot's copter 1.0e-3 and
+    /// 2.0e-2 (`AP_NavEKF3.cpp:30-31`) to 1.1e-4 and 2.2e-3. These are ArduPilot's, the
+    /// larger pair.
+    ///
+    /// What the conversion is worth: read unconverted as a density, the accelerometer-bias
+    /// walk is 33 times PX4's in σ, and on `2c42096b` — grounded for two hours, where only
+    /// `tilt · g + b_a` is observed — `σ_ba` grows to 0.63 m s⁻², the bias estimate walks to
+    /// 0.56 and drags tilt from 0.95° to a peak of 5.2°, against EKF2's 1.08°. Converted, the
+    /// ten-minute mean tilt holds between 0.89° and 1.11°, and the 2.5° peak is a 3.5 g knock
+    /// at 4757 s. PX4's own pair gives 2.4°. A ceiling on `σ_ba` at PX4's 0.35 gives 3.3°
+    /// and a clamp on the bias at its 0.4 gives 4.4°, and neither is reached once the walk
+    /// is converted.
+    ///
+    /// The white-noise terms are PX4's per-step σ read the same way, and stay unconverted:
+    /// converted, `gnss_latency`'s `false_valid` goes from 340 to 37 494 and `a299e722` ends
+    /// `Degraded`, so at the harness's unfloored `R` this filter needs the wider figure (#138).
     fn default() -> Self {
         Self {
             gyro_white: 1.5e-2,
             accel_white: 3.5e-1,
-            gyro_bias_walk: 1.0e-3,
-            accel_bias_walk: 1.0e-2,
+            gyro_bias_walk: 1.1e-4,
+            accel_bias_walk: 2.2e-3,
         }
     }
 }
@@ -456,8 +475,8 @@ impl Default for Accuracy {
     /// again. On every static log in `data/manifest.txt` that read as a valid attitude for
     /// exactly one sample.
     ///
-    /// What these buy, measured on a static start at [`ImuNoise`]'s defaults: 3.82 s of unaided
-    /// propagation before tilt leaves the bar, 35.8 s before heading does
+    /// What these buy, measured on a static start at [`ImuNoise`]'s defaults: 3.85 s of unaided
+    /// propagation before tilt leaves the bar, 37.8 s before heading does
     /// (`an_unaided_start_holds_its_attitude_for_the_margin_the_defaults_buy`). Neither is the
     /// `σ_g² t` the white-noise density alone gives, which would be 10.4 s and 674 s — the
     /// gyroscope-bias prior enters attitude through equation (20)'s `−I Δt` and grows as

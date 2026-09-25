@@ -554,7 +554,8 @@ fn measured(value: Option<f64>, places: usize) -> String {
 /// So each key carries an error of its own. A glitch the gate refuses still stretches
 /// `extent`, and the first fix is the origin whatever it was. `tilt_max` includes the
 /// filter's tilt error and the attitude initialization committed: on the grounded
-/// `2c42096b` it reads 5.2° where EKF2 never leaves 1.1°, and the manifest note says why.
+/// `f16771dd` it read 15.8° at a moment EKF2 read 1.7°, until the bias walks of `ImuNoise`
+/// were converted, and the manifest note says how.
 #[derive(Default)]
 struct Excursion {
     origin: Option<(f32, f32)>,
@@ -2846,15 +2847,15 @@ mod tests {
     fn an_unaided_attitude_stops_being_valid_and_the_line_says_when() {
         // The covariance growth of (16)–(22) on a log with no truth: a window that observed
         // both tilt and heading aligns at 0.00 and the tilt variance then crosses
-        // `Accuracy::tilt` 3.82 s later, which is the figure `Accuracy`'s defaults cite. Six
+        // `Accuracy::tilt` 3.85 s later, which is the figure `Accuracy`'s defaults cite. Six
         // seconds of stillness at 50 Hz is enough to see it.
         let log = Log::new().mag(0.0).run(0.0, 400, DT, STILL);
         let summary = replay(&log).summary();
         assert_eq!(key(&summary, "aligned_at"), "0.00");
         assert_eq!(
             key(&summary, "attitude_lost"),
-            "3.84",
-            "one epoch past 3.82 s at this rate: {summary}"
+            "3.86",
+            "one epoch past 3.85 s at this rate: {summary}"
         );
     }
 
@@ -2887,7 +2888,7 @@ mod tests {
                 "{unmoved}: {tight}"
             );
         }
-        assert_eq!(key(&default, "attitude_lost"), "3.84");
+        assert_eq!(key(&default, "attitude_lost"), "3.86");
         assert_eq!(key(&tight, "attitude_lost"), "0.00", "{tight}");
     }
 
@@ -2989,7 +2990,7 @@ mod tests {
         // σ_v = 0.01 m/s the gate turns it down; at 0.5 — PX4's `ekf2_gps_v_noise`, which
         // sits above 4885 of the corpus's 5348 velocity solutions — the same innovation is
         // accepted. So a floor applied in `Replay::row` would flip the first assertion,
-        // which is the mutation this guards and the one `a299e722` runs 278 times.
+        // which is the mutation this guards and the one `a299e722` runs 283 times.
         let moving = |var: &str| {
             still_start().raw(&format!(
                 "2.000000,gnss_vel,1.0,0.0,0.0,,,,{var},{var},{var}"

@@ -373,7 +373,7 @@ Reading the columns back is what verifies them — a wrong index is silence, not
 delta-angle bias agree to 5.3e-4 rad/s (0.03 °/s), which is what confirms the units and the index
 map. The rounding itself rests on PX4 source rather than on that number: it moves `2c42096b` by
 0.5 %, and the log where it would matter carries 58 bias samples against a velocity source this
-filter rejects 278 of 609 solutions from, so its own bias wanders by ±0.01 rad/s and cannot
+filter rejects 283 of 609 solutions from, so its own bias wanders by ±0.01 rad/s and cannot
 adjudicate anything.
 
 Tilt agrees with EKF2 within 0.13° on all five logs at EKF2's first attitude sample after the

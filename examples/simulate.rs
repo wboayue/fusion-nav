@@ -420,13 +420,14 @@ struct ImuErrors {
 /// A well-isolated airframe carrying a current MEMS IMU: a few times a datasheet, and well below
 /// what the filter assumes.
 ///
-/// `ImuNoise::default()` is PX4's, which sits 10–15× above datasheet deliberately — its `Q`
-/// absorbs vibration, scale-factor error, timing jitter and the coning a first-order propagation
-/// drops. None of that is in this simulator, so matching those numbers here would be simulating
-/// PX4's modelling allowance rather than an IMU. The consequence for scoring is worth stating
-/// plainly: against this table the filter's `Q` is two orders of magnitude conservative, so every
-/// scenario should come out *under*-confident, and a consistency statistic that does not is a
-/// finding rather than a pass. [`HARSH_IMU`] widens the spread without changing that sign.
+/// `ImuNoise::default()`'s white noise is PX4's, which sits far above datasheet deliberately —
+/// its `Q` absorbs vibration, scale-factor error, timing jitter and the coning a first-order
+/// propagation drops. None of that is in this simulator, so matching those numbers here would be
+/// simulating PX4's modelling allowance rather than an IMU. The consequence for scoring is worth
+/// stating plainly: against this table the filter's white noise is two orders of magnitude
+/// conservative and its bias walks one, so every scenario should come out *under*-confident,
+/// and a consistency statistic that does not is a finding rather than a pass. [`HARSH_IMU`]
+/// widens the spread without changing that sign.
 const IMU: ImuErrors = ImuErrors {
     gyro_white: 2.6e-4,
     accel_white: 2.0e-3,
@@ -449,9 +450,11 @@ const IMU: ImuErrors = ImuErrors {
 ///
 /// It does **not** make the filter overconfident, and the attempt is what showed why. Exceeding
 /// `ImuNoise::default()` would take 4.95 m s⁻² of per-sample accelerometer noise at this rate,
-/// because PX4's densities are a process-noise allowance for vibration, coning and timing —
+/// because PX4's figures are a process-noise allowance for vibration, coning and timing —
 /// things absent from an analytic simulator — rather than a sensor specification. No IMU worth
-/// flying reaches them. So `Q` cannot be made optimistic from the sensor side here, and a
+/// flying reaches them. Its gyroscope-bias walk is the one term that does exceed the filter's,
+/// 2.0e-4 against 1.1e-4, which costs `tilt` and `yaw` but leaves `nees_att` under 1, the white
+/// noise dominating. So `Q` cannot be made optimistic overall from the sensor side here, and a
 /// scenario that makes the covariance genuinely overconfident has to do it through `R`: a
 /// receiver reporting an accuracy better than it delivers. Nothing in this table does that yet.
 const HARSH_IMU: ImuErrors = ImuErrors {

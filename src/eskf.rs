@@ -1246,7 +1246,7 @@ impl Eskf {
     /// Tilt is where the projection earns its place, because nothing aids it: a static
     /// window brings it in and (20)'s gyroscope-bias term takes it back out, on a schedule
     /// the covariance knows and no acceptance timer does. At [`ImuNoise`](crate::ImuNoise)'s
-    /// defaults an unaided start holds tilt for 3.82 s, so a horizon under that arms and one
+    /// defaults an unaided start holds tilt for 3.85 s, so a horizon under that arms and one
     /// over it does not — an answer, where before there was only the current value repeated.
     ///
     /// The projection reads slightly optimistic and the amount is measured: a first-order
@@ -1622,8 +1622,8 @@ mod tests {
     }
 
     /// The margin [`Accuracy`]'s defaults were chosen for, measured rather than derived: a
-    /// static start with a magnetometer in the window holds its tilt for 3.82 s of unaided
-    /// propagation and its heading for 35.8 s, at [`ImuNoise`](crate::ImuNoise)'s defaults.
+    /// static start with a magnetometer in the window holds its tilt for 3.85 s of unaided
+    /// propagation and its heading for 37.8 s, at [`ImuNoise`](crate::ImuNoise)'s defaults.
     ///
     /// Not the `σ_g² t` the white-noise density alone would give — that is 10.4 s and 674 s.
     /// The gyroscope-bias prior reaches attitude through (20)'s `−I Δt` and accumulates as
@@ -1660,8 +1660,8 @@ mod tests {
 
         let tilt = tilt_held.expect("tilt leaves the bar inside 40 s");
         let heading = heading_held.expect("heading leaves the bar inside 40 s");
-        assert!((tilt - 3.82).abs() < 0.05, "tilt held {tilt} s");
-        assert!((heading - 35.8).abs() < 0.2, "heading held {heading} s");
+        assert!((tilt - 3.85).abs() < 0.05, "tilt held {tilt} s");
+        assert!((heading - 37.8).abs() < 0.2, "heading held {heading} s");
     }
 
     #[test]
@@ -2917,7 +2917,7 @@ mod tests {
         assert!(filter.is_aligned());
         assert!(filter.validity().tilt);
 
-        // Past the 3.82 s the default bars buy, with the barometer still arriving at 2 Hz so
+        // Past the 3.85 s the default bars buy, with the barometer still arriving at 2 Hz so
         // that aiding is never stale: otherwise `degraded_after` expires on the way and
         // `Degraded` would be what the status assertion below saw.
         for step in 1..=800 {
@@ -3440,7 +3440,7 @@ mod tests {
     #[test]
     fn the_horizon_is_what_separates_predicted_validity_from_the_current_one() {
         // The projection's whole point, on the quantity nothing aids. A static start levels
-        // tilt and holds it for 3.82 s unaided
+        // tilt and holds it for 3.85 s unaided
         // (`an_unaided_start_holds_its_attitude_for_the_margin_the_defaults_buy`), so a
         // horizon inside that arms and one outside it does not -- while `validity` says the
         // same thing at both, because it is answering about now.
@@ -3459,7 +3459,7 @@ mod tests {
             (filter.validity().tilt, filter.predicted_validity().tilt)
         };
 
-        assert_eq!(ask(1.0), (true, true), "a second is inside the 3.82 s hold");
+        assert_eq!(ask(1.0), (true, true), "a second is inside the 3.85 s hold");
         assert_eq!(ask(6.0), (true, false), "six seconds is outside it");
     }
 

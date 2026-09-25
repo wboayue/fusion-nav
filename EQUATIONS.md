@@ -423,6 +423,13 @@ same airframe logged at 400 Hz is given eight times less process noise than at 5
 logs in `data/manifest.txt` run from 50 Hz to 250 Hz against one `Config`. Holding the density
 fixed is rate-independent, and `propagate::process_noise` implements that.
 
+What the form does not do is convert a number. A production default is a per-step
+$`\sigma_{\text{sample}}`$ at that estimator's own prediction step — 10 ms for PX4, 12 ms for
+ArduPilot — so the density it stands for is $`\sigma_{\text{sample}} \sqrt{\Delta t}`$, about a
+tenth of it. The random walks carry the same per-step form, $`(\sigma \Delta t)^2`$ in both
+estimators. `ImuNoise`'s bias walks are converted this way and its white noise is not; its
+`Default` doc comment carries the figures and what each choice measured.
+
 The velocity block of (21) is the rotated accelerometer noise $`R \Sigma_a R^\mathsf{T}`$. Writing
 it as $`\sigma_a^2 I`$ is exact only when the accelerometer noise is **isotropic**, since
 $`R (\sigma_a^2 I) R^\mathsf{T} = \sigma_a^2 I`$ for orthogonal $`R`$. Real IMUs are not
