@@ -2298,6 +2298,20 @@ mod tests {
         Log::new().run(0.0, 100, DT, STILL)
     }
 
+    /// [`still_start`], rounded up to whole runs, with the barometer reading each of `altitudes` in turn, spread through
+    /// it. Interleaved rather than written up front, because the harness holds the last reading
+    /// on every IMU sample, and readings that all arrive before the first one are one reading
+    /// held — which sets no reference.
+    fn still_start_with_baro(altitudes: &[f32]) -> Log {
+        let rows = 100_usize.div_ceil(altitudes.len());
+        let mut log = Log::new();
+        for (k, altitude) in altitudes.iter().enumerate() {
+            let t = (k * rows) as f64 * DT;
+            log = log.baro(t, *altitude).run(t, rows, DT, STILL);
+        }
+        log
+    }
+
     // ---- the row parser ----
 
     /// The two magnitudes the comment on `Record::parse` quantifies, pinned so the figures
@@ -2499,7 +2513,9 @@ mod tests {
 
     #[test]
     fn a_barometer_in_a_still_window_sets_the_reference() {
-        let log = Log::new().baro(0.0, 42.0).run(0.0, 100, DT, STILL);
+        // Three readings, since one held across the window is one reading and sets no
+        // reference: it has no scatter to give the reference a variance from.
+        let log = still_start_with_baro(&[41.5, 42.5, 42.0]);
         let replay = replay(&log);
         assert_eq!(key(&replay.summary(), "alpha0"), "set");
         let reference = replay.filter.baro_reference().expect("α₀ established");
@@ -2864,9 +2880,7 @@ mod tests {
         // The barometer needs a reading inside the window as well as after it: with no `α₀`
         // its `fuse_*` returns `NoReference`, the gate never runs, and the source publishes
         // no dimension to check `AXES` against.
-        let log = Log::new()
-            .baro(0.0, 42.0)
-            .run(0.0, 100, DT, STILL)
+        let log = still_start_with_baro(&[41.5, 42.5, 42.0])
             .gnss_pos(2.0, 1.0, 2.0, -3.0)
             .gnss_vel(2.0, 0.1, 0.0, 0.0)
             .baro(2.0, 42.5)

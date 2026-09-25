@@ -11,7 +11,7 @@ use nalgebra::{Matrix3, SMatrix, Vector3};
 use crate::config::{GRAVITY, ImuNoise};
 use crate::frames::Body;
 use crate::math::{enforce_symmetry, exp_quat, skew};
-use crate::state::{Covariance, ErrorState, STATES, State};
+use crate::state::{Covariance, ErrorState, Offset, STATES, State};
 use crate::units::{Acceleration, AngularRate, Attitude, Position, Seconds, Velocity};
 
 /// One IMU measurement, uncorrected. The filter subtracts its own bias estimates,
@@ -117,12 +117,14 @@ pub(crate) struct Propagated {
     pub(crate) state: State,
     /// The covariance of (22).
     pub(crate) covariance: Covariance,
+    /// The barometric offset's share of it, (30′).
+    pub(crate) offset: Offset,
 }
 
 impl Propagated {
     /// Whether every number in the step is finite.
     pub(crate) fn is_finite(&self) -> bool {
-        self.state.is_finite() && self.covariance.is_finite()
+        self.state.is_finite() && self.covariance.is_finite() && self.offset.is_finite()
     }
 }
 
@@ -137,9 +139,11 @@ impl Propagated {
 pub(crate) fn propagate(
     state: State,
     covariance: Covariance,
+    offset: Offset,
     imu: ImuSample,
     dt: Seconds,
     noise: &ImuNoise,
+    offset_walk: f32,
 ) -> Propagated {
     let corrected = corrected_imu(imu, &state);
     let transition = transition_matrix(&state, corrected, dt);
@@ -147,6 +151,20 @@ pub(crate) fn propagate(
     Propagated {
         state: propagate_nominal(state, corrected, dt),
         covariance: propagate_covariance(covariance, &transition, process_noise(noise, dt)),
+        offset: propagate_offset(offset, &transition, offset_walk, dt),
+    }
+}
+
+/// `P_xb ← F P_xb` and `P_bb ← P_bb + q_b² Δt`. Equation (30′).
+///
+/// The offset is a random walk with no dynamics of its own, so its block of the augmented
+/// transition is one and the cross-covariance moves only with the error state it is
+/// correlated with: a 15 × 15 by 15 × 1 product, where the augmented `F P Fᵀ` would repeat
+/// (22) at sixteen.
+fn propagate_offset(offset: Offset, f: &Transition, walk: f32, dt: Seconds) -> Offset {
+    Offset {
+        cross: f * offset.cross,
+        variance: offset.variance + walk * walk * dt.as_secs(),
     }
 }
 
@@ -762,7 +780,15 @@ mod tests {
             let mut state = at_rest();
 
             for _ in 0..steps {
-                let step = propagate(state, covariance, holding_still(), dt, &noise);
+                let step = propagate(
+                    state,
+                    covariance,
+                    Offset::default(),
+                    holding_still(),
+                    dt,
+                    &noise,
+                    0.0,
+                );
                 (state, covariance) = (step.state, step.covariance);
             }
 
@@ -806,7 +832,15 @@ mod tests {
 
         for _ in 0..12_000 {
             let before = covariance.as_matrix().trace();
-            let step = propagate(state, covariance, manoeuvring(), dt, &noise);
+            let step = propagate(
+                state,
+                covariance,
+                Offset::default(),
+                manoeuvring(),
+                dt,
+                &noise,
+                0.0,
+            );
             (state, covariance) = (step.state, step.covariance);
 
             let p = covariance.as_matrix();
@@ -859,7 +893,15 @@ mod tests {
             accel: Acceleration::body(0.0, 0.0, -GRAVITY),
         };
 
-        let step = propagate(at_rest(), Covariance::from_sigmas(sigmas), imu, dt, &quiet);
+        let step = propagate(
+            at_rest(),
+            Covariance::from_sigmas(sigmas),
+            Offset::default(),
+            imu,
+            dt,
+            &quiet,
+            0.0,
+        );
         let after = step.covariance;
 
         assert!((after.variance(ErrorState::AttitudeX) - tilt * tilt).abs() < 1.0e-9);
@@ -912,7 +954,7 @@ mod tests {
             q,
         );
 
-        let step = propagate(state, prior, imu, dt, &quiet);
+        let step = propagate(state, prior, Offset::default(), imu, dt, &quiet, 0.0);
         assert_eq!(step.covariance, before);
 
         // What the other ordering would have claimed about north velocity: `cos²(0)` of the
@@ -939,9 +981,11 @@ mod tests {
         let step = propagate(
             tilted_and_moving(),
             enormous,
+            Offset::default(),
             manoeuvring(),
             Seconds::from_secs(0.005),
             &ImuNoise::default(),
+            0.0,
         );
 
         assert!(step.state.is_finite(), "the state itself is fine");
@@ -965,6 +1009,31 @@ mod tests {
 
         let state = run(at_rest(), imu, 1_000);
         assert!(!state.is_finite(), "{state:?}");
+    }
+
+    #[test]
+    fn the_offset_walks_and_its_correlations_move_with_the_state() {
+        // `P_xb` correlated with vertical velocity only: one step of (20) carries it into
+        // down position by `Δt`, and `P_bb` grows by `q_b² Δt` whatever the state did.
+        let mut cross = nalgebra::SVector::<f32, STATES>::zeros();
+        cross[ErrorState::VelocityDown.index()] = 1.0;
+        let offset = Offset {
+            cross,
+            variance: 0.25,
+        };
+        let dt = Seconds::from_secs(0.01);
+        let step = propagate(
+            at_rest(),
+            Covariance::from_sigmas([0.1; STATES]),
+            offset,
+            holding_still(),
+            dt,
+            &ImuNoise::default(),
+            2.0,
+        );
+        assert!((step.offset.variance - (0.25 + 4.0 * 0.01)).abs() < 1e-6);
+        assert!((step.offset.cross[ErrorState::PositionDown.index()] - 0.01).abs() < 1e-6);
+        assert_eq!(step.offset.cross[ErrorState::VelocityDown.index()], 1.0);
     }
 }
 

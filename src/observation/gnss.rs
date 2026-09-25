@@ -43,6 +43,7 @@ pub(crate) fn horizontal_observation(
     Observation {
         y: SVector::<f32, 2>::new(y[0], y[1]),
         h: horizontal_jacobian(),
+        h_b: SVector::<f32, 2>::zeros(),
         r_m: SVector::<f32, 2>::new(r_m[0], r_m[1]),
     }
 }
@@ -56,6 +57,7 @@ pub(crate) fn height_observation(
     Observation {
         y: SVector::<f32, 1>::new(fix.vector()[2] - state.position.vector()[2]),
         h: height_jacobian(),
+        h_b: SVector::<f32, 1>::zeros(),
         r_m: SVector::<f32, 1>::new(noise.variance()[2]),
     }
 }
@@ -88,6 +90,7 @@ pub(crate) fn velocity_observation(
     Observation {
         y: solution.vector() - state.velocity.vector(),
         h: velocity_jacobian(),
+        h_b: SVector::<f32, 3>::zeros(),
         r_m: noise.variance(),
     }
 }

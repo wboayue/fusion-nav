@@ -629,7 +629,7 @@ struct BaroErrors {
     period: f64,
     /// m.
     sigma: f64,
-    /// m s⁻¹: reference drift, the quantity GOALS.md decided not to estimate.
+    /// m s⁻¹: reference drift, the quantity equation (30′) estimates.
     drift: f64,
     /// m: what the barometer reads on the ground. Initialization averages this into `α₀` and
     /// every later altitude is relative to it, so a non-zero value makes a scenario that never
@@ -667,9 +667,8 @@ impl Baro {
 
     /// Altitude above the barometer's own reference — and that reference drifts.
     ///
-    /// Equation (30) fixes `α₀` from the initialization window; everything after that is measured
-    /// against a reference that may no longer be where it was, which the filter carries no state
-    /// to notice.
+    /// Equation (30) takes `α₀` from the initialization window; everything after that is measured
+    /// against a reference that may no longer be where it was, which (30′) is there to follow.
     fn sample(&mut self, t: f64, truth: &Truth) -> Option<Altitude> {
         // Drawn before the availability window is consulted, for the reason [`Gnss::fix`] gives.
         let noise = self.errors.sigma * self.noise.sample();
@@ -1022,14 +1021,13 @@ fn scenarios() -> Vec<Scenario> {
             trajectory: banked_turn(),
             ..base
         },
-        // What GOALS.md's "barometric reference as a constant" costs: the reference walks 2 cm/s
-        // away from the one initialization fixed, 3.7 m over the log, and the filter has no state
-        // that can tell that from a climb. Both production estimators track this; the number this
-        // scenario produces is the evidence for revisiting the decision.
+        // The reference walks 2 cm/s away from the one initialization fixed, 3.7 m over the log:
+        // what GOALS.md's "barometric reference as an estimated offset" exists to follow, and the
+        // scenario that measured a constant `α₀` costing 2 m of height.
         Scenario {
             name: "baro_drift",
             covers: "the baseline with the barometric reference drifting 0.02 m/s: what a \
-                     constant alpha0 costs in vertical position",
+                     reference that is not followed costs in vertical position",
             baro: BaroErrors {
                 drift: 0.02,
                 ..BARO

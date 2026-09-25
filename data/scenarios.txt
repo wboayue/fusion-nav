@@ -153,15 +153,15 @@
 # removes exactly that error and nothing else was changed to make it: `pos_v` 3.07 to 0.819,
 # `pos_h` 9.14 to 3.03, `yaw` 12.96 deg to 7.59. A heading the window observed, stage 8's, is
 # the other half -- this one corrects the consequence and leaves the 0.6 rad in place.
-static           1  pos_h<=0.275 pos_v<=0.152 vel<=0.193 pos_h_max<=0.988  tilt<=0.631 yaw<=0.514 ba<=0.07963 bg<=0.000999 in3s>=0.9817 nees_pos<=2.0627   nees_vel<=0.4577 nees_att<=0.1343 false_valid<=0   false_valid_att<=0   scored>=11600
-mission          2  pos_h<=0.247 pos_v<=0.084 vel<=0.190 pos_h_max<=0.887  tilt<=0.582 yaw<=0.658 ba<=0.05400 bg<=0.001024 in3s>=0.9894 nees_pos<=1.0645   nees_vel<=0.4448 nees_att<=0.2026 false_valid<=0   false_valid_att<=0   scored>=36600
-harsh_imu        2  pos_h<=0.247 pos_v<=0.084 vel<=0.192 pos_h_max<=0.886  tilt<=1.160 yaw<=1.071 ba<=0.15479 bg<=0.002253 in3s>=0.9891 nees_pos<=1.0658   nees_vel<=0.4512 nees_att<=0.6048 false_valid<=0   false_valid_att<=0   scored>=36600
-gnss_outage      2  pos_h<=2.391 pos_v<=0.093 vel<=0.356 pos_h_max<=29.524 tilt<=0.606 yaw<=0.657 ba<=0.05418 bg<=0.001020 in3s>=0.9893 nees_pos<=0.9114   nees_vel<=0.4088 nees_att<=0.1951 false_valid<=0   false_valid_att<=0   scored>=36600
-moving_start     4  pos_h<=0.266 pos_v<=0.300 vel<=0.195 pos_h_max<=0.975  tilt<=1.682 yaw<=0.927 ba<=0.05849 bg<=0.002687 in3s>=0.9900 nees_pos<=1.0934   nees_vel<=0.4550 nees_att<=0.2286 false_valid<=0   false_valid_att<=0   scored>=15999
-baro_drift       2  pos_h<=0.246 pos_v<=2.073 vel<=0.190 pos_h_max<=0.887  tilt<=0.578 yaw<=0.656 ba<=0.05401 bg<=0.001022 in3s>=0.9295 nees_pos<=259.8456 nees_vel<=0.4450 nees_att<=0.2007 false_valid<=0   false_valid_att<=0   scored>=36600
-gnss_latency     2  pos_h<=2.220 pos_v<=0.085 vel<=0.475 pos_h_max<=3.361  tilt<=0.962 yaw<=1.367 ba<=0.05383 bg<=0.002371 in3s>=0.8609 nees_pos<=57.3319  nees_vel<=2.7390 nees_att<=0.7754 false_valid<=418 false_valid_att<=122 scored>=36600
-mag_disturbance  2  pos_h<=0.247 pos_v<=0.084 vel<=0.190 pos_h_max<=0.887  tilt<=0.583 yaw<=0.734 ba<=0.05355 bg<=0.001062 in3s>=0.9894 nees_pos<=1.0646   nees_vel<=0.4450 nees_att<=0.2029 false_valid<=0   false_valid_att<=0   scored>=36600
-flight           8  pos_h<=2.502 pos_v<=0.421 vel<=0.685 pos_h_max<=6.166  tilt<=1.037 yaw<=7.679 ba<=0.07355 bg<=0.003287 in3s>=0.9900 nees_pos<=0.6243   nees_vel<=0.2326 nees_att<=0.1779 false_valid<=0   false_valid_att<=0   scored>=600
+static           1  pos_h<=0.275 pos_v<=0.218 vel<=0.193 pos_h_max<=0.988  tilt<=0.631 yaw<=0.514 ba<=0.07963 bg<=0.000999 in3s>=0.9898 nees_pos<=1.0351   nees_vel<=0.4570 nees_att<=0.1343 false_valid<=0   false_valid_att<=0   scored>=11600
+mission          2  pos_h<=0.247 pos_v<=0.252 vel<=0.190 pos_h_max<=0.887  tilt<=0.577 yaw<=0.656 ba<=0.05304 bg<=0.001027 in3s>=0.9900 nees_pos<=1.0758   nees_vel<=0.4458 nees_att<=0.2004 false_valid<=0   false_valid_att<=0   scored>=36600
+harsh_imu        2  pos_h<=0.247 pos_v<=0.252 vel<=0.192 pos_h_max<=0.886  tilt<=1.154 yaw<=1.066 ba<=0.15406 bg<=0.002251 in3s>=0.9897 nees_pos<=1.0747   nees_vel<=0.4520 nees_att<=0.5987 false_valid<=0   false_valid_att<=0   scored>=36600
+gnss_outage      2  pos_h<=2.267 pos_v<=0.265 vel<=0.339 pos_h_max<=27.060 tilt<=0.598 yaw<=0.660 ba<=0.05368 bg<=0.001025 in3s>=0.9900 nees_pos<=0.8635   nees_vel<=0.4070 nees_att<=0.1951 false_valid<=0   false_valid_att<=0   scored>=36600
+moving_start     4  pos_h<=0.266 pos_v<=0.300 vel<=0.195 pos_h_max<=0.975  tilt<=1.682 yaw<=0.927 ba<=0.05849 bg<=0.002686 in3s>=0.9900 nees_pos<=1.0934   nees_vel<=0.4550 nees_att<=0.2284 false_valid<=0   false_valid_att<=0   scored>=15999
+baro_drift       2  pos_h<=0.247 pos_v<=0.287 vel<=0.190 pos_h_max<=0.887  tilt<=0.576 yaw<=0.656 ba<=0.05305 bg<=0.001026 in3s>=0.9899 nees_pos<=1.1975   nees_vel<=0.4460 nees_att<=0.2002 false_valid<=0   false_valid_att<=0   scored>=36600
+gnss_latency     2  pos_h<=2.221 pos_v<=0.265 vel<=0.475 pos_h_max<=3.361  tilt<=0.958 yaw<=1.370 ba<=0.05314 bg<=0.002377 in3s>=0.8615 nees_pos<=57.5194  nees_vel<=2.7398 nees_att<=0.7753 false_valid<=417 false_valid_att<=122 scored>=36600
+mag_disturbance  2  pos_h<=0.247 pos_v<=0.252 vel<=0.190 pos_h_max<=0.887  tilt<=0.579 yaw<=0.734 ba<=0.05262 bg<=0.001064 in3s>=0.9900 nees_pos<=1.0759   nees_vel<=0.4459 nees_att<=0.2009 false_valid<=0   false_valid_att<=0   scored>=36600
+flight           8  pos_h<=2.456 pos_v<=0.340 vel<=0.667 pos_h_max<=6.021  tilt<=1.025 yaw<=7.682 ba<=0.07352 bg<=0.003303 in3s>=0.9900 nees_pos<=0.5592   nees_vel<=0.2281 nees_att<=0.1784 false_valid<=0   false_valid_att<=0   scored>=600
 
 # (34)-(36) are what `yaw` reads now, and what it buys depends entirely on what the start knew.
 # Where yaw was never observed the magnetometer is the whole estimate: `moving_start` goes 3.228
@@ -220,3 +220,18 @@ flight           8  pos_h<=2.502 pos_v<=0.421 vel<=0.685 pos_h_max<=6.166  tilt<
 # are the joint one, `R` being diagonal. What it buys is on real data rather than here: a height
 # the estimate disagrees with no longer costs the horizontal fix beside it (`src/config.rs`,
 # `Gates`).
+#
+# (30') estimates the barometric reference rather than holding it (#119), and every line with a
+# barometer moved, most of them looser in `pos_v` and tighter in `nees_pos`. `baro_drift` is the
+# line the change is for: `pos_v` 2.053 m to 0.284, `nees_pos` 257.52 to 1.19, `in3s` 0.9389 to
+# 0.9999 -- the drift is followed rather than split with GNSS height. `static` goes 2.04 to 1.02 in
+# `nees_pos`, and the explanation this file carried for its 2.04 -- the accelerometer bias walk
+# the barometer cannot separate from a height -- was at most part of it: with the offset
+# estimated at `q_b = 0` it reads 1.92, so what took it to 1.02 is the reference being allowed to
+# walk. The cost is `pos_v` on every line whose barometer does not drift, which in this simulator
+# is all but one: `mission` 0.083 m to 0.249, `static` 0.150 to 0.215. At PX4's 0.13 m/s/sqrt(Hz)
+# the reference walks away from what the barometer knew and GNSS height carries the low
+# frequencies. That is the default the corpus argued for (GOALS.md, "Barometric reference as an
+# estimated offset"), and a simulator whose barometer never drifts is the one place it looks
+# like pure loss. `moving_start` and `2c42096b` are unmoved, since a start in motion still fixes
+# no reference until #115.

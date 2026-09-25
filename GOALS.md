@@ -418,7 +418,7 @@ The cost is that hard- and soft-iron calibration is the application's responsibi
 calibrated magnetometer produces a heading bias the filter cannot detect. That is a documented
 precondition, not a silent failure.
 
-### Barometric reference as a constant
+### Barometric reference as an estimated offset
 
 The barometer measures altitude above its own reference, and that reference drifts — with
 weather, with ground effect, with sensor warm-up. Both production estimators treat it as
@@ -431,55 +431,47 @@ resets, and it adds that estimator's variance to the barometer's `R`
 ±5 m, and separately corrects its origin height with a filter that models baro drift rate
 explicitly.
 
-**Decided, and reopened by #119:** `fusion-nav` carries a constant. `α₀` is averaged over the quasi-static
-initialization window and fixed there — `StaticSample::baro` in, `Eskf::baro_reference` out,
-equation (30). Estimating the drift needs either a 16th state, which contradicts the bounded
-15-state positioning, or a tracker living outside the covariance, which is a second estimator to
-tune and explain for a quantity most short flights never see move.
+**Decided (#119):** `α₀` is estimated. The error in it, `b`, is appended to the error state for
+the update and nowhere else — equation (30′) — so it has a variance, a correlation with the 15
+states, and a correction every time a barometer and a GNSS height disagree, while `State`,
+`Covariance` and `ErrorState` stay the 15-state estimate this crate is positioned on. Nothing
+reads `b` except `Eskf::baro_reference`, which reports the current `α₀`. It walks at
+`Config::baro_offset_walk`, PX4's `baro_bias_nsd` of 0.13 m s⁻¹/√Hz (`common.h:347`).
 
-The cost is that reference drift becomes vertical position error directly, and the filter cannot
-tell a drifting reference from a genuine climb. The remedies available to an application are to
-re-establish `α₀` on the ground, to lean on GNSS height for the low-frequency component, or to
-accept the error over a flight short enough that it stays small.
+**What the constant cost.** `baro_drift` is the baseline flown with the reference walking
+0.02 m/s, 3.7 m over 185 s. Held constant, `pos_v` was 2.053 m against `mission`'s 0.083,
+`nees_pos` 257.52 and `in3s` 0.9389: metres out, reporting the uncertainty of a perfect sensor.
+Estimated, it reads 0.284 m, 1.19 and 0.9999. `static` goes 2.04 to 1.02 in `nees_pos` with no
+drift configured at all — and to only 1.92 with `b` estimated at `q_b = 0`, so what that line
+needed was the walk rather than the estimate.
 
-**What it costs, measured.** The `baro_drift` scenario is this paragraph with a number on it: the
-baseline flown with the reference walking 0.02 m/s, 3.7 m over 185 s. Against `mission`, which it
-matches on every other key, `pos_v` is 2.053 m to `mission`'s 0.083 — twenty-five times the error,
-and less than the full 3.7 m only because GNSS height drags the estimate back. The consistency
-keys are the more interesting half: `nees_pos` goes 1.05 to 257.52 and `in3s` 0.9994 to 0.9389.
-The error grows twenty-five-fold and the covariance does not move, because no state in the vector
-models the thing that is wrong — so the filter is metres out while reporting the same
-uncertainty it would on a perfect sensor, and `Validity` is derived from that covariance. An
-application that cannot accept a height claim of that kind is the one that needs a remedy above.
-The same mechanism at a tenth the size is what takes `static`'s `nees_pos` from 1.06 to 2.04 with
-no drift configured at all, where what the barometer cannot separate from a height is the
-accelerometer bias walk.
+**What was measured against it.** Three alternatives, each on a start the constant cannot make: a
+start in motion, with `α₀` read from the estimate after the first fix (#115), as PX4 does at `:79`.
+That reference inherits the estimate's height error, one number shared by every reading, and on
+`moving_start`:
 
-**Why it is reopened.** A constant fixed at rest is not the only way `α₀` gets set. A start in
-motion fixes none, and the obvious remedy (#115) reads it from the estimate once the first fix
-has established position. PX4 reads its offset from the estimate too, at `:79`, over the first
-barometer samples after a start or reset. That reference inherits the estimate's height error,
-one number shared by every barometer reading, and nothing in the covariance says so. On `moving_start` it takes `nees_pos`
-from 1.08 to 112.59. Adding the reference's variance to `R`, PX4's `:86`, gets it to 14.58 and no
-further: `σ_pos_d` falls from 1.80 m to 0.16 m within ten seconds while the height error stays at
-1.1 m, because N readings with a common error average `S` down as though their errors were
-independent. No `R` holds an error the readings share. `baro_drift`'s 257.52 is the same defect
-with the error arriving slowly instead of all at once.
+* **Constant, as #115 first wrote it:** `nees_pos` 112.59.
+* **Constant, with its variance added to `R`** (PX4's `:86`): 14.58. N readings with a common
+  error average `S` down as though their errors were independent, so no `R` holds it.
+* **A consider state** — `b` carried in the covariance and never corrected: 1.035, the best of
+  the three. It fails on the corpus's one drifting barometer. `2c42096b` is a grounded two-hour
+  log whose barometer climbs about 12 m start to end, and a reference that cannot move rejects
+  29310 of its readings.
 
-Nor does a tracker outside the covariance settle it on the data there is. On `2c42096b`, a
-grounded two-hour log whose barometer climbs about 12 m from start to end, EKF2's height climbs
-the same 12 m: an offset tracked against an altitude the barometer itself dominates cannot see the
-barometer drift.
+A tracker outside the covariance, PX4's `:112`, was not built: on `2c42096b` EKF2's height climbs
+the same 12 m, so it did not separate the drift on the data there is either.
 
-What #119 proposes is the option this decision did not weigh: the offset as a **consider state**.
-Its variance and its correlation with the 15 states are carried in the covariance, and no update
-ever corrects it, so the state vector, `Covariance` and every public type stay as they are. It
-does not claim to know the offset, only that the barometer cannot be believed past it. That is
-the property the constant lacks and the gate and `Validity` both read. What it gives up against a
-16th estimated state is calibration: with GNSS height fused, an estimated offset would learn what
-a consider state ignores. The decision to make is between those two, with the constant kept only
-if #119's measurements come out against both. See
-[barometric altitude](EQUATIONS.md#barometric-altitude).
+The walk is the number the corpus argues. Estimated at `q_b = 0`, `2c42096b` rejects 3825 GNSS
+heights instead, the estimate having settled on a barometer that then drifts away from the
+receiver; at 0.02 it rejects 20, at 0.05 five, at 0.13 none, both sources accepted and `Healthy`
+throughout.
+
+**What it costs.** Height, wherever the barometer does not drift. The simulator's never does, and
+there `mission`'s `pos_v` goes 0.083 m to 0.249: the reference walks away from what the barometer
+knew and GNSS height carries the low frequencies, as it does in PX4. A barometer characterized as
+more stable than 0.13 m s⁻¹/√Hz is the reason to lower `baro_offset_walk`. An `α₀` stepped on the
+ground by `set_baro_reference` remains available, and now names its σ. See
+[barometric offset](EQUATIONS.md#barometric-offset).
 
 ### Local gravity as a constant, derived offline
 

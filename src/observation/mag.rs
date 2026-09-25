@@ -91,9 +91,10 @@ pub(crate) fn heading_jacobian(state: &State) -> SMatrix<f32, 1, STATES> {
 /// determines an order of magnitude better — from a scalar carrying 3° of noise, and
 /// measured `mission` at 9.0° of tilt error and 1.26 m/s² of accelerometer bias against
 /// 0.58° and 0.053 for the form here. Widening `S` says the heading is less trustworthy
-/// than its own noise suggests without claiming it observes the tilt that made it so,
-/// which is the Schmidt treatment of a state a measurement depends on and does not
-/// constrain. On `moving_start`, whose coarse start is where an unpriced levelling error
+/// than its own noise suggests without claiming it observes the tilt that made it so.
+/// That is `R` inflation with no cross-covariance, and it suffices because velocity fusion
+/// keeps correcting the tilt it prices; an error shared unchanged across readings needs the
+/// cross-covariance too, which is (30′). On `moving_start`, whose coarse start is where an unpriced levelling error
 /// is largest, it is worth tilt 2.653° → 1.720, yaw 3.777° → 0.940, `nees_att`
 /// 1.634 → 0.231, and 840 falsely-valid attitude quantity-epochs → 0.
 ///
@@ -112,6 +113,7 @@ pub(crate) fn heading_observation(
     Observation {
         y: SVector::<f32, 1>::new(heading_innovation(state, field, declination)),
         h,
+        h_b: SVector::<f32, 1>::zeros(),
         r_m: SVector::<f32, 1>::new(noise.variance() + levelling_variance(covariance, field, &h)),
     }
 }

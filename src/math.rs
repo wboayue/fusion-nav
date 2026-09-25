@@ -7,9 +7,9 @@
 
 use core::f32::consts::{PI, TAU};
 
-use nalgebra::{ComplexField, Matrix3, Quaternion, UnitQuaternion, Vector3};
+use nalgebra::{ComplexField, Matrix3, Quaternion, SMatrix, UnitQuaternion, Vector3};
 
-use crate::state::{CovarianceMatrix, STATES};
+use crate::state::{CovarianceMatrix, ErrorState, Offset, STATES};
 
 /// The skew-symmetric matrix `[u]ₓ` of the operators table, so that `[u]ₓ v = u × v`.
 ///
@@ -109,12 +109,11 @@ pub(crate) fn wrap_pi(angle: f32) -> f32 {
 /// The two forms agree bit for bit — `a + a` and a multiplication by ½ are both exact in
 /// binary floating point — so an already-symmetric `P` is unchanged either way and the
 /// cheaper one costs no accuracy.
-pub(crate) fn enforce_symmetry(p: &mut CovarianceMatrix) {
-    // Both indices stay below `STATES`, which is the dimension of `P`, so neither the read
-    // nor the write can be out of range: `nalgebra` indexing panics, and nothing in `src/`
-    // may.
-    for i in 0..STATES {
-        for j in (i + 1)..STATES {
+pub(crate) fn enforce_symmetry<const N: usize>(p: &mut SMatrix<f32, N, N>) {
+    // Both indices stay below `N`, which is the dimension of `P`, so neither the read nor
+    // the write can be out of range: `nalgebra` indexing panics, and nothing in `src/` may.
+    for i in 0..N {
+        for j in (i + 1)..N {
             let mean = 0.5 * (p[(i, j)] + p[(j, i)]);
             p[(i, j)] = mean;
             p[(j, i)] = mean;
@@ -151,6 +150,19 @@ const FLOOR: [f32; STATES] = [
     1e-9, 1e-9, 1e-9, // δβa, (m s⁻²)²
     1e-9, 1e-9, 1e-9, // δβg, (rad/s)²
 ];
+
+/// Raise the barometric offset's variance to its floor, the position group's, since `b` of
+/// (30′) is a height. Equation (42′). Returns whether it was raised, for the same count
+/// [`floor_diagonal`] keeps.
+pub(crate) fn floor_offset(offset: &mut Offset) -> bool {
+    // NaN fails the comparison and is left alone, as in `floor_diagonal`.
+    let floor = FLOOR[ErrorState::PositionDown.index()];
+    let raised = offset.variance < floor;
+    if raised {
+        offset.variance = floor;
+    }
+    raised
+}
 
 /// Whether any variance on the diagonal sits below its floor.
 ///

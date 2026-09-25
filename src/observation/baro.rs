@@ -56,6 +56,7 @@ pub(crate) fn altitude_observation(
     Observation {
         y: SVector::<f32, 1>::new(z - state.position.vector()[2]),
         h: altitude_jacobian(),
+        h_b: SVector::<f32, 1>::new(1.0),
         r_m: SVector::<f32, 1>::new(noise.variance()),
     }
 }

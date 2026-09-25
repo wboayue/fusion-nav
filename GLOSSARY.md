@@ -282,9 +282,9 @@ document, the entry points there instead of repeating it.
   [the decision](GOALS.md#magnetometer-without-magnetic-field-states).
 * **Barometer bias** — both track the reference rather than fixing it, and neither carries it in
   the EKF's state vector: PX4 runs a dedicated one-state estimator per height source, ArduPilot
-  slews a `baroHgtOffset` outside the covariance. Here `α₀` is a constant fixed at
-  initialization, so reference drift becomes vertical error. See
-  [the decision](GOALS.md#barometric-reference-as-a-constant).
+  slews a `baroHgtOffset` outside the covariance. Here the error in `α₀` is estimated inside
+  the covariance, as an offset appended to the error state for the update only, so it is not a
+  component of `State`. See [the decision](GOALS.md#barometric-reference-as-an-estimated-offset).
 * **`EKF2_*`, `EK3_*` parameters** — dozens of tunables, most describing the hardware rather than
   the mission. `Config` is deliberately small, and the ambition is smaller still:
   [configuration derived, not demanded](GOALS.md#7-configuration-derived-not-demanded).

@@ -37,7 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Quasi-static initialization. A real window is captured from the IMU while the
     // vehicle sits still; the filter validates the stationarity assumption.
-    let window = [stationary_sample(); (2 * IMU_HZ) as usize];
+    let window: [StaticSample; (2 * IMU_HZ) as usize] = core::array::from_fn(stationary_sample);
     let alignment = filter.initialize(&window, Seconds::from_secs(1.0 / IMU_HZ as f32))?;
     println!("alignment:         {alignment:?}");
     println!("initialized:       {:?}\n", filter.state().status);
@@ -231,17 +231,24 @@ fn imu_sample() -> ImuSample {
     }
 }
 
-fn stationary_sample() -> StaticSample {
+/// The `i`th sample of a window on the ground.
+fn stationary_sample(i: usize) -> StaticSample {
     StaticSample {
         imu: ImuSample {
             gyro: AngularRate::body(0.0, 0.0, 0.0),
             accel: Acceleration::body(0.0, 0.0, -GRAVITY),
         },
         mag: Some(MagField::body(0.22, 0.0, 0.44)),
-        // Ground level at the launch point. This is what fixes the barometer's
-        // reference, so the 60 m fused later reads as 8 m above the origin rather than
-        // as an absolute altitude. Without it `fuse_baro_altitude` refuses.
-        baro: Some(Altitude::from_meters(52.0)),
+        // Ground level at the launch point, 52 m, with the scatter a real barometer
+        // has. This is what fixes the barometer's reference, so the 60 m fused later
+        // reads as 8 m above the origin rather than as an absolute altitude, and the
+        // scatter is how well it is fixed: one reading held across the window has none
+        // and fixes nothing. Without it `fuse_baro_altitude` refuses.
+        baro: Some(Altitude::from_meters(if i.is_multiple_of(2) {
+            52.25
+        } else {
+            51.75
+        })),
         // A vehicle on the ground has nothing to difference; `velocity` is what a
         // window taken in motion carries. See `StaticSample::velocity`.
         ..StaticSample::default()
