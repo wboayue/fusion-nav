@@ -146,11 +146,11 @@
 //! `gnss_outage` and `gnss_latency` separate through the GNSS they change, and `harsh_imu`
 //! through propagation — no longer on the position keys at all, which read `mission`'s figures
 //! now that two quantities are aided, but on `tilt` and on `ba`, the keys that read the IMU's
-//! own errors. `baro_drift` separates on height since (30) landed — `pos_v` 2.052 m against
-//! `mission`'s 0.083, and `nees_pos` 257 against 1.04, which is what a reference the state
-//! vector cannot model costs. `mag_disturbance` separates on `yaw` alone since (34)–(36)
-//! landed — 0.726 deg against `mission`'s 0.651 — which is what a 30 deg field error costs a
-//! filter that refuses all 200 samples of it.
+//! own errors. `baro_drift` separates on height — `pos_v` 0.284 m against `mission`'s 0.249,
+//! and `nees_pos` 1.19 against 1.07, which is what a drifting reference costs once (30′)
+//! estimates it. `mag_disturbance` separates on `yaw` alone — 0.726 deg against `mission`'s
+//! 0.649 — which is what a 30 deg field error costs a filter that refuses all 200 samples of
+//! it.
 //!
 //! A refused propagation step is still scored. The epoch row is written either way — the
 //! state is simply the one before it — and that stale state is what the filter published, so

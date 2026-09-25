@@ -76,7 +76,8 @@ None of this is a criticism of `eskf`, which does what it set out to do. It is a
 ## Differentiators
 
 Ranked by how defensible they are, which is not the same as how valuable. Differentiator 4 is
-true today by construction; differentiator 1 matters most and is entirely unbuilt.
+true today by construction; differentiator 1 matters most and is unmeasured on a target: stack frames are measured per
+function on a host build, and nothing has yet run or been timed on hardware (#41).
 
 Number 5 is missing on purpose: it was *ecosystem coherence*, and was dropped rather than
 renumbered — see [Decisions](#ecosystem-coherence-dropped).
@@ -175,13 +176,14 @@ a `Config` the user reads and commits.
 
 | value | derived from | where |
 | ----- | ------------ | ----- |
-| `α₀`, barometric reference | mean of the window's barometer samples | `initialize` — **done** |
+| `α₀`, barometric reference | mean of the window's barometer samples, then estimated as the offset of (30′) | `initialize` seeds it, the filter refines it — **done** |
 | accelerometer and gyroscope white noise | sample variance over the static window | `initialize` — candidate |
 | barometer measurement noise | sample variance over the static window | `initialize` — candidate |
 | `max_predict_dt` | observed IMU interval | offline |
 | gate thresholds | chi-square quantile for a chosen percentile and dimension | a constructor, not a number — **done** |
 | `Timeouts` | observed per-source update intervals | offline recommendation only |
-| GNSS `R` | the receiver, floored | per measurement — **done** |
+| GNSS `R` | the receiver; bounding it is the caller's (`PositionNoise::clamped`), and the replay harness fuses it raw (`r_policy=`) | per measurement — **done** |
+| `baro_offset_walk`, the barometric offset's drift | a barometer's drift against GNSS height over a replay log | offline (#51); PX4's 0.13 until then |
 | local gravity `γ` | the origin's latitude, by the WGS-84 gravity formula | the offline tool (#51); a constant in the filter — see the decision below |
 | magnetic declination | a magnetic model, given the GNSS origin and date | optional, for its flash cost |
 
@@ -195,8 +197,8 @@ And what stays with the user, because no amount of data yields it:
 * **Policy**: what a `DeadReckoning` status should do to the vehicle.
 * **The static window itself.** The filter can validate stillness; it cannot arrange it.
 
-Status: three rows of that table are done — `α₀`, measured from the window; GNSS `R`, which the
-receiver supplies and the caller floors; and the gate thresholds, which `Gates::at` derives from a
+Status: three rows of that table are done — `α₀`, seeded from the window and estimated by (30′) from
+there; GNSS `R`, which the receiver supplies and the caller may bound; and the gate thresholds, which `Gates::at` derives from a
 percentile at each source's degrees of freedom. Everything needing the offline tool is a commitment
 rather than a present fact, and this is the differentiator most likely to be judged on whether
 that tool gets written.
@@ -266,9 +268,11 @@ informed, and the current API cannot express that.
 The deeper asymmetry is against the production estimators. PX4 and ArduPilot can afford sloppy
 starts — ArduPilot aligns from a single un-averaged accelerometer sample — because they realign
 continuously from aiding and from their bias states. A bad start is a transient they grow out of.
-`fusion-nav` has no realignment path, so `initialize` is the only moment attitude is ever
-established, and refusing is permanent rather than deferred. **That is what turns a stillness
-precondition into a launch restriction**, and either half alone would be survivable.
+An estimator that establishes attitude only at `initialize` makes refusing a window permanent
+rather than deferred. **That is what turns a stillness precondition into a launch restriction**,
+and either half alone would be survivable. The options below are how `fusion-nav` stopped being
+that estimator: it no longer refuses a usable window (2), it adopts the first heading (3), and
+velocity fusion corrects tilt through the covariance from then on.
 
 The options, in the order they are worth doing:
 
@@ -310,8 +314,8 @@ The options, in the order they are worth doing:
    answers half of it: across 49,692 headings on five logs the gate turns down none, so nothing
    there is locked out at any tilt those vehicles reach. The simulator answers the half the
    corpus cannot, because only it starts badly on purpose — `moving_start` begins at 14.6° of
-   pitch with a coarse attitude, has 96 of its headings refused early, and recovers to 1.720° of
-   tilt against the 1.770 it read with no magnetometer at all. No separate policy while
+   pitch with a coarse attitude, has none of its headings refused (`rejected_mag=0`), and
+   recovers to 1.665° of tilt against the 5.294 it reads with its magnetometer rows removed. No separate policy while
    aligning, and no widened gate.
 
    What that needed was not a gate change but an honest `R`. Leaving tilt to the ordinary gate
@@ -325,8 +329,8 @@ The options, in the order they are worth doing:
    Removes the stillness requirement for tilt outright. No new states; noisy under aggressive
    manoeuvring. **Half done** — the window carries GNSS velocity, `StaticSample::velocity`, and
    a moving window measures `ā_n` and reports it on `Coarse::NotStationary`. Equation (5′)
-   subtracts nothing yet: the correction needs an attitude to rotate `ā_n` into body axes, and
-   (5)–(7) do not compute one.
+   subtracts nothing yet. The attitude (5)–(7) commit is what rotates `ā_n` into body axes;
+   the subtraction is #59's.
 
    Whether finishing it is worth anything the corpus cannot say. Its one moving start
    (`2c42096b`) measures `ā_n` = 0.14 m s⁻², against the 0.39 m s⁻² of noise that differencing a
@@ -337,8 +341,8 @@ The options, in the order they are worth doing:
    charging that peak against that average than option 4 could have recovered here, and #77 has
    since collected it. Judging option 4 itself needs
    a log that actually accelerates, which the simulator's `moving_start` now is — a banked,
-   climbing turn from the first sample, with truth beside it. Reading a verdict off it needs the
-   scoring of #16.
+   climbing turn from the first sample, with truth beside it and a line in
+   `data/scenarios.txt`. Reading option 4's verdict off it is #59's.
 5. **Yaw from course over ground.** While moving, velocity direction is heading, nearly free.
    Works for fixed-wing and ground vehicles, not for a multirotor that crabs and hovers.
 6. **An EKF-GSF yaw estimator.** A bank of small filters over yaw hypotheses weighted by GNSS
@@ -499,6 +503,9 @@ until someone runs the offline tool, and that the error shows up in the accelero
 rather than anywhere labelled gravity.
 
 ### Rejection handling: report, do not self-recover
+
+#116 replaces this decision with recovery on by default, behind per-correction `Config` opt-outs;
+until it lands, what follows is what the code does.
 
 Innovation gating protects against bad measurements but is self-sealing. When the filter itself
 is wrong, correct measurements are rejected, and the filter locks itself out of the data that
