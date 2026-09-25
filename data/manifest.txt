@@ -195,10 +195,11 @@
 #
 # Being the filter's, tilt_max can say something about the filter, and on
 # 2c42096b it does. A grounded vehicle whose EKF2 attitude never leaves
-# 1.08 deg of level reads 5.19 here, over 2 deg on 659881 of 1398114 epochs:
-# the horizontal accelerometer bias walks to 0.56 m/s^2 while its sigma grows
-# 0.10 to 0.63, and tilt follows it, the two being indistinguishable on a
-# vehicle that never accelerates. The key pins that until something changes it.
+# 1.08 deg of level reads 5.2 here, at t=6475 s. Its accelerometer bias walks:
+# ba_x reads 0.56 m/s^2 at that epoch and 0.60 at the end of the log, while
+# its sigma grows from 0.10 at the start to 0.63 at the end, and tilt follows
+# it, the two being indistinguishable on a vehicle that never accelerates.
+# The key pins that until something changes it.
 #
 # PX4 Flight Review public logs are CC BY 4.0, so a corpus can be pinned here and
 # redistributed with attribution. The files themselves stay out of the repo

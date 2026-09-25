@@ -230,6 +230,11 @@ def convert_imu(ulog, rows, used):
     return dataset
 
 
+def is_3d_fix(fix, k):
+    """Whether sample `k` is a 3D fix. A receiver logging no `fix_type` is taken at its word."""
+    return fix is None or fix[k] >= 3
+
+
 def convert_gnss(ulog, rows, used):
     dataset = pick(ulog, GNSS_TOPICS)
     if dataset is None:
@@ -267,7 +272,7 @@ def convert_gnss(ulog, rows, used):
 
     origin = None
     for k in range(len(t)):
-        if fix is not None and fix[k] < 3:
+        if not is_3d_fix(fix, k):
             continue
         phi = float(lat[k]) * angle_scale
         lam = float(lon[k]) * angle_scale
@@ -888,13 +893,19 @@ SCREEN_TOPICS = GNSS_TOPICS + [
 
 
 def release(encoded):
-    """`ver_sw_release` as `vMAJOR.MINOR.PATCH`, or `none` for a build that sets none.
+    """`ver_sw_release` as `vMAJOR.MINOR.PATCH`, suffixed unless a release, or `none`.
 
-    PX4 packs it as 0xMMmmpptt; the low byte is the release type, not a version.
+    PX4 packs it as 0xMMmmpptt, the low byte a firmware type: dev from 0, alpha from 64,
+    beta from 128, rc from 192, release at 255 (`FIRMWARE_TYPE` in
+    src/lib/version/version.c:49-58 at PX4-Autopilot c4e4ef98e9). Dropping it is how
+    `3949f175`, an rc build, reads as v1.16.0.
     """
     if not encoded:
         return "none"
-    return f"v{(encoded >> 24) & 0xFF}.{(encoded >> 16) & 0xFF}.{(encoded >> 8) & 0xFF}"
+    kind = encoded & 0xFF
+    suffix = ("" if kind == 255 else "-rc" if kind >= 192 else "-beta" if kind >= 128
+              else "-alpha" if kind >= 64 else "-dev")
+    return f"v{(encoded >> 24) & 0xFF}.{(encoded >> 16) & 0xFF}.{(encoded >> 8) & 0xFF}{suffix}"
 
 
 def screen_gnss(dataset):
@@ -908,8 +919,8 @@ def screen_gnss(dataset):
         return dict.fromkeys(keys, "none")
     fix = dataset.data.get("fix_type")
     sats = dataset.data.get("satellites_used")
-    eph = column(dataset, "eph")
-    fixed = [k for k in range(len(eph)) if fix is None or fix[k] >= 3]
+    eph = dataset.data.get("eph")
+    fixed = [k for k in range(len(dataset.data["timestamp"])) if is_3d_fix(fix, k)]
 
     def span(values, form):
         if values is None or not fixed:
@@ -932,7 +943,9 @@ def screen_vibration(ulog):
     A percentile, not the maximum: touchdown alone reads 0.55 on `3949f175`, a
     simulation whose median is 0.008. `vehicle_imu_status` carries one metric per
     IMU instance, pooled here; older builds put the accelerometer's in
-    `estimator_status.vibe[2]` instead.
+    `estimator_status.vibe[2]` instead. A metric that is zero throughout was never
+    computed -- LPE's `7592c9b2` logs the field and fills it with nothing -- so it
+    reads `none` rather than as a quiet airframe.
     """
     combined = pick(ulog, ["sensor_combined"])
     clipping = None if combined is None else combined.data.get("accelerometer_clipping")
@@ -947,18 +960,26 @@ def screen_vibration(ulog):
         status = pick(ulog, ["estimator_status"])
         if status is not None and "vibe[2]" in status.data:
             metrics = [float(v) for v in status.data["vibe[2]"]]
-    if not metrics:
+    if not any(metrics):
         return {"clip": clip, "vib_p95": "none"}
     metrics.sort()
-    return {"clip": clip, "vib_p95": f"{metrics[(95 * (len(metrics) - 1)) // 100]:.2f}"}
+    return {"clip": clip, "vib_p95": f"{metrics[(95 * (len(metrics) - 1)) // 100]:.3f}"}
 
 
-def screen_mode_changes(vehicle, vtol):
-    """Regime changes a VTOL made, counted from the rows `--reference` writes."""
+def screen_regime(vehicle, vtol):
+    """The airframe, and the regime changes a VTOL made, from the rows `--reference` writes.
+
+    `type` is `mc`, `fw` or `other` off `vehicle_status`, or `vtol`. A VTOL whose
+    regime nothing logged has changes nobody can count, which is `none` and not 0.
+    """
     rows = []
-    if reference_mode(vehicle, vtol, rows) is None:
-        return "none"
-    return f"{len(rows) - 1}"
+    provenance = reference_mode(vehicle, vtol, rows)
+    if provenance is None:
+        return {"type": "none", "mode_changes": "none"}
+    if any(vehicle.data["is_vtol"]):
+        counted = rows and rows[0][2]["mode"] != "undefined"
+        return {"type": "vtol", "mode_changes": f"{len(rows) - 1}" if counted else "none"}
+    return {"type": rows[0][2]["mode"], "mode_changes": "0"}
 
 
 def screen(ulog):
@@ -983,9 +1004,7 @@ def screen(ulog):
     keys.update(screen_vibration(ulog))
     keys["n_states"] = "none" if n_states is None else f"{n_states}"
     keys["vehicle_imu"] = "yes" if pick(ulog, ["vehicle_imu"]) is not None else "no"
-    keys["mode_changes"] = screen_mode_changes(
-        pick(ulog, ["vehicle_status"]), pick(ulog, ["vtol_vehicle_status"])
-    )
+    keys.update(screen_regime(pick(ulog, ["vehicle_status"]), pick(ulog, ["vtol_vehicle_status"])))
     return "screen " + " ".join(f"{k}={v}" for k, v in keys.items())
 
 
@@ -1055,20 +1074,27 @@ def self_test():
 
     # --screen. A receiver's span is taken over its 3D fixes only: the 2D fix at
     # eph 9.0 is outside it, and counting it would make a constant receiver vary.
-    gps = Fixture("sensor_gps", fix_type=[2, 3, 3, 6], eph=[9.0, 0.9, 0.9, 0.9],
+    gps = Fixture("sensor_gps", timestamp=[0, 1, 2, 3], fix_type=[2, 3, 3, 6], eph=[9.0, 0.9, 0.9, 0.9],
                   satellites_used=[4, 10, 10, 10])
     expect("constant receiver", screen_gnss(gps),
            {"gnss": "sensor_gps", "fix_max": "6", "eph_min": "0.90", "eph_max": "0.90",
             "sats_min": "10", "sats_max": "10"})
-    gps = Fixture("vehicle_gps_position", eph=[1.4, 2.1])
+    gps = Fixture("vehicle_gps_position", timestamp=[0, 1], eph=[1.4, 2.1])
     expect("receiver with no fix_type", screen_gnss(gps),
            {"gnss": "vehicle_gps_position", "fix_max": "none", "eph_min": "1.40",
             "eph_max": "2.10", "sats_min": "none", "sats_max": "none"})
     expect("no receiver", screen_gnss(None)["eph_min"], "none")
-    expect("vtol mode changes", screen_mode_changes(status, vtol), "4")
-    expect("multirotor mode changes", screen_mode_changes(
-        Fixture("vehicle_status", timestamp=[0], is_vtol=[0], system_type=[2]), None), "0")
+    expect("vtol regime", screen_regime(status, vtol), {"type": "vtol", "mode_changes": "4"})
+    expect("vtol with no regime logged", screen_regime(status, None),
+           {"type": "vtol", "mode_changes": "none"})
+    expect("fixed wing", screen_regime(
+        Fixture("vehicle_status", timestamp=[0], is_vtol=[0], system_type=[1]), None),
+        {"type": "fw", "mode_changes": "0"})
+    expect("receiver with no eph", screen_gnss(Fixture("sensor_gps", timestamp=[0]))["eph_max"],
+           "none")
     expect("release", release(0x010B03FF), "v1.11.3")
+    expect("rc", release(0x011000C0), "v1.16.0-rc")
+    expect("dev", release(0x010A0000), "v1.10.0-dev")
     expect("no release", release(0), "none")
 
     for failure in failures:

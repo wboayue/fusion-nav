@@ -233,8 +233,9 @@ for e in json.load(open("dbinfo.json")):
         print(e["download_url"], e["sys_hw"], e["duration_s"], e["airframe_name"])'
 ```
 
-Thousands of real EKF2 logs on current firmware pass for each airframe class. Descriptions are
-sparse: a few mention a catapult, and on the order of a hundred mention RTK or vibration.
+Thousands of real EKF2 logs on current firmware pass for multirotors, fixed-wings and standard
+VTOLs, and hundreds for tailsitters. Descriptions are sparse: a few mention a catapult, and on
+the order of a hundred mention RTK or vibration.
 
 **`--screen`.** Download the candidate somewhere other than `logs/` — `fetch.sh --add` writes the
 manifest — and read what the ULog alone can say about it:
@@ -242,22 +243,24 @@ manifest — and read what the ULog alone can say about it:
 ```console
 $ uv run tools/ulog2replay.py candidate.ulg --screen
 screen sitl=no hw=PX4_FMU_V5 sw=v1.11.3 duration=7127 gnss=vehicle_gps_position fix_max=4
-  eph_min=1.17 eph_max=2.18 sats_min=17 sats_max=26 clip=0 vib_p95=0.09 n_states=24
-  vehicle_imu=yes mode_changes=0
+  eph_min=1.17 eph_max=2.18 sats_min=17 sats_max=26 clip=0 vib_p95=0.094 n_states=24
+  vehicle_imu=yes type=mc mode_changes=0
 ```
 
-Every value is one number or one word, so a gap's criteria are `expect.sh` pairs, tested with
-`compare_pairs`:
+Every value is one number or one word, so most of a gap's criteria are `expect.sh` pairs, checked
+with `compare_pairs` after sourcing the file. `sw=` carries the firmware type (`v1.16.0-rc`), and
+`n_states=` is whatever count the estimator logs — 10 is LPE, and only 24 and 25 are EKF2 layouts
+`--reference` can read. What a pair cannot say is in prose:
 
 | gap | on the `screen` line | then, on the `summary` line |
 | --- | --- | --- |
-| every entry | `sitl=no`, `eph_min` ≠ `eph_max` | |
+| every entry | `sitl=no`, and `eph_min` differing from `eph_max` | |
 | real baseline | `n_states>=24 vehicle_imu=yes duration>=600` | `align=static` |
 | short-and-still start | | `align=coarse alpha0=window` |
-| RTK receiver | `fix_max>=6` | what `nis_gnss_pos=` reads |
+| RTK receiver | `fix_max>=6` | `nis_gnss_pos=`, recorded in the note |
 | high vibration | `clip>=1` | `rejected_mag=`, if it moves |
-| fixed-wing, VTOL | `mode_changes>=2` for a VTOL | `extent>=1000` |
-| tailsitter | `mode_changes>=2` | `tilt_max>=80` |
+| fixed-wing | `type=fw` | `extent>=1000` |
+| VTOL, tailsitter | `type=vtol mode_changes>=2` | `tilt_max>=80` for a tailsitter |
 
 **Replay.** What the vehicle did — `extent=`, `speed_max=`, `tilt_max=` — and whether its start
 was still are the harness's to say, not the screen's: the harness is where a statistic is

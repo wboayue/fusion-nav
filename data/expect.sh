@@ -142,20 +142,24 @@ pin_pairs() {
     awk -v line="$1" '
         function floor(x) { return (x == int(x) || x > 0) ? int(x) : int(x) - 1 }
         function ceil(x)  { return -floor(-x) }
-        function band(key, value,    places, unit, delta, scale, format) {
-            places = index(value, ".") ? length(value) - index(value, ".") : 0
+        # `text` is the value as printed, which says how many places to round to; `v` is the
+        # same value as a number. substr() yields a string, and mawk and gawk compare a
+        # string against a constant as strings, where "-0.011616" > "-0.001".
+        function band(key, text,    v, places, unit, delta, scale, format) {
+            v = text + 0
+            places = index(text, ".") ? length(text) - index(text, ".") : 0
             format = "%." places "f"
-            if (key ~ /^nu_/ && value < 0.001 && value > -0.001)
+            if (key ~ /^nu_/ && v < 0.001 && v > -0.001)
                 return sprintf(format ".." format, -0.001, 0.001)
             scale = 10 ^ places
             unit = 1 / scale
-            delta = (value < 0 ? -value : value) * 0.01
+            delta = (v < 0 ? -v : v) * 0.01
             if (delta < unit) delta = unit
             # 1e-6 of a unit absorbs the binary error in `value * scale`; without it a bound
             # that lands on the grid, as 0.0006 - 0.0001 does, rounds out one more unit.
             return sprintf(format ".." format,
-                           floor((value - delta) * scale + 1e-6) / scale,
-                           ceil((value + delta) * scale - 1e-6) / scale)
+                           floor((v - delta) * scale + 1e-6) / scale,
+                           ceil((v + delta) * scale - 1e-6) / scale)
         }
         BEGIN {
             number = "^-?[0-9]+([.][0-9]+)?$"
@@ -297,6 +301,7 @@ self_test() {
     p 'on the grid, below'      'summary nis_over95_mag=0.0006' 'nis_over95_mag=0.0005..0.0007'
     p 'on the grid, above'      'summary nis_over95_mag=0.0005' 'nis_over95_mag=0.0004..0.0006'
     p 'no offset'               'summary nu_mag_yaw=0.000400' 'nu_mag_yaw=-0.001000..0.001000'
+    p 'no offset, negative'     'summary nu_mag_yaw=-0.000400' 'nu_mag_yaw=-0.001000..0.001000'
     p 'the thousandth is nu only' 'summary acf1_mag=0.0004' 'acf1_mag=0.0003..0.0005'
     p 'zero and none stay exact' 'summary nis_over95_baro=0.0000 nis_baro=none' \
         'nis_over95_baro=0.0000 nis_baro=none'
@@ -306,6 +311,10 @@ self_test() {
         'yaw0=-107.33 attitude_lost=3.84 extent_max=5.0 status=Healthy'
     p 'what the vehicle did'    'summary extent=112.6 tilt_max=41.1' 'extent=111.4..113.8 tilt_max=40.6..41.6'
     p 'epochs is not pinned'    'summary rate=250 epochs=16079 status=Healthy' 'rate=250 status=Healthy'
+
+    # What --pin prints has to pass --check against the line it came from.
+    local line='summary rate=250 nis_mag=0.0907 nu_baro_d=-0.011616 nu_mag_yaw=-0.000400 extent=112.6 status=Healthy'
+    t 0 'pin_pairs round-trips' "$line" "$(pin_pairs "$line")"
 
     echo "expect.sh: $passed passed, $failed failed"
     [ "$failed" = 0 ]

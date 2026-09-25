@@ -541,13 +541,6 @@ fn measured(value: Option<f64>, places: usize) -> String {
     value.map_or_else(|| "none".to_string(), |value| format!("{value:.places$}"))
 }
 
-/// The two output streams.
-///
-/// Two files rather than a `row_kind` column: an epoch row and a fusion row share no
-/// columns, and the epoch file's width is what `write_header` and the determinism job in CI
-/// both rest on. `dyn Write` rather than two type parameters, because `Replay` would
-/// otherwise carry them through every method for no gain — the writers are buffered and
-/// this is one virtual call per row.
 /// What the vehicle did, for the `summary` line: how far it went, how fast, how far over.
 ///
 /// These say what a log *is* — AGENTS.md, "Know what a log is before reading its figures as
@@ -557,6 +550,11 @@ fn measured(value: Option<f64>, places: usize) -> String {
 /// the flight rather than the filter; a glitch the gate refuses still counts. Tilt is the
 /// filter's estimate, the only attitude a replay has, on navigation axes: the angle between
 /// body down and navigation down, which no Euler sequence reaches at 90° of pitch.
+///
+/// So each key carries an error of its own. A glitch the gate refuses still stretches
+/// `extent`, and the first fix is the origin whatever it was. `tilt_max` includes the
+/// filter's tilt error and the attitude initialization committed: on the grounded
+/// `2c42096b` it reads 5.2° where EKF2 never leaves 1.1°, and the manifest note says why.
 #[derive(Default)]
 struct Excursion {
     origin: Option<(f32, f32)>,
@@ -596,6 +594,13 @@ impl Excursion {
     }
 }
 
+/// The two output streams.
+///
+/// Two files rather than a `row_kind` column: an epoch row and a fusion row share no
+/// columns, and the epoch file's width is what `write_header` and the determinism job in CI
+/// both rest on. `dyn Write` rather than two type parameters, because `Replay` would
+/// otherwise carry them through every method for no gain — the writers are buffered and
+/// this is one virtual call per row.
 struct Sinks<'a> {
     epochs: &'a mut dyn Write,
     fusions: &'a mut dyn Write,
