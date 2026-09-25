@@ -428,6 +428,9 @@ aiding clause on its own — the current answer widened by what is being accepte
 
 ## Recovery is the application's job
 
+[#116](https://github.com/wboayue/fusion-nav/issues/116) replaces this with recovery on by default, behind per-correction `Config`
+opt-outs; until it lands, this section describes the code.
+
 The filter gates but does **not** recover on its own. Only the application knows whether to
 reset states, degrade the flight mode, or alert the operator. `reset_position_to(fix, noise)`
 and `reset_velocity_to(fix, noise)` exist so that `DeadReckoning` is actionable. Both return
@@ -494,7 +497,7 @@ Known and deliberate, stated here rather than discovered in flight.
   7.8 m at 10 km, so `-p_D` far out is not height. The barometer model does not correct for it,
   and [equation (30)](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#barometric-altitude)
   records the measurement behind that.
-* **No self-recovery**, by design — see above.
+* **No self-recovery**, by design — see above, and [#116](https://github.com/wboayue/fusion-nav/issues/116), which replaces it.
 
 Features deliberately deferred (wind, terrain, optical flow, airspeed, ...) are listed in
 [DESIGN.md](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#initial-scope).

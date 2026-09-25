@@ -210,6 +210,18 @@ $ uv run tools/ulog2replay.py data/logs/<log-id>.ulg -o data/logs/<log-id>.csv -
 $ cargo run --example replay -- data/logs/<log-id>.csv
 ```
 
+### Converter changes are batched
+
+A change to `tools/ulog2replay.py`'s output costs a corpus regeneration: every log reconverted
+and replayed, and every moved `manifest.txt` expectation explained. Land the changes that move
+that output together — one `--check` run and one manifest diff that names, per moved
+expectation, the change that moved it. Separately, each diff obscures the last: the second
+regeneration's manifest diff mixes its own movement with whatever the first left unexplained.
+
+Every column now reaches something the manifest pins. A variance the converter writes is the `R`
+a `fuse_*` gates against, so moving it moves `rejected_<source>=` and the consistency keys, where
+before the update existed it changed CSV bytes and no key.
+
 ### What `--reference` writes, and what it cannot
 
 `--reference` writes EKF2's own solution to a second file on the replay timebase, for a
