@@ -427,8 +427,9 @@ What the form does not do is convert a number. A production default is a per-ste
 $`\sigma_{\text{sample}}`$ at that estimator's own prediction step — 10 ms for PX4, 12 ms for
 ArduPilot — so the density it stands for is $`\sigma_{\text{sample}} \sqrt{\Delta t}`$, about a
 tenth of it. The random walks carry the same per-step form, $`(\sigma \Delta t)^2`$ in both
-estimators. `ImuNoise`'s bias walks are converted this way and its white noise is not; its
-`Default` doc comment carries the figures and what each choice measured.
+estimators. `ImuNoise`'s bias walks are converted this way. Its white noise is kept at ten times PX4's
+density, because replay measured this filter needing it; its `Default` doc comment carries the
+figures and what each choice measured.
 
 The velocity block of (21) is the rotated accelerometer noise $`R \Sigma_a R^\mathsf{T}`$. Writing
 it as $`\sigma_a^2 I`$ is exact only when the accelerometer noise is **isotropic**, since

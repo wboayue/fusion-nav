@@ -67,8 +67,8 @@ pub struct ImuNoise {
 }
 
 impl Default for ImuNoise {
-    /// PX4 EKF2's white noise and ArduPilot EK3's bias walks, the walks converted to the
-    /// densities these fields hold.
+    /// White noise at ten times PX4 EKF2's density, measured to be what this filter needs;
+    /// bias walks at ArduPilot EK3's density.
     ///
     /// These are deliberately far above what an IMU datasheet or an Allan variance plot
     /// gives for the sensor alone, because the process noise of a real airframe absorbs
@@ -97,10 +97,27 @@ impl Default for ImuNoise {
     /// and a clamp on the bias at its 0.4 gives 4.4°, and neither is reached once the walk
     /// is converted.
     ///
-    /// The white-noise terms are PX4's per-step σ read the same way, and stay unconverted:
-    /// converted as well, `gnss_latency`'s `false_valid` goes from 323 to 37 494 and
-    /// `a299e722` ends `Degraded`, so at the harness's unfloored `R` this filter needs the wider
-    /// figure (#138).
+    /// The white noise is PX4's per-step σ taken as a density, which is ten times the density
+    /// PX4's 1.5e-2 rad s⁻¹ and 0.35 m s⁻² stand for at its 10 ms step (`module.yaml:118-131`),
+    /// and the factor is kept because replay measured it being spent. Scaling
+    /// `accel_white` down breaks the one thing each source can say: at 0.3×, `2c42096b` — a
+    /// real airframe vibrating on the ground — reads a tilt peak of 4.6° against 2.5° (EKF2
+    /// never leaves 1.08°), and still 4.5° with PX4's `R` floors applied, so the vibration
+    /// needs it; `a299e722` ends `Degraded`, rejecting 493 velocity solutions against 283,
+    /// which PX4's floors cure (43, `Healthy`), so the receiver's raw `R` needs it; and
+    /// `gnss_latency`'s `false_valid` goes 323 to 888 while the same flight without the
+    /// 150 ms of latency stays at 0, so fusing a stale fix as current needs it. Scaling
+    /// `gyro_white` down to 0.7× improves `tilt` and `yaw` on every scenario, but `harsh_imu`'s
+    /// `nees_att` crosses 1 (1.07), and on the corpus `f16771dd` grows a 14.1° tilt at
+    /// t = 51 s where EKF2 reads 2.6°.
+    /// The simulator's IMU is 58 times quieter than this figure, so the scenarios favouring
+    /// less gyroscope noise are the simulator's preference rather than an airframe's.
+    ///
+    /// So the factor stands for three things this filter does not model: the delayed fusion
+    /// horizon PX4 has (#52), the floors both estimators put under a receiver's reported
+    /// accuracy (#105), and vibration, which PX4 meets only by inflating accelerometer noise
+    /// on clipping (`covariance.cpp:125-133`). A change that models one of them is the moment
+    /// to measure this again.
     fn default() -> Self {
         Self {
             gyro_white: 1.5e-2,
