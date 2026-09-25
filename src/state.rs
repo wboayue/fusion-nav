@@ -159,6 +159,14 @@ impl Covariance {
         self.0[(i, i)] = variance;
     }
 
+    /// Replace the attitude block, `P_θθ`, leaving its correlations with the other states.
+    pub(crate) fn set_attitude_block(&mut self, block: Matrix3<f32>) {
+        let theta = ErrorState::AttitudeX.index();
+        self.0
+            .fixed_view_mut::<3, 3>(theta, theta)
+            .copy_from(&block);
+    }
+
     /// [`reset_state`](Self::reset_state) along a direction of the attitude block rather
     /// than one of its axes: the component `uᵀδθ` gets `variance` and loses its correlations,
     /// and everything orthogonal to it is left as it was.
@@ -213,7 +221,7 @@ impl Covariance {
 /// The covariance cannot be read for these directly. Its attitude block is the covariance of
 /// `δθ`, a rotation vector in **body** axes (equations (2)–(4)), and (36) states the
 /// navigation-frame rotation it stands for as `R(q̂) δθ`. So the body x and y diagonal is tilt,
-/// and z heading, only while the vehicle is level: at 90° of pitch body x points down, and
+/// and z heading, only while the vehicle is level: at 90° of pitch body x is vertical, and
 /// `P[δθ_x]` is the heading's variance. These are the diagonal of `R(q̂) P_θθ R(q̂)ᵀ`, which
 /// holds at any attitude, and which is what PX4 publishes too — `getTiltVariance` and
 /// `getYawVar` read the same components of its navigation-frame covariance
