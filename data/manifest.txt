@@ -85,8 +85,8 @@
 #
 # Converting ImuNoise's gyroscope-bias walk to a density (#137) moved the three
 # that still lose it by hundredths -- f16771dd to 3.86 s, 7592c9b2 to 3.89 s and
-# 2c42096b to 6.21 s: what regrows the attitude block
-# is the bias prior through (20), and a slower walk adds to it more slowly.
+# 2c42096b to 6.21 s: what regrows the attitude block is the bias prior
+# through (20), and a slower walk adds to it more slowly.
 #
 # rejected= is the gate's verdict and discarded= is everything that never
 # reached it -- a variance of zero or less, a NaN, an altitude with no
