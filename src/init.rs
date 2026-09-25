@@ -51,11 +51,11 @@ pub struct StaticSample {
     /// origin (equation (30)). Averaged rather than taken from one sample for the same
     /// reason the gyroscope bias is: a single reading carries the sensor's full noise.
     ///
-    /// Without it there is no reference and
-    /// [`Eskf::fuse_baro_altitude`](crate::Eskf::fuse_baro_altitude) refuses with
-    /// [`Fusion::NoReference`](crate::Fusion::NoReference). `α₀` is refined in flight by
-    /// (30′) but established here or not at all, and the scatter of these readings is the
-    /// variance it starts with, so a window needs two of them.
+    /// Without it the window fixes no reference, and
+    /// [`Eskf::fuse_baro_altitude`](crate::Eskf::fuse_baro_altitude) reads one from the
+    /// estimate at the first altitude instead. `α₀` is refined in flight by (30′), and the
+    /// scatter of these readings is the variance it starts with, so a window needs two of
+    /// them.
     pub baro: Option<Altitude>,
     /// GNSS velocity in the navigation frame, if the vehicle has a receiver.
     ///

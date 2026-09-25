@@ -117,13 +117,11 @@ pub enum Fusion {
     NotInitialized,
     /// The measurement has nothing to be relative to. The measurement was discarded.
     ///
-    /// Barometer: no reference altitude was established, because the window carried no
-    /// barometer sample or was taken in motion — a start that cannot claim the altitude it
-    /// reads is the ground leaves the reference alone, so a filter that never had one has
-    /// none. `α₀` of equation (30) is established by a start and only estimated after it
-    /// (30′), so a barometric altitude without one has no origin to be relative to. Fusing it
-    /// anyway would silently invent the origin from whichever sample happened to arrive first.
-    /// [`Eskf::set_baro_reference`](crate::Eskf::set_baro_reference) names one.
+    /// Barometer: no reference altitude `α₀` is held, and position is not yet established to
+    /// read one against — a start in motion before its first fix — or
+    /// [`Config::baro_reference_from_estimate`](crate::Config::baro_reference_from_estimate)
+    /// is off. Fusing it anyway would invent the origin from whichever sample happened to
+    /// arrive first. [`Eskf::set_baro_reference`](crate::Eskf::set_baro_reference) names one.
     ///
     /// Geodetic GNSS: no navigation origin is held and this fix cannot place one, because
     /// its latitude is beyond ±90°. The next usable fix will. See

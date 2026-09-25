@@ -66,8 +66,8 @@
 #
 # (30) is what `pos_v` reads now, and it moved that key and almost nothing else: 0.273 m to
 # 0.083 on `mission`, 0.274 to 0.150 on `static`, 0.819 to 0.414 on `flight`. `moving_start` is
-# byte-identical on all fifteen keys, which is the attribution -- it starts in motion, fixes no
-# `alpha0`, and so fuses no altitude at all. The rest of `mission`'s line barely moves, because
+# byte-identical on all fifteen keys, which is the attribution -- it starts in motion, and then
+# fixed no `alpha0` and fused no altitude at all (#115 is where it began to, below). The rest of `mission`'s line barely moves, because
 # a barometer says nothing about the other two axes: `pos_h` unchanged at 0.240, `tilt` 0.509 to
 # 0.513, `ba` 0.04902 to 0.05022.
 #
@@ -157,7 +157,7 @@ static           1  pos_h<=0.275 pos_v<=0.218 vel<=0.193 pos_h_max<=0.988  tilt<
 mission          2  pos_h<=0.247 pos_v<=0.252 vel<=0.190 pos_h_max<=0.887  tilt<=0.577 yaw<=0.656 ba<=0.05304 bg<=0.001027 in3s>=0.9900 nees_pos<=1.0758   nees_vel<=0.4458 nees_att<=0.2004 false_valid<=0   false_valid_att<=0   scored>=36600
 harsh_imu        2  pos_h<=0.247 pos_v<=0.252 vel<=0.192 pos_h_max<=0.886  tilt<=1.154 yaw<=1.066 ba<=0.15406 bg<=0.002251 in3s>=0.9897 nees_pos<=1.0747   nees_vel<=0.4520 nees_att<=0.5987 false_valid<=0   false_valid_att<=0   scored>=36600
 gnss_outage      2  pos_h<=2.267 pos_v<=0.265 vel<=0.339 pos_h_max<=27.060 tilt<=0.598 yaw<=0.660 ba<=0.05368 bg<=0.001025 in3s>=0.9900 nees_pos<=0.8635   nees_vel<=0.4070 nees_att<=0.1951 false_valid<=0   false_valid_att<=0   scored>=36600
-moving_start     4  pos_h<=0.266 pos_v<=0.300 vel<=0.195 pos_h_max<=0.975  tilt<=1.682 yaw<=0.927 ba<=0.05849 bg<=0.002686 in3s>=0.9900 nees_pos<=1.0934   nees_vel<=0.4550 nees_att<=0.2284 false_valid<=0   false_valid_att<=0   scored>=15999
+moving_start     4  pos_h<=0.266 pos_v<=0.291 vel<=0.194 pos_h_max<=0.975  tilt<=1.682 yaw<=0.925 ba<=0.05849 bg<=0.002689 in3s>=0.9900 nees_pos<=1.0986   nees_vel<=0.4529 nees_att<=0.2272 false_valid<=0   false_valid_att<=0   scored>=15999
 baro_drift       2  pos_h<=0.247 pos_v<=0.287 vel<=0.190 pos_h_max<=0.887  tilt<=0.576 yaw<=0.656 ba<=0.05305 bg<=0.001026 in3s>=0.9899 nees_pos<=1.1975   nees_vel<=0.4460 nees_att<=0.2002 false_valid<=0   false_valid_att<=0   scored>=36600
 gnss_latency     2  pos_h<=2.221 pos_v<=0.265 vel<=0.475 pos_h_max<=3.361  tilt<=0.958 yaw<=1.370 ba<=0.05314 bg<=0.002377 in3s>=0.8615 nees_pos<=57.5194  nees_vel<=2.7398 nees_att<=0.7753 false_valid<=417 false_valid_att<=122 scored>=36600
 mag_disturbance  2  pos_h<=0.247 pos_v<=0.252 vel<=0.190 pos_h_max<=0.887  tilt<=0.579 yaw<=0.734 ba<=0.05262 bg<=0.001064 in3s>=0.9900 nees_pos<=1.0759   nees_vel<=0.4459 nees_att<=0.2009 false_valid<=0   false_valid_att<=0   scored>=36600
@@ -233,5 +233,14 @@ flight           8  pos_h<=2.456 pos_v<=0.340 vel<=0.667 pos_h_max<=6.021  tilt<
 # the reference walks away from what the barometer knew and GNSS height carries the low
 # frequencies. That is the default the corpus argued for (GOALS.md, "Barometric reference as an
 # estimated offset"), and a simulator whose barometer never drifts is the one place it looks
-# like pure loss. `moving_start` and `2c42096b` are unmoved, since a start in motion still fixes
-# no reference until #115.
+# like pure loss. `moving_start` and `2c42096b` are unmoved, since a start in motion fixes no
+# reference.
+#
+# #115 reads one from the estimate at the first altitude after the first fix, seeded correlated
+# with the height it was read against by (30'), and `moving_start` fuses its barometer: 1600
+# rows discarded to 0, `nis_baro` 0.9666. It moves only that line. `pos_v` 0.297 m to 0.288 and
+# `nees_pos` 1.0825 to 1.0877 -- a second height source in a simulator whose barometer never
+# drifts, so worth little, and priced honestly. The seed is what keeps it honest: a reference
+# read from the estimate and held constant took `nees_pos` to 112.59, with that error's variance
+# added to `R` to 14.58. `nees_pos` and `bg` re-measure a hair looser than their ceilings, the
+# rest tighter.

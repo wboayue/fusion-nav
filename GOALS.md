@@ -176,7 +176,7 @@ a `Config` the user reads and commits.
 
 | value | derived from | where |
 | ----- | ------------ | ----- |
-| `α₀`, barometric reference | mean of the window's barometer samples, then estimated as the offset of (30′) | `initialize` seeds it, the filter refines it — **done** |
+| `α₀`, barometric reference | mean of the window's barometer samples, or — for a start that leaves none — the first altitude read against the estimate; then estimated as the offset of (30′) | `initialize` or the first `fuse_baro_altitude` seeds it, the filter refines it — **done** |
 | accelerometer and gyroscope white noise | sample variance over the static window | `initialize` — candidate |
 | barometer measurement noise | sample variance over the static window | `initialize` — candidate |
 | `max_predict_dt` | observed IMU interval | offline |
@@ -197,8 +197,8 @@ And what stays with the user, because no amount of data yields it:
 * **Policy**: what a `DeadReckoning` status should do to the vehicle.
 * **The static window itself.** The filter can validate stillness; it cannot arrange it.
 
-Status: three rows of that table are done — `α₀`, seeded from the window and estimated by (30′) from
-there; GNSS `R`, which the receiver supplies and the caller may bound; and the gate thresholds, which `Gates::at` derives from a
+Status: three rows of that table are done — `α₀`, seeded from the window or the estimate and
+estimated by (30′) from there; GNSS `R`, which the receiver supplies and the caller may bound; and the gate thresholds, which `Gates::at` derives from a
 percentile at each source's degrees of freedom. Everything needing the offline tool is a commitment
 rather than a present fact, and this is the differentiator most likely to be judged on whether
 that tool gets written.
@@ -281,7 +281,8 @@ The options, in the order they are worth doing:
    states, no hot-path cost; what it does need is the boundary work of
    [differentiator 2](#2-compile-time-frames-and-units), since a seed arrives in whatever
    convention its source uses. **Done** —
-   `Eskf::initialize_from`, with `set_baro_reference` to complete the seed. It covers the
+   `Eskf::initialize_from`; the barometric reference follows from the first altitude, read
+   against the seeded height (#115). It covers the
    restart-at-altitude case and any vehicle already carrying an attitude source; it does nothing
    for a bare vehicle with no second source.
 
@@ -474,7 +475,14 @@ throughout.
 there `mission`'s `pos_v` goes 0.083 m to 0.249: the reference walks away from what the barometer
 knew and GNSS height carries the low frequencies, as it does in PX4. A barometer characterized as
 more stable than 0.13 m s⁻¹/√Hz is the reason to lower `baro_offset_walk`. An `α₀` stepped on the
-ground by `set_baro_reference` remains available, and now names its σ. See
+ground by `set_baro_reference` remains available, and now names its σ.
+
+**Seeded from the estimate (#115).** Estimated, the reference read from the estimate after a
+coarse start is seeded correlated with the height it was read against, `P_bb = P_DD + R_m` and
+`P_xb = −P[:, D]`, and `moving_start` reads `nees_pos` 1.0877 against the 112.59 and 14.58 above.
+`2c42096b` fuses every barometer row after its first fix — 35575 refused before — with no GNSS
+height rejected and `status=Healthy`; at `q_b = 0` the same run rejects 3825. It covers every start
+that leaves no reference, and `Config::baro_reference_from_estimate` turns it off. See
 [barometric offset](EQUATIONS.md#barometric-offset).
 
 ### Local gravity as a constant, derived offline
@@ -536,7 +544,8 @@ What it did cover is the refusals that move no timer and the one-shot `Fusion::R
 gained counters of their own in #67 — `SourceHealth::refused`, `last_refusal` and `adopted`, plus
 `PropagationHealth` for the steps `predict` turns away — and the decision stands on them. The
 corpus made the case immediately: the coarse log's barometer reads `never accepted`, exactly like
-a vehicle carrying no barometer, and now reports 35575 refusals with `NoReference` beside it.
+a vehicle carrying no barometer, and reported 35575 refusals with `NoReference` beside it until
+#115 gave a start in motion a reference read from the estimate.
 `Propagation` and the `reset_*` outcomes keep the lint, having no second channel at all.
 
 See [gate lockout](EQUATIONS.md#gate-lockout) and

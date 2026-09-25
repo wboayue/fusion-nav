@@ -358,7 +358,8 @@ numeric check a ceiling gets, so `none` cannot clear a bound the filter never me
 The keys are `rate=` and `window=` (the IMU rate and the samples it takes to cover
 `min_duration`), `align=`, `an=` and `alpha0=` (what initialization achieved, whether a moving
 window measured the vehicle's own acceleration from GNSS velocity — `ā_n` of equation (5′), which
-only a moving start reports — and whether it fixed a barometric reference), `heading=` (`Validity::heading` **as initialization left it** — not as the
+only a moving start reports — and where the barometric reference came from: `window`, `estimate`
+once a fix has established position, or `none`), `heading=` (`Validity::heading` **as initialization left it** — not as the
 log ended, which would only restate `transitions=`), `resets=` (adoptions, per source, so a GNSS fix adopted whole counts in both its halves),
 `aligned_at=` (seconds from the end of the window to the first epoch `Eskf::is_aligned` read true,
 or `never`), `attitude_lost=` (seconds to the first epoch at or after it where `Validity::attitude`
