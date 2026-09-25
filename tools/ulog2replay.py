@@ -96,28 +96,38 @@ EKF2_RATIOS = [
 EKF2_STATE_BG = 10
 EKF2_STATE_BA = 13
 
-# Where each quantity sits on the 24-entry covariance diagonal, keyed on
-# n_states. Both eras report 24 entries meaning different things, which is why
-# this is keyed on a count rather than on a field name: no spelling distinguishes
-# them. Read at PX4-Autopilot c4e4ef98.
+# Where each quantity sits on the covariance diagonal, keyed on the pair
+# (n_states, entries in `covariances`). Neither count alone separates the three
+# eras: n_states=24 is both the state-indexed covariance and the first
+# error-state one, and a 24-entry covariance is both the state-indexed one and
+# the error-state one with terrain. The pair does, and no field name does.
+# Read at PX4-Autopilot c4e4ef98 and v1.15.4.
 #
-# n_states=25 -- the covariance is error-state, mapped by State:: in
+# (25, 24) err24 -- error-state, mapped by State:: in
 #   EKF/python/ekf_derivation/generated/state.h:44-54, and the bias states are
 #   rates. Three commits got it there: 84b6b472b4 ("change delta angle and delta
 #   velocity bias states to accel and gyro bias"), 0d6c2c8ce9 ("EKF2:
 #   Error-State Kalman Filter"), and 68980b59e2, which added the terrain state
 #   that makes the count 25 against a 24-entry covariance.
-# n_states=24 -- the covariance is indexed like the state vector instead, so four
-#   quaternion entries at [0..3] push vel to [4..6] and pos to [7..9], and the
-#   bias states are a delta angle in rad and a delta velocity in m/s over one
-#   filter update. `att` is None because a quaternion covariance becomes a
-#   rotation-vector one only through the full 4x4 block, and the log carries the
-#   diagonal alone.
+# (24, 23) err23 -- the same error-state order before the terrain state: v1.15,
+#   whose msg/EstimatorStates.msg carries float32[23] covariances and whose
+#   state.h puts quat_nominal, vel, pos, gyro_bias and accel_bias at 0, 3, 6, 9
+#   and 12 with State::size 23. Mapped as err24 was, every v1.15 log failed on
+#   `covariances[23]`.
+# (24, 24) quat24 -- indexed like the state vector instead, so four quaternion
+#   entries at [0..3] push vel to [4..6] and pos to [7..9], and the bias states
+#   are a delta angle in rad and a delta velocity in m/s over one filter update.
+#   `att` is None because a quaternion covariance becomes a rotation-vector one
+#   only through the full 4x4 block, and the log carries the diagonal alone.
 # Anything else is a different filter -- an LPE log reports n_states=10 -- and is
 #   refused rather than mapped.
 EKF2_LAYOUTS = {
-    25: {"att": 0, "vel": 3, "pos": 6, "bg": 9, "ba": 12, "bias_is_rate": True},
-    24: {"att": None, "vel": 4, "pos": 7, "bg": 10, "ba": 13, "bias_is_rate": False},
+    (25, 24): {"name": "err24", "att": 0, "vel": 3, "pos": 6, "bg": 9, "ba": 12,
+               "bias_is_rate": True},
+    (24, 23): {"name": "err23", "att": 0, "vel": 3, "pos": 6, "bg": 9, "ba": 12,
+               "bias_is_rate": True},
+    (24, 24): {"name": "quat24", "att": None, "vel": 4, "pos": 7, "bg": 10, "ba": 13,
+               "bias_is_rate": False},
 }
 
 REFERENCE_TOPICS = [
@@ -604,7 +614,8 @@ def reference_states(states, layout, period, rows):
         "ba": [column(states, "states", EKF2_STATE_BA + i) for i in range(3)],
         "bg": [column(states, "states", EKF2_STATE_BG + i) for i in range(3)],
     }
-    cov = [column(states, "covariances", i) for i in range(24)]
+    entries = sum(1 for name in states.data if name.startswith("covariances["))
+    cov = [column(states, "covariances", i) for i in range(entries)]
     scale = 1.0 if layout["bias_is_rate"] else 1.0 / period
 
     for k in range(len(t)):
@@ -728,15 +739,25 @@ def reference_mode(status, vtol, rows):
 
 
 def ekf2_states(ulog):
-    """The topic carrying EKF2's state vector and its `n_states`, or `(None, None)`.
+    """The topic carrying EKF2's state vector and its layout key, or `(None, None)`.
 
     Newer builds log `estimator_states`; older ones put the same fields in
-    `estimator_status`. Either way the covariance layout is keyed on the count.
+    `estimator_status`. The key is `(n_states, covariance entries)`, which is what
+    `EKF2_LAYOUTS` is indexed by.
     """
     states = pick(ulog, ["estimator_states", "estimator_status"])
     if states is None or "states[0]" not in states.data:
         return None, None
-    return states, int(states.data["n_states"][0])
+    entries = sum(1 for name in states.data if name.startswith("covariances["))
+    return states, (int(states.data["n_states"][0]), entries)
+
+
+def layout_label(key):
+    """How `--screen` and the reference header name a layout key."""
+    if key is None:
+        return "none"
+    layout = EKF2_LAYOUTS.get(key)
+    return layout["name"] if layout is not None else "unmapped"
 
 
 def write_reference(ulog, out, t0, imu_dt, source_name):
@@ -744,7 +765,7 @@ def write_reference(ulog, out, t0, imu_dt, source_name):
     local = pick(ulog, ["vehicle_local_position"])
     attitude = pick(ulog, ["vehicle_attitude"])
     status = pick(ulog, ["estimator_status"])
-    states, n_states = ekf2_states(ulog)
+    states, key = ekf2_states(ulog)
     vehicle = pick(ulog, ["vehicle_status"])
     vtol = pick(ulog, ["vtol_vehicle_status"])
     if local is None and status is None and attitude is None:
@@ -762,12 +783,13 @@ def write_reference(ulog, out, t0, imu_dt, source_name):
             )
 
     layout, period, provenance = None, None, None
-    if n_states is not None:
-        layout = EKF2_LAYOUTS.get(n_states)
+    if key is not None:
+        layout = EKF2_LAYOUTS.get(key)
         if layout is None:
             print(
-                f"warning: `{states.name}` reports n_states={n_states}, which is "
-                "neither of the two EKF2 layouts; states and covariance omitted",
+                f"warning: `{states.name}` reports n_states={key[0]} with {key[1]} "
+                "covariance entries, which is none of the EKF2 layouts; states and "
+                "covariance omitted",
                 file=sys.stderr,
             )
         else:
@@ -786,7 +808,7 @@ def write_reference(ulog, out, t0, imu_dt, source_name):
     rows.sort(key=lambda r: r[0])
 
     with open(out, "w", newline="") as handle:
-        for line in reference_note(local, attitude, states, layout, n_states,
+        for line in reference_note(local, attitude, states, layout, key,
                                    period, provenance, ratio_fields, mode, source_name):
             handle.write(f"# {line}\n")
         handle.write("t_s,source," + ",".join(REFERENCE_COLUMNS) + "\n")
@@ -804,7 +826,7 @@ def write_reference(ulog, out, t0, imu_dt, source_name):
     return True
 
 
-def reference_note(local, attitude, states, layout, n_states, period, provenance,
+def reference_note(local, attitude, states, layout, key, period, provenance,
                    ratio_fields, mode, source_name):
     """The `#` header: what each row kind came from, and every caveat on it."""
     kinds = []
@@ -830,10 +852,12 @@ def reference_note(local, attitude, states, layout, n_states, period, provenance
     if ratio_fields:
         note.append("Ratio fields: " + ", ".join(f or "(missing)" for f in ratio_fields))
     if layout is None:
-        if n_states is not None:
-            note.append(f"No states or covariance: n_states={n_states} is not an EKF2 layout.")
+        if key is not None:
+            note.append(f"No states or covariance: n_states={key[0]} with {key[1]} "
+                        "covariance entries is not an EKF2 layout.")
     else:
-        note.append(f"EKF2 layout: n_states={n_states}.")
+        note.append(f"EKF2 layout: {layout['name']}, n_states={key[0]} with {key[1]} "
+                    "covariance entries.")
         if layout["bias_is_rate"]:
             note.append("Bias states are rates as logged; nothing scaled.")
         else:
@@ -906,6 +930,28 @@ def release(encoded):
     suffix = ("" if kind == 255 else "-rc" if kind >= 192 else "-beta" if kind >= 128
               else "-alpha" if kind >= 64 else "-dev")
     return f"v{(encoded >> 24) & 0xFF}.{(encoded >> 16) & 0xFF}.{(encoded >> 8) & 0xFF}{suffix}"
+
+
+def vibration_metric(encoded):
+    """Which quantity `accel_vibration_metric` is on this build: `dv`, `accel` or `unknown`.
+
+    PX4 f2ae8ae814 changed it, under the same field name, from a filtered
+    |dv - dv_prev| over one integration interval, in m/s, to |a - a_prev| over raw
+    samples, in m/s^2. So 0.094 on `2c42096b` (v1.11.3) and 32 on a v1.15 log are
+    not a quiet airframe and a loud one. No rescaling makes them one quantity --
+    the old metric differences averages, which is where vibration is filtered out
+    -- so the screen names the metric rather than converting it. The commit is on
+    master between v1.12 and v1.13.0-beta1: a v1.12 dev build could be either.
+    `estimator_status.vibe[2]` on older builds is the delta-velocity one.
+    """
+    if not encoded:
+        return "unknown"
+    major, minor = (encoded >> 24) & 0xFF, (encoded >> 16) & 0xFF
+    if (major, minor) >= (1, 13):
+        return "accel"
+    if (major, minor) == (1, 12) and encoded & 0xFF != 255:
+        return "unknown"
+    return "dv"
 
 
 def screen_gnss(dataset):
@@ -997,7 +1043,7 @@ def screen(ulog):
     """
     info = ulog.msg_info_dict
     hardware = str(info.get("ver_hw", "none")).replace(" ", "_")
-    _, n_states = ekf2_states(ulog)
+    _, key = ekf2_states(ulog)
     keys = {
         "sitl": "yes" if "SITL" in hardware else "no",
         "hw": hardware,
@@ -1006,7 +1052,8 @@ def screen(ulog):
     }
     keys.update(screen_gnss(pick(ulog, GNSS_TOPICS)))
     keys.update(screen_vibration(ulog))
-    keys["n_states"] = "none" if n_states is None else f"{n_states}"
+    keys["vib_metric"] = vibration_metric(info.get("ver_sw_release", 0))
+    keys["ekf2"] = layout_label(key)
     keys["vehicle_imu"] = "yes" if pick(ulog, ["vehicle_imu"]) is not None else "no"
     keys.update(screen_regime(pick(ulog, ["vehicle_status"]), pick(ulog, ["vtol_vehicle_status"])))
     return "screen " + " ".join(f"{k}={v}" for k, v in keys.items())
@@ -1119,6 +1166,25 @@ def self_test():
         Fixture("vehicle_imu_status", accel_vibration_metric=[0.02] * 20),
     )
     expect("vibration pooled, touchdown excluded", screen_vibration(imus)["vib_p95"], "0.020")
+    for encoded, want in [
+        (0x010B03FF, "dv"), (0x010C01FF, "dv"), (0x010C0100, "unknown"),
+        (0x010D0080, "accel"), (0x010F0400, "accel"), (0, "unknown"),
+    ]:
+        expect(f"vibration metric {encoded:#x}", vibration_metric(encoded), want)
+    # 25 states against 24 entries, 24 against 23, 24 against 24: only the pair names each.
+    expect("v1.16 layout", layout_label((25, 24)), "err24")
+    expect("v1.15 layout", layout_label((24, 23)), "err23")
+    expect("state-indexed layout", layout_label((24, 24)), "quat24")
+    expect("LPE layout", layout_label((10, 10)), "unmapped")
+    expect("no estimator", layout_label(None), "none")
+    expect("v1.15 velocity index", EKF2_LAYOUTS[(24, 23)]["vel"], 3)
+    rows = []
+    v115 = Fixture("estimator_states", timestamp=[0],
+                   **{f"states[{i}]": [0.0] for i in range(24)},
+                   **{f"covariances[{i}]": [float(i)] for i in range(23)})
+    reference_states(v115, EKF2_LAYOUTS[(24, 23)], None, rows)
+    expect("v1.15 sigma_vel_n", rows[0][2]["sigma_vel_n"], math.sqrt(3.0))
+    expect("v1.15 sigma_ba_z", rows[0][2]["sigma_ba_z"], math.sqrt(14.0))
     expect("release", release(0x010B03FF), "v1.11.3")
     expect("rc", release(0x011000C0), "v1.16.0-rc")
     expect("dev", release(0x010A0000), "v1.10.0-dev")
