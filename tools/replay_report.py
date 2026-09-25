@@ -1506,11 +1506,12 @@ def self_test():
     t, y = decimate(np.array([0.0, 1.0, 2.0]), {"h": np.array([1.0, np.nan, 3.0])},
                     10)["h"]
     near("decimate skips NaN", np.unique(y), (1.0, 3.0))
-    # The envelope keeps each bucket's extremes in time order: a spike survives
-    # a stride that would step over it.
-    t, y = envelope(np.arange(6.0), np.array([0.0, 9.0, 1.0, 2.0, -4.0, 3.0]), 3)
-    near("envelope values", y, (0.0, 9.0, -4.0, 3.0))
-    near("envelope times", t, (0.0, 1.0, 4.0, 5.0))
+    # The envelope keeps each bucket's extremes, in time order: a spike survives
+    # a stride that would step over it, and the second bucket's maximum comes
+    # before its minimum.
+    t, y = envelope(np.arange(6.0), np.array([0.0, 9.0, 1.0, 5.0, 2.0, -4.0]), 3)
+    near("envelope values", y, (0.0, 9.0, 5.0, -4.0))
+    near("envelope times", t, (0.0, 1.0, 3.0, 5.0))
 
     for failure in failures:
         print(f"FAIL {failure}", file=sys.stderr)
