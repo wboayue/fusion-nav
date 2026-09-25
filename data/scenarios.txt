@@ -244,3 +244,22 @@ flight           8  pos_h<=2.524 pos_v<=0.345 vel<=0.694 pos_h_max<=6.244  tilt<
 # read from the estimate and held constant took `nees_pos` to 112.59, with that error's variance
 # added to `R` to 14.58. `nees_pos` and `bg` re-measure a hair looser than their ceilings, the
 # rest tighter.
+#
+# #131 moved `tilt` and `yaw` on every line, and only by what they mean. They read the attitude
+# error on navigation axes now -- tilt about north and east, heading about down, the axes
+# `Validity` tests -- where they read `dtheta`'s body axes, which are those only while level. The
+# total is unchanged: `mission`'s tilt^2 + yaw^2 is 0.747 deg^2 under both, 0.571 and 0.649
+# becoming 0.537 and 0.677. The body split was booking heading error as tilt, the most on
+# `moving_start`, 1.665 and 0.915 becoming 1.507 and 1.150. `gnss_latency`'s `false_valid` goes
+# 412 to 342 and `false_valid_att` 120 to 50 for the same reason: 70 of the epochs it charged
+# to a falsely-valid tilt were heading error that the body split read as tilt. No other key
+# on these eight lines moved past the margin.
+#
+# `flight` is the one line the filter itself moved: `pos_h` 2.431 m to 2.499, `vel` 0.660 to
+# 0.687, `bg` 0.003270 to 0.003656, `nees_att` 0.1766 to 0.1918. That is (8) alone -- reverting
+# its rotation restores 2.417 -- which gives the prior the tilt/heading correlation a 0.35 deg
+# start puts in body axes, about 8 %. It costs on eight of nine seeds (`pos_h` 2-8 % worse,
+# `ba` about 1 % on all nine), and the reason is the scenario: truth yaw starts 0.6 rad off on
+# every seed against a `sigma_yaw` of 0.35, and a correlation derived from a heading variance
+# that understates the error steers tilt corrections that the uncorrelated body prior never
+# made. The prior is the correct one for the variance it is given; the ceiling moves.
