@@ -10,7 +10,7 @@ which is #59's. The `**Stub.**` marker survives on those two and nowhere else, a
 banner says built rather than intended. What is left is mostly measurement and publication —
 #41 (cost on hardware), #8 (the EKF2 comparison), #47 (the release), #89 (ANEES) — plus two
 defects the consistency keys of #112 surfaced on `2c42096b`: every corpus source is correlated
-(`acf1_` 0.10–0.99) while (24) fuses it as white (#117); and that overconfidence is the lockout
+(`acf1_` 0.11–0.99) while (24) fuses it as white (#117); and that overconfidence is the lockout
 precondition "report, do not self-recover" accepted, which #116 replaces with recovery on by
 default behind per-correction `Config` opt-outs. #118 gated GNSS height apart from horizontal
 position, which removed the lockout fusing that barometer caused. #119 (#122) estimates the
@@ -23,8 +23,8 @@ leaves no reference, correlated with the height it was read against (`P_xb = −
 `rejected_gnss_hgt=0`, `Healthy`; 3825 rejected at `baro_offset_walk = 0`), `moving_start`
 `nees_pos` 1.0877. Beside EKF2 there, horizontal agrees within metres and height does not: EKF2
 follows the barometer's ~12 m climb, this filter GNSS height's low frequencies — #8's to explain.
-Order: #137 (`2c42096b`'s horizontal accelerometer bias walks unobserved, tilt 5.2° against
-EKF2's 1.08°), #89 (the gate the remedies are judged by), #117, #116, then #8. #86's tailsitter is no
+Order: #138 (`ImuNoise`'s white noise is PX4's per-step σ read as a density, the half #137
+left), #89 (the gate the remedies are judged by), #117, #116, then #8. #86's tailsitter is no
 longer blocked: #131 (#133) reads tilt and heading on navigation axes, `diag(R P_θθ Rᵀ)` through
 `AttitudeVariance`, in `Validity`, the latch, the heading adoption and (8)'s prior, and the
 `tilt`/`yaw`/`false_valid` score keys moved with it — tilt² + yaw² unchanged, the body split had
@@ -40,12 +40,12 @@ propagates the nominal state *and* its covariance, (9)–(22), and a GNSS positi
 a barometric altitude or a magnetic heading corrects both: the update of (23)–(27) in Joseph form,
 the observation models (28), (29), (30) and (34)–(36) with the levelling variance (36′), the gate
 of (37)–(38) and the injection and reset of (39)–(41) all exist, in `src/update.rs` and
-`src/observation/{gnss,baro,mag}.rs`. So `mission` scores 0.240 m of horizontal RMSE, 0.188 m/s of
+`src/observation/{gnss,baro,mag}.rs`. So `mission` scores 0.244 m of horizontal RMSE, 0.187 m/s of
 velocity and 0.249 m of height where dead reckoning scored 1261 — 0.083 before (30′), whose
 walking offset hands the low frequencies to GNSS height, which a simulated barometer that never
 drifts reads as pure loss (`data/scenarios.txt`).
 The gate turns a fix down rather than taking everything offered — on the corpus, where
-`a299e722` refuses 278 of its 609 velocity solutions, a receiver its own differenced positions
+`a299e722` refuses 283 of its 609 velocity solutions, a receiver its own differenced positions
 contradict (#105 settled that the harness does *not* floor `R` as both production estimators do,
 and `r_policy=raw` pins that); the
 barometer and the magnetometer have never been turned down there, 42 298 altitudes and 49 229
@@ -96,7 +96,7 @@ without it. `math.rs`'s `FLOOR` owns the headroom figures and every other mentio
 And `predicted_validity` stopped meaning *aiding is arriving*: `P` is projected
 `Accuracy::horizon` forward with nothing fusing and each quantity tested at the far end, **or**
 counted because a constraining source is being accepted. Tilt is what it bought — a static start
-holds tilt 3.82 s, so a 1 s horizon arms and a 6 s one does not, where before it predicted its own
+holds tilt 3.85 s, so a 1 s horizon arms and a 6 s one does not, where before it predicted its own
 current value. `Accuracy::horizon` is the one knob no data could settle.
 
 Also real: the health bookkeeping (timers,
@@ -549,7 +549,8 @@ check.
 
 Three defaults are no longer placeholders, and each records its evidence in its doc comment:
 `Timeouts::degraded_after` (replay showed 7992 status flaps at 1.0 s on `2c42096b`), `ImuNoise`
-(PX4 and ArduPilot agree within 2x and both sit 10-15x above datasheet), and `Initialization`'s
+(PX4's white noise; ArduPilot's bias walks converted from per-step σ to density, which took
+`2c42096b`'s tilt peak from 5.2° to 2.5°), and `Initialization`'s
 stationarity tolerances (the old ones failed four of five corpus logs on vehicles sitting on the
 ground). Follow that pattern rather than adjusting a number quietly.
 
@@ -710,7 +711,7 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
   or a constraining source is being accepted. Both exist because PX4 and ArduPilot answer
   per-quantity validity and a single ladder cannot.
 - **An unaided filter loses its outputs on a schedule the defaults set**, and the schedule is
-  measured: at `ImuNoise`'s defaults a static start holds tilt for 3.82 s and heading for 35.8 s.
+  measured: at `ImuNoise`'s defaults a static start holds tilt for 3.85 s and heading for 37.8 s.
   Those two figures are cited by `Accuracy`'s doc comment and pinned by a test; the gyroscope-bias
   prior entering attitude through (20)'s `−I Δt` is what sets them, not the white-noise density,
   which alone would give 10.4 s and 674 s. They move `Validity` only — `Status` is answering on

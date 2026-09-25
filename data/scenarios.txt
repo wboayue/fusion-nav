@@ -153,15 +153,15 @@
 # removes exactly that error and nothing else was changed to make it: `pos_v` 3.07 to 0.819,
 # `pos_h` 9.14 to 3.03, `yaw` 12.96 deg to 7.59. A heading the window observed, stage 8's, is
 # the other half -- this one corrects the consequence and leaves the 0.6 rad in place.
-static           1  pos_h<=0.275 pos_v<=0.218 vel<=0.193 pos_h_max<=0.988  tilt<=0.631 yaw<=0.514 ba<=0.07963 bg<=0.000999 in3s>=0.9898 nees_pos<=1.0351   nees_vel<=0.4570 nees_att<=0.1343 false_valid<=0   false_valid_att<=0   scored>=11600
-mission          2  pos_h<=0.247 pos_v<=0.252 vel<=0.190 pos_h_max<=0.887  tilt<=0.543 yaw<=0.684 ba<=0.05304 bg<=0.001027 in3s>=0.9900 nees_pos<=1.0758   nees_vel<=0.4458 nees_att<=0.2004 false_valid<=0   false_valid_att<=0   scored>=36600
-harsh_imu        2  pos_h<=0.247 pos_v<=0.252 vel<=0.192 pos_h_max<=0.886  tilt<=1.090 yaw<=1.130 ba<=0.15406 bg<=0.002251 in3s>=0.9897 nees_pos<=1.0747   nees_vel<=0.4520 nees_att<=0.5987 false_valid<=0   false_valid_att<=0   scored>=36600
-gnss_outage      2  pos_h<=2.267 pos_v<=0.265 vel<=0.339 pos_h_max<=27.060 tilt<=0.565 yaw<=0.688 ba<=0.05368 bg<=0.001025 in3s>=0.9900 nees_pos<=0.8635   nees_vel<=0.4070 nees_att<=0.1951 false_valid<=0   false_valid_att<=0   scored>=36600
-moving_start     4  pos_h<=0.266 pos_v<=0.291 vel<=0.194 pos_h_max<=0.975  tilt<=1.523 yaw<=1.162 ba<=0.05849 bg<=0.002689 in3s>=0.9900 nees_pos<=1.0986   nees_vel<=0.4529 nees_att<=0.2272 false_valid<=0   false_valid_att<=0   scored>=15999
-baro_drift       2  pos_h<=0.247 pos_v<=0.287 vel<=0.190 pos_h_max<=0.887  tilt<=0.542 yaw<=0.683 ba<=0.05305 bg<=0.001026 in3s>=0.9899 nees_pos<=1.1975   nees_vel<=0.4460 nees_att<=0.2002 false_valid<=0   false_valid_att<=0   scored>=36600
-gnss_latency     2  pos_h<=2.221 pos_v<=0.265 vel<=0.475 pos_h_max<=3.361  tilt<=0.916 yaw<=1.400 ba<=0.05314 bg<=0.002377 in3s>=0.8615 nees_pos<=57.5194  nees_vel<=2.7398 nees_att<=0.7753 false_valid<=346 false_valid_att<=51  scored>=36600
-mag_disturbance  2  pos_h<=0.247 pos_v<=0.252 vel<=0.190 pos_h_max<=0.887  tilt<=0.541 yaw<=0.761 ba<=0.05262 bg<=0.001064 in3s>=0.9900 nees_pos<=1.0759   nees_vel<=0.4459 nees_att<=0.2009 false_valid<=0   false_valid_att<=0   scored>=36600
-flight           8  pos_h<=2.524 pos_v<=0.345 vel<=0.694 pos_h_max<=6.244  tilt<=1.025 yaw<=7.750 ba<=0.07435 bg<=0.003693 in3s>=0.9900 nees_pos<=0.5617   nees_vel<=0.2304 nees_att<=0.1938 false_valid<=0   false_valid_att<=0   scored>=600
+static           1  pos_h<=0.275 pos_v<=0.218 vel<=0.193 pos_h_max<=0.988  tilt<=0.619 yaw<=0.504 ba<=0.07963 bg<=0.000828 in3s>=0.9898 nees_pos<=1.0351   nees_vel<=0.4570 nees_att<=0.1375 false_valid<=0   false_valid_att<=0   scored>=11600
+mission          2  pos_h<=0.247 pos_v<=0.252 vel<=0.190 pos_h_max<=0.887  tilt<=0.529 yaw<=0.663 ba<=0.05581 bg<=0.000667 in3s>=0.9900 nees_pos<=1.0758   nees_vel<=0.4458 nees_att<=0.2072 false_valid<=0   false_valid_att<=0   scored>=36600
+harsh_imu        2  pos_h<=0.247 pos_v<=0.252 vel<=0.192 pos_h_max<=0.886  tilt<=1.200 yaw<=1.203 ba<=0.16295 bg<=0.002251 in3s>=0.9897 nees_pos<=1.0747   nees_vel<=0.4520 nees_att<=0.7639 false_valid<=0   false_valid_att<=0   scored>=36600
+gnss_outage      2  pos_h<=1.942 pos_v<=0.265 vel<=0.290 pos_h_max<=18.170 tilt<=0.542 yaw<=0.666 ba<=0.05642 bg<=0.000670 in3s>=0.9900 nees_pos<=0.8635   nees_vel<=0.4070 nees_att<=0.2019 false_valid<=0   false_valid_att<=0   scored>=36600
+moving_start     4  pos_h<=0.266 pos_v<=0.291 vel<=0.194 pos_h_max<=0.975  tilt<=1.507 yaw<=1.128 ba<=0.06030 bg<=0.002214 in3s>=0.9900 nees_pos<=1.0986   nees_vel<=0.4529 nees_att<=0.2045 false_valid<=0   false_valid_att<=0   scored>=15999
+baro_drift       2  pos_h<=0.247 pos_v<=0.287 vel<=0.190 pos_h_max<=0.887  tilt<=0.528 yaw<=0.663 ba<=0.05581 bg<=0.000667 in3s>=0.9899 nees_pos<=1.1975   nees_vel<=0.4460 nees_att<=0.2069 false_valid<=0   false_valid_att<=0   scored>=36600
+gnss_latency     2  pos_h<=2.221 pos_v<=0.265 vel<=0.475 pos_h_max<=3.361  tilt<=0.888 yaw<=1.294 ba<=0.05560 bg<=0.001823 in3s>=0.8615 nees_pos<=57.5194  nees_vel<=2.7398 nees_att<=0.7215 false_valid<=327 false_valid_att<=32  scored>=36600
+mag_disturbance  2  pos_h<=0.247 pos_v<=0.252 vel<=0.190 pos_h_max<=0.887  tilt<=0.527 yaw<=0.723 ba<=0.05562 bg<=0.000677 in3s>=0.9900 nees_pos<=1.0759   nees_vel<=0.4459 nees_att<=0.2074 false_valid<=0   false_valid_att<=0   scored>=36600
+flight           8  pos_h<=2.524 pos_v<=0.345 vel<=0.694 pos_h_max<=6.244  tilt<=1.025 yaw<=7.750 ba<=0.07435 bg<=0.003571 in3s>=0.9900 nees_pos<=0.5617   nees_vel<=0.2304 nees_att<=0.1915 false_valid<=0   false_valid_att<=0   scored>=600
 
 # (34)-(36) are what `yaw` reads now, and what it buys depends entirely on what the start knew.
 # Where yaw was never observed the magnetometer is the whole estimate: `moving_start` goes 3.228
@@ -278,3 +278,17 @@ flight           8  pos_h<=2.524 pos_v<=0.345 vel<=0.694 pos_h_max<=6.244  tilt<
 # horizontal direction, was measured and not taken: `gnss_outage` `pos_h` 2.630 against 2.227
 # under the eigenvalue and 2.232 under the diagonals, and `yaw` looser on every line but
 # `static`. EQUATIONS.md, (36'), says why.
+#
+# #137 converts `ImuNoise`'s bias walks from PX4's per-step sigma to densities, ArduPilot's pair:
+# gyroscope 1.0e-3 to 1.1e-4, accelerometer 1.0e-2 to 2.2e-3. What it was for is on the corpus,
+# `2c42096b`'s tilt peak 5.2 deg to 2.5; here it moves every line, both ways. `bg` tightens on
+# every line, by a third on the 60 s ones (`mission` 0.001014 to 0.000660), and `tilt` and `yaw`
+# by 2-7 % with it: a gyroscope bias allowed to wander less is estimated more closely.
+# `gnss_outage` gains most, `pos_h` 2.227 m to 1.922 and `pos_h_max` 26.8 to 18.0, the bias
+# holding through the gap where the walk had spread it. `ba` loosens 3-6 % on every 60 s line
+# (`mission` 0.05247 to 0.05525), and `nees_att` 2-4 %, still under 1 everywhere: a smaller walk
+# learns the bias more slowly at the start of a short flight. `gnss_latency`'s `false_valid` goes
+# 340 to 323 and `false_valid_att` 48 to 31. `harsh_imu` is the one line that loses outright --
+# `tilt` 1.079 to 1.188, `yaw` 1.118 to 1.191, `nees_att` 0.5891 to 0.7563 -- because its simulated
+# gyroscope walk, 2.0e-4, is now above the filter's 1.1e-4. That is the airframe the scenario
+# describes: one whose `ImuNoise` a caller has to raise, and the defaults no longer cover it.
