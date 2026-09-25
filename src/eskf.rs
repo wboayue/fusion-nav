@@ -1085,8 +1085,8 @@ impl Eskf {
     /// Status and validity are derived here rather than cached: they are pure functions
     /// of [`diagnostics`](Self::diagnostics), the covariance, and [`Config`], so computing
     /// them on read means there is no invariant for the mutating methods to maintain. The
-    /// cost is one rotation of the attitude block, six other covariance entries and four
-    /// source timers, compared.
+    /// cost is two rotations of the attitude block, one each for tilt and heading, six other
+    /// covariance entries and four source timers, compared.
     pub fn state(&self) -> State {
         // `self.state.status` and `.validity` are inert; the stored estimate never
         // carries meaningful ones, and every read overwrites them.
