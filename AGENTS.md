@@ -283,6 +283,8 @@ data/fetch.sh                     # fetch + verify the manifest
 data/fetch.sh --verify            # checksums only, no network
 data/fetch.sh --check             # convert each .ulg and replay it, assert expectations
 data/fetch.sh --add <url> [name]  # download once, append a manifest line to commit
+data/fetch.sh --pin <name>        # replay one log, print the expectations to append
+uv run tools/ulog2replay.py log.ulg --screen   # what a candidate could cover; data/README.md
 uv run tools/ulog2replay.py log.ulg -o log.csv [--reference]   # ULog -> replay CSV
 uv run tools/replay_report.py in.csv out.csv [truth.csv] \
     --reference ref.csv --summary summary.txt -o report.html   # one HTML per log

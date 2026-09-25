@@ -210,6 +210,61 @@ $ uv run tools/ulog2replay.py data/logs/<log-id>.ulg -o data/logs/<log-id>.csv -
 $ cargo run --example replay -- data/logs/<log-id>.csv
 ```
 
+### Finding a candidate
+
+An entry exists because it covers something no other log does, and #86 names the gaps. A
+candidate is found in three passes, each cheaper than the one after it, so most are refused
+before anything is downloaded whole.
+
+**Metadata.** Flight Review publishes every public log's metadata as one gzipped JSON array —
+hundreds of thousands of entries, `sys_hw`, `ver_sw_release`, `mav_type`, `estimator`,
+`duration_s`, `airframe_name`, `description` and `download_url` among them. It narrows by
+airframe, firmware and length, and says nothing about the sensors:
+
+```console
+$ curl -sL https://review.px4.io/dbinfo | gunzip > dbinfo.json
+$ python3 -c '
+import json, re
+for e in json.load(open("dbinfo.json")):
+    v = re.match(r"v?(\d+)\.(\d+)", e.get("ver_sw_release") or "")
+    if (e["estimator"] == "EKF2" and "SITL" not in str(e["sys_hw"])
+            and v and (int(v[1]), int(v[2])) >= (1, 14)
+            and e["mav_type"] == "Fixed Wing" and e["duration_s"] > 300):
+        print(e["download_url"], e["sys_hw"], e["duration_s"], e["airframe_name"])'
+```
+
+Thousands of real EKF2 logs on current firmware pass for each airframe class. Descriptions are
+sparse: a few mention a catapult, and on the order of a hundred mention RTK or vibration.
+
+**`--screen`.** Download the candidate somewhere other than `logs/` — `fetch.sh --add` writes the
+manifest — and read what the ULog alone can say about it:
+
+```console
+$ uv run tools/ulog2replay.py candidate.ulg --screen
+screen sitl=no hw=PX4_FMU_V5 sw=v1.11.3 duration=7127 gnss=vehicle_gps_position fix_max=4
+  eph_min=1.17 eph_max=2.18 sats_min=17 sats_max=26 clip=0 vib_p95=0.09 n_states=24
+  vehicle_imu=yes mode_changes=0
+```
+
+Every value is one number or one word, so a gap's criteria are `expect.sh` pairs, tested with
+`compare_pairs`:
+
+| gap | on the `screen` line | then, on the `summary` line |
+| --- | --- | --- |
+| every entry | `sitl=no`, `eph_min` ≠ `eph_max` | |
+| real baseline | `n_states>=24 vehicle_imu=yes duration>=600` | `align=static` |
+| short-and-still start | | `align=coarse alpha0=window` |
+| RTK receiver | `fix_max>=6` | what `nis_gnss_pos=` reads |
+| high vibration | `clip>=1` | `rejected_mag=`, if it moves |
+| fixed-wing, VTOL | `mode_changes>=2` for a VTOL | `extent>=1000` |
+| tailsitter | `mode_changes>=2` | `tilt_max>=80` |
+
+**Replay.** What the vehicle did — `extent=`, `speed_max=`, `tilt_max=` — and whether its start
+was still are the harness's to say, not the screen's: the harness is where a statistic is
+computed, and stillness is `init::at_rest`'s claim. Convert, replay, open the
+`replay_report.py` page, write the manifest note's sentence naming the gap, and only then
+`fetch.sh --add` and `fetch.sh --pin`.
+
 ### Converter changes are batched
 
 A change to `tools/ulog2replay.py`'s output costs a corpus regeneration: every log reconverted
@@ -380,10 +435,15 @@ statistics below are what it is for. An exact pin on a statistic says *this numb
 claim is *this receiver reports six times the accuracy its own solutions support*: it makes every
 filter change that moves a digit a manifest edit, and it states nothing a reader can disagree
 with. A range states the finding and survives the digit. Both endpoints go through the same
-numeric check a ceiling gets, so `none` cannot clear a bound the filter never met.
+numeric check a ceiling gets, so `none` cannot clear a bound the filter never met. The band a
+range gets is stated in `manifest.txt`'s header, and `data/fetch.sh --pin <name>` applies it, so a
+new entry's ranges are derived rather than typed.
 
 The keys are `rate=` and `window=` (the IMU rate and the samples it takes to cover
-`min_duration`), `align=`, `an=` and `alpha0=` (what initialization achieved, whether a moving
+`min_duration`), `extent=`, `speed_max=` and `tilt_max=` (what the vehicle did: the farthest
+horizontal GNSS row from the first and the fastest horizontal GNSS velocity, as reported, and the
+filter's own largest tilt from the vertical — what a manifest note's "past a kilometre" is pinned
+by), `align=`, `an=` and `alpha0=` (what initialization achieved, whether a moving
 window measured the vehicle's own acceleration from GNSS velocity — `ā_n` of equation (5′), which
 only a moving start reports — and where the barometric reference came from: `window`, `estimate`
 once a fix has established position, or `none`), `heading=` (`Validity::heading` **as initialization left it** — not as the
