@@ -23,8 +23,8 @@ leaves no reference, correlated with the height it was read against (`P_xb = −
 `rejected_gnss_hgt=0`, `Healthy`; 3825 rejected at `baro_offset_walk = 0`), `moving_start`
 `nees_pos` 1.0877. Beside EKF2 there, horizontal agrees within metres and height does not: EKF2
 follows the barometer's ~12 m climb, this filter GNSS height's low frequencies — #8's to explain.
-Order: #137 (`2c42096b`'s horizontal accelerometer bias walks unobserved, tilt 5.2° against
-EKF2's 1.08°), #89 (the gate the remedies are judged by), #117, #116, then #8. #86's tailsitter is no
+Order: #138 (`ImuNoise`'s white noise is PX4's per-step σ read as a density, the half #137
+left), #89 (the gate the remedies are judged by), #117, #116, then #8. #86's tailsitter is no
 longer blocked: #131 (#133) reads tilt and heading on navigation axes, `diag(R P_θθ Rᵀ)` through
 `AttitudeVariance`, in `Validity`, the latch, the heading adoption and (8)'s prior, and the
 `tilt`/`yaw`/`false_valid` score keys moved with it — tilt² + yaw² unchanged, the body split had

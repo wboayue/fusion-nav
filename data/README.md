@@ -502,9 +502,9 @@ for three measured reasons:
   0.900 m against a 0.5 m bound, and σ_v averages 1.78–3.59 m against 0.75. Since the barometer
   and the magnetometer already carry converter constants, flooring would leave no
   receiver-reported variance anywhere in the corpus.
-- **It costs most or all of the only rejection the corpus has.** `rejected_gnss_vel=278` on
-  `a299e722` is the single non-zero count across five logs. Replayed with the floors applied it
-  reads 0 under PX4's treatment — the 0.5 m/s floor *and* the separate `sq(1.5f)` vertical
+- **It costs most or all of the only rejection the corpus has.** `rejected_gnss_vel=283` on
+  `a299e722` is the single non-zero count across five logs. Replayed with the floors applied,
+  the 278 it read before #137 read 0 under PX4's treatment — the 0.5 m/s floor *and* the separate `sq(1.5f)` vertical
   widening — 2 under that floor alone, and 44 under ArduPilot's per-axis 0.3/0.5, which is the one
   policy that would leave the gate of (37)–(38) still exercised by real data. `transitions=` goes
   4 to 2 under all three, so this is not the only key a floor would move.

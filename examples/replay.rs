@@ -553,9 +553,9 @@ fn measured(value: Option<f64>, places: usize) -> String {
 ///
 /// So each key carries an error of its own. A glitch the gate refuses still stretches
 /// `extent`, and the first fix is the origin whatever it was. `tilt_max` includes the
-/// filter's tilt error and the attitude initialization committed: on the grounded
-/// `f16771dd` it read 15.8° at a moment EKF2 read 1.7°, until the bias walks of `ImuNoise`
-/// were converted, and the manifest note says how.
+/// filter's tilt error and the attitude initialization committed, which is how it found
+/// bias walks read as densities without conversion (#137); the manifest note has the
+/// figures.
 #[derive(Default)]
 struct Excursion {
     origin: Option<(f32, f32)>,

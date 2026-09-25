@@ -98,8 +98,9 @@ impl Default for ImuNoise {
     /// is converted.
     ///
     /// The white-noise terms are PX4's per-step σ read the same way, and stay unconverted:
-    /// converted, `gnss_latency`'s `false_valid` goes from 340 to 37 494 and `a299e722` ends
-    /// `Degraded`, so at the harness's unfloored `R` this filter needs the wider figure (#138).
+    /// converted as well, `gnss_latency`'s `false_valid` goes from 323 to 37 494 and
+    /// `a299e722` ends `Degraded`, so at the harness's unfloored `R` this filter needs the wider
+    /// figure (#138).
     fn default() -> Self {
         Self {
             gyro_white: 1.5e-2,
