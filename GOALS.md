@@ -281,7 +281,8 @@ The options, in the order they are worth doing:
    states, no hot-path cost; what it does need is the boundary work of
    [differentiator 2](#2-compile-time-frames-and-units), since a seed arrives in whatever
    convention its source uses. **Done** —
-   `Eskf::initialize_from`, with `set_baro_reference` to complete the seed. It covers the
+   `Eskf::initialize_from`; the barometric reference follows from the first altitude, read
+   against the seeded height (#115). It covers the
    restart-at-altitude case and any vehicle already carrying an attitude source; it does nothing
    for a bare vehicle with no second source.
 
