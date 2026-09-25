@@ -23,7 +23,10 @@ leaves no reference, correlated with the height it was read against (`P_xb = −
 `rejected_gnss_hgt=0`, `Healthy`; 3825 rejected at `baro_offset_walk = 0`), `moving_start`
 `nees_pos` 1.0877. Beside EKF2 there, horizontal agrees within metres and height does not: EKF2
 follows the barometer's ~12 m climb, this filter GNSS height's low frequencies — #8's to explain.
-Order: #89 (the gate the remedies are judged by), #117, #116, then #8.
+Order: #89 (the gate the remedies are judged by), #117, #116, then #8. Apart from that order,
+#131 blocks #86's tailsitter: `Validity`, the alignment latch, (36′) and heading adoption split
+attitude by body axis, which is tilt and heading only near level. #129 (#132) already made the
+tooling read 90° of pitch, as quaternions and tilt/heading panels.
 
 **Every source the crate publishes is fused; no `fuse_*` is a stub.** Initialization is real —
 equations (5)–(8), so the filter starts at the attitude and biases the window yields — `predict`
