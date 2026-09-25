@@ -8,20 +8,22 @@ This file provides guidance to coding agents working with code in this repositor
 except (31)–(33), the three-axis magnetometer, which is out of scope, and (5′)'s subtraction,
 which is #59's. The `**Stub.**` marker survives on those two and nowhere else, and every status
 banner says built rather than intended. What is left is mostly measurement and publication —
-#41 (cost on hardware), #8 (the EKF2 comparison), #47 (the release), #89 (ANEES) — plus three
-defects the consistency keys of #112 surfaced on `2c42096b`, all one mechanism: a coarse start
-fixes no `α₀`, so 35575 barometer rows are refused (#115); every corpus source is correlated
-(`acf1_` 0.17–0.99) while (24) fuses it as white, so `σ_pos_d` sits under the receiver's `epv` at
-4603 of 4604 fixes (#117); and that overconfidence is the lockout precondition "report, do not
-self-recover" accepted, which #116 replaces with recovery on by default behind per-correction
-`Config` opt-outs. #118 gated GNSS height apart from horizontal
+#41 (cost on hardware), #8 (the EKF2 comparison), #47 (the release), #89 (ANEES) — plus two
+defects the consistency keys of #112 surfaced on `2c42096b`: every corpus source is correlated
+(`acf1_` 0.10–0.99) while (24) fuses it as white (#117); and that overconfidence is the lockout
+precondition "report, do not self-recover" accepted, which #116 replaces with recovery on by
+default behind per-correction `Config` opt-outs. #118 gated GNSS height apart from horizontal
 position, which removed the lockout fusing that barometer caused. #119 (#122) estimates the
 barometric offset beside the 15-state covariance, equation (30′), walking at
 `Config::baro_offset_walk` (PX4's 0.13); GOALS' "Barometric reference as an estimated offset"
 records why estimated rather than a consider state — 1.035 on `moving_start`, but 29310 barometer
-rejections on `2c42096b`. That unblocks #115, parked on `115-coarse-baro`, whose `R` inflation
-(`548cc57`) it supersedes: seed the offset from the estimate instead. Order: #115, then #89 (the
-gate the remedies are judged by), #117, #116, then #8.
+rejections on `2c42096b`. #115 (#127) seeds that offset from the estimate on any start that
+leaves no reference, correlated with the height it was read against (`P_xb = −P[:, D]`), behind
+`Config::baro_reference_from_estimate`: `2c42096b` fuses its barometer (35575 rows refused → 4,
+`rejected_gnss_hgt=0`, `Healthy`; 3825 rejected at `baro_offset_walk = 0`), `moving_start`
+`nees_pos` 1.0877. Beside EKF2 there, horizontal agrees within metres and height does not: EKF2
+follows the barometer's ~12 m climb, this filter GNSS height's low frequencies — #8's to explain.
+Order: #89 (the gate the remedies are judged by), #117, #116, then #8.
 
 **Every source the crate publishes is fused; no `fuse_*` is a stub.** Initialization is real —
 equations (5)–(8), so the filter starts at the attitude and biases the window yields — `predict`
@@ -340,8 +342,8 @@ affected expectations.
 Expectations are matched pair by pair as substrings, so **adding** a key to the `summary` line is
 safe and pinning new behavior there is cheap — `align=`, `resets=`, `alpha0=` and `heading=` were
 added that way, and each now guards a decision that would otherwise rot into a comment (`alpha0=`
-catches the coarse log's 35575 barometer rows going from fused to `NoReference`, which no other key
-noticed; `heading=` is the validity verdict on the initialization window, which catches a yaw
+caught the coarse log's 35575 barometer rows going from fused to `NoReference`, which no other key
+noticed, and now says where each log's reference came from — `window`, `estimate` or `none`; `heading=` is the validity verdict on the initialization window, which catches a yaw
 reported valid that no magnetometer ever observed — taken at the end of the log it would only
 restate `transitions=`). `floored=` is the odd one: it pins behaviour that must
 **not** happen, a count of variances raised to the floor of (42′) that reads zero on every log, and
@@ -706,7 +708,9 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
   reparameterizes the surviving attitude rows by (41) with the exact `R(q̂⁺)ᵀR(q̂)` rather than the
   small-angle Jacobian an update takes, and it carries the `R` of (36′) rather than the caller's
   σ_ψ² — a heading levelled by a coarse tilt is not worth the magnetometer's own variance. Never
-  for recovery, never for a quantity that was once known.
+  for recovery, never for a quantity that was once known. The barometric reference is the same
+  shape without the step: a start that leaves none reads it from the estimate at the first
+  altitude once position is established, which moves no state.
 - **Nothing in `src/` panics.** No `unwrap`, `expect`, `panic!` or `unreachable!` outside
   `#[cfg(test)]`. On `thumbv6m` a panic is a `udf` and the vehicle is a brick, which is why bad
   input is reported through a typed outcome rather than asserted on. The matrix arithmetic the
@@ -819,9 +823,11 @@ has an honest reference while a moving window of any length does not. Its varian
 window's own scatter over its count of distinct readings — a held value is one reading, and one
 reading sets no reference — and from then on (30′) estimates it, so it is none of the three above:
 an initialization output that the filter goes on refining. A window
-with no barometer sample leaves it unset and `fuse_baro_altitude` returns `Fusion::NoReference`
-rather than referring altitudes to an invented origin — the LPE log in the corpus
-(`7592c9b2…`) yields no barometer rows at all and covers that path.
+that fixes none — in motion, or with no barometer sample — leaves the first altitude after
+position is established to read one from the estimate (#115), correlated with the height it was
+read against; until then `fuse_baro_altitude` returns `Fusion::NoReference` rather than referring
+altitudes to an invented origin. `2c42096b` is the corpus log that covers the seed; the LPE log
+(`7592c9b2…`) yields no barometer rows at all.
 
 Still open: the same window could *measure* the barometer and IMU noise and hand back a starting
 `R`/`Q` instead of making the caller guess, as another output of `initialize`. That sits under
