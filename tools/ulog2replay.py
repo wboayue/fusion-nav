@@ -125,6 +125,8 @@ REFERENCE_TOPICS = [
     "vehicle_attitude",
     "estimator_states",
     "estimator_status",
+    "vehicle_status",
+    "vtol_vehicle_status",
 ]
 
 
@@ -160,21 +162,6 @@ def ecef(lat, lon, alt):
         (n + alt) * math.cos(phi) * math.cos(lam),
         (n + alt) * math.cos(phi) * math.sin(lam),
         (n * (1.0 - WGS84_E2) + alt) * s,
-    )
-
-
-def euler_zyx(q0, q1, q2, q3):
-    """Roll, pitch and yaw from a Hamilton scalar-first body-to-NED quaternion.
-
-    The same convention and the same ZYX order the replay output and the truth
-    format use, so the columns diff against theirs by name. PX4's
-    `vehicle_attitude.q` is already this convention, so nothing is reframed here.
-    """
-    sin_pitch = max(-1.0, min(1.0, 2.0 * (q0 * q2 - q3 * q1)))
-    return (
-        math.atan2(2.0 * (q0 * q1 + q2 * q3), 1.0 - 2.0 * (q1 * q1 + q2 * q2)),
-        math.asin(sin_pitch),
-        math.atan2(2.0 * (q0 * q3 + q1 * q2), 1.0 - 2.0 * (q2 * q2 + q3 * q3)),
     )
 
 
@@ -535,7 +522,7 @@ def ekf2_update_period(ulog, imu_dt):
 # replay input handles sources of different arities.
 REFERENCE_COLUMNS = [
     "pos_n", "pos_e", "pos_d", "vel_n", "vel_e", "vel_d",
-    "roll", "pitch", "yaw", "att_reset",
+    "q0", "q1", "q2", "q3", "att_reset",
     "ba_x", "ba_y", "ba_z", "bg_x", "bg_y", "bg_z",
     "sigma_pos_n", "sigma_pos_e", "sigma_pos_d",
     "sigma_vel_n", "sigma_vel_e", "sigma_vel_d",
@@ -543,6 +530,7 @@ REFERENCE_COLUMNS = [
     "sigma_ba_x", "sigma_ba_y", "sigma_ba_z",
     "sigma_bg_x", "sigma_bg_y", "sigma_bg_z",
     "r_gnss_pos", "r_gnss_vel", "r_baro", "r_mag",
+    "mode",
 ]
 
 
@@ -556,29 +544,22 @@ def reference_local(local, rows):
 
 
 def reference_attitude(attitude, rows):
-    """EKF2's attitude, from `vehicle_attitude`.
+    """EKF2's attitude, from `vehicle_attitude`, as the quaternion it logs.
 
-    Available on every corpus log where the states topic and its covariance are
-    not, which makes this the one comparison the whole corpus can support. Tilt
-    is the half that compares cleanly: both filters level off gravity, and across
-    the corpus EKF2's roll and pitch sit within 0.28 deg of what this crate's
-    static window reports.
+    Written through unconverted: `vehicle_attitude.q` is Hamilton, scalar-first,
+    body FRD to NED (`msg/versioned/VehicleAttitude.msg:2,10` at PX4 c4e4ef98),
+    the convention the replay output's `q0..q3` carry, so the two diff by name.
+    Euler angles are what `tools/replay_report.py` does not draw, because ZYX
+    cannot separate roll from yaw at 90 deg of pitch.
 
     `att_reset` carries `quat_reset_counter` where the topic has it, because
-    without it a reset reads as divergence. On 3949f175 EKF2's yaw moves 41.60
-    deg to 16.66 between t=2 s and t=4 s, so a yaw differenced at one instant
-    measures which side of that step each filter was on. The residue after it is
-    a declination difference -- the replay harness overrides declination to a
-    fixed -0.06 rad while EKF2 reads the world magnetic model at an origin two
-    corpus logs do not have -- so absolute yaw is not a like-for-like number and
-    tilt is.
+    without it a reset reads as divergence.
     """
     t = stamps(attitude)
     q = [column(attitude, "q", i) for i in range(4)]
     resets = attitude.data.get("quat_reset_counter")
     for k in range(len(t)):
-        roll, pitch, yaw = euler_zyx(q[0][k], q[1][k], q[2][k], q[3][k])
-        values = {"roll": roll, "pitch": pitch, "yaw": yaw}
+        values = {f"q{i}": q[i][k] for i in range(4)}
         if resets is not None:
             values["att_reset"] = resets[k]
         rows.append((t[k], "ekf2_att", values))
@@ -649,12 +630,102 @@ def reference_ratios(status, ratio_fields, rows):
         ))
 
 
+# The vehicle's flight regime, for shading the report and nothing else. PX4 tells
+# EKF2 whether it is flying fixed-wing or transitioning (`flags.is_fixed_wing`,
+# `flags.in_transition`, src/modules/ekf2/EKF2.cpp:2830-2831 at c4e4ef98); this
+# filter is told nothing, and a reader of a VTOL log needs to see where the
+# regime changed to judge whether that matters.
+#
+# `vehicle_status.vehicle_type` is never read. Its constants were renumbered
+# (7cb6464cfb: rotary wing 0, fixed wing 1) and put back (a150fc05af, 50626f6848:
+# 1 and 2) under one field name, and ULog records names, not constants: 3949f175
+# logs a quadrotor as 0. What is read instead is fixed outside PX4 -- MAVLink's
+# MAV_TYPE (`vehicle_status.system_type`) and MAV_VTOL_STATE
+# (`vtol_vehicle_status.vehicle_vtol_state`, msg/versioned/VtolVehicleStatus.msg:1)
+# -- or told apart by field name, as the three bools that preceded the VTOL state
+# in 2b7efeacca are.
+
+# MAV_VTOL_STATE, which has not moved since v1.10.
+VTOL_STATES = {0: "undefined", 1: "to_fw", 2: "to_mc", 3: "mc", 4: "fw"}
+
+# MAV_TYPE for a vehicle that is not a VTOL: one regime for the whole log.
+# Anything else -- a rover, a boat, a value outside MAVLink's enum such as
+# a299e722's 202 -- is `other` rather than a guess.
+MAV_TYPE_MC = {2, 3, 4, 13, 14, 15, 29, 35}  # quad, coax, heli, hexa, octo, tri, dodeca, deca
+MAV_TYPE_FW = {1}
+
+
+def classify_mode(is_vtol, system_type, vtol_state=None, legacy=None):
+    """The regime one status sample describes.
+
+    `vtol_state` is MAV_VTOL_STATE; `legacy` is the pre-2b7efeacca triple
+    `(vtol_in_rw_mode, vtol_in_trans_mode, in_transition_to_fw)`. A VTOL with
+    neither logged has no regime to report, which is `undefined`.
+    """
+    if not is_vtol:
+        if system_type in MAV_TYPE_MC:
+            return "mc"
+        if system_type in MAV_TYPE_FW:
+            return "fw"
+        return "other"
+    if vtol_state is not None:
+        return VTOL_STATES.get(vtol_state, "undefined")
+    if legacy is not None:
+        rotary, transition, to_fw = legacy
+        if transition:
+            return "to_fw" if to_fw else "to_mc"
+        return "mc" if rotary else "fw"
+    return "undefined"
+
+
+def reference_mode(status, vtol, rows):
+    """One `vehicle_mode` row per change of regime.
+
+    A vehicle that is not a VTOL has one regime for the whole log, so one row, at
+    the first status sample. A VTOL takes its regime from `vtol_vehicle_status`,
+    whichever era of that topic the log carries.
+    """
+    if status is None or "is_vtol" not in status.data or "system_type" not in status.data:
+        return None
+    t = stamps(status)
+    system_type = int(status.data["system_type"][0])
+    if not any(status.data["is_vtol"]):
+        rows.append((t[0], "vehicle_mode", {"mode": classify_mode(False, system_type)}))
+        return f"vehicle_status.system_type (MAV_TYPE {system_type})"
+
+    samples = []
+    if vtol is not None and "vehicle_vtol_state" in vtol.data:
+        states = vtol.data["vehicle_vtol_state"]
+        for k, when in enumerate(stamps(vtol)):
+            samples.append((when, classify_mode(True, system_type, vtol_state=int(states[k]))))
+        provenance = "vtol_vehicle_status.vehicle_vtol_state"
+    elif vtol is not None and "vtol_in_rw_mode" in vtol.data:
+        legacy = [vtol.data[f] for f in
+                  ("vtol_in_rw_mode", "vtol_in_trans_mode", "in_transition_to_fw")]
+        for k, when in enumerate(stamps(vtol)):
+            triple = tuple(bool(c[k]) for c in legacy)
+            samples.append((when, classify_mode(True, system_type, legacy=triple)))
+        provenance = "vtol_vehicle_status.vtol_in_rw_mode/vtol_in_trans_mode"
+    else:
+        samples.append((t[0], classify_mode(True, system_type)))
+        provenance = "is_vtol with no vtol_vehicle_status"
+
+    previous = None
+    for when, mode in samples:
+        if mode != previous:
+            rows.append((when, "vehicle_mode", {"mode": mode}))
+            previous = mode
+    return provenance
+
+
 def write_reference(ulog, out, t0, imu_dt, source_name):
     """EKF2's own solution and innovation ratios, for a side-by-side diff."""
     local = pick(ulog, ["vehicle_local_position"])
     attitude = pick(ulog, ["vehicle_attitude"])
     status = pick(ulog, ["estimator_status"])
     states = pick(ulog, ["estimator_states", "estimator_status"])
+    vehicle = pick(ulog, ["vehicle_status"])
+    vtol = pick(ulog, ["vtol_vehicle_status"])
     if local is None and status is None and attitude is None:
         print("warning: no EKF2 topics; reference not written", file=sys.stderr)
         return False
@@ -691,24 +762,30 @@ def write_reference(ulog, out, t0, imu_dt, source_name):
         reference_states(states, layout, period, rows)
     if status is not None and ratio_fields:
         reference_ratios(status, ratio_fields, rows)
+    mode = reference_mode(vehicle, vtol, rows)
     rows.sort(key=lambda r: r[0])
 
     with open(out, "w", newline="") as handle:
         for line in reference_note(local, attitude, states, layout, n_states,
-                                   period, provenance, ratio_fields, source_name):
+                                   period, provenance, ratio_fields, mode, source_name):
             handle.write(f"# {line}\n")
         handle.write("t_s,source," + ",".join(REFERENCE_COLUMNS) + "\n")
         for timestamp, source, values in rows:
             cells = [f"{(timestamp - t0) * 1e-6:.6f}", source]
             for name in REFERENCE_COLUMNS:
                 value = values.get(name)
-                cells.append("" if value is None else f"{value:.6g}")
+                if value is None:
+                    cells.append("")
+                elif isinstance(value, str):
+                    cells.append(value)
+                else:
+                    cells.append(f"{value:.6g}")
             handle.write(",".join(cells) + "\n")
     return True
 
 
 def reference_note(local, attitude, states, layout, n_states, period, provenance,
-                   ratio_fields, source_name):
+                   ratio_fields, mode, source_name):
     """The `#` header: what each row kind came from, and every caveat on it."""
     kinds = []
     if local is not None:
@@ -719,6 +796,8 @@ def reference_note(local, attitude, states, layout, n_states, period, provenance
         kinds.append(f"ekf2_states={states.name}")
     if ratio_fields:
         kinds.append("ekf2_ratio=estimator_status")
+    if mode:
+        kinds.append(f"vehicle_mode={mode}")
 
     note = [
         "EKF2's own solution, for comparison. Never filter input.",
@@ -782,11 +861,81 @@ def ekf2_origin_note(local):
     return f"EKF2 origin: {lat:.9g} {lon:.9g} {alt:.9g}"
 
 
+class Fixture:
+    """A stand-in for a pyulog dataset: a name and a dict of field arrays."""
+
+    def __init__(self, name, **fields):
+        self.name = name
+        self.data = fields
+
+
+def self_test():
+    """Literal fixtures for what no corpus log can check about the converter.
+
+    None of the five logs is a VTOL and every one fuses a near-level attitude, so
+    neither a mode read from the wrong field nor a quaternion written scalar-last
+    would show in their output: a scalar-last quaternion is still a rotation.
+    """
+    failures = []
+
+    def expect(what, got, want):
+        if got != want:
+            failures.append(f"{what}: got {got!r}, want {want!r}")
+
+    for args, want in [
+        ((False, 2), "mc"), ((False, 13), "mc"), ((False, 1), "fw"),
+        ((False, 10), "other"), ((False, 202), "other"),
+        ((True, 20, 3), "mc"), ((True, 20, 1), "to_fw"), ((True, 20, 4), "fw"),
+        ((True, 20, 2), "to_mc"), ((True, 20, 0), "undefined"),
+        ((True, 20), "undefined"),
+    ]:
+        expect(f"classify_mode{args}", classify_mode(*args), want)
+    for triple, want in [
+        ((True, False, False), "mc"), ((False, True, True), "to_fw"),
+        ((False, True, False), "to_mc"), ((False, False, False), "fw"),
+    ]:
+        expect(f"legacy {triple}", classify_mode(True, 21, legacy=triple), want)
+
+    # 3949f175's combination: a quadrotor (MAV_TYPE 2) built inside the window
+    # where `vehicle_type` numbered rotary wing 0. Read numerically under the
+    # other era's constants, 0 is no vehicle at all.
+    rows = []
+    status = Fixture("vehicle_status", timestamp=[10, 20], is_vtol=[0, 0],
+                     system_type=[2, 2], vehicle_type=[0, 0])
+    reference_mode(status, None, rows)
+    expect("3949f175 mode rows", [(t, v["mode"]) for t, _, v in rows], [(10, "mc")])
+
+    # A VTOL mission: one row per change, not per message.
+    rows = []
+    status = Fixture("vehicle_status", timestamp=[0], is_vtol=[1], system_type=[20],
+                     vehicle_type=[1])
+    vtol = Fixture("vtol_vehicle_status", timestamp=[1, 2, 3, 4, 5, 6, 7],
+                   vehicle_vtol_state=[3, 3, 1, 4, 4, 2, 3])
+    reference_mode(status, vtol, rows)
+    expect("vtol mode rows", [(t, v["mode"]) for t, _, v in rows],
+           [(1, "mc"), (3, "to_fw"), (4, "fw"), (6, "to_mc"), (7, "mc")])
+
+    # Pitched 90 deg: (cos 45, 0, sin 45, 0), scalar first. Scalar-last would put
+    # the pair in q1 and q3 -- a half turn about a tilted axis, still a rotation.
+    rows = []
+    half = math.sqrt(0.5)
+    attitude = Fixture("vehicle_attitude", timestamp=[0],
+                       **{"q[0]": [half], "q[1]": [0.0], "q[2]": [half], "q[3]": [0.0]})
+    reference_attitude(attitude, rows)
+    expect("attitude row", {k: rows[0][2][k] for k in ("q0", "q1", "q2", "q3")},
+           {"q0": half, "q1": 0.0, "q2": half, "q3": 0.0})
+
+    for failure in failures:
+        print(f"FAIL {failure}", file=sys.stderr)
+    print(f"ulog2replay self-test: {'FAIL' if failures else 'ok'}", file=sys.stderr)
+    return 1 if failures else 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("ulog", type=Path, help="input .ulg file")
+    parser.add_argument("ulog", type=Path, nargs="?", help="input .ulg file")
     parser.add_argument("-o", "--output", type=Path, help="output CSV (default: alongside input)")
     parser.add_argument(
         "--reference", type=Path, nargs="?", const=True,
@@ -801,7 +950,15 @@ def main():
         "--mag-variance", type=float, default=DEFAULT_MAG_VARIANCE,
         help=f"rad^2 on heading, PX4 does not log one (default: {DEFAULT_MAG_VARIANCE})",
     )
+    parser.add_argument(
+        "--self-test", action="store_true",
+        help="run the fixtures no corpus log can check, and exit",
+    )
     args = parser.parse_args()
+    if args.self_test:
+        return self_test()
+    if args.ulog is None:
+        parser.error("a .ulg file is required")
 
     output = args.output or args.ulog.with_suffix(".csv")
     try:

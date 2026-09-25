@@ -227,10 +227,28 @@ before the update existed it changed CSV bytes and no key.
 `--reference` writes EKF2's own solution to a second file on the replay timebase, for a
 side-by-side diff. It is never filter input. Four row kinds, each at its own publication rate
 rather than resampled onto a common grid — interpolation is a statistic, and not a converter's:
-`ekf2_local` (position and velocity), `ekf2_att` (attitude, and `quat_reset_counter` where the
-topic carries it), `ekf2_states` (biases and the covariance diagonal as standard deviations), and
-`ekf2_ratio` (the four aggregate innovation test ratios). Column names match the epoch file's, so
-a diff is by name.
+`ekf2_local` (position and velocity), `ekf2_att` (attitude as the quaternion `q0..q3`, and
+`quat_reset_counter` where the topic carries it), `ekf2_states` (biases and the covariance diagonal
+as standard deviations), and `ekf2_ratio` (the four aggregate innovation test ratios). Column
+names match the epoch file's, so a diff is by name.
+
+Attitude is a quaternion in both files — Hamilton, scalar-first, body to NED, the convention
+`Attitude::body_to_ned` names and `vehicle_attitude.q` already logs — rather than Euler angles,
+because ZYX Euler cannot separate roll from yaw at 90° of pitch, where a tailsitter cruises (#129).
+On the `mission` scenario with the circuit's pitch amplitude raised from 0.12 rad to 1.9 rad (a
+local edit to `examples/simulate.rs`, default seed), which pitches to 109°, ZYX roll and yaw read
+off the epoch file's quaternion step 125° in one epoch at t = 113.885 s while the quaternion moves
+by a fraction of a degree. The report derives what it draws.
+
+A fifth kind, `vehicle_mode`, is not EKF2's: it is the vehicle's flight regime — `mc`, `fw`,
+`to_fw`, `to_mc`, `undefined` or `other` — one row per change, for shading the report. PX4 tells
+EKF2 its regime and this filter is told nothing, so a reader of a VTOL log needs to see where it
+changed; it goes in the reference, never the replay input, so the filter cannot read it. It is
+taken from MAVLink's `MAV_VTOL_STATE` and `MAV_TYPE`, never from `vehicle_status.vehicle_type`,
+whose constants were renumbered under one field name — `3949f175` logs its quadrotor as 0
+(AGENTS.md, "A ULog field name does not pin its meaning"). Four corpus logs read `mc`;
+`a299e722` reports `MAV_TYPE` 202, outside MAVLink's enum, and reads `other` rather than a guess.
+None is a VTOL.
 
 EKF2's state vector has been laid out the same way in every version that logs one, but **its
 covariance has not**, and the two eras both report 24 entries meaning different things — so no
@@ -298,9 +316,15 @@ map. The rounding itself rests on PX4 source rather than on that number: it move
 filter rejects 278 of 609 solutions from, so its own bias wanders by ±0.01 rad/s and cannot
 adjudicate anything.
 
-Roll and pitch agree with EKF2 within 0.28° on all five logs at the end of the initialization
-window, which is what confirms the quaternion convention, the ZYX order and the timebase
-rebasing at once. **Absolute yaw does not compare at an instant** and should not be read as
+Tilt agrees with EKF2 within 0.13° on all five logs at EKF2's first attitude sample after the
+initialization window — read with the report's own `tilt_heading` and `rotation_difference`, so
+no second implementation of either — which is what confirms the quaternion convention and the
+timebase rebasing at once. A magnitude cannot see a tilt in the wrong direction, so the direction is read
+off the rotation between the two: its body x and y components are within 0.42° on the three logs
+whose headings there agree within 17°. On the other two they are not a tilt comparison — a
+heading difference about navigation down lands partly on body x and y, by the sine of the tilt,
+and `f16771dd` reads 1.84° and 2.39° there with its headings 162° apart at 1° of tilt.
+**Absolute yaw does not compare at an instant** and should not be read as
 divergence: EKF2 resets yaw in the first seconds — on `3949f175` it moves 41.60° to 16.66°
 between t = 2 s and t = 4 s, which is what `ekf2_att`'s `att_reset` column is for — and the
 residue after its reset is a declination difference, this harness overriding declination to a
@@ -311,6 +335,7 @@ have.
 
 `tools/replay_report.py` renders one replay into a single self-contained HTML file: horizontal
 track against EKF2 and the raw fixes, every state with its ±3σ band and `Status` shaded behind it,
+attitude as tilt and heading and as its rotation from EKF2's in body axes,
 all the σ on one log axis with GNSS gaps shaded, per-axis normalized innovations with the gate and
 its rejections, the NIS histogram and QQ plot against χ², and the published keys.
 
@@ -322,7 +347,7 @@ $ uv run tools/replay_report.py data/logs/<log-id>.csv target/replay.csv \
 ```
 
 One HTML file with the PNGs inlined, and no JavaScript, for the same reason `README.md` carries no
-mermaid: it renders wherever it lands. The 2 h log takes 16 s and produces 2.1 MB, decimating
+mermaid: it renders wherever it lands. The 2 h log takes 27 s and produces 2.4 MB, decimating
 1.4 M epochs to about 4000 points per trace with a min/max envelope per bucket, so a transient
 survives the stride. Sources, their gates and their degrees of freedom are discovered from the
 files, so adding a measurement source to the crate needs no edit in that tool.
