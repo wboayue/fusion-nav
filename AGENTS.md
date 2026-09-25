@@ -288,6 +288,16 @@ LPE log is refused outright. `data/README.md`, "What `--reference` writes, and w
 those boundaries and the bias-scaling factor; the map itself lives in `tools/ulog2replay.py` and
 nowhere else, so a consumer reads column names and never the layout.
 
+**A ULog field name does not pin its meaning.** A ULog file records field names and types, never
+enum constants, so a renumbered enum reads the same as the old one. `vehicle_status.vehicle_type`
+is the case the corpus already holds. PX4 `7cb6464cfb` renumbered it to rotary wing 0 and fixed
+wing 1, and `a150fc05af` (v1.16.0-rc2) and `50626f6848` (main) put back 1 and 2.
+`3949f175` was built inside that window (`v1.16.0-rc1-154`) and logs a quadrotor as 0, while its
+`ver_sw_release` reads as a v1.16.0 build, so a mapping keyed on the version misreads it too.
+Before the converter reads a numeric enum, check the `.msg` history in `~/projects/PX4-Autopilot`.
+Prefer a field whose values an outside standard fixes, such as MAVLink's `MAV_VTOL_STATE`, or one
+whose name changed when its meaning did. #129 applies this to flight mode.
+
 The report tool computes no statistic: it plots the per-fusion rows and prints the `summary` and
 `score` keys. It refuses a set of files that do not describe one run — `epochs=` against the epoch
 row count, `rejected_<source>=` against the fusion CSV's tally, the source `.ulg` both the
