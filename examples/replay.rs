@@ -1209,8 +1209,9 @@ impl Replay {
                         "barometric reference {:.2} m, altitudes are relative to it",
                         reference.as_meters()
                     ),
-                    None => "no barometric reference (no barometer in the window, or it was \
-                             taken in motion), altitude refused until a fix establishes position"
+                    None => "no barometric reference from the window (no barometer in it, or \
+                             it was taken in motion); the first altitude once position is \
+                             established reads one from the estimate"
                         .to_string(),
                 };
                 let alignment = match self.alignment {
@@ -2912,8 +2913,8 @@ mod tests {
         // component 0 of a fix is called, so its lengths are checked against the dimensions
         // the filter actually publishes rather than trusted.
         // The barometer needs a reading inside the window as well as after it: with no `α₀`
-        // its `fuse_*` returns `NoReference`, the gate never runs, and the source publishes
-        // no dimension to check `AXES` against.
+        // the first reading after it is spent reading one from the estimate, the gate never
+        // runs, and the source publishes no dimension to check `AXES` against.
         let log = still_start_with_baro(&[41.5, 42.5, 42.0])
             .gnss_pos(2.0, 1.0, 2.0, -3.0)
             .gnss_vel(2.0, 0.1, 0.0, 0.0)

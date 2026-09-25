@@ -161,11 +161,11 @@
 # the filter without (42')'s floor, which is what a floor that never fires has
 # to produce.
 #
-# discarded= is also what separates two logs that alpha0= reads the same way.
+# discarded= is what says how much of a barometer alpha0= left unused.
 # 7592c9b2 is alpha0=none discarded=0: an LPE log with no barometer rows at
-# all. 2c42096b is alpha0=none discarded=35575: a barometer that reports
-# throughout, every row of it thrown away for want of a reference a moving
-# window could not establish. Counted after the commit, because Diagnostics
+# all. 2c42096b is alpha0=estimate discarded=4: the rows between its commit
+# and its first fix, when there is no established height to read a
+# reference against. Counted after the commit, because Diagnostics
 # resets there -- what a log refuses before it initializes is the harness's
 # startup order and not the flight.
 #
@@ -216,12 +216,12 @@
 # margin, and reading them back would flatter the claim by 1 %.
 #
 # GNSS position reads 0.0056, 0.0110 and 0.1221 horizontally on the three logs
-# that carry it, and 0.0048, 0.0547 and 0.1024 in height, so S is 3-15x too
+# that carry it, and 0.0048, 0.3125 and 0.1024 in height, so S is 2-15x too
 # wide in sigma -- and mostly R, since an aided filter's H P H' sits well
 # under a several-metre eph. The two halves are gated and reported apart
-# (GnssFusion), so each reads against its own degrees of freedom; as one
-# joint test the three read 0.0059, 0.0255 and 0.1170, and 2c42096b's 0.0255
-# was mostly its height. a299e722's velocity is the one
+# (GnssFusion), so each reads against its own degrees of freedom.
+# 2c42096b's height, the least conservative, is the receiver measured against
+# a height its barometer holds. a299e722's velocity is the one
 # that reads the other way, 7.5592, its sigma_v about 2.75x too tight; smaller
 # than the 6x its own differenced positions suggest (#105) because S is
 # H P H' + R and the state's own uncertainty dilutes a too-small R. The same
@@ -247,15 +247,26 @@
 # 0.0064 to 0.0048 and acf1_gnss_hgt 0.5489 to 0.6638 on 3949f175, nis_baro
 # 0.2493 to 0.2093 on a299e722. Vertical velocity's mean innovation moves
 # with them, 16 % on 3949f175 and 8 % on a299e722; f16771dd's heading mean
-# moves 3 %, and the horizontal keys under 1 %. 2c42096b and 7592c9b2 are
-# unmoved: the first starts in motion and fixes no reference (#115), the
-# second has no barometer rows at all.
+# moves 3 %, and the horizontal keys under 1 %. 7592c9b2 has no barometer
+# rows at all, and 2c42096b is the paragraph below.
+#
+# 2c42096b starts in motion, so its window fixes no reference; the first
+# altitude after its first fix reads one from the estimate (#115), seeded
+# correlated with the height it was read against by (30'). Its barometer is
+# then fused throughout -- 4 rows discarded, all before that fix -- and the
+# height keys move as a second height source should move them: nis_gnss_hgt
+# 0.0547 to 0.3125, nu_gnss_hgt_d 0.0638 to 0.1689, acf1_gnss_hgt 0.8883 to
+# 0.9855, the receiver now measured against a height it no longer sets
+# alone. rejected_gnss_hgt=0 and status=Healthy are the claim, and the
+# negative control is what makes them one: the same log at
+# baro_offset_walk=0 rejects 3825 GNSS heights and ends Degraded.
 #
 # nis_over95_<source>= is the fraction above the 95 % chi-square quantile at
 # that source's dimension -- 0.05 for a filter whose innovations are
 # distributed the way S claims. It sits beside the mean rather than instead of
 # it because the two fail differently, and it is a structural zero everywhere
-# except a299e722's velocity at 0.6503: another key whose interesting value
+# except a299e722's velocity at 0.6503 and 2c42096b's GNSS height at 0.0026:
+# another key whose interesting value
 # the one it does not have.
 #
 # nu_<source>_<axis>= is the mean innovation, per axis because a norm hides
@@ -266,14 +277,14 @@
 #
 # acf1_<source>= is the lag-1 autocorrelation of the normalized innovation,
 # averaged over the source's axes. 0 for the white sequence (24) assumes, and
-# it is not white anywhere: 0.59-0.99 on GNSS horizontal position, 0.55-0.99
-# on GNSS height, 0.17-0.85 on the
+# it is not white anywhere: 0.59-0.99 on GNSS horizontal position, 0.66-0.99
+# on GNSS height, 0.10-0.83 on the
 # barometer, 0.18-0.99 on the magnetometer. Expected and not chased -- a 1 Hz
 # receiver filters its own solution in time, and a 250 Hz magnetometer is
 # sampled far faster than the field it reads changes. It is pinned so that a
 # change in that character is visible, not because 0 is reachable. The split
 # of GNSS position into its two halves is where the figure says most:
-# 2c42096b's receiver reads 0.5936 horizontally and 0.8883 in height, so
+# 2c42096b's receiver reads 0.5925 horizontally and 0.9855 in height, so
 # the axis it wanders on is the one it is most correlated on -- the altitude
 # that spans -7.49 to +19.80 m on a vehicle that does not move (#117).
 #
@@ -300,14 +311,14 @@
 # also the one start here that would notice nothing if (6)'s levelling were
 # dropped -- the tilt it levels by is zero.
 # Source: PX4 Flight Review (CC BY 4.0).
-b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-4425-b118-7b7187331a98.ulg  https://cdn.logs.px4.io/3949f175-26b4-4425-b118-7b7187331a98.ulg  rate=250 window=500 align=static an=none alpha0=set heading=valid roll0=0.01 pitch0=0.01 yaw0=24.38 resets=0 aligned_at=0.00 attitude_lost=never r_policy=raw rejected=0 rejected_gnss_pos=0 rejected_gnss_hgt=0 rejected_gnss_vel=0 rejected_baro=0 rejected_mag=0 discarded=0 refused=0 invalid=0 floored=0 transitions=2 status=Healthy nis_gnss_pos=0.0055..0.0057 nis_gnss_hgt=0.0047..0.0049 nis_gnss_vel=0.0424..0.0434 nis_baro=0.0066..0.0068 nis_mag=0.1566..0.1598 nis_over95_gnss_pos=0.0000 nis_over95_gnss_hgt=0.0000 nis_over95_gnss_vel=0.0000 nis_over95_baro=0.0000 nis_over95_mag=0.0034..0.0036 nu_gnss_pos_n=-0.011593..-0.011363 nu_gnss_pos_e=0.006062..0.006186 nu_gnss_hgt_d=-0.042746..-0.041898 nu_gnss_vel_n=-0.012084..-0.011844 nu_gnss_vel_e=0.006636..0.006772 nu_gnss_vel_d=0.007788..0.007946 nu_baro_d=-0.006715..-0.006581 nu_mag_yaw=0.001507..0.001539 acf1_gnss_pos=0.5801..0.5919 acf1_gnss_hgt=0.6571..0.6705 acf1_gnss_vel=0.4286..0.4374 acf1_baro=0.2621..0.2675 acf1_mag=0.9752..0.9950
+b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-4425-b118-7b7187331a98.ulg  https://cdn.logs.px4.io/3949f175-26b4-4425-b118-7b7187331a98.ulg  rate=250 window=500 align=static an=none alpha0=window heading=valid roll0=0.01 pitch0=0.01 yaw0=24.38 resets=0 aligned_at=0.00 attitude_lost=never r_policy=raw rejected=0 rejected_gnss_pos=0 rejected_gnss_hgt=0 rejected_gnss_vel=0 rejected_baro=0 rejected_mag=0 discarded=0 refused=0 invalid=0 floored=0 transitions=2 status=Healthy nis_gnss_pos=0.0055..0.0057 nis_gnss_hgt=0.0047..0.0049 nis_gnss_vel=0.0424..0.0434 nis_baro=0.0066..0.0068 nis_mag=0.1566..0.1598 nis_over95_gnss_pos=0.0000 nis_over95_gnss_hgt=0.0000 nis_over95_gnss_vel=0.0000 nis_over95_baro=0.0000 nis_over95_mag=0.0034..0.0036 nu_gnss_pos_n=-0.011593..-0.011363 nu_gnss_pos_e=0.006062..0.006186 nu_gnss_hgt_d=-0.042746..-0.041898 nu_gnss_vel_n=-0.012084..-0.011844 nu_gnss_vel_e=0.006636..0.006772 nu_gnss_vel_d=0.007788..0.007946 nu_baro_d=-0.006715..-0.006581 nu_mag_yaw=0.001507..0.001539 acf1_gnss_pos=0.5801..0.5919 acf1_gnss_hgt=0.6571..0.6705 acf1_gnss_vel=0.4286..0.4374 acf1_baro=0.2621..0.2675 acf1_mag=0.9752..0.9950
 
 # 64 s quadrotor, PX4 v1.10.0, EKF2. No GNSS topic; baro and mag only.
 # 11 SD-card dropouts totalling 2796 ms leave four holes in sensor_combined up
 # to 1.304 s. The only log that exercises Propagation::StepTooLong, and the
 # reason Config::max_predict_dt exists.
 # Source: PX4 Flight Review (CC BY 4.0).
-1f3132990f6c9c220a99e1b51aaa21d555ab80224c02cbc336d6841811fae5d2  f16771dd-fe7f-4ebe-a0bb-77ca2a5de6a7.ulg  https://cdn.logs.px4.io/f16771dd-fe7f-4ebe-a0bb-77ca2a5de6a7.ulg  rate=250 window=500 align=static an=none alpha0=set heading=valid roll0=0.84 pitch0=-0.51 yaw0=-107.33 resets=0 aligned_at=0.00 attitude_lost=3.84 r_policy=raw rejected=0 rejected_gnss_pos=0 rejected_gnss_hgt=0 rejected_gnss_vel=0 rejected_baro=0 rejected_mag=0 discarded=0 refused=4 invalid=0 floored=0 transitions=2 status=Healthy nis_gnss_pos=none nis_gnss_hgt=none nis_gnss_vel=none nis_baro=0.0297..0.0305 nis_mag=0.0888..0.0906 nis_over95_gnss_pos=none nis_over95_gnss_hgt=none nis_over95_gnss_vel=none nis_over95_baro=0.0000 nis_over95_mag=0.0003..0.0005 nu_gnss_pos_n=none nu_gnss_pos_e=none nu_gnss_hgt_d=none nu_gnss_vel_n=none nu_gnss_vel_e=none nu_gnss_vel_d=none nu_baro_d=-0.011033..-0.010813 nu_mag_yaw=-0.027577..-0.027029 acf1_gnss_pos=none acf1_gnss_hgt=none acf1_gnss_vel=none acf1_baro=0.1590..0.1624 acf1_mag=0.8871..0.9051
+1f3132990f6c9c220a99e1b51aaa21d555ab80224c02cbc336d6841811fae5d2  f16771dd-fe7f-4ebe-a0bb-77ca2a5de6a7.ulg  https://cdn.logs.px4.io/f16771dd-fe7f-4ebe-a0bb-77ca2a5de6a7.ulg  rate=250 window=500 align=static an=none alpha0=window heading=valid roll0=0.84 pitch0=-0.51 yaw0=-107.33 resets=0 aligned_at=0.00 attitude_lost=3.84 r_policy=raw rejected=0 rejected_gnss_pos=0 rejected_gnss_hgt=0 rejected_gnss_vel=0 rejected_baro=0 rejected_mag=0 discarded=0 refused=4 invalid=0 floored=0 transitions=2 status=Healthy nis_gnss_pos=none nis_gnss_hgt=none nis_gnss_vel=none nis_baro=0.0297..0.0305 nis_mag=0.0888..0.0906 nis_over95_gnss_pos=none nis_over95_gnss_hgt=none nis_over95_gnss_vel=none nis_over95_baro=0.0000 nis_over95_mag=0.0003..0.0005 nu_gnss_pos_n=none nu_gnss_pos_e=none nu_gnss_hgt_d=none nu_gnss_vel_n=none nu_gnss_vel_e=none nu_gnss_vel_d=none nu_baro_d=-0.011033..-0.010813 nu_mag_yaw=-0.027577..-0.027029 acf1_gnss_pos=none acf1_gnss_hgt=none acf1_gnss_vel=none acf1_baro=0.1590..0.1624 acf1_mag=0.8871..0.9051
 
 # 61 s, vendor firmware reporting v6.5.22, EKF2, airframe unknown type.
 # Logs in bursts: shortest IMU interval 2.5 ms against a true period of 20 ms.
@@ -357,7 +368,7 @@ b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-
 # third source's verdict, on the one receiver in this corpus close enough to
 # the gate to show it.
 # Source: PX4 Flight Review (CC BY 4.0).
-1c0ea42d6e22cef5cb8730e71a7740b4f5a35988e88e677a72351835cd42990a  a299e722-a7f0-4e2e-bcdf-ce487d556ac1.ulg  https://cdn.logs.px4.io/a299e722-a7f0-4e2e-bcdf-ce487d556ac1.ulg  rate=50 window=101 align=static an=none alpha0=set heading=valid roll0=1.19 pitch0=-2.93 yaw0=-176.42 resets=0 aligned_at=0.00 attitude_lost=never r_policy=raw rejected=278 rejected_gnss_pos=0 rejected_gnss_hgt=0 rejected_gnss_vel=278 rejected_baro=0 rejected_mag=0 discarded=0 refused=0 invalid=0 floored=0 transitions=4 status=Healthy nis_gnss_pos=0.1208..0.1234 nis_gnss_hgt=0.1013..0.1035 nis_gnss_vel=7.4836..7.6348 nis_baro=0.2072..0.2114 nis_mag=0.1964..0.2004 nis_over95_gnss_pos=0.0000 nis_over95_gnss_hgt=0.0000 nis_over95_gnss_vel=0.6437..0.6569 nis_over95_baro=0.0000 nis_over95_mag=0.0000 nu_gnss_pos_n=0.261820..0.267110 nu_gnss_pos_e=-0.668738..-0.655494 nu_gnss_hgt_d=0.156439..0.159601 nu_gnss_vel_n=0.071641..0.073089 nu_gnss_vel_e=-0.125147..-0.122667 nu_gnss_vel_d=-0.010334..-0.010128 nu_baro_d=-0.027811..-0.027259 nu_mag_yaw=-0.066443..-0.065127 acf1_gnss_pos=0.9786..0.9984 acf1_gnss_hgt=0.9787..0.9985 acf1_gnss_vel=0.6962..0.7104 acf1_baro=0.8182..0.8348 acf1_mag=0.8611..0.8785
+1c0ea42d6e22cef5cb8730e71a7740b4f5a35988e88e677a72351835cd42990a  a299e722-a7f0-4e2e-bcdf-ce487d556ac1.ulg  https://cdn.logs.px4.io/a299e722-a7f0-4e2e-bcdf-ce487d556ac1.ulg  rate=50 window=101 align=static an=none alpha0=window heading=valid roll0=1.19 pitch0=-2.93 yaw0=-176.42 resets=0 aligned_at=0.00 attitude_lost=never r_policy=raw rejected=278 rejected_gnss_pos=0 rejected_gnss_hgt=0 rejected_gnss_vel=278 rejected_baro=0 rejected_mag=0 discarded=0 refused=0 invalid=0 floored=0 transitions=4 status=Healthy nis_gnss_pos=0.1208..0.1234 nis_gnss_hgt=0.1013..0.1035 nis_gnss_vel=7.4836..7.6348 nis_baro=0.2072..0.2114 nis_mag=0.1964..0.2004 nis_over95_gnss_pos=0.0000 nis_over95_gnss_hgt=0.0000 nis_over95_gnss_vel=0.6437..0.6569 nis_over95_baro=0.0000 nis_over95_mag=0.0000 nu_gnss_pos_n=0.261820..0.267110 nu_gnss_pos_e=-0.668738..-0.655494 nu_gnss_hgt_d=0.156439..0.159601 nu_gnss_vel_n=0.071641..0.073089 nu_gnss_vel_e=-0.125147..-0.122667 nu_gnss_vel_d=-0.010334..-0.010128 nu_baro_d=-0.027811..-0.027259 nu_mag_yaw=-0.066443..-0.065127 acf1_gnss_pos=0.9786..0.9984 acf1_gnss_hgt=0.9787..0.9985 acf1_gnss_vel=0.6962..0.7104 acf1_baro=0.8182..0.8348 acf1_mag=0.8611..0.8785
 
 # 68 s quadrotor on AUAV_X21, genuinely old firmware, LPE estimator.
 # The only log where the barometer and magnetometer are fields of
@@ -365,8 +376,7 @@ b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-
 # ulog2replay's from_sensor_combined path. Its baro_alt_meter is present but
 # every timestamp_relative is invalid, which is why a source that yields no
 # rows must not be reported as used. No barometer rows means no reference
-# either, so alpha0=none: this is the entry that covers Fusion::NoReference
-# on a static start.
+# either, so alpha0=none: the one entry that fuses no barometer at all.
 # It is also the most tilted start in the corpus, roll0=2.94 pitch0=6.56, so
 # it is the entry whose yaw0 would move if the levelling came out of (6):
 # the dip leans into the horizontal axes in proportion to the tilt, and the
@@ -395,12 +405,14 @@ b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-
 #     Fusion::Reset adoptions that give a moving start its first position
 #     and velocity. resets=4 counts per source: the first fix is adopted
 #     whole and recorded by both its halves, gnss_pos and gnss_hgt, beside
-#     the velocity and the heading. A window taken in motion establishes no barometric
-#     reference, so alpha0=none here and its 35575 barometer rows are all
-#     refused with Fusion::NoReference -- the application would have to
-#     name a reference. That is the whole reason the alpha0 key exists:
-#     nothing else in the summary line notices barometric aiding
-#     disappearing. It is also the one entry with heading=invalid: its
+#     the velocity and the heading. A window taken in motion establishes no
+#     barometric reference, so alpha0=estimate: the only entry whose
+#     reference is read from the estimate after its first fix, and the only
+#     real barometer that drifts -- about 12 m start to end -- so the one
+#     that shows the offset of (30') following it (see the consistency
+#     notes above). Without that seed its 35575 barometer rows are refused
+#     with Fusion::NoReference, which nothing else in the summary line
+#     notices. It is also the one entry with heading=invalid: its
 #     window carries a magnetometer, so yaw0 is a computed -22.47 rather
 #     than zero, but the window was moving and Unestablished::heading says
 #     nothing established it. The first fused magnetic heading does, which
@@ -437,4 +449,4 @@ b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-
 # the window's average it resolves 0.20 s in, and the line describes the
 # aiding the flight actually had.
 # Source: PX4 Flight Review (CC BY 4.0).
-9289375e4280ddec891b26b870f5065f2310d2e39527e4e8706d22e537d047dd  2c42096b-fa9b-4c74-8b89-ac79bf067a1d.ulg  https://cdn.logs.px4.io/2c42096b-fa9b-4c74-8b89-ac79bf067a1d.ulg  rate=199 window=398 align=coarse an=measured alpha0=none heading=invalid roll0=0.42 pitch0=-0.89 yaw0=-22.47 resets=4 aligned_at=0.20 attitude_lost=6.16 r_policy=raw rejected=0 rejected_gnss_pos=0 rejected_gnss_hgt=0 rejected_gnss_vel=0 rejected_baro=0 rejected_mag=0 discarded=35575 refused=0 invalid=0 floored=0 transitions=888 status=Healthy nis_gnss_pos=0.0108..0.0112 nis_gnss_hgt=0.0541..0.0553 nis_gnss_vel=0.0432..0.0442 nis_baro=none nis_mag=0.0024..0.0026 nis_over95_gnss_pos=0.0000 nis_over95_gnss_hgt=0.0000 nis_over95_gnss_vel=0.0000 nis_over95_baro=none nis_over95_mag=0.0000 nu_gnss_pos_n=-0.013266..-0.013002 nu_gnss_pos_e=0.016731..0.017071 nu_gnss_hgt_d=0.063162..0.064440 nu_gnss_vel_n=0.001760..0.001796 nu_gnss_vel_e=-0.001989..-0.001949 nu_gnss_vel_d=-0.003859..-0.003781 nu_baro_d=none nu_mag_yaw=-0.001000..0.001000 acf1_gnss_pos=0.5876..0.5996 acf1_gnss_hgt=0.8794..0.8972 acf1_gnss_vel=0.1250..0.1276 acf1_baro=none acf1_mag=0.2443..0.2493
+9289375e4280ddec891b26b870f5065f2310d2e39527e4e8706d22e537d047dd  2c42096b-fa9b-4c74-8b89-ac79bf067a1d.ulg  https://cdn.logs.px4.io/2c42096b-fa9b-4c74-8b89-ac79bf067a1d.ulg  rate=199 window=398 align=coarse an=measured alpha0=estimate heading=invalid roll0=0.42 pitch0=-0.89 yaw0=-22.47 resets=4 aligned_at=0.20 attitude_lost=6.16 r_policy=raw rejected=0 rejected_gnss_pos=0 rejected_gnss_hgt=0 rejected_gnss_vel=0 rejected_baro=0 rejected_mag=0 discarded=4 refused=0 invalid=0 floored=0 transitions=888 status=Healthy nis_gnss_pos=0.0108..0.0112 nis_gnss_hgt=0.3093..0.3157 nis_gnss_vel=0.0409..0.0419 nis_baro=0.0372..0.0380 nis_mag=0.0024..0.0026 nis_over95_gnss_pos=0.0000 nis_over95_gnss_hgt=0.0025..0.0027 nis_over95_gnss_vel=0.0000 nis_over95_baro=0.0000 nis_over95_mag=0.0000 nu_gnss_pos_n=-0.013464..-0.013196 nu_gnss_pos_e=0.016831..0.017173 nu_gnss_hgt_d=0.167196..0.170574 nu_gnss_vel_n=0.001688..0.001724 nu_gnss_vel_e=-0.001871..-0.001833 nu_gnss_vel_d=-0.005717..-0.005603 nu_baro_d=0.004506..0.004598 nu_mag_yaw=-0.001000..0.001000 acf1_gnss_pos=0.5865..0.5985 acf1_gnss_hgt=0.9756..0.9954 acf1_gnss_vel=0.1134..0.1158 acf1_baro=0.1037..0.1059 acf1_mag=0.2603..0.2657

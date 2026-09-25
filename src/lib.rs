@@ -40,8 +40,8 @@ pub use state::{CovarianceMatrix, STATES};
 /// };
 /// // The barometer in the window is what fixes the reference the fusion below is
 /// // relative to, and its scatter is how well: one reading held across the window has
-/// // none, and fixes no reference. Without one that call refuses with
-/// // `Fusion::NoReference`.
+/// // none, and fixes no reference. Without one the first altitude is spent reading a
+/// // reference from the estimate instead, and tests nothing.
 /// let window: [StaticSample; 800] = core::array::from_fn(|i| StaticSample {
 ///     baro: Some(Altitude::from_meters(if i % 2 == 0 { 112.25 } else { 111.75 })),
 ///     ..still

@@ -54,8 +54,8 @@ use nalgebra::Vector3;
 /// // says `Status::Aligning` until attitude converges.
 /// assert_eq!(filter.initialize(&[still; 800], dt)?, Alignment::Static);
 ///
-/// // Nothing in that window carried a barometer, so there is no reference altitude and
-/// // `fuse_baro_altitude` would refuse. See `StaticSample::baro`.
+/// // Nothing in that window carried a barometer, so it fixes no reference altitude, and
+/// // the first `fuse_baro_altitude` reads one from the estimate. See `StaticSample::baro`.
 ///
 /// assert!(filter.predict(ImuSample::default(), dt).is_propagated());
 ///

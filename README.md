@@ -169,15 +169,19 @@ and GNSS velocity. From the window the filter takes:
   is not separable from tilt at rest either way, and starts at zero
 * **the barometric reference** `α₀` — the altitude the barometer read at the origin, with the
   variance of that reading. The filter goes on estimating it, since a barometer's reference
-  drifts, but only from a start: a window with no barometer samples leaves altitudes with nothing
-  to be relative to, and `fuse_baro_altitude` returns `Fusion::NoReference` for the whole flight.
+  drifts. A window with no barometer samples fixes none, and the first altitude once position is
+  established reads one from the estimate instead
 
 A window taken **at rest** establishes `α₀`, including one too short to align an attitude from: a
 vehicle sitting on the ground has an honest reference whatever the window length, and that altitude
 is what zero will mean. A window taken in motion — a restart at altitude, most obviously — keeps the
-reference the flight began with rather than calling its own altitude the ground.
-`set_baro_reference(α₀, σ)` names one instead, which is also how an `initialize_from` seed gets
-one; it returns `false` for a value that is not a number or a σ that is not positive.
+reference the flight began with rather than calling its own altitude the ground. A start that
+leaves no reference at all — in motion, with no barometer, or an `initialize_from` seed — takes one
+from the estimate at the first altitude once position is established, as PX4 does, correlated with
+the height it was read against; `fuse_baro_altitude` returns `Fusion::NoReference` until then.
+`set_baro_reference(α₀, σ)` names one instead, for a reference known better than the estimate, and
+`Config::baro_reference_from_estimate = false` leaves that to the caller; it returns `false` for a
+value that is not a number or a σ that is not positive.
 
 A window that is short or moving is **not refused**. It gives a coarse start: attitude
 uncertainty bounded by what that window itself supports — equations (5)–(6) level its *averages*,
@@ -329,7 +333,7 @@ a `Reset` steps the state, and a refusal says the measurement never reached the 
 | `Accepted { test_ratio }` | fused; ratio ≤ 1 |
 | `Rejected { test_ratio }` | gated out; ratio > 1, state unchanged |
 | `Reset` | adopted outright, the quantity having never been established (once per quantity); steps the state |
-| `NoReference` | barometer altitude with no `α₀` from initialization, or a geodetic fix that cannot place an origin |
+| `NoReference` | barometer altitude with no `α₀` and no established position to read one against, or a geodetic fix that cannot place an origin |
 | `NotFinite` | a NaN or infinity in the measurement or its noise; discarded |
 | `InvalidNoise` | a zero or negative variance in the noise — no sensor has one, and `S` would be singular or worse; discarded |
 | `StateInvalid` | the filter's own covariance or correction could not support an update — `S` not positive-definite, or f32 overflow; nothing committed, and the measurement is not at fault |
