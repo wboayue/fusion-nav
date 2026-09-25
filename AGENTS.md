@@ -236,8 +236,13 @@ cargo +1.89 build --lib           # MSRV
 
 # Stack frame per function, which `propagate_covariance` and `enforce_symmetry` both cite a
 # measured figure from. Needs `rustup target add --toolchain nightly <target>` once.
+# llvm-readobj is not on PATH here: it ships with rustup's llvm-tools, at
+# ~/.rustup/toolchains/*/lib/rustlib/*/bin/llvm-readobj.
 RUSTFLAGS=-Zemit-stack-sizes cargo +nightly build --lib --release --target thumbv6m-none-eabi
 llvm-readobj --stack-sizes target/thumbv6m-none-eabi/release/libfusion_nav.rlib | grep -A1 predict
+# When a frame grows, bisect it: strip one candidate per build and re-measure. #122's +4168
+# bytes on `update::<3>` was not only the 16 x 16 it looked like -- returning `(Covariance,
+# Offset)` as a tuple through `reset` cost a 900-byte copy of P on its own.
 
 cargo run --example basic         # minimal integration loop
 cargo run --example degradation   # timeouts, status transitions, application-driven recovery
@@ -424,6 +429,9 @@ The same pass caught a prefix match that read `pos_h_max` where `pos_h` was aske
 missing numeric check that let `nees_pos=none` read as zero and clear every ceiling. Each took one
 `sed` and one run. Where the mutation is not obvious, the fixture's comment says which one it
 survives — that is the sentence a later reader needs, not the assertion, which they can see.
+Commit the test before mutating, and restore with `git checkout HEAD -- <file>`: restoring an
+uncommitted file wipes the test along with the mutation, and every later mutation then "passes"
+a test that no longer exists — which is how #122's first mutation pass reported three survivors.
 
 **An artifact nobody looked at is unverified, whatever the pipeline says.** The rule above, one
 level out: a passing test says nothing about a guard never exercised, and a passing pipeline says
@@ -436,6 +444,16 @@ had not happened, since a caption is an argument; and an attitude σ panel label
 while plotting radians. None of it errored. A wrong plot renders, sizes and times exactly like a
 right one, so **the only detector is opening it** — one figure per section, on a log that
 exercises that section, before the work is called done.
+
+**An issue's "what the data must say" was written before the data.** Meet it, then measure the
+alternatives it did not propose, on the corpus as well as the simulator. #119 asked for a consider
+state and listed its success criteria; the consider state met them — `moving_start` `nees_pos`
+112.59 → 1.035 — and on `2c42096b`, the one real barometer that drifts, it rejected 29310
+barometer readings. The simulator's barometer never drifts, so no scenario could have said so. An
+estimated offset shipped instead (#122), and GOALS records both measurements. The same run showed
+a criterion that could not fail: once a second height source is fused, `σ_pos_d` under the
+receiver's `epv` is legitimate, so the 4603-of-4604 count #117 was to close on reads the same
+whether or not the covariance is honest.
 
 **Evidence has to be able to come out the other way.** Before a number is offered as confirmation,
 ask what it would read if the thing were broken. The corrected EKF2 bias scaling was argued from
@@ -568,7 +586,9 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
   anything else in `src/`: the gate of (37) took the last one when it became
   `record_rejected`'s first caller.
 - `src/state.rs` — `State` (nominal, 16 values), `Covariance`/`CovarianceMatrix` (15×15), and
-  `ErrorState`, whose discriminants define the covariance ordering `[δp δv δθ δβa δβg]`.
+  `ErrorState`, whose discriminants define the covariance ordering `[δp δv δθ δβa δβg]`; also
+  `Offset`, the barometric offset's row of (30′) (`P_xb`, `P_bb`), crate-private and beside the
+  covariance rather than in it, so the public 15 × 15 stays the navigation state's.
 - `src/units.rs` — typed scalars/vectors. Types carry the claims that cause bugs — frame,
   value vs noise, sign convention — not units: SI throughout, and a constructor names a unit
   only where sources commonly supply another (`Radians::from_degrees`, `body_deg_per_s`).
@@ -609,6 +629,10 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
   single-dependency claims in four documents, and puts the simulator one `use` away from sharing
   the filter's rotations, which is the property its numbers rest on. See #16 and #17.
   Tests in an example do run under `cargo test --all-targets`, so none of this is about coverage.
+  Their `main`s do not: `basic` and `degradation` compile in CI and never run, so a behaviour
+  change that breaks them shows only when they are run and their output diffed against main's.
+  #122's held-reading rule turned every `degradation` altitude into `NoReference` with every
+  test green.
 - `panic-check/` — a second, unpublished crate: a bare-metal binary calling the whole public
   API, plus `run.sh`, which links it and reads the panic paths back out of the ELF. A workspace
   member so that one `Cargo.lock` covers both, but not a *default* member, so `cargo test`,
@@ -618,6 +642,12 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
 
 ### Invariants worth knowing before editing
 
+- **A window sample's `baro` and `mag` may be held.** A slower sensor's last value repeats across
+  IMU epochs, and the harness does exactly that. A mean survives it; any other statistic over
+  the window has to count distinct readings, which is why `init::baro_reference` counts a value
+  only where it differs from the previous sample's. The corollary for fixtures: `[sample; N]`
+  with a barometer is *one reading held*, which sets no reference — the fixtures, both examples
+  and the `prelude` doctest all had to be given real scatter.
 - **The filter never reads a clock.** `dt` is a parameter everywhere, including `initialize`,
   which measures the static window in seconds rather than samples.
 - **`predict` refuses rather than fakes.** Zero/negative/NaN `dt` → `InvalidStep`, before the
@@ -761,7 +791,8 @@ length of `sources()`'s array.
   source for those is bench characterization of the residual after calibration, which is a
   different activity from calibration itself (this crate does no calibration — that is the
   application's job).
-- **`Q`, process noise** — `Config::imu` (`ImuNoise`), continuous-time densities.
+- **`Q`, process noise** — `Config::imu` (`ImuNoise`), continuous-time densities, and
+  `Config::baro_offset_walk`, the random walk of (30′)'s barometric offset.
 - **`P0`, initial state uncertainty** — `Initialization::sigma_*`. A prior on the *state*, not on
   any measurement; `sigma_yaw` >> `sigma_tilt` because gravity pins tilt and yaw inherits the
   magnetometer's error.
