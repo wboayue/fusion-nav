@@ -39,7 +39,7 @@ The gate turns a fix down rather than taking everything offered — on the corpu
 `a299e722` refuses 278 of its 609 velocity solutions, a receiver its own differenced positions
 contradict (#105 settled that the harness does *not* floor `R` as both production estimators do,
 and `r_policy=raw` pins that); the
-barometer and the magnetometer have never been turned down there, 6727 altitudes and 49 692
+barometer and the magnetometer have never been turned down there, 42 298 altitudes and 49 229
 headings accepted, so `rejected_mag=0` is a measured zero rather than a structural one. Between
 fixes — and on every axis a fix reaches only through the covariance — the estimate is still dead
 reckoning, which is what `Validity` and `attitude_lost=` stay honest about.
@@ -498,7 +498,7 @@ The rule reaches past *computing* a number, and the extension is the one that ha
 A statistic that **audits a filter claim** must falsify it in the shape the filter states it, not
 merely read its verdict. `false_valid` took `Validity` off the filter exactly as intended and then
 tested the 2-D norm of the horizontal error, while `Eskf::validity` states the claim per axis
-(`within(PositionNorth) && within(PositionEast)`, `src/eskf.rs:1144-1145`) — a bar √2 tighter than
+(`within(PositionNorth) && within(PositionEast)`, `src/eskf.rs:1170-1171`) — a bar √2 tighter than
 the one the filter asserted, diverging from it precisely as the estimate approaches it, which is
 the only regime where such a count says anything. Reading the verdict and re-deriving the geometry
 is still two implementations of one claim. It applies to every scoring statistic still to land:
@@ -807,7 +807,7 @@ A fourth thing is often mistaken for `R`: **an error the readings share.** Infla
 represent it, because (24) treats each reading's error as independent, so N readings average `S`
 down by about N however large `R` is. Measured on #115: `α₀` read from the estimate carries the
 fix's height error into every barometer reading, and adding that variance to `R` (PX4's
-`baro_height_control.cpp:86`) takes `moving_start`'s `nees_pos` from 112.59 only to 14.58, while
+`baro_height_control.cpp:87`) takes `moving_start`'s `nees_pos` from 112.59 only to 14.58, while
 `σ_pos_d` still falls 1.80 m → 0.16 m under a constant 1.1 m error. A shared error belongs in the
 covariance with its correlations — (30′), where #119 measured a consider state against an estimated
 one and the corpus chose the second. (36′) is `R` inflation too,
