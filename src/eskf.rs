@@ -1460,9 +1460,8 @@ impl Unestablished {
     /// `settled` is [`init::at_rest`]'s verdict. A vehicle that held still through the
     /// window is where the origin says it is and is not moving, which is the whole of
     /// what a static start ever claimed about position and velocity — and a window too
-    /// short to align an attitude from claims it just as honestly, since
-    /// [`init::classify`] reports a short window as [`Coarse::WindowTooShort`] before it
-    /// ever measures motion. A window taken in motion establishes neither: the vehicle
+    /// short to align an attitude from claims it just as honestly, which is
+    /// [`Coarse::WindowTooShort`]. A window taken in motion establishes neither: the vehicle
     /// passed through somewhere the filter cannot name. Those wait for the first fix.
     ///
     /// Heading needs a magnetometer on top of stillness. Gravity pins tilt and nothing
@@ -3287,8 +3286,7 @@ mod tests {
     #[test]
     fn a_still_short_window_calls_its_heading_valid_at_once() {
         // #85. The same field, the same stillness, and the only thing wrong with the
-        // window is its length — which `classify` reports before it measures motion, so
-        // the coarse verdict says nothing about whether the vehicle moved. It did not.
+        // window is its length.
         let mut filter = Eskf::new(Config::default());
         let alignment = filter
             .initialize(&window_with_mag(), Seconds::from_secs(0.1))

@@ -285,12 +285,13 @@ impl Alignment {
 /// [`Initialization`](crate::Initialization) needs to know by how much.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Coarse {
-    /// The window spans less than
+    /// The vehicle held still, but the window spans less than
     /// [`Initialization::min_duration`](crate::Initialization::min_duration).
     ///
-    /// Reported before motion is measured at all, so it says nothing about whether the
-    /// vehicle was moving: a short window of a parked vehicle is this variant, and
-    /// [`at_rest`] is what separates the two.
+    /// Still is measured before length, so a short window that moved is
+    /// [`NotStationary`](Self::NotStationary) instead: this variant is a parked vehicle
+    /// that has not been parked for long, and the filter trusts its position, velocity,
+    /// barometric reference and heading as it would a static window's.
     WindowTooShort {
         /// Duration the configuration requires.
         required: Seconds,
@@ -386,23 +387,30 @@ impl core::error::Error for InitError {}
 
 /// Classify a measured window as a static or a coarse start.
 ///
-/// The test behind [`Eskf::alignment_of`](crate::Eskf::alignment_of): long enough, then
-/// still enough, against the tolerances in `init`. Total, because [`measure`] has already
+/// The test behind [`Eskf::alignment_of`](crate::Eskf::alignment_of): still enough, then
+/// long enough, against the tolerances in `init`. Total, because [`measure`] has already
 /// refused every window that can be refused.
+///
+/// Motion is tested first so that each coarse variant answers one question. A window that
+/// moved is [`Coarse::NotStationary`] whatever its length, and its `span` says how long it
+/// was; a short one is [`Coarse::WindowTooShort`] only if it was still. Tested the other
+/// way round, a short window said nothing about motion, and a caller holding a still
+/// window that had not yet reached `min_duration` could not tell from the outcome that it
+/// was still — which is what deciding to initialize at the onset of motion asks.
 pub(crate) fn classify(measured: &Measured, init: &Initialization) -> Alignment {
-    let required = init.min_duration;
-    if measured.span < required {
-        return Alignment::Coarse(Coarse::WindowTooShort {
-            required,
-            provided: measured.span,
-        });
-    }
     if !at_rest(measured, init) {
         return Alignment::Coarse(Coarse::NotStationary {
             peak_gyro: measured.peak_gyro,
             peak_accel_deviation: measured.peak_deviation,
             span: measured.span,
             inertial_accel: measured.inertial_accel,
+        });
+    }
+    let required = init.min_duration;
+    if measured.span < required {
+        return Alignment::Coarse(Coarse::WindowTooShort {
+            required,
+            provided: measured.span,
         });
     }
     Alignment::Static
@@ -771,9 +779,8 @@ const UNKNOWN_HEADING_SIGMA: Radians = Radians::from_radians(1.813_799_4);
 ///
 /// Half of what [`classify`] asks, and all of what the barometric reference and what the
 /// start establishes ask, which is why it is separate: a window can be too short to align
-/// an attitude from and still be a window of a vehicle sitting on the ground. `classify`
-/// reports the short one as [`Coarse::WindowTooShort`] before it ever measures motion, so
-/// window length is not a stand-in for this test in either direction.
+/// an attitude from and still be a window of a vehicle sitting on the ground, which is
+/// what [`Coarse::WindowTooShort`] reports.
 ///
 /// GNSS velocity does not enter, however well it explains the specific force. The things
 /// that hang on this answer — [`Alignment::Static`], the barometric reference, and
@@ -1151,6 +1158,18 @@ pub(crate) mod tests {
             alignment,
             Ok(Alignment::Coarse(Coarse::WindowTooShort { .. }))
         ));
+    }
+
+    #[test]
+    fn a_short_window_that_moved_is_not_stationary_rather_than_too_short() {
+        // Motion is measured before length, so `WindowTooShort` only ever means still.
+        let mut window = [still(); 8];
+        window[3].imu.gyro = AngularRate::body(0.0, 0.4, 0.0);
+        let alignment = classify_default(&window, Seconds::from_secs(0.1));
+        let Ok(Alignment::Coarse(Coarse::NotStationary { span, .. })) = alignment else {
+            panic!("0.8 s and moving: {alignment:?}");
+        };
+        assert!((span.as_secs() - 0.8).abs() < 1e-6, "got {span:?}");
     }
 
     #[test]
