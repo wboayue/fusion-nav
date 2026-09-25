@@ -932,6 +932,25 @@ def release(encoded):
     return f"v{(encoded >> 24) & 0xFF}.{(encoded >> 16) & 0xFF}.{(encoded >> 8) & 0xFF}{suffix}"
 
 
+def declination_note(ulog):
+    """The header line `examples/replay.rs` reads its magnetic declination from.
+
+    EKF2's own `EKF2_MAG_DECL`, degrees east-positive -- the sign `Config`'s is -- as the
+    log began: with `EKF2_DECL_TYPE` bit 0 EKF2 looks it up from its first fix and saves
+    it at disarm, so this is the value an earlier flight from the same field saved. LPE
+    logs `ATT_MAG_DECL`. A log with no GNSS reads 0, which EKF2 never replaced, and is
+    written as it reads: nothing in such a log can say where north is.
+
+    Configured rather than fixed, because the site sets it. One constant for the corpus
+    put a standing 17 deg between `cd7e0001`'s heading and EKF2's.
+    """
+    params = ulog.initial_parameters
+    name = next((n for n in ("EKF2_MAG_DECL", "ATT_MAG_DECL") if n in params), None)
+    degrees = float(params[name]) if name is not None else 0.0
+    source = name or "no declination parameter, so zero"
+    return f"Magnetic declination {math.radians(degrees):.6f} rad ({degrees:.2f} deg, {source})"
+
+
 def vibration_metric(encoded):
     """Which quantity `accel_vibration_metric` is on this build: `dv`, `accel` or `unknown`.
 
@@ -1186,6 +1205,15 @@ def self_test():
     reference_states(v115, EKF2_LAYOUTS[(24, 23)], None, rows)
     expect("v1.15 sigma_vel_n", rows[0][2]["sigma_vel_n"], math.sqrt(3.0))
     expect("v1.15 sigma_ba_z", rows[0][2]["sigma_ba_z"], math.sqrt(14.0))
+    class Params:
+        def __init__(self, **params):
+            self.initial_parameters = params
+    expect("declination", declination_note(Params(EKF2_MAG_DECL=13.746335)),
+           "Magnetic declination 0.239919 rad (13.75 deg, EKF2_MAG_DECL)")
+    expect("LPE declination", declination_note(Params(ATT_MAG_DECL=-2.0)).split(" rad")[0],
+           "Magnetic declination -0.034907")
+    expect("no declination", declination_note(Params()).split(" rad")[0],
+           "Magnetic declination 0.000000")
     expect("release", release(0x010B03FF), "v1.11.3")
     expect("rc", release(0x011000C0), "v1.16.0-rc")
     expect("dev", release(0x010A0000), "v1.10.0-dev")
@@ -1245,6 +1273,7 @@ def main():
         )
         note = [
             f"Converted from {args.ulog.name} by tools/ulog2replay.py",
+            declination_note(open_ulog(args.ulog, [])),
             "Topics used: " + ", ".join(f"{k}={v}" for k, v in sorted(used.items())),
             f"baro variance {args.baro_variance} m^2 and mag heading variance "
             f"{args.mag_variance} rad^2 are assumed; PX4 logs neither.",

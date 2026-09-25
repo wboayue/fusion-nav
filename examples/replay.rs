@@ -310,14 +310,11 @@ fn run() -> Result<(), Box<dyn Error>> {
     let output = args.next().map_or_else(default_output, PathBuf::from);
     let truth = args.next();
 
-    // `examples/simulate.rs` writes its magnetic field for this same declination, and says what
-    // divergence costs: a heading fused from a generated log would carry the difference as a
-    // bias in every score, with nothing failing to say so.
+    let text = fs::read_to_string(&input).map_err(|e| format!("{}: {e}", input.display()))?;
     let config = Config {
-        magnetic_declination: Radians::from_radians(-0.06),
+        magnetic_declination: declination_of(&text),
         ..Config::default()
     };
-    let text = fs::read_to_string(&input).map_err(|e| format!("{}: {e}", input.display()))?;
     // Optional, and absent on every corpus log: no truth file, no `score` line. Opened with
     // the log in hand, so a truth file belonging to another scenario is refused here rather
     // than scored against this one.
@@ -1606,7 +1603,7 @@ impl Replay {
         let (roll0, pitch0, yaw0) = self.angles_at_init();
         format!(
             "summary rate={:.0} window={} {} align={} an={} alpha0={} heading={} \
-             roll0={roll0:.2} pitch0={pitch0:.2} yaw0={yaw0:.2} resets={} \
+             roll0={roll0:.2} pitch0={pitch0:.2} yaw0={yaw0:.2} declination={:.2} resets={} \
              aligned_at={} attitude_lost={} r_policy={R_POLICY} rejected={}{} discarded={} refused={} \
              invalid={} floored={} epochs={}{} \
              transitions={} status={:?}",
@@ -1653,6 +1650,13 @@ impl Replay {
             } else {
                 "invalid"
             },
+            // Degrees, from the log's header (`declination_of`): a log converted before the
+            // converter wrote one reads 0.00, which is a site nobody named.
+            self.filter
+                .config()
+                .magnetic_declination
+                .as_radians()
+                .to_degrees(),
             self.resets(),
             // When the filter first called its own attitude usable. It is what settled
             // `Accuracy`'s attitude defaults off the corpus the way replay settled
@@ -1866,6 +1870,21 @@ impl TruthRow {
 ///
 /// `None` for a file carrying no marker — a corpus log, a converted one, a hand-written one.
 /// Those are taken on trust, because there is nothing in them that could be checked.
+/// The magnetic declination a log's header names, or zero where it names none.
+///
+/// Read from the log because the site sets it: `tools/ulog2replay.py` writes the one the log's
+/// EKF2 used and `examples/simulate.rs` the one its field was generated for. One constant for
+/// every log put a standing 17° between `cd7e0001`'s heading and EKF2's, and the error would
+/// score as heading bias with nothing failing to say so. `declination=` on the `summary` line
+/// is what notices it stop arriving.
+fn declination_of(text: &str) -> Radians {
+    text.lines()
+        .take_while(|line| line.starts_with('#'))
+        .find_map(|line| line.strip_prefix("# Magnetic declination "))
+        .and_then(|rest| rest.split_whitespace().next()?.parse().ok())
+        .map_or(Radians::ZERO, Radians::from_radians)
+}
+
 fn scenario_of(text: &str) -> Option<(String, u64)> {
     let line = text
         .lines()
@@ -2773,6 +2792,17 @@ mod tests {
     }
 
     // ---- the verdict keys ----
+
+    #[test]
+    fn the_declination_comes_from_the_header_and_defaults_to_zero() {
+        let named =
+            "# Converted from x.ulg\n# Magnetic declination 0.239919 rad (13.75 deg)\nt_s\n";
+        assert!((declination_of(named).as_radians() - 0.239_919).abs() < 1e-6);
+        // Only the header: a data row carrying the same words is not a declination.
+        let late = "t_s,source\n# Magnetic declination 0.5 rad\n";
+        assert_eq!(declination_of(late), Radians::ZERO);
+        assert_eq!(declination_of("# nothing\n"), Radians::ZERO);
+    }
 
     #[test]
     fn a_still_window_aligns_statically() {
