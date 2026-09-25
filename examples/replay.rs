@@ -2949,18 +2949,21 @@ mod tests {
     fn a_static_window_after_a_bump_beats_the_still_start_before_it() {
         // Still for 80 samples, bumped for one, then still for 100: the prefix is kept as
         // a fallback and never used, because a full static window arrives inside
-        // `PATIENCE`.
+        // `PATIENCE`. The fix that arrived while it waited is released as the refusal it
+        // was; drop the release and the fusion file loses it.
         let log = Log::new()
             .run(0.0, 80, DT, STILL)
             .imu(1.6, TURNING)
+            .gnss_pos(1.61, 1.0, 2.0, -3.0)
             .run(1.62, 100, DT, STILL);
-        let replay = replay(&log);
+        let (replay, rows) = drive(&log, None).expect("fixture replays");
         assert_eq!(key(&replay.summary(), "align"), "static");
         assert_eq!(key(&replay.summary(), "window"), "100");
         assert!(
             replay.fallback.is_none(),
             "released once the static start committed"
         );
+        assert_eq!(rows.matches("not_initialized").count(), 2, "{rows}");
     }
 
     #[test]
