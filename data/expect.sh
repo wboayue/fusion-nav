@@ -128,6 +128,55 @@ compare_pairs() {
     return $rc
 }
 
+# pin_pairs <line>
+#
+# The inverse of compare_pairs: expectations for a `summary` line, by the rule the header of
+# data/manifest.txt states, so a new entry's forty-odd pairs are derived rather than typed.
+# Exact for every key, except the measured statistics -- the four consistency families and
+# what the vehicle did -- which get a range: the value plus or minus the larger of 1 % and one
+# unit in its last printed place, rounded outward to that place. A zero or a word stays
+# exact, and a mean innovation inside a thousandth is pinned to +/-0.001, since what it
+# claims is the absence of an offset. `epochs=` is left out: it counts rows, so it would
+# pin the converter's output rather than the filter's.
+pin_pairs() {
+    awk -v line="$1" '
+        function floor(x) { return (x == int(x) || x > 0) ? int(x) : int(x) - 1 }
+        function ceil(x)  { return -floor(-x) }
+        function band(key, value,    places, unit, delta, scale, format) {
+            places = index(value, ".") ? length(value) - index(value, ".") : 0
+            format = "%." places "f"
+            if (key ~ /^nu_/ && value < 0.001 && value > -0.001)
+                return sprintf(format ".." format, -0.001, 0.001)
+            scale = 10 ^ places
+            unit = 1 / scale
+            delta = (value < 0 ? -value : value) * 0.01
+            if (delta < unit) delta = unit
+            # 1e-6 of a unit absorbs the binary error in `value * scale`; without it a bound
+            # that lands on the grid, as 0.0035 - 0.0001 does, rounds out one more unit.
+            return sprintf(format ".." format,
+                           floor((value - delta) * scale + 1e-6) / scale,
+                           ceil((value + delta) * scale - 1e-6) / scale)
+        }
+        BEGIN {
+            number = "^-?[0-9]+([.][0-9]+)?$"
+            statistic = "^(nis_|nu_|acf1_)|^(extent|speed_max|tilt_max)$"
+            n = split(line, words, " ")
+            out = ""
+            for (i = 1; i <= n; i++) {
+                eq = index(words[i], "=")
+                if (!eq) continue
+                key = substr(words[i], 1, eq - 1)
+                value = substr(words[i], eq + 1)
+                if (key == "epochs") continue
+                pair = words[i]
+                if (key ~ statistic && value ~ number && value + 0 != 0)
+                    pair = key "=" band(key, value)
+                out = out (out == "" ? "" : " ") pair
+            }
+            print out
+        }'
+}
+
 # The expectations in data/manifest.txt and data/scenarios.txt were produced by the harness
 # they are meant to guard, so a comparator that waves something through turns a miscount into
 # a pinned number and then into the baseline every later change is measured against -- the
@@ -226,6 +275,34 @@ self_test() {
         *mission*pos_h=101.112*pos_h'<='100.000*) passed=$((passed + 1)) ;;
         *) failed=$((failed + 1)); echo "  FAIL  breach message: $message" >&2 ;;
     esac
+
+    # pin_pairs, against bands data/manifest.txt carries for values its prose quotes.
+    # p <name> <line> <wanted expectations>
+    p() {
+        local got
+        got=$(pin_pairs "$2")
+        if [ "$got" = "$3" ]; then
+            passed=$((passed + 1))
+        else
+            failed=$((failed + 1))
+            echo "  FAIL  pin $1: got '$got', wanted '$3'" >&2
+        fi
+    }
+    p '1 % of the value'        'summary nis_gnss_vel=7.5592' 'nis_gnss_vel=7.4836..7.6348'
+    p 'negative, outward'       'summary nu_baro_d=-0.011616' 'nu_baro_d=-0.011733..-0.011499'
+    # 1 % of 0.0035 is under a unit of 0.0001, so the unit is the half-width. A bound that
+    # lands on the grid must not round out a second unit: 0.0033..0.0037 is that mutation.
+    p 'one unit, on the grid'   'summary nis_over95_mag=0.0035' 'nis_over95_mag=0.0034..0.0036'
+    p 'no offset'               'summary nu_mag_yaw=0.000400' 'nu_mag_yaw=-0.001000..0.001000'
+    p 'the thousandth is nu only' 'summary acf1_mag=0.0004' 'acf1_mag=0.0003..0.0005'
+    p 'zero and none stay exact' 'summary nis_over95_baro=0.0000 nis_baro=none' \
+        'nis_over95_baro=0.0000 nis_baro=none'
+    # Exact keys stay exact however decimal they look, and a key is matched whole: a
+    # prefix match on `nu` would band `nudge` and one on `extent` would band `extent_max`.
+    p 'exact keys, whole names' 'summary yaw0=-107.33 attitude_lost=3.84 extent_max=5.0 status=Healthy' \
+        'yaw0=-107.33 attitude_lost=3.84 extent_max=5.0 status=Healthy'
+    p 'what the vehicle did'    'summary extent=112.6 tilt_max=41.1' 'extent=111.4..113.8 tilt_max=40.6..41.6'
+    p 'epochs is not pinned'    'summary rate=250 epochs=16079 status=Healthy' 'rate=250 status=Healthy'
 
     echo "expect.sh: $passed passed, $failed failed"
     [ "$failed" = 0 ]
