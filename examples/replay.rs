@@ -254,6 +254,9 @@ const SIGMAS: [(ErrorState, &str); 15] = [
     (ErrorState::GyroBiasZ, "sigma_bg_z"),
 ];
 
+/// Reads one variance out of an `AttitudeVariance`.
+type AttitudeColumn = fn(AttitudeVariance) -> f32;
+
 /// The attitude's σ on navigation axes, from `Eskf::attitude_variance`: tilt about north and
 /// east, heading about down.
 ///
@@ -261,7 +264,7 @@ const SIGMAS: [(ErrorState, &str); 15] = [
 /// NEES and `in3s` compare `δθ` against; these are what a tilt or heading panel can be banded
 /// with, which the body diagonal cannot be at 90° of pitch and cannot be rotated into without
 /// the off-diagonals the row does not carry.
-const ATTITUDE_SIGMAS: [(&str, fn(AttitudeVariance) -> f32); 3] = [
+const ATTITUDE_SIGMAS: [(&str, AttitudeColumn); 3] = [
     ("sigma_tilt_n", |v| v.tilt_north),
     ("sigma_tilt_e", |v| v.tilt_east),
     ("sigma_heading", |v| v.heading),

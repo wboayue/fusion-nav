@@ -1132,13 +1132,12 @@ impl Eskf {
     /// alignment is an event, "the start has been resolved", where
     /// [`validity`](Self::validity) is the live question, "is tilt good enough right now".
     ///
-    /// Conflating the two is what a corpus replay showed costs: with the bar read live, the
-    /// handled log `7592c9b2` flaps `Healthy`/`Aligning` four times in four seconds and every
-    /// static log ends `Aligning`. Not because anything degraded — because a body-frame
-    /// attitude covariance **rotates** with the body (equation (20)), so a 20° yaw prior
-    /// becomes partly a roll-and-pitch prior as the vehicle turns, and back again. That is
-    /// honest about tilt right now, which is [`Validity`]'s job, and useless as a report that
-    /// the filter has not finished starting up. PX4 and ArduPilot both latch it for the same
+    /// Conflating the two is what a corpus replay showed costs. Read live, the bar is crossed
+    /// 703 times on `2c42096b`, a grounded vehicle under a poor sky view whose tilt σ sits
+    /// above [`ALIGNED_TILT`] for 79 % of two hours, and `7592c9b2` and `f16771dd` start
+    /// aligned and end `Aligning`. The counts are the same with tilt read on body axes or on
+    /// navigation ones. That is honest about tilt right now, which is [`Validity`]'s job, and
+    /// useless as a report that the filter has not finished starting up. PX4 and ArduPilot both latch it for the same
     /// reason: `tilt_align` and `tiltAlignComplete` are only ever tested while false
     /// (`src/modules/ekf2/EKF/control.cpp:73-78` at `c4e4ef98e9`,
     /// `libraries/AP_NavEKF3/AP_NavEKF3_Control.cpp:520-525` at `368dc0c428`).

@@ -218,13 +218,21 @@ same distinction `α₀` draws below. Neither production estimator averages at a
 the bias at bootstrap (`libraries/AP_NavEKF3/AP_NavEKF3_core.cpp:546`, `368dc0c4`) and PX4 refuses
 to initialize outside 0.8–1.2 g and 15°/s (`src/modules/ekf2/EKF/ekf.cpp:213-227`, `c4e4ef98`).
 
-The initial covariance is diagonal:
+The initial covariance is block-diagonal, and diagonal apart from attitude:
 
 **(8)**
 
 ```math
-P_0 = \mathrm{diag}\left( \sigma_{p,0}^2 I,\quad \sigma_{v,0}^2 I,\quad \mathrm{diag}(\sigma_{\text{tilt},0}^2, \sigma_{\text{tilt},0}^2, \sigma_{\psi,0}^2),\quad \sigma_{\beta a,0}^2 I,\quad \sigma_{\beta g,0}^2 I \right)
+P_0 = \mathrm{diag}\left( \sigma_{p,0}^2 I,\quad \sigma_{v,0}^2 I,\quad R(\hat q_0)^\mathsf{T}\, \mathrm{diag}(\sigma_{\text{tilt},0}^2, \sigma_{\text{tilt},0}^2, \sigma_{\psi,0}^2)\, R(\hat q_0),\quad \sigma_{\beta a,0}^2 I,\quad \sigma_{\beta g,0}^2 I \right)
 ```
+
+Tilt and yaw are uncertainties about navigation axes — rotation about north and east, and about
+down — while $`\delta\theta`$ is a body-frame rotation vector whose navigation-frame counterpart
+is $`R(\hat q)\,\delta\theta`$, as (36) uses. So the attitude block is the navigation-frame
+diagonal rotated into body axes, and it is diagonal only when the start is level. On a vehicle
+standing on its tail, body x points up and the yaw prior belongs on $`\delta\theta_x`$. Every
+reader of tilt and heading takes the same diagonal back out, $`\mathrm{diag}(R\, P_{\theta\theta} R^\mathsf{T})`$
+(`AttitudeVariance`): `Validity`, the alignment latch, (36′) and the heading adoption.
 
 Yaw uncertainty $`\sigma_{\psi,0}`$ is set much larger than tilt uncertainty
 $`\sigma_{\text{tilt},0}`$: roll and pitch come from gravity and are well determined, whereas yaw
@@ -685,13 +693,13 @@ R_m = \sigma_\psi^2 + \tan^2\!\delta \cdot \sigma_{\text{tilt}}^2,
 \qquad
 \tan\delta = \frac{\bigl| \tilde m_n \cdot e_3 \bigr|}{\bigl\lVert (I - e_3 e_3^\mathsf{T})\, \tilde m_n \bigr\rVert},
 \qquad
-\sigma_{\text{tilt}}^2 = \max\bigl( P_{\delta\theta_x \delta\theta_x},\; P_{\delta\theta_y \delta\theta_y} \bigr)
+\sigma_{\text{tilt}}^2 = \max\bigl( [R P_{\theta\theta} R^\mathsf{T}]_{NN},\; [R P_{\theta\theta} R^\mathsf{T}]_{EE} \bigr)
 ```
 
 $`\tan\delta`$ is the ratio (8′) already defines, measured off this field rather than
 configured, and it is an angle between a field and a direction — the same number in whichever
 frame the two are expressed together, so the implementation reads it in body axes, where
-navigation down is (36)'s Jacobian row transposed. The larger of the two horizontal variances is
+navigation down is (36)'s Jacobian row transposed. The larger of the north and east variances is
 taken rather than their average because the two errors are not symmetric: a $`\sigma`$ too large
 only slows the heading's correction, while one too small is a filter claiming an attitude it does
 not have.
@@ -933,7 +941,7 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | equations | concept | module | function |
 | --------- | ------- | ------ | -------- |
 | (1)–(4) | state definitions | `state.rs` | `State`, `ErrorState` |
-| (5)–(8) | static initialization | `init.rs` | `measure`, `level_from_accel`, `heading_from_mag`, `nominal_state`, `classify`, `attitude_sigmas`, `initial_covariance` |
+| (5)–(8) | static initialization | `init.rs` | `measure`, `level_from_accel`, `heading_from_mag`, `nominal_state`, `classify`, `attitude_sigmas`, `initial_covariance`, with `state.rs`'s `AttitudeVariance::in_body` |
 | (8′) | what a coarse window supports | `init.rs` | `coarse_sigmas`, `window_drift`, `heading_sensitivity` — `tan δ` shared with (36′) |
 | (5′) `ā_n` | in-motion levelling | `init.rs` | `inertial_acceleration`; the correction itself is unbuilt — #59 |
 | (30) `α₀` | barometric reference and its variance | `init.rs` | `baro_reference` |
@@ -950,12 +958,12 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | (30′) | barometric offset | `state.rs`, `update.rs`, `propagate.rs` | `Offset`; `update`'s blocks; `propagate_offset`; `Eskf::establish_reference` |
 | (31)–(33) | magnetometer, three-axis | — | unbuilt and [out of scope](GOALS.md#magnetometer-without-magnetic-field-states); no `field_jacobian` exists |
 | (34)–(36) | magnetometer, heading only | `observation/mag.rs` | `heading_innovation`, `heading_jacobian`, `heading_observation` |
-| (36′) | levelling variance | `observation/mag.rs` | `levelling_variance`, with `tan δ` from `init.rs`'s `heading_sensitivity` |
+| (36′) | levelling variance | `observation/mag.rs` | `levelling_variance`, with `tan δ` from `init.rs`'s `heading_sensitivity` and `σ_tilt²` from `state.rs`'s `AttitudeVariance::of` |
 | (37) `γ` | gate thresholds | `config.rs` | `Gate::at`, `Gate::new`, `Gates::at` |
 | (37)–(38) | innovation gating, test ratio | `update.rs` | `nis`, `test_ratio`, called by `update` |
 | — | per-source health tracking | `health.rs` | `SourceHealth`, `Status` |
 | (39)–(41) | injection and reset | `update.rs` | `inject`, `reset_jacobian`, `reparameterize`, `reparameterize_offset`, called by `update` |
-| (41) | reset after an adoption | `eskf.rs` | `Eskf::reset_heading_by`, through `update.rs`'s `reparameterize` |
+| (41) | reset after an adoption | `eskf.rs` | `Eskf::reset_heading_by`, through `update.rs`'s `reparameterize` and `state.rs`'s `Covariance::reset_attitude_direction` |
 | (42) | symmetry enforcement | `math.rs` | `enforce_symmetry`, called by `propagate_covariance` and `reparameterize` |
 | (42′) | diagonal variance floor | `math.rs` | `floor_diagonal`, `floor_offset` and `FLOOR`; applied by `Eskf::commit_covariance` |
 | (43) | local tangent plane | `geodetic.rs` | `LocalOrigin::to_ned`, `to_geodetic` |

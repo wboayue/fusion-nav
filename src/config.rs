@@ -407,7 +407,8 @@ impl Default for Initialization {
 /// out of service the moment the start resolved — beside an `aligned_at=` that has not moved.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Accuracy {
-    /// Roll and pitch.
+    /// Tilt, per axis: the attitude's σ about north and about east, each held to this. See
+    /// [`AttitudeVariance`](crate::AttitudeVariance).
     pub tilt: Radians,
     /// Heading.
     pub heading: Radians,
