@@ -153,21 +153,26 @@ def tilt_heading(q0, q1, q2, q3):
     return tilt, np.where(tilt > INVERTED, np.nan, heading)
 
 
-def rotation_difference(a, b):
-    """The rotation vector of `a^-1 * b`, in `a`'s body axes, radians.
+def conjugate(q):
+    """The inverse of a unit quaternion."""
+    q0, q1, q2, q3 = q
+    return q0, -q1, -q2, -q3
 
-    `b = a * exp(d)`, the local perturbation of equation (3), which is the
-    frame the epoch file's `sigma_att_x/y/z` are in -- so a band drawn from them
-    around `d` compares like with like at any attitude. The shorter of the two
-    rotations `q` and `-q` describe is taken.
-    """
-    a0, a1, a2, a3 = a
-    b0, b1, b2, b3 = b
-    w = a0 * b0 + a1 * b1 + a2 * b2 + a3 * b3
-    # a0 b_v - b0 a_v - a_v x b_v: the vector part of conj(a) * b.
-    x = a0 * b1 - b0 * a1 - (a2 * b3 - a3 * b2)
-    y = a0 * b2 - b0 * a2 - (a3 * b1 - a1 * b3)
-    z = a0 * b3 - b0 * a3 - (a1 * b2 - a2 * b1)
+
+def multiply(p, r):
+    """The Hamilton product `p * r`."""
+    p0, p1, p2, p3 = p
+    r0, r1, r2, r3 = r
+    return (p0 * r0 - p1 * r1 - p2 * r2 - p3 * r3,
+            p0 * r1 + p1 * r0 + p2 * r3 - p3 * r2,
+            p0 * r2 - p1 * r3 + p2 * r0 + p3 * r1,
+            p0 * r3 + p1 * r2 - p2 * r1 + p3 * r0)
+
+
+def rotation_vector(q):
+    """`log(q)` as a rotation vector, radians, taking the shorter of the two
+    rotations `q` and `-q` describe."""
+    w, x, y, z = q
     sign = np.where(w < 0.0, -1.0, 1.0)
     w, x, y, z = w * sign, x * sign, y * sign, z * sign
     norm = np.sqrt(x * x + y * y + z * z)
@@ -177,16 +182,57 @@ def rotation_difference(a, b):
     return x * scale, y * scale, z * scale
 
 
+def rotation_difference(a, b):
+    """The rotation vector of `a^-1 * b`, in `a`'s body axes, radians.
+
+    `b = a * exp(d)`, the local perturbation of equation (3), which is the
+    frame the epoch file's `sigma_att_x/y/z` are in -- so a band drawn from them
+    around `d` compares like with like at any attitude.
+    """
+    return rotation_vector(multiply(conjugate(a), b))
+
+
 def nearest(times, at, tolerance):
     """For each of `at`, the index of the nearest of the sorted `times`, or -1.
 
     `tolerance` refuses a pairing across a gap: a reference sample with no
     epoch near it compares against nothing rather than against the far side.
     """
-    right = np.clip(np.searchsorted(times, at), 1, len(times) - 1)
-    left = right - 1
-    pick = np.where(np.abs(times[left] - at) <= np.abs(times[right] - at), left, right)
+    if len(times) == 1:
+        pick = np.zeros(len(at), dtype=int)
+    else:
+        right = np.clip(np.searchsorted(times, at), 1, len(times) - 1)
+        left = right - 1
+        pick = np.where(np.abs(times[left] - at) <= np.abs(times[right] - at),
+                        left, right)
     return np.where(np.abs(times[pick] - at) <= tolerance, pick, -1)
+
+
+def attitude_difference(ours, reference):
+    """`(t, (dx, dy, dz))`: each reference sample's rotation to ours, undecimated.
+
+    Both arguments are `(t, {"q0": .., "q3": ..})` as read_columns returns them.
+    Each reference sample is paired with the nearest of ours, never
+    interpolated, within two of our sample intervals: a reference sample in a
+    gap in ours compares against nothing. Undecimated so that a caller comparing
+    other pairs of runs decides its own stride.
+    """
+    (t_ours, q_ours), (t_ref, q_ref) = ours, reference
+    tolerance = 2.0 * float(np.median(np.diff(t_ours))) if len(t_ours) > 1 else 0.0
+    pick = nearest(t_ours, t_ref, tolerance)
+    keep = pick >= 0
+    d = rotation_difference(tuple(q_ref[n][keep] for n in QUATERNION),
+                            tuple(q_ours[n][pick[keep]] for n in QUATERNION))
+    return t_ref[keep], d
+
+
+def attitude_series(pair, points):
+    """Decimated tilt and heading from `(t, {"q0": .., "q3": ..})`, or None."""
+    if pair is None:
+        return None
+    t, q = pair
+    tilt, heading = tilt_heading(*(q[n] for n in QUATERNION))
+    return decimate(t, {"tilt": tilt, "heading": heading}, points)
 
 
 # ----------------------------------------------------------------- readers
@@ -213,6 +259,17 @@ def read_header_and_rows(path):
         raise ReportError(f"{path}: no header row")
 
 
+def rows_of(path, source=None, source_column="source"):
+    """`(notes, columns, rows)`, the rows restricted to one row kind if `source`
+    is given -- the union-schema input and reference files carry several."""
+    stream = read_header_and_rows(path)
+    notes, columns = next(stream)
+    kind = columns.index(source_column) if source_column in columns else None
+    if kind is None or source is None:
+        return notes, columns, (cells for _, cells in stream)
+    return notes, columns, (cells for _, cells in stream if cells[kind] == source)
+
+
 def count_rows(path, source=None, source_column="source"):
     """Data rows, for choosing a decimation stride before reading values.
 
@@ -226,15 +283,7 @@ def count_rows(path, source=None, source_column="source"):
     the 1 Hz GNSS rows 371x too large, leaving 38 fixes out of 7000 and a gap
     detector that saw an outage nearly everywhere.
     """
-    total, kind = 0, None
-    stream = read_header_and_rows(path)
-    _, columns = next(stream)
-    if source is not None and source_column in columns:
-        kind = columns.index(source_column)
-    for _, cells in stream:
-        if kind is None or cells[kind] == source:
-            total += 1
-    return total
+    return sum(1 for _ in rows_of(path, source, source_column)[2])
 
 
 class Decimator:
@@ -292,23 +341,29 @@ class Decimator:
         }
 
 
-def read_series(path, wanted, points, source=None, source_column="source"):
-    """Decimated `{name: (t, values)}` for `wanted`, streaming the file once.
+def scan(path, wanted, points, source=None, source_column="source", keep=()):
+    """One pass: `wanted` decimated, and `keep` undecimated.
 
-    `source` restricts to one row kind, which is how the union-schema input and
-    reference files are read without holding a blank cell per column per row.
+    Returns `(notes, {name: (t, values)}, kept)`, where `kept` is
+    `(t, {name: array})` over the rows carrying every one of `keep`, or None.
+    `keep` is for columns that mean nothing apart -- a quaternion's four
+    components -- which an envelope per column would decimate into a rotation
+    nobody held, the mistake read_path exists to avoid for a track. Derive from
+    them first, then `decimate` what was derived. One pass rather than two
+    because on the 2 h log each costs about 5 s.
     """
-    rows = count_rows(path, source, source_column)
-    stream = read_header_and_rows(path)
-    notes, columns = next(stream)
+    rows = count_rows(path, source, source_column) if wanted else 0
+    notes, columns, stream = rows_of(path, source, source_column)
     index = {name: columns.index(name) for name in wanted if name in columns}
-    if not index:
-        return notes, {}
-    kind = columns.index(source_column) if source_column in columns else None
+    kept_index = ([columns.index(name) for name in keep]
+                  if keep and all(name in columns for name in keep) else None)
+    if not index and kept_index is None:
+        return notes, {}, None
     decimator = Decimator(index, rows, points)
-    for _, cells in stream:
-        if kind is not None and source is not None and cells[kind] != source:
-            continue
+    # array('d') rather than lists: on the 2 h log these are 1.4 M rows, and a
+    # list of Python floats holds them in four times the memory.
+    kept_t, kept = array.array("d"), [array.array("d") for _ in keep]
+    for cells in stream:
         values = {}
         for name, position in index.items():
             cell = cells[position]
@@ -316,52 +371,56 @@ def read_series(path, wanted, points, source=None, source_column="source"):
                 values[name] = float(cell)
         if values:
             decimator.add(float(cells[0]), values)
-    return notes, decimator.done()
+        if kept_index is not None:
+            here = [cells[i] for i in kept_index]
+            if all(here):
+                kept_t.append(float(cells[0]))
+                for column_values, cell in zip(kept, here):
+                    column_values.append(float(cell))
+    result = None
+    if kept_t:
+        result = np.frombuffer(kept_t), {n: np.frombuffer(v) for n, v in zip(keep, kept)}
+    return notes, decimator.done() if index else {}, result
+
+
+def read_series(path, wanted, points, source=None, source_column="source"):
+    """Decimated `{name: (t, values)}` for `wanted`, with the file's notes."""
+    notes, series, _ = scan(path, wanted, points, source, source_column)
+    return notes, series
 
 
 def read_columns(path, names, source=None, source_column="source"):
-    """Undecimated `(t, {name: array})` for rows carrying every one of `names`.
+    """Undecimated `(t, {name: array})` for rows carrying every one of `names`."""
+    return scan(path, (), 0, source, source_column, keep=names)[2]
 
-    For columns that mean nothing apart -- a quaternion's four components --
-    which read_series would decimate one envelope at a time into a rotation
-    nobody held, the mistake read_path exists to avoid for a track. Derive from
-    these rows first, then `decimate` what was derived.
+
+def envelope(t, y, stride):
+    """The min/max envelope Decimator keeps, over arrays already in memory.
+
+    Vectorized because the arrays are: fed to Decimator a sample at a time, the
+    tilt and heading of the 2 h log alone took 1.9 s. Non-finite samples are
+    skipped, so a NaN heading past `INVERTED` leaves a gap rather than a bucket
+    extreme. Buckets are by sample index, as Decimator's are by row.
     """
-    stream = read_header_and_rows(path)
-    _, columns = next(stream)
-    if not all(name in columns for name in names):
-        return None
-    index = [columns.index(name) for name in names]
-    kind = columns.index(source_column) if source_column in columns else None
-    # array('d') rather than lists: on the 2 h log these are 1.4 M rows, and a
-    # list of Python floats holds them in four times the memory.
-    t, values = array.array("d"), [array.array("d") for _ in names]
-    for _, cells in stream:
-        if kind is not None and source is not None and cells[kind] != source:
-            continue
-        cells_here = [cells[i] for i in index]
-        if not all(cells_here):
-            continue
-        t.append(float(cells[0]))
-        for column_values, cell in zip(values, cells_here):
-            column_values.append(float(cell))
-    if not t:
-        return None
-    return np.frombuffer(t), {n: np.frombuffer(v) for n, v in zip(names, values)}
+    index = np.flatnonzero(np.isfinite(y))
+    if not len(index):
+        return np.array([]), np.array([])
+    bucket = index // stride
+    # Sorted by bucket, then value: each bucket's first entry is its minimum and
+    # its last its maximum.
+    order = np.lexsort((y[index], bucket))
+    starts = np.flatnonzero(np.r_[True, np.diff(bucket[order]) != 0])
+    ends = np.r_[starts[1:], len(order)] - 1
+    low, high = index[order[starts]], index[order[ends]]
+    first, second = np.minimum(low, high), np.maximum(low, high)
+    pairs = np.column_stack((first, second)).ravel()
+    return t[pairs], y[pairs]
 
 
 def decimate(t, series, points):
-    """read_series's envelope, over arrays already in memory.
-
-    Non-finite samples are skipped, so a NaN heading past `INVERTED` leaves a
-    gap rather than a bucket extreme.
-    """
-    decimator = Decimator(series, len(t), points)
-    arrays = list(series.items())
-    for k, when in enumerate(t):
-        decimator.add(when, {name: float(y[k]) for name, y in arrays
-                             if math.isfinite(y[k])})
-    return decimator.done()
+    """`{name: (t, values)}` for arrays already in memory, at read_series's stride."""
+    stride = max(1, math.ceil(len(t) / points)) if len(t) else 1
+    return {name: envelope(t, y, stride) for name, y in series.items()}
 
 
 def read_times(path, source, source_column="source"):
@@ -371,14 +430,7 @@ def read_times(path, source, source_column="source"):
     outage from its own stride, and reading one column of a 1 Hz source costs a
     few thousand floats even on the 2 h log.
     """
-    stream = read_header_and_rows(path)
-    _, columns = next(stream)
-    kind = columns.index(source_column) if source_column in columns else None
-    return [
-        float(cells[0])
-        for _, cells in stream
-        if kind is None or cells[kind] == source
-    ]
+    return [float(cells[0]) for cells in rows_of(path, source, source_column)[2]]
 
 
 def read_notes(path):
@@ -396,14 +448,13 @@ def read_resets(path):
     seconds of a flight, and without the marks that step reads as divergence
     from this filter rather than as an event in theirs.
     """
-    stream = read_header_and_rows(path)
-    _, columns = next(stream)
+    _, columns, stream = rows_of(path, "ekf2_att")
     if "att_reset" not in columns or "source" not in columns:
         return []
-    counter, kind = columns.index("att_reset"), columns.index("source")
+    counter = columns.index("att_reset")
     times, previous = [], None
-    for _, cells in stream:
-        if cells[kind] != "ekf2_att" or not cells[counter]:
+    for cells in stream:
+        if not cells[counter]:
             continue
         value = cells[counter]
         if previous is not None and value != previous:
@@ -428,16 +479,12 @@ def read_path(path, x_name, y_name, points, source=None, source_column="source")
     """
     rows = count_rows(path, source, source_column)
     stride = max(1, math.ceil(rows / points)) if rows else 1
-    stream = read_header_and_rows(path)
-    _, columns = next(stream)
+    _, columns, stream = rows_of(path, source, source_column)
     if x_name not in columns or y_name not in columns:
         return None
     xi, yi = columns.index(x_name), columns.index(y_name)
-    kind = columns.index(source_column) if source_column in columns else None
     x, y, index = [], [], 0
-    for _, cells in stream:
-        if kind is not None and source is not None and cells[kind] != source:
-            continue
+    for cells in stream:
         if index % stride == 0 and cells[xi] and cells[yi]:
             x.append(float(cells[xi]))
             y.append(float(cells[yi]))
@@ -452,16 +499,12 @@ def read_runs(path, column, source=None, until=None, source_column="source"):
     reference writes a `vehicle_mode` row per change, so its last regime has no
     row marking where it ends.
     """
-    stream = read_header_and_rows(path)
-    _, columns = next(stream)
+    _, columns, stream = rows_of(path, source, source_column)
     if column not in columns:
         return []
     position = columns.index(column)
-    kind = columns.index(source_column) if source_column in columns else None
     runs, current = [], None
-    for _, cells in stream:
-        if kind is not None and source is not None and cells[kind] != source:
-            continue
+    for cells in stream:
         t, value = float(cells[0]), cells[position]
         if current is None or current[2] != value:
             if current is not None:
@@ -1137,8 +1180,7 @@ def build_report(args):
     for _title, _unit, _columns, sigmas in STATE_GROUPS:
         epoch_columns.extend(sigmas)
     epoch_columns.extend(RATIOS)
-    _, epochs = read_series(args.replay, epoch_columns, args.points)
-    ours_q = read_columns(args.replay, QUATERNION)
+    _, epochs, ours_q = scan(args.replay, epoch_columns, args.points, keep=QUATERNION)
 
     gates, sources = read_fusion(fusion_path(args.replay))
 
@@ -1186,32 +1228,14 @@ def build_report(args):
             "these files do not describe the same run:\n  - " + "\n  - ".join(problems)
         )
 
-    # `gnss_pos` carries north in v0 and east in v1, the replay input's union
-    # schema. Paired from one row, never from two decimated columns.
     backdrop = Backdrop(status_runs, mode_runs)
-
-    def attitude_of(pair):
-        if pair is None:
-            return None
-        t, q = pair
-        tilt, heading = tilt_heading(*(q[n] for n in QUATERNION))
-        return decimate(t, {"tilt": tilt, "heading": heading}, args.points)
-
     difference = None
     if ours_q and reference_q:
-        # EKF2 publishes attitude slower than the IMU epochs arrive, so each of
-        # its samples is paired with the nearest epoch, never interpolated.
-        # Two epoch intervals of tolerance: a reference sample in a gap in the
-        # replay compares against nothing.
-        (t_ours, q_ours), (t_ref, q_ref) = ours_q, reference_q
-        tolerance = 2.0 * float(np.median(np.diff(t_ours))) if len(t_ours) > 1 else 0.0
-        pick = nearest(t_ours, t_ref, tolerance)
-        keep = pick >= 0
-        d = rotation_difference(tuple(q_ref[n][keep] for n in QUATERNION),
-                                tuple(q_ours[n][pick[keep]] for n in QUATERNION))
-        difference = decimate(t_ref[keep], dict(zip(("d_x", "d_y", "d_z"), d)),
-                              args.points)
+        t, d = attitude_difference(ours_q, reference_q)
+        difference = decimate(t, dict(zip(("d_x", "d_y", "d_z"), d)), args.points)
 
+    # `gnss_pos` carries north in v0 and east in v1, the replay input's union
+    # schema. Paired from one row, never from two decimated columns.
     fixes = read_path(args.input, "v0", "v1", args.points, source="gnss_pos")
     gaps = read_times(args.input, "gnss_pos") if fixes is not None else None
 
@@ -1264,7 +1288,8 @@ def build_report(args):
         regimes = sorted({run[2] for run in mode_runs})
         shading += (" The strip along the top of each panel is the vehicle's "
                     "flight regime from the reference: blue fixed-wing, purple "
-                    "transition, unshaded multicopter. This log reads "
+                    "transition, and unshaded for multicopter or a regime the "
+                    "log does not name. This log reads "
                     + ", ".join(f"<code>{html.escape(r)}</code>" for r in regimes)
                     + ".")
     resets_note = (" Blue dotted verticals are EKF2's own "
@@ -1279,8 +1304,9 @@ def build_report(args):
             if ours_q is None:
                 continue
             png, caption = figure(
-                attitude_figure(attitude_of(ours_q), attitude_of(reference_q),
-                                attitude_of(truth_q), backdrop, resets),
+                attitude_figure(attitude_series(ours_q, args.points),
+                                attitude_series(reference_q, args.points),
+                                attitude_series(truth_q, args.points), backdrop, resets),
                 "Tilt, the angle between body down and navigation down, and "
                 "heading, the rotation about navigation down that remains "
                 "&mdash; the split <code>Validity</code> reports attitude in, "
@@ -1310,16 +1336,12 @@ def build_report(args):
             "of <code>q<sub>EKF2</sub><sup>-1</sup> q&#770;</code> in body axes, "
             "each EKF2 sample paired with the nearest epoch. The band is this "
             "filter's own +/-3 sigma, in the same body axes as the trace, so the "
-            "comparison holds at any attitude. Tilt compares cleanly, since both "
-            "filters level off gravity, and heading does not at an instant: EKF2 "
-            "resets yaw in the first seconds, and after that the residue is a "
-            "declination difference &mdash; the replay harness fixes declination "
-            "at -0.06 rad where EKF2 reads the world magnetic model at an origin "
-            "two corpus logs do not report. Body x and y are the tilt difference "
-            "only while the headings agree: a heading difference lands partly on "
-            "them, by the sine of the tilt &mdash; 2.4&deg; on f16771dd at 2 s, "
-            "headings 162&deg; apart at 1&deg; of tilt. The tilt panel above "
-            "compares tilt directly. "
+            "comparison holds at any attitude. Body x and y are the tilt "
+            "difference only while the headings agree: a heading difference "
+            "lands partly on them, by the sine of the tilt, and the tilt panel "
+            "above compares tilt directly. Heading does not compare at an "
+            "instant, for reasons data/README.md, \"What --reference writes, "
+            "and what it cannot\", sets out. "
             + shading + resets_note,
             height=6.2)
         blocks.append(png_block(png, caption))
@@ -1466,30 +1488,29 @@ def self_test():
 
     # The difference is body-frame: 5 deg about body x on a vehicle pitched
     # 90 deg is (5, 0, 0), where a navigation-frame one would read it on down.
-    def compose(p, r):
-        p0, p1, p2, p3 = p
-        r0, r1, r2, r3 = r
-        return (p0 * r0 - p1 * r1 - p2 * r2 - p3 * r3,
-                p0 * r1 + p1 * r0 + p2 * r3 - p3 * r2,
-                p0 * r2 - p1 * r3 + p2 * r0 + p3 * r1,
-                p0 * r3 + p1 * r2 - p2 * r1 + p3 * r0)
-
     pitched = quaternion_from_euler(0.0, d(90), d(30))
     nudge = (math.cos(d(2.5)), math.sin(d(2.5)), 0.0, 0.0)
-    near("difference in body axes", rotation_difference(pitched, compose(pitched, nudge)),
+    near("difference in body axes", rotation_difference(pitched, multiply(pitched, nudge)),
          (d(5), 0.0, 0.0))
     # The same 5 deg with the second quaternion negated: q and -q are one
     # rotation, and the long way round is 355 deg about -x.
     near("difference across -q",
-         rotation_difference(pitched, tuple(-c for c in compose(pitched, nudge))),
+         rotation_difference(pitched, tuple(-c for c in multiply(pitched, nudge))),
          (d(5), 0.0, 0.0))
     near("no difference", rotation_difference(pitched, pitched), (0.0, 0.0, 0.0))
 
     near("nearest", nearest(np.array([0.0, 1.0, 2.0]), np.array([0.4, 1.6, 9.0]), 0.5),
          (0, 2, -1))
+    near("nearest of one", nearest(np.array([5.0]), np.array([4.9, 5.1, 9.0]), 0.5),
+         (0, 0, -1))
     t, y = decimate(np.array([0.0, 1.0, 2.0]), {"h": np.array([1.0, np.nan, 3.0])},
                     10)["h"]
     near("decimate skips NaN", np.unique(y), (1.0, 3.0))
+    # The envelope keeps each bucket's extremes in time order: a spike survives
+    # a stride that would step over it.
+    t, y = envelope(np.arange(6.0), np.array([0.0, 9.0, 1.0, 2.0, -4.0, 3.0]), 3)
+    near("envelope values", y, (0.0, 9.0, -4.0, 3.0))
+    near("envelope times", t, (0.0, 1.0, 4.0, 5.0))
 
     for failure in failures:
         print(f"FAIL {failure}", file=sys.stderr)
@@ -1498,24 +1519,28 @@ def self_test():
 
 
 def main():
-    if sys.argv[1:] == ["--self-test"]:
-        return self_test()
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("input", type=Path, help="the replay input CSV")
-    parser.add_argument("replay", type=Path, help="the per-epoch output CSV")
+    parser.add_argument("input", type=Path, nargs="?", help="the replay input CSV")
+    parser.add_argument("replay", type=Path, nargs="?", help="the per-epoch output CSV")
     parser.add_argument("truth", type=Path, nargs="?", help="truth CSV, when the "
                         "scenario has one")
     parser.add_argument("--reference", type=Path, help="EKF2's reference CSV from "
                         "`ulog2replay.py --reference`")
     parser.add_argument("--summary", type=Path, help="captured replay stdout, for "
                         "the summary and score keys")
-    parser.add_argument("-o", "--out", type=Path, required=True, help="output HTML")
+    parser.add_argument("-o", "--out", type=Path, help="output HTML")
     parser.add_argument("--points", type=int, default=4000, help="approximate "
                         "points per trace after decimation (default: 4000)")
     parser.add_argument("--title", help="report title (default: the input's stem)")
+    parser.add_argument("--self-test", action="store_true",
+                        help="run the attitude fixtures no corpus log can check, and exit")
     args = parser.parse_args()
+    if args.self_test:
+        return self_test()
+    if args.input is None or args.replay is None or args.out is None:
+        parser.error("input, replay and -o/--out are required")
 
     try:
         page = build_report(args)

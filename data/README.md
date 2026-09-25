@@ -235,8 +235,10 @@ names match the epoch file's, so a diff is by name.
 Attitude is a quaternion in both files — Hamilton, scalar-first, body to NED, the convention
 `Attitude::body_to_ned` names and `vehicle_attitude.q` already logs — rather than Euler angles,
 because ZYX Euler cannot separate roll from yaw at 90° of pitch, where a tailsitter cruises (#129).
-On a simulated flight pitching to 109°, ZYX roll and yaw read off the same epoch file step 125° in
-one epoch while the quaternion moves by a fraction of a degree. The report derives what it draws.
+On the `mission` scenario with the circuit's pitch amplitude raised from 0.12 rad to 1.9 rad (a
+local edit to `examples/simulate.rs`, default seed), which pitches to 109°, ZYX roll and yaw read
+off the epoch file's quaternion step 125° in one epoch at t = 113.885 s while the quaternion moves
+by a fraction of a degree. The report derives what it draws.
 
 A fifth kind, `vehicle_mode`, is not EKF2's: it is the vehicle's flight regime — `mc`, `fw`,
 `to_fw`, `to_mc`, `undefined` or `other` — one row per change, for shading the report. PX4 tells
@@ -315,8 +317,9 @@ filter rejects 278 of 609 solutions from, so its own bias wanders by ±0.01 rad/
 adjudicate anything.
 
 Tilt agrees with EKF2 within 0.13° on all five logs at EKF2's first attitude sample after the
-initialization window, which is what confirms the quaternion convention and the timebase
-rebasing at once. A magnitude cannot see a tilt in the wrong direction, so the direction is read
+initialization window — read with the report's own `tilt_heading` and `rotation_difference`, so
+no second implementation of either — which is what confirms the quaternion convention and the
+timebase rebasing at once. A magnitude cannot see a tilt in the wrong direction, so the direction is read
 off the rotation between the two: its body x and y components are within 0.42° on the three logs
 whose headings there agree within 17°. On the other two they are not a tilt comparison — a
 heading difference about navigation down lands partly on body x and y, by the sine of the tilt,
