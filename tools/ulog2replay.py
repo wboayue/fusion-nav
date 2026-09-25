@@ -977,8 +977,12 @@ def screen_regime(vehicle, vtol):
     if provenance is None:
         return {"type": "none", "mode_changes": "none"}
     if any(vehicle.data["is_vtol"]):
-        counted = rows and rows[0][2]["mode"] != "undefined"
-        return {"type": "vtol", "mode_changes": f"{len(rows) - 1}" if counted else "none"}
+        # MAV_VTOL_STATE_UNDEFINED is a sample that says nothing, often the first one at
+        # boot. Skipped rather than counted, so it neither hides the changes after it nor
+        # adds two of its own mid-flight.
+        modes = [v["mode"] for _, _, v in rows if v["mode"] != "undefined"]
+        changes = sum(1 for a, b in zip(modes, modes[1:]) if a != b)
+        return {"type": "vtol", "mode_changes": f"{changes}" if modes else "none"}
     return {"type": rows[0][2]["mode"], "mode_changes": "0"}
 
 
@@ -1097,6 +1101,11 @@ def self_test():
     expect("vtol regime", screen_regime(status, vtol), {"type": "vtol", "mode_changes": "4"})
     expect("vtol with no regime logged", screen_regime(status, None),
            {"type": "vtol", "mode_changes": "none"})
+    # Undefined at boot, and again mid-flight: still the four changes of the mission above.
+    vtol = Fixture("vtol_vehicle_status", timestamp=[0, 1, 2, 3, 4, 5, 6, 7],
+                   vehicle_vtol_state=[0, 3, 1, 4, 0, 4, 2, 3])
+    expect("vtol regime past undefined", screen_regime(status, vtol),
+           {"type": "vtol", "mode_changes": "4"})
     expect("fixed wing", screen_regime(
         Fixture("vehicle_status", timestamp=[0], is_vtol=[0], system_type=[1]), None),
         {"type": "fw", "mode_changes": "0"})
