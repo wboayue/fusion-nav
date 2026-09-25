@@ -907,7 +907,8 @@ def self_test():
 
     # A VTOL mission: one row per change, not per message.
     rows = []
-    status = Fixture("vehicle_status", timestamp=[0], is_vtol=[1], system_type=[20])
+    status = Fixture("vehicle_status", timestamp=[0], is_vtol=[1], system_type=[20],
+                     vehicle_type=[1])
     vtol = Fixture("vtol_vehicle_status", timestamp=[1, 2, 3, 4, 5, 6, 7],
                    vehicle_vtol_state=[3, 3, 1, 4, 4, 2, 3])
     reference_mode(status, vtol, rows)

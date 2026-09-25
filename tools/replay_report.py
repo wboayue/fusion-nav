@@ -1429,6 +1429,9 @@ def self_test():
 
     def near(what, got, want, tolerance=1e-9):
         got, want = np.atleast_1d(got), np.atleast_1d(want)
+        if got.shape != want.shape:
+            failures.append(f"{what}: got {got}, want {want}")
+            return
         same = np.isnan(got) == np.isnan(want)
         close = np.isnan(want) | (np.abs(np.nan_to_num(got) - np.nan_to_num(want))
                                   <= tolerance)
@@ -1475,8 +1478,11 @@ def self_test():
     nudge = (math.cos(d(2.5)), math.sin(d(2.5)), 0.0, 0.0)
     near("difference in body axes", rotation_difference(pitched, compose(pitched, nudge)),
          (d(5), 0.0, 0.0))
-    near("difference of q and -q", rotation_difference(pitched, tuple(-c for c in pitched)),
-         (0.0, 0.0, 0.0))
+    # The same 5 deg with the second quaternion negated: q and -q are one
+    # rotation, and the long way round is 355 deg about -x.
+    near("difference across -q",
+         rotation_difference(pitched, tuple(-c for c in compose(pitched, nudge))),
+         (d(5), 0.0, 0.0))
     near("no difference", rotation_difference(pitched, pitched), (0.0, 0.0, 0.0))
 
     near("nearest", nearest(np.array([0.0, 1.0, 2.0]), np.array([0.4, 1.6, 9.0]), 0.5),
