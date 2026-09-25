@@ -614,6 +614,12 @@ struct Replay {
     /// accepts it. A log that begins in motion simply initializes later.
     window: [StaticSample; WINDOW],
     filled: usize,
+    /// Whether every sample since the log began may still be still, which is what lets a
+    /// start shorter than a full window commit at the onset of motion. See
+    /// [`Replay::onset_of_motion`].
+    still_since_start: bool,
+    /// Samples in the longest prefix of the log the filter has read as still.
+    still_prefix: usize,
     /// IMU sample period, taken as the median of the first `PROBE` intervals.
     ///
     /// The log supplies the rate rather than the example assuming one. The median, not
@@ -709,6 +715,8 @@ impl Replay {
             filter: Eskf::new(config),
             window: [StaticSample::default(); WINDOW],
             filled: 0,
+            still_since_start: true,
+            still_prefix: 0,
             interval: None,
             probe: [0.0f64; PROBE],
             probed: 0,
@@ -753,7 +761,7 @@ impl Replay {
                 if self.filter.is_initialized() {
                     self.propagate(r.t, imu, out)?;
                 } else {
-                    self.accumulate(r.t, imu)?;
+                    self.accumulate(r.t, imu, out)?;
                 }
             }
             "gnss_pos" => {
@@ -805,8 +813,14 @@ impl Replay {
     /// Before initialization the filter refuses measurements with
     /// [`Fusion::NotInitialized`], so aiding rows in this stretch of the log are simply
     /// recorded and dropped.
-    fn accumulate(&mut self, t: f64, imu: ImuSample) -> Result<(), Box<dyn Error>> {
+    fn accumulate(
+        &mut self,
+        t: f64,
+        imu: ImuSample,
+        out: &mut Sinks,
+    ) -> Result<(), Box<dyn Error>> {
         self.first_imu.get_or_insert(t);
+        let previous = self.previous_imu;
         self.probe_rate(t);
         let sample = StaticSample {
             imu,
@@ -821,21 +835,41 @@ impl Replay {
             return Ok(());
         };
         let needed = self.samples_needed(interval)?;
+        let dt = Seconds::from_secs(interval as f32);
+        if self.still_since_start && self.filled <= needed {
+            // Nothing has slid out yet, so the window is every sample since the log began.
+            let alignment = self.filter.alignment_of(&self.window[..self.filled], dt)?;
+            if let Some(still) = self.onset_of_motion(alignment)
+                && let Some(previous) = previous
+            {
+                self.commit(previous, 0..still, dt)?;
+                // The sample that moved is the first the filter propagates.
+                self.previous_imu = Some(previous);
+                return self.propagate(t, imu, out).map_err(Into::into);
+            }
+        }
         if self.filled < needed {
             return Ok(());
         }
-        self.window_samples = needed;
-        let window = &self.window[self.filled - needed..self.filled];
-
-        let dt = Seconds::from_secs(interval as f32);
-        let alignment = self.filter.alignment_of(window, dt)?;
+        let window = self.filled - needed..self.filled;
+        let alignment = self.filter.alignment_of(&self.window[window.clone()], dt)?;
         if !self.worth_committing(t, alignment) {
             return Ok(());
         }
+        self.commit(t, window, dt)
+    }
 
+    /// Initialize on `self.window[range]`, the window ending at the sample stamped `t`.
+    fn commit(
+        &mut self,
+        t: f64,
+        range: core::ops::Range<usize>,
+        dt: Seconds,
+    ) -> Result<(), Box<dyn Error>> {
+        self.window_samples = range.len();
+        let window = &self.window[range];
+        let alignment = self.filter.initialize(window, dt)?;
         self.alignment = Some(alignment);
-        // Already classified above; committing it cannot disagree.
-        let _ = self.filter.initialize(window, dt)?;
         self.initialized_at = Some(t);
         // The filter's own rule: one magnetometer sample anywhere in the window observes
         // heading, and none at all leaves yaw a prior until a heading is fused.
@@ -902,6 +936,35 @@ impl Replay {
     fn worth_committing(&self, t: f64, alignment: Alignment) -> bool {
         let waited = t - self.first_imu.unwrap_or(t);
         alignment.is_static() || waited >= PATIENCE
+    }
+
+    /// The other half of the policy: a vehicle still since the log began that starts to
+    /// move before a full window has passed is initialized on what it had, at the onset,
+    /// rather than `PATIENCE` later on a window taken in motion.
+    ///
+    /// `alignment` is the prefix from the first sample through the newest. Returns how
+    /// many samples to commit — all but the newest — when the newest is the one that
+    /// turned it `NotStationary`, and `None` otherwise: the prefix before it must itself
+    /// have been read still, so a log that moved before the rate was fixed commits
+    /// nothing here. Stillness is a peak test (`init::at_rest`), so once a prefix has
+    /// moved no longer one is still, and the check stops. The rate probe is therefore the
+    /// floor on how short a start this commits.
+    ///
+    /// What an application does when it arms a vehicle that has been sitting for less
+    /// than `Initialization::min_duration`: the filter reports the start as
+    /// `Coarse::WindowTooShort`, and keeps what a still window establishes.
+    fn onset_of_motion(&mut self, alignment: Alignment) -> Option<usize> {
+        match alignment {
+            Alignment::Coarse(Coarse::NotStationary { .. }) => {
+                self.still_since_start = false;
+                (self.still_prefix > 0 && self.still_prefix == self.filled - 1)
+                    .then_some(self.still_prefix)
+            }
+            _ => {
+                self.still_prefix = self.filled;
+                None
+            }
+        }
     }
 
     fn propagate(&mut self, t: f64, imu: ImuSample, out: &mut Sinks) -> io::Result<()> {
@@ -1449,7 +1512,8 @@ impl Replay {
             self.excursion.keys(),
             match self.alignment {
                 Some(Alignment::Static) => "static",
-                Some(Alignment::Coarse(..)) => "coarse",
+                Some(Alignment::Coarse(Coarse::WindowTooShort { .. })) => "short",
+                Some(Alignment::Coarse(Coarse::NotStationary { .. })) => "coarse",
                 Some(Alignment::Seeded) => "seeded",
                 None => "none",
             },
@@ -2746,6 +2810,44 @@ mod tests {
             baro.accepted, 0,
             "no altitude is referred to an invented origin"
         );
+    }
+
+    #[test]
+    fn a_log_still_for_less_than_a_window_starts_short_at_the_onset_of_motion() {
+        // 80 still samples, 1.58 s, then turning: never a full window to be static, and
+        // committed at the sample that moved rather than at `PATIENCE` on one that had.
+        // Three barometer readings in the still stretch, so `alpha0=` can say the short
+        // window was taken at rest.
+        let log = Log::new()
+            .baro(0.0, 41.5)
+            .run(0.0, 30, DT, STILL)
+            .baro(0.6, 42.5)
+            .run(0.6, 30, DT, STILL)
+            .baro(1.2, 42.0)
+            .run(1.2, 20, DT, STILL)
+            .run(1.6, 400, DT, TURNING);
+        let replay = replay(&log);
+        let summary = replay.summary();
+        assert_eq!(key(&summary, "align"), "short");
+        assert_eq!(key(&summary, "window"), "80");
+        assert_eq!(key(&summary, "alpha0"), "window");
+        let at = replay.initialized_at.expect("committed");
+        assert!(
+            (at - 1.58).abs() < 1e-9,
+            "at the last still sample, not {at}"
+        );
+    }
+
+    #[test]
+    fn a_log_that_moves_before_its_rate_is_fixed_waits_for_patience() {
+        // 30 still samples, fewer than the 65 the rate probe needs: no prefix was ever read
+        // still, so there is nothing to commit at the onset and the harness waits.
+        let log = Log::new()
+            .run(0.0, 30, DT, STILL)
+            .run(0.6, 471, DT, TURNING);
+        let replay = replay(&log);
+        assert_eq!(key(&replay.summary(), "align"), "coarse");
+        assert_eq!(replay.initialized_at, Some(PATIENCE));
     }
 
     #[test]
