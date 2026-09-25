@@ -6,6 +6,7 @@
 #   data/fetch.sh --verify           verify what is already on disk, download nothing
 #   data/fetch.sh --add URL [NAME]   download once, record its checksum, append to manifest
 #   data/fetch.sh --check            convert and replay each log, assert its expectations
+#   data/fetch.sh --pin NAME         convert and replay one log, print expectations to commit
 #   data/fetch.sh --list             show the manifest
 #   data/fetch.sh --venv             create .venv with the pyulog version the converter pins
 #
@@ -68,10 +69,9 @@ each_entry() {
     return $rc
 }
 
-# Convert one log and replay it, asserting the manifest's expectations against the
-# `summary` line the example prints.
-check_one() {
-    local name=$2 expect=$4
+# Convert one log and replay it, printing the `summary` line the example prints.
+replay_summary() {
+    local name=$1
     local ulg="$dest/$name" csv="$dest/${name%.ulg}.csv"
     if [ ! -f "$ulg" ]; then
         echo "  missing  $name — run data/fetch.sh first" >&2
@@ -89,6 +89,13 @@ check_one() {
         echo "  REPLAY FAILED   $name" >&2
         return 1
     fi
+    echo "$summary"
+}
+
+# Replay one log, asserting the manifest's expectations against its `summary` line.
+check_one() {
+    local name=$2 expect=$4 summary
+    summary=$(replay_summary "$name") || return 1
     if [ -z "$expect" ]; then
         echo "  no expectations  $name — ${summary#summary }"
         return 0
@@ -155,6 +162,25 @@ pyulog_pin() {
     echo "$pin"
 }
 
+# Refuse to convert with anything but the pyulog the converter pins, so --check and --pin
+# produce the CSV `uv run` would.
+require_pinned_pyulog() {
+    local pin have
+    command -v "$python" >/dev/null || die "$python not found; set PYTHON="
+    # Suggesting `uv run` as the remedy would be no remedy at all: replay_summary converts with
+    # $python, so uv never enters this path.
+    pin=$(pyulog_pin)
+    # Imports as well as reports a version. Metadata alone answers a different question:
+    # a present dist-info over a package that cannot import -- a missing numpy, a
+    # half-removed install, an ABI mismatch after a Python upgrade -- would pass here and
+    # then fail inside replay_summary, which discards converter stderr and would print only
+    # `CONVERT FAILED` once per log with no cause.
+    have=$("$python" -c 'import pyulog, importlib.metadata as m; print(m.version("pyulog"))' 2>/dev/null) ||
+        die "pyulog not importable by $python. \`data/fetch.sh --venv\` from the repository root, or set PYTHON= to an interpreter that has it"
+    [ "$have" = "$pin" ] ||
+        die "$python has pyulog $have, but tools/ulog2replay.py pins $pin. \`uv run\` would use $pin, so the two paths would not produce the same CSV. \`uv pip install pyulog==$pin\`, or move the pin if $have is the version you mean to adopt"
+}
+
 cmd=${1:---fetch}
 case "$cmd" in
 --fetch)
@@ -167,23 +193,19 @@ case "$cmd" in
 
 --check)
     [ -f "$manifest" ] || die "no manifest at $manifest"
-    command -v "$python" >/dev/null || die "$python not found; set PYTHON="
-    # Suggesting `uv run` as the remedy would be no remedy at all: check_one converts with
-    # $python, so uv never enters this path.
-    pin=$(pyulog_pin)
-    # Imports as well as reports a version. Metadata alone answers a different question:
-    # a present dist-info over a package that cannot import -- a missing numpy, a
-    # half-removed install, an ABI mismatch after a Python upgrade -- would pass here and
-    # then fail inside check_one, which discards converter stderr and would print only
-    # `CONVERT FAILED` once per log with no cause.
-    have=$("$python" -c 'import pyulog, importlib.metadata as m; print(m.version("pyulog"))' 2>/dev/null) ||
-        die "pyulog not importable by $python. \`data/fetch.sh --venv\` from the repository root, or set PYTHON= to an interpreter that has it"
-    [ "$have" = "$pin" ] ||
-        die "$python has pyulog $have, but tools/ulog2replay.py pins $pin. \`uv run\` would use $pin, so the two paths would not produce the same CSV. \`uv pip install pyulog==$pin\`, or move the pin if $have is the version you mean to adopt"
+    require_pinned_pyulog
     echo "checking the corpus end to end"
     failed=0
     each_entry check_one || failed=1
     [ "$failed" = 0 ] || die "one or more entries did not match their expectations"
+    ;;
+
+--pin)
+    name=${2:-}
+    [ -n "$name" ] || die "usage: data/fetch.sh --pin NAME"
+    require_pinned_pyulog
+    summary=$(replay_summary "$name") || die "no summary for $name"
+    pin_pairs "$summary"
     ;;
 
 --verify)

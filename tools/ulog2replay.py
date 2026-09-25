@@ -230,6 +230,11 @@ def convert_imu(ulog, rows, used):
     return dataset
 
 
+def is_3d_fix(fix, k):
+    """Whether sample `k` is a 3D fix. A receiver logging no `fix_type` is taken at its word."""
+    return fix is None or fix[k] >= 3
+
+
 def convert_gnss(ulog, rows, used):
     dataset = pick(ulog, GNSS_TOPICS)
     if dataset is None:
@@ -267,7 +272,7 @@ def convert_gnss(ulog, rows, used):
 
     origin = None
     for k in range(len(t)):
-        if fix is not None and fix[k] < 3:
+        if not is_3d_fix(fix, k):
             continue
         phi = float(lat[k]) * angle_scale
         lam = float(lon[k]) * angle_scale
@@ -415,7 +420,8 @@ def pinned_pyulog():
     return match.group(1) if match else None
 
 
-def convert(path, baro_variance, mag_variance):
+def open_ulog(path, topics=None):
+    """Parse a ULog, or say how to get the pinned pyulog that parses it."""
     try:
         from pyulog import ULog
     except ImportError:
@@ -432,8 +438,11 @@ def convert(path, baro_variance, mag_variance):
             "  uv run tools/ulog2replay.py ...\n"
             f"{remedy}"
         ) from None
+    return ULog(str(path), topics)
 
-    ulog = ULog(str(path))
+
+def convert(path, baro_variance, mag_variance):
+    ulog = open_ulog(path)
     rows = []
     used = {}
     note = dropouts(ulog)
@@ -718,12 +727,24 @@ def reference_mode(status, vtol, rows):
     return provenance
 
 
+def ekf2_states(ulog):
+    """The topic carrying EKF2's state vector and its `n_states`, or `(None, None)`.
+
+    Newer builds log `estimator_states`; older ones put the same fields in
+    `estimator_status`. Either way the covariance layout is keyed on the count.
+    """
+    states = pick(ulog, ["estimator_states", "estimator_status"])
+    if states is None or "states[0]" not in states.data:
+        return None, None
+    return states, int(states.data["n_states"][0])
+
+
 def write_reference(ulog, out, t0, imu_dt, source_name):
     """EKF2's own solution and innovation ratios, for a side-by-side diff."""
     local = pick(ulog, ["vehicle_local_position"])
     attitude = pick(ulog, ["vehicle_attitude"])
     status = pick(ulog, ["estimator_status"])
-    states = pick(ulog, ["estimator_states", "estimator_status"])
+    states, n_states = ekf2_states(ulog)
     vehicle = pick(ulog, ["vehicle_status"])
     vtol = pick(ulog, ["vtol_vehicle_status"])
     if local is None and status is None and attitude is None:
@@ -740,9 +761,8 @@ def write_reference(ulog, out, t0, imu_dt, source_name):
                 file=sys.stderr,
             )
 
-    layout, n_states, period, provenance = None, None, None, None
-    if states is not None and "states[0]" in states.data:
-        n_states = int(states.data["n_states"][0])
+    layout, period, provenance = None, None, None
+    if n_states is not None:
         layout = EKF2_LAYOUTS.get(n_states)
         if layout is None:
             print(
@@ -861,12 +881,153 @@ def ekf2_origin_note(local):
     return f"EKF2 origin: {lat:.9g} {lon:.9g} {alt:.9g}"
 
 
+SCREEN_TOPICS = GNSS_TOPICS + [
+    "sensor_combined",
+    "vehicle_imu",
+    "vehicle_imu_status",
+    "estimator_states",
+    "estimator_status",
+    "vehicle_status",
+    "vtol_vehicle_status",
+]
+
+
+def release(encoded):
+    """`ver_sw_release` as `vMAJOR.MINOR.PATCH`, suffixed unless a release, or `none`.
+
+    PX4 packs it as 0xMMmmpptt, the low byte a firmware type: dev from 0, alpha from 64,
+    beta from 128, rc from 192, release at 255 (`FIRMWARE_TYPE` in
+    src/lib/version/version.c:49-58 at PX4-Autopilot c4e4ef98e9). Dropping it is how
+    `3949f175`, an rc build, reads as v1.16.0.
+    """
+    if not encoded:
+        return "none"
+    kind = encoded & 0xFF
+    suffix = ("" if kind == 255 else "-rc" if kind >= 192 else "-beta" if kind >= 128
+              else "-alpha" if kind >= 64 else "-dev")
+    return f"v{(encoded >> 24) & 0xFF}.{(encoded >> 16) & 0xFF}.{(encoded >> 8) & 0xFF}{suffix}"
+
+
+def screen_gnss(dataset):
+    """What a receiver reports about itself, over the samples it calls a 3D fix.
+
+    A constant `eph` and satellite count is the tell of a simulated receiver: a
+    real one's accuracy moves with the sky it sees.
+    """
+    keys = ("gnss", "fix_max", "eph_min", "eph_max", "sats_min", "sats_max")
+    if dataset is None:
+        return dict.fromkeys(keys, "none")
+    fix = dataset.data.get("fix_type")
+    sats = dataset.data.get("satellites_used")
+    eph = dataset.data.get("eph")
+    fixed = [k for k in range(len(dataset.data["timestamp"])) if is_3d_fix(fix, k)]
+
+    def span(values, form):
+        if values is None or not fixed:
+            return "none", "none"
+        chosen = [float(values[k]) for k in fixed]
+        return form(min(chosen)), form(max(chosen))
+
+    eph_min, eph_max = span(eph, lambda v: f"{v:.2f}")
+    sats_min, sats_max = span(sats, lambda v: f"{v:.0f}")
+    return dict(zip(keys, (
+        dataset.name,
+        "none" if fix is None else f"{max(int(f) for f in fix)}",
+        eph_min, eph_max, sats_min, sats_max,
+    )))
+
+
+def screen_vibration(ulog):
+    """Clipped accelerometer samples, and the 95th percentile of the vibration metric.
+
+    A percentile, not the maximum: touchdown alone reads 0.55 on `3949f175`, a
+    simulation whose median is 0.008. `vehicle_imu_status` carries one metric per
+    IMU instance, pooled here; older builds put the accelerometer's in
+    `estimator_status.vibe[2]` instead. A metric that is zero throughout was never
+    computed -- LPE's `7592c9b2` logs the field and fills it with nothing -- so it
+    reads `none` rather than as a quiet airframe.
+    """
+    combined = pick(ulog, ["sensor_combined"])
+    clipping = None if combined is None else combined.data.get("accelerometer_clipping")
+    clip = "none" if clipping is None else f"{sum(1 for c in clipping if c)}"
+
+    metrics = [
+        float(v)
+        for d in ulog.data_list if d.name == "vehicle_imu_status"
+        for v in d.data.get("accel_vibration_metric", [])
+    ]
+    if not metrics:
+        status = pick(ulog, ["estimator_status"])
+        if status is not None and "vibe[2]" in status.data:
+            metrics = [float(v) for v in status.data["vibe[2]"]]
+    if not any(metrics):
+        return {"clip": clip, "vib_p95": "none"}
+    metrics.sort()
+    return {"clip": clip, "vib_p95": f"{metrics[(95 * (len(metrics) - 1)) // 100]:.3f}"}
+
+
+def screen_regime(vehicle, vtol):
+    """The airframe, and the regime changes a VTOL made, from the rows `--reference` writes.
+
+    `type` is `mc`, `fw` or `other` off `vehicle_status`, or `vtol`. A VTOL whose
+    regime nothing logged has changes nobody can count, which is `none` and not 0.
+    """
+    rows = []
+    provenance = reference_mode(vehicle, vtol, rows)
+    if provenance is None:
+        return {"type": "none", "mode_changes": "none"}
+    if any(vehicle.data["is_vtol"]):
+        # MAV_VTOL_STATE_UNDEFINED is a sample that says nothing, often the first one at
+        # boot. Skipped rather than counted, so it neither hides the changes after it nor
+        # adds two of its own mid-flight.
+        modes = [v["mode"] for _, _, v in rows if v["mode"] != "undefined"]
+        changes = sum(1 for a, b in zip(modes, modes[1:]) if a != b)
+        return {"type": "vtol", "mode_changes": f"{changes}" if modes else "none"}
+    return {"type": rows[0][2]["mode"], "mode_changes": "0"}
+
+
+def screen(ulog):
+    """One `key=value` line saying whether a candidate log fills a corpus gap.
+
+    Only what the ULog alone can say. What the vehicle did -- extent, speed, tilt
+    -- and whether its start was still are the replay harness's `summary` keys,
+    because the harness is the one place a statistic is computed and `at_rest` is
+    the filter's claim to make. Every value is one number or one word, so a gap's
+    criteria can be written as `data/expect.sh` pairs and tested against it.
+    """
+    info = ulog.msg_info_dict
+    hardware = str(info.get("ver_hw", "none")).replace(" ", "_")
+    _, n_states = ekf2_states(ulog)
+    keys = {
+        "sitl": "yes" if "SITL" in hardware else "no",
+        "hw": hardware,
+        "sw": release(info.get("ver_sw_release", 0)),
+        "duration": f"{(ulog.last_timestamp - ulog.start_timestamp) * 1e-6:.0f}",
+    }
+    keys.update(screen_gnss(pick(ulog, GNSS_TOPICS)))
+    keys.update(screen_vibration(ulog))
+    keys["n_states"] = "none" if n_states is None else f"{n_states}"
+    keys["vehicle_imu"] = "yes" if pick(ulog, ["vehicle_imu"]) is not None else "no"
+    keys.update(screen_regime(pick(ulog, ["vehicle_status"]), pick(ulog, ["vtol_vehicle_status"])))
+    return "screen " + " ".join(f"{k}={v}" for k, v in keys.items())
+
+
 class Fixture:
     """A stand-in for a pyulog dataset: a name and a dict of field arrays."""
 
     def __init__(self, name, **fields):
         self.name = name
         self.data = fields
+
+
+class FixtureLog:
+    """A stand-in for a pyulog `ULog`: the datasets, and `get_dataset` by name."""
+
+    def __init__(self, *datasets):
+        self.data_list = list(datasets)
+
+    def get_dataset(self, name):
+        return next(d for d in self.data_list if d.name == name)
 
 
 def self_test():
@@ -925,6 +1086,44 @@ def self_test():
     expect("attitude row", {k: rows[0][2][k] for k in ("q0", "q1", "q2", "q3")},
            {"q0": half, "q1": 0.0, "q2": half, "q3": 0.0})
 
+    # --screen. A receiver's span is taken over its 3D fixes only: the 2D fix at
+    # eph 9.0 is outside it, and counting it would make a constant receiver vary.
+    gps = Fixture("sensor_gps", timestamp=[0, 1, 2, 3], fix_type=[2, 3, 3, 6], eph=[9.0, 0.9, 0.9, 0.9],
+                  satellites_used=[4, 10, 10, 10])
+    expect("constant receiver", screen_gnss(gps),
+           {"gnss": "sensor_gps", "fix_max": "6", "eph_min": "0.90", "eph_max": "0.90",
+            "sats_min": "10", "sats_max": "10"})
+    gps = Fixture("vehicle_gps_position", timestamp=[0, 1], eph=[1.4, 2.1])
+    expect("receiver with no fix_type", screen_gnss(gps),
+           {"gnss": "vehicle_gps_position", "fix_max": "none", "eph_min": "1.40",
+            "eph_max": "2.10", "sats_min": "none", "sats_max": "none"})
+    expect("no receiver", screen_gnss(None)["eph_min"], "none")
+    expect("vtol regime", screen_regime(status, vtol), {"type": "vtol", "mode_changes": "4"})
+    expect("vtol with no regime logged", screen_regime(status, None),
+           {"type": "vtol", "mode_changes": "none"})
+    # Undefined at boot, and again mid-flight: still the four changes of the mission above.
+    vtol = Fixture("vtol_vehicle_status", timestamp=[0, 1, 2, 3, 4, 5, 6, 7],
+                   vehicle_vtol_state=[0, 3, 1, 4, 0, 4, 2, 3])
+    expect("vtol regime past undefined", screen_regime(status, vtol),
+           {"type": "vtol", "mode_changes": "4"})
+    expect("fixed wing", screen_regime(
+        Fixture("vehicle_status", timestamp=[0], is_vtol=[0], system_type=[1]), None),
+        {"type": "fw", "mode_changes": "0"})
+    expect("receiver with no eph", screen_gnss(Fixture("sensor_gps", timestamp=[0]))["eph_max"],
+           "none")
+    # LPE's `7592c9b2` logs `vibe[2]` and never fills it: zero throughout is unmeasured.
+    lpe = FixtureLog(Fixture("estimator_status", **{"vibe[2]": [0.0, 0.0, 0.0]}))
+    expect("vibration never computed", screen_vibration(lpe)["vib_p95"], "none")
+    imus = FixtureLog(
+        Fixture("vehicle_imu_status", accel_vibration_metric=[0.01] * 19 + [0.55]),
+        Fixture("vehicle_imu_status", accel_vibration_metric=[0.02] * 20),
+    )
+    expect("vibration pooled, touchdown excluded", screen_vibration(imus)["vib_p95"], "0.020")
+    expect("release", release(0x010B03FF), "v1.11.3")
+    expect("rc", release(0x011000C0), "v1.16.0-rc")
+    expect("dev", release(0x010A0000), "v1.10.0-dev")
+    expect("no release", release(0), "none")
+
     for failure in failures:
         print(f"FAIL {failure}", file=sys.stderr)
     print(f"ulog2replay self-test: {'FAIL' if failures else 'ok'}", file=sys.stderr)
@@ -954,11 +1153,23 @@ def main():
         "--self-test", action="store_true",
         help="run the fixtures no corpus log can check, and exit",
     )
+    parser.add_argument(
+        "--screen", action="store_true",
+        help="print one `screen` line of what the log could cover in the corpus, "
+             "write nothing, and exit",
+    )
     args = parser.parse_args()
     if args.self_test:
         return self_test()
     if args.ulog is None:
         parser.error("a .ulg file is required")
+    if args.screen:
+        try:
+            print(screen(open_ulog(args.ulog, SCREEN_TOPICS)))
+        except ConversionError as e:
+            print(f"ulog2replay: {e}", file=sys.stderr)
+            return 1
+        return 0
 
     output = args.output or args.ulog.with_suffix(".csv")
     try:
@@ -977,8 +1188,6 @@ def main():
         count, t0 = write_rows(rows, output, note)
 
         if args.reference:
-            from pyulog import ULog
-
             target = (
                 args.reference
                 if isinstance(args.reference, Path)
@@ -987,7 +1196,7 @@ def main():
             # A second open, with its own topic filter: the replay pass and this
             # one want disjoint topics, and the largest corpus log is 219 MB.
             # Do not fold them into one unfiltered open.
-            reference = ULog(str(args.ulog), REFERENCE_TOPICS)
+            reference = open_ulog(args.ulog, REFERENCE_TOPICS)
             if write_reference(reference, target, t0, imu_dt, args.ulog.name):
                 print(f"reference -> {target}", file=sys.stderr)
     except ConversionError as e:

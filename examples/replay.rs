@@ -541,6 +541,59 @@ fn measured(value: Option<f64>, places: usize) -> String {
     value.map_or_else(|| "none".to_string(), |value| format!("{value:.places$}"))
 }
 
+/// What the vehicle did, for the `summary` line: how far it went, how fast, how far over.
+///
+/// These say what a log *is* — AGENTS.md, "Know what a log is before reading its figures as
+/// accuracy" — so a manifest note's claim that a log flies past a kilometre or pitches to
+/// the vertical is pinned rather than asserted. Extent and speed are the receiver's own rows
+/// as the log gives them, gated or not and before initialization too, because they describe
+/// the flight rather than the filter; a glitch the gate refuses still counts. Tilt is the
+/// filter's estimate, the only attitude a replay has, on navigation axes: the angle between
+/// body down and navigation down, which no Euler sequence reaches at 90° of pitch.
+///
+/// So each key carries an error of its own. A glitch the gate refuses still stretches
+/// `extent`, and the first fix is the origin whatever it was. `tilt_max` includes the
+/// filter's tilt error and the attitude initialization committed: on the grounded
+/// `2c42096b` it reads 5.2° where EKF2 never leaves 1.1°, and the manifest note says why.
+#[derive(Default)]
+struct Excursion {
+    origin: Option<(f32, f32)>,
+    extent: Option<f32>,
+    speed_max: Option<f32>,
+    tilt_max: Option<f32>,
+}
+
+impl Excursion {
+    /// Horizontal distance from the first fix in the log.
+    fn fix(&mut self, north: f32, east: f32) {
+        let (n0, e0) = *self.origin.get_or_insert((north, east));
+        let distance = (north - n0).hypot(east - e0);
+        self.extent = Some(self.extent.map_or(distance, |d| d.max(distance)));
+    }
+
+    /// Horizontal ground speed, the one a fixed-wing's range and a fix's latency scale with.
+    fn velocity(&mut self, north: f32, east: f32) {
+        let speed = north.hypot(east);
+        self.speed_max = Some(self.speed_max.map_or(speed, |s| s.max(speed)));
+    }
+
+    fn attitude(&mut self, attitude: Attitude) {
+        let down = attitude.quaternion() * Vector3::z();
+        let tilt = down.z.clamp(-1.0, 1.0).acos().to_degrees();
+        self.tilt_max = Some(self.tilt_max.map_or(tilt, |t| t.max(tilt)));
+    }
+
+    fn keys(&self) -> String {
+        let text = |value: Option<f32>| value.map_or("none".to_string(), |v| format!("{v:.1}"));
+        format!(
+            "extent={} speed_max={} tilt_max={}",
+            text(self.extent),
+            text(self.speed_max),
+            text(self.tilt_max)
+        )
+    }
+}
+
 /// The two output streams.
 ///
 /// Two files rather than a `row_kind` column: an epoch row and a fusion row share no
@@ -631,6 +684,7 @@ struct Replay {
     /// vehicle turns, and reading it off the end would silently report an end-of-log
     /// attitude instead — the trap `heading=` documents, which this capture is what avoids.
     attitude_at_init: Option<Attitude>,
+    excursion: Excursion,
     epochs: u32,
     /// Rows written to the fusion file: every verdict the log met, whatever it was — one per
     /// `fuse_*` call, two per GNSS fix.
@@ -672,6 +726,7 @@ impl Replay {
             attitude_lost: None,
             heading_at_init: false,
             attitude_at_init: None,
+            excursion: Excursion::default(),
             epochs: 0,
             fusions: 0,
             longest_step_at: None,
@@ -701,6 +756,7 @@ impl Replay {
                 }
             }
             "gnss_pos" => {
+                self.excursion.fix(r.value(0)?, r.value(1)?);
                 // Variance comes from the log, per sample: a real GNSS reports its own
                 // accuracy, and it degrades before it drops out.
                 let outcome = self.filter.fuse_gnss_position(
@@ -712,6 +768,7 @@ impl Replay {
             }
             "gnss_vel" => {
                 let velocity = Velocity::ned(r.value(0)?, r.value(1)?, r.value(2)?);
+                self.excursion.velocity(r.value(0)?, r.value(1)?);
                 // Before initialization the fusion below is refused, and this is the one
                 // thing in the row that a window taken in motion can still use.
                 self.pending_velocity = Some(velocity);
@@ -787,6 +844,7 @@ impl Replay {
         self.note_alignment(t, self.filter.is_aligned(), state.validity);
         self.heading_at_init = state.validity.heading;
         self.attitude_at_init = Some(state.attitude);
+        self.excursion.attitude(state.attitude);
         self.status = state.status;
         self.transitions.push((t, self.status));
         Ok(())
@@ -863,6 +921,7 @@ impl Replay {
         }
         let state = self.filter.state();
         self.note_alignment(t, self.filter.is_aligned(), state.validity);
+        self.excursion.attitude(state.attitude);
         if state.status != self.status {
             self.status = state.status;
             self.transitions.push((t, state.status));
@@ -1378,13 +1437,15 @@ impl Replay {
         let state = self.filter.state();
         let (roll0, pitch0, yaw0) = self.angles_at_init();
         format!(
-            "summary rate={:.0} window={} align={} an={} alpha0={} heading={} \
+            "summary rate={:.0} window={} {} align={} an={} alpha0={} heading={} \
              roll0={roll0:.2} pitch0={pitch0:.2} yaw0={yaw0:.2} resets={} \
              aligned_at={} attitude_lost={} r_policy={R_POLICY} rejected={}{} discarded={} refused={} \
              invalid={} floored={} epochs={}{} \
              transitions={} status={:?}",
             self.interval.map_or(0.0, |interval| 1.0 / interval),
             self.window_samples,
+            // What the vehicle did, so a note's "past a kilometre" is a pin. See `Excursion`.
+            self.excursion.keys(),
             match self.alignment {
                 Some(Alignment::Static) => "static",
                 Some(Alignment::Coarse(..)) => "coarse",
@@ -2573,6 +2634,32 @@ mod tests {
         assert_eq!(key(&summary, "align"), "static", "a tilt is not motion");
         assert_eq!(key(&summary, "roll0"), "10.00");
         assert_eq!(key(&summary, "pitch0"), "-5.00");
+    }
+
+    #[test]
+    fn the_excursion_keys_read_the_receiver_horizontally_from_its_first_fix() {
+        // Extent from the first fix, not from the origin: measured from (0, 0) the last fix
+        // would read 7.3. Speed horizontal: the 10 m/s climb would make it 11.2 in 3-D.
+        let log = still_start()
+            .gnss_pos(2.0, 1.0, 1.0, 0.0)
+            .gnss_pos(3.0, 4.0, 5.0, -50.0)
+            .gnss_pos(4.0, -2.0, 7.0, 0.0)
+            .gnss_vel(4.0, 3.0, 4.0, -10.0);
+        let summary = replay(&log).summary();
+        assert_eq!(key(&summary, "extent"), "6.7");
+        assert_eq!(key(&summary, "speed_max"), "5.0");
+    }
+
+    #[test]
+    fn the_tilt_key_is_the_angle_between_body_down_and_navigation_down() {
+        // The parked vehicle of the test above, 10° roll and 5° pitch: acos(cos 10° cos 5°)
+        // is 11.17°, where the larger Euler angle alone would read 10.0.
+        const TILTED: ([f32; 3], [f32; 3]) =
+            ([0.0, 0.0, 0.0], [-0.854_706, -1.696_427, -9.620_915]);
+        let summary = replay(&Log::new().run(0.0, 100, DT, TILTED)).summary();
+        assert_eq!(key(&summary, "tilt_max"), "11.2");
+        assert_eq!(key(&summary, "extent"), "none", "no receiver, no extent");
+        assert_eq!(key(&summary, "speed_max"), "none");
     }
 
     #[test]
