@@ -309,6 +309,15 @@
 # correlations both reach. No transitions=,
 # aligned_at= or attitude_lost= moved on any log: the corpus starts within
 # 6.56 deg of level, where the two splits differ at second order.
+#
+# #134 takes that tilt variance as the largest eigenvalue of the horizontal
+# tilt block, which no choice of axes moves, and f16771dd moves again for the
+# same reason it moved under #131: nu_mag_yaw -0.025485 to -0.024121, nis_mag
+# 0.0900 to 0.0907, nu_baro_d -0.010810 to -0.011616 through the same
+# attitude-height correlations. The eigenvalue is at least either diagonal of
+# any pair, so the heading is priced no tighter than either split priced it.
+# The other four logs stay inside every band, and no transitions=,
+# aligned_at=, attitude_lost= or heading= moved.
 
 # 124 s quadrotor mission, PX4 v1.16.0-rc1, EKF2 -- in SITL, not a real
 # vehicle: ver_hw=PX4_SITL on Linux, a barometer at a constant 288 K, a
@@ -327,7 +336,7 @@ b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-
 # to 1.304 s. The only log that exercises Propagation::StepTooLong, and the
 # reason Config::max_predict_dt exists.
 # Source: PX4 Flight Review (CC BY 4.0).
-1f3132990f6c9c220a99e1b51aaa21d555ab80224c02cbc336d6841811fae5d2  f16771dd-fe7f-4ebe-a0bb-77ca2a5de6a7.ulg  https://cdn.logs.px4.io/f16771dd-fe7f-4ebe-a0bb-77ca2a5de6a7.ulg  rate=250 window=500 align=static an=none alpha0=window heading=valid roll0=0.84 pitch0=-0.51 yaw0=-107.33 resets=0 aligned_at=0.00 attitude_lost=3.84 r_policy=raw rejected=0 rejected_gnss_pos=0 rejected_gnss_hgt=0 rejected_gnss_vel=0 rejected_baro=0 rejected_mag=0 discarded=0 refused=4 invalid=0 floored=0 transitions=2 status=Healthy nis_gnss_pos=none nis_gnss_hgt=none nis_gnss_vel=none nis_baro=0.0297..0.0305 nis_mag=0.0888..0.0906 nis_over95_gnss_pos=none nis_over95_gnss_hgt=none nis_over95_gnss_vel=none nis_over95_baro=0.0000 nis_over95_mag=0.0003..0.0005 nu_gnss_pos_n=none nu_gnss_pos_e=none nu_gnss_hgt_d=none nu_gnss_vel_n=none nu_gnss_vel_e=none nu_gnss_vel_d=none nu_baro_d=-0.010919..-0.010701 nu_mag_yaw=-0.025740..-0.025230 acf1_gnss_pos=none acf1_gnss_hgt=none acf1_gnss_vel=none acf1_baro=0.1590..0.1624 acf1_mag=0.8871..0.9051
+1f3132990f6c9c220a99e1b51aaa21d555ab80224c02cbc336d6841811fae5d2  f16771dd-fe7f-4ebe-a0bb-77ca2a5de6a7.ulg  https://cdn.logs.px4.io/f16771dd-fe7f-4ebe-a0bb-77ca2a5de6a7.ulg  rate=250 window=500 align=static an=none alpha0=window heading=valid roll0=0.84 pitch0=-0.51 yaw0=-107.33 resets=0 aligned_at=0.00 attitude_lost=3.84 r_policy=raw rejected=0 rejected_gnss_pos=0 rejected_gnss_hgt=0 rejected_gnss_vel=0 rejected_baro=0 rejected_mag=0 discarded=0 refused=4 invalid=0 floored=0 transitions=2 status=Healthy nis_gnss_pos=none nis_gnss_hgt=none nis_gnss_vel=none nis_baro=0.0297..0.0305 nis_mag=0.0897..0.0917 nis_over95_gnss_pos=none nis_over95_gnss_hgt=none nis_over95_gnss_vel=none nis_over95_baro=0.0000 nis_over95_mag=0.0003..0.0005 nu_gnss_pos_n=none nu_gnss_pos_e=none nu_gnss_hgt_d=none nu_gnss_vel_n=none nu_gnss_vel_e=none nu_gnss_vel_d=none nu_baro_d=-0.011733..-0.011499 nu_mag_yaw=-0.024363..-0.023879 acf1_gnss_pos=none acf1_gnss_hgt=none acf1_gnss_vel=none acf1_baro=0.1590..0.1624 acf1_mag=0.8871..0.9051
 
 # 61 s, vendor firmware reporting v6.5.22, EKF2, airframe unknown type.
 # Logs in bursts: shortest IMU interval 2.5 ms against a true period of 20 ms.
