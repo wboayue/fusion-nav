@@ -31,17 +31,22 @@ pub use state::{CovarianceMatrix, STATES};
 /// let mut filter = Eskf::new(Config::default());
 /// let dt = Seconds::from_secs(0.0025);
 ///
-/// // The barometer in the window is what fixes the reference the fusion below is
-/// // relative to. Without it that call refuses with `Fusion::NoReference`.
 /// let still = StaticSample {
 ///     imu: ImuSample {
 ///         gyro: AngularRate::body(0.0, 0.0, 0.0),
 ///         accel: Acceleration::body(0.0, 0.0, -GRAVITY),
 ///     },
-///     baro: Some(Altitude::from_meters(112.0)),
 ///     ..StaticSample::default()
 /// };
-/// filter.initialize(&[still; 800], dt)?;
+/// // The barometer in the window is what fixes the reference the fusion below is
+/// // relative to, and its scatter is how well: one reading held across the window has
+/// // none, and fixes no reference. Without one that call refuses with
+/// // `Fusion::NoReference`.
+/// let window: [StaticSample; 800] = core::array::from_fn(|i| StaticSample {
+///     baro: Some(Altitude::from_meters(if i % 2 == 0 { 112.25 } else { 111.75 })),
+///     ..still
+/// });
+/// filter.initialize(&window, dt)?;
 /// assert_eq!(filter.predict(still.imu, dt), Propagation::Propagated);
 ///
 /// // An IMU that has stopped producing numbers is refused rather than propagated: a

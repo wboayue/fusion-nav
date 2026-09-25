@@ -441,7 +441,7 @@ reads `b` except `Eskf::baro_reference`, which reports the current `α₀`. It w
 **What the constant cost.** `baro_drift` is the baseline flown with the reference walking
 0.02 m/s, 3.7 m over 185 s. Held constant, `pos_v` was 2.053 m against `mission`'s 0.083,
 `nees_pos` 257.52 and `in3s` 0.9389: metres out, reporting the uncertainty of a perfect sensor.
-Estimated, it reads 0.284 m, 1.19 and 0.9999. `static` goes 2.04 to 1.03 in `nees_pos` with no
+Estimated, it reads 0.284 m, 1.19 and 0.9999. `static` goes 2.04 to 1.02 in `nees_pos` with no
 drift configured at all — and to only 1.92 with `b` estimated at `q_b = 0`, so what that line
 needed was the walk rather than the estimate.
 

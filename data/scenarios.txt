@@ -153,15 +153,15 @@
 # removes exactly that error and nothing else was changed to make it: `pos_v` 3.07 to 0.819,
 # `pos_h` 9.14 to 3.03, `yaw` 12.96 deg to 7.59. A heading the window observed, stage 8's, is
 # the other half -- this one corrects the consequence and leaves the 0.6 rad in place.
-static           1  pos_h<=0.275 pos_v<=0.218 vel<=0.193 pos_h_max<=0.988  tilt<=0.631 yaw<=0.514 ba<=0.07963 bg<=0.000999 in3s>=0.9898 nees_pos<=1.0450   nees_vel<=0.4570 nees_att<=0.1343 false_valid<=0   false_valid_att<=0   scored>=11600
+static           1  pos_h<=0.275 pos_v<=0.218 vel<=0.193 pos_h_max<=0.988  tilt<=0.631 yaw<=0.514 ba<=0.07963 bg<=0.000999 in3s>=0.9898 nees_pos<=1.0351   nees_vel<=0.4570 nees_att<=0.1343 false_valid<=0   false_valid_att<=0   scored>=11600
 mission          2  pos_h<=0.247 pos_v<=0.252 vel<=0.190 pos_h_max<=0.887  tilt<=0.577 yaw<=0.656 ba<=0.05304 bg<=0.001027 in3s>=0.9900 nees_pos<=1.0758   nees_vel<=0.4458 nees_att<=0.2004 false_valid<=0   false_valid_att<=0   scored>=36600
-harsh_imu        2  pos_h<=0.247 pos_v<=0.252 vel<=0.192 pos_h_max<=0.886  tilt<=1.154 yaw<=1.066 ba<=0.15405 bg<=0.002251 in3s>=0.9897 nees_pos<=1.0747   nees_vel<=0.4520 nees_att<=0.5987 false_valid<=0   false_valid_att<=0   scored>=36600
+harsh_imu        2  pos_h<=0.247 pos_v<=0.252 vel<=0.192 pos_h_max<=0.886  tilt<=1.154 yaw<=1.066 ba<=0.15406 bg<=0.002251 in3s>=0.9897 nees_pos<=1.0747   nees_vel<=0.4520 nees_att<=0.5987 false_valid<=0   false_valid_att<=0   scored>=36600
 gnss_outage      2  pos_h<=2.267 pos_v<=0.265 vel<=0.339 pos_h_max<=27.060 tilt<=0.598 yaw<=0.660 ba<=0.05368 bg<=0.001025 in3s>=0.9900 nees_pos<=0.8635   nees_vel<=0.4070 nees_att<=0.1951 false_valid<=0   false_valid_att<=0   scored>=36600
 moving_start     4  pos_h<=0.266 pos_v<=0.300 vel<=0.195 pos_h_max<=0.975  tilt<=1.682 yaw<=0.927 ba<=0.05849 bg<=0.002686 in3s>=0.9900 nees_pos<=1.0934   nees_vel<=0.4550 nees_att<=0.2284 false_valid<=0   false_valid_att<=0   scored>=15999
-baro_drift       2  pos_h<=0.247 pos_v<=0.287 vel<=0.190 pos_h_max<=0.887  tilt<=0.576 yaw<=0.656 ba<=0.05305 bg<=0.001026 in3s>=0.9899 nees_pos<=1.1974   nees_vel<=0.4460 nees_att<=0.2002 false_valid<=0   false_valid_att<=0   scored>=36600
-gnss_latency     2  pos_h<=2.221 pos_v<=0.265 vel<=0.475 pos_h_max<=3.361  tilt<=0.958 yaw<=1.370 ba<=0.05314 bg<=0.002377 in3s>=0.8615 nees_pos<=57.5205  nees_vel<=2.7398 nees_att<=0.7753 false_valid<=417 false_valid_att<=122 scored>=36600
+baro_drift       2  pos_h<=0.247 pos_v<=0.287 vel<=0.190 pos_h_max<=0.887  tilt<=0.576 yaw<=0.656 ba<=0.05305 bg<=0.001026 in3s>=0.9899 nees_pos<=1.1975   nees_vel<=0.4460 nees_att<=0.2002 false_valid<=0   false_valid_att<=0   scored>=36600
+gnss_latency     2  pos_h<=2.221 pos_v<=0.265 vel<=0.475 pos_h_max<=3.361  tilt<=0.958 yaw<=1.370 ba<=0.05314 bg<=0.002377 in3s>=0.8615 nees_pos<=57.5194  nees_vel<=2.7398 nees_att<=0.7753 false_valid<=417 false_valid_att<=122 scored>=36600
 mag_disturbance  2  pos_h<=0.247 pos_v<=0.252 vel<=0.190 pos_h_max<=0.887  tilt<=0.579 yaw<=0.734 ba<=0.05262 bg<=0.001064 in3s>=0.9900 nees_pos<=1.0759   nees_vel<=0.4459 nees_att<=0.2009 false_valid<=0   false_valid_att<=0   scored>=36600
-flight           8  pos_h<=2.455 pos_v<=0.347 vel<=0.667 pos_h_max<=6.020  tilt<=1.025 yaw<=7.682 ba<=0.07353 bg<=0.003303 in3s>=0.9900 nees_pos<=0.5577   nees_vel<=0.2281 nees_att<=0.1784 false_valid<=0   false_valid_att<=0   scored>=600
+flight           8  pos_h<=2.456 pos_v<=0.340 vel<=0.667 pos_h_max<=6.021  tilt<=1.025 yaw<=7.682 ba<=0.07352 bg<=0.003303 in3s>=0.9900 nees_pos<=0.5592   nees_vel<=0.2281 nees_att<=0.1784 false_valid<=0   false_valid_att<=0   scored>=600
 
 # (34)-(36) are what `yaw` reads now, and what it buys depends entirely on what the start knew.
 # Where yaw was never observed the magnetometer is the whole estimate: `moving_start` goes 3.228
@@ -224,10 +224,10 @@ flight           8  pos_h<=2.455 pos_v<=0.347 vel<=0.667 pos_h_max<=6.020  tilt<
 # (30') estimates the barometric reference rather than holding it (#119), and every line with a
 # barometer moved, most of them looser in `pos_v` and tighter in `nees_pos`. `baro_drift` is the
 # line the change is for: `pos_v` 2.053 m to 0.284, `nees_pos` 257.52 to 1.19, `in3s` 0.9389 to
-# 0.9999 -- the drift is followed rather than split with GNSS height. `static` goes 2.04 to 1.03 in
+# 0.9999 -- the drift is followed rather than split with GNSS height. `static` goes 2.04 to 1.02 in
 # `nees_pos`, and the explanation this file carried for its 2.04 -- the accelerometer bias walk
 # the barometer cannot separate from a height -- was at most part of it: with the offset
-# estimated at `q_b = 0` it reads 1.92, so what took it to 1.03 is the reference being allowed to
+# estimated at `q_b = 0` it reads 1.92, so what took it to 1.02 is the reference being allowed to
 # walk. The cost is `pos_v` on every line whose barometer does not drift, which in this simulator
 # is all but one: `mission` 0.083 m to 0.249, `static` 0.150 to 0.215. At PX4's 0.13 m/s/sqrt(Hz)
 # the reference walks away from what the barometer knew and GNSS height carries the low

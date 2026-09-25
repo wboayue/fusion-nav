@@ -375,15 +375,15 @@ figure they produce:
 
 - PX4 logs **no variance at all** for the barometer or the magnetic heading, so
   `tools/ulog2replay.py` substitutes a constant. `nis_baro` and `nis_mag` therefore measure that
-  constant rather than the filter's tuning, and the corpus reads 0.0067–0.2090 and 0.0025–0.1984
+  constant rather than the filter's tuning, and the corpus reads 0.0067–0.2093 and 0.0025–0.1984
   — conservative by 2.2–12.2× in σ for the barometer and 2.2–20.0× for the magnetometer, stated
   separately because one range across both understates the magnetometer's low end by two thirds.
   Nothing here had ever tested them; that is the first measurement
   [#50](https://github.com/wboayue/fusion-nav/issues/50) can argue from.
 - For GNSS the statistic tests the receiver's own `eph`/`epv`/`s_variance_m_s`, which the harness
   passes through unfloored where both production estimators bound theirs. Horizontal position
-  reads 0.0056, 0.0110 and 0.1221 and height 0.0046, 0.0547 and 0.1024, so those figures are
-  wider than their residuals earn; `a299e722`'s velocity reads 7.5593, a receiver contradicting its
+  reads 0.0056, 0.0110 and 0.1221 and height 0.0048, 0.0547 and 0.1024, so those figures are
+  wider than their residuals earn; `a299e722`'s velocity reads 7.5592, a receiver contradicting its
   own differenced positions.
 
 **Unfloored is the policy, and it is deliberate.** Both production estimators bound a receiver's
