@@ -146,6 +146,7 @@ fn drive() {
     let _ = black_box(filter.is_initialized());
     let _ = black_box(filter.is_aligned());
     let _ = black_box(filter.validity());
+    let _ = black_box(filter.attitude_variance());
     let _ = black_box(filter.predicted_validity());
 
     // The tangent plane is reachable through `fuse_gnss_geodetic` above, but it is also a

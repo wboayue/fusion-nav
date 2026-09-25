@@ -8,7 +8,7 @@ use crate::init::{self, Alignment, Coarse, InitError, Measured, StaticSample, ba
 use crate::math::{below_floor, exp_quat, floor_diagonal, floor_offset};
 use crate::observation::{baro, gnss, mag};
 use crate::propagate::{ImuSample, project, propagate};
-use crate::state::{Covariance, ErrorState, Offset, State};
+use crate::state::{AttitudeVariance, Covariance, ErrorState, Offset, State};
 use crate::units::{
     Altitude, AltitudeNoise, Attitude, HeadingNoise, MagField, Position, PositionNoise, Radians,
     Seconds, Velocity, VelocityNoise,
@@ -1005,7 +1005,14 @@ impl Eskf {
             // The adoption reads the same `y` and the same `R` an ordinary update would.
             // (36′) is what makes that worth saying: the levelling error is priced on the
             // path where the tilt it comes from is worst.
-            self.reset_heading_by(observation.y[0], observation.r_m[0]);
+            // Navigation down in body axes, `R(q̂)ᵀe₃`: (36)'s row, read back rather than
+            // derived again, so the direction the adoption resets is the one the source
+            // observes.
+            let down = observation
+                .h
+                .fixed_view::<1, 3>(0, ErrorState::AttitudeX.index())
+                .transpose();
+            self.reset_heading_by(observation.y[0], observation.r_m[0], down);
             self.diagnostics.mag_heading.record_adopted();
             self.note_alignment();
             return Fusion::Reset;
@@ -1043,9 +1050,10 @@ impl Eskf {
     ///
     /// The correlations go with it, which is what fusing against an infinitely uncertain
     /// prior converges to — the same limit [`reset_position_to`](Self::reset_position_to)
-    /// takes, one component wide. The yaw axis is `AttitudeZ`, the body-frame error
-    /// component, while the rotation above is about navigation down: the two agree at zero
-    /// tilt and differ by the `1/cos θ` equation (36) already carries.
+    /// takes, one component wide. That component is the rotation about navigation down,
+    /// `uᵀδθ` with `u = R(q̂)ᵀe₃` in body axes, not `δθ_z`: the two agree only while the
+    /// vehicle is level, and at 90° of pitch `δθ_z` is a tilt. The rotation above leaves
+    /// `e₃` where it was, so `u` is the same before the adoption and after it.
     ///
     /// What survives — the tilt block, the biases, and the correlations between them — is
     /// reparameterized first, by the (41) of `update::reparameterize`. `δθ` is referenced
@@ -1056,7 +1064,7 @@ impl Eskf {
     /// their correlations with attitude transform on one side only — left unrotated, a
     /// roll-error/gyro-bias-x correlation is read afterwards as roll-error/gyro-bias-y and
     /// the next velocity update pushes the correction into the wrong axis.
-    fn reset_heading_by(&mut self, y: f32, variance: f32) {
+    fn reset_heading_by(&mut self, y: f32, variance: f32, down: Vector3<f32>) {
         let before = self.state.attitude.quaternion().to_rotation_matrix();
         let mut corrected = exp_quat(Vector3::z() * y) * self.state.attitude.quaternion();
         corrected.renormalize();
@@ -1066,8 +1074,8 @@ impl Eskf {
         let g_theta = g_theta.into_inner();
         let mut covariance = update::reparameterize(*self.covariance.as_matrix(), g_theta);
         let mut offset = update::reparameterize_offset(&self.offset, g_theta);
-        covariance.reset_state(ErrorState::AttitudeZ, variance);
-        offset.decorrelate(ErrorState::AttitudeZ);
+        covariance.reset_attitude_direction(down, variance);
+        offset.decorrelate_attitude_direction(down);
         self.commit_covariance(covariance, offset);
         self.unestablished.heading = false;
     }
@@ -1077,7 +1085,8 @@ impl Eskf {
     /// Status and validity are derived here rather than cached: they are pure functions
     /// of [`diagnostics`](Self::diagnostics), the covariance, and [`Config`], so computing
     /// them on read means there is no invariant for the mutating methods to maintain. The
-    /// cost is nine covariance entries and four source timers, compared.
+    /// cost is two rotations of the attitude block, one each for tilt and heading, six other
+    /// covariance entries and four source timers, compared.
     pub fn state(&self) -> State {
         // `self.state.status` and `.validity` are inert; the stored estimate never
         // carries meaningful ones, and every read overwrites them.
@@ -1098,6 +1107,18 @@ impl Eskf {
         &self.covariance
     }
 
+    /// How uncertain the attitude is about each navigation axis: tilt about north and east,
+    /// heading about down.
+    ///
+    /// The numbers [`validity`](Self::validity) tests against
+    /// [`Accuracy`](crate::Accuracy), and the ones to plot beside a tilt or a heading. The
+    /// attitude rows of [`covariance`](Self::covariance) are in body axes and mean tilt and
+    /// heading only while the vehicle is level; see [`AttitudeVariance`]. All zero before
+    /// the filter is initialized, which is the covariance it then holds.
+    pub fn attitude_variance(&self) -> AttitudeVariance {
+        AttitudeVariance::of(&self.state.attitude, &self.covariance)
+    }
+
     /// Whether the attitude has **ever** met [`ALIGNED_TILT`] and [`ALIGNED_HEADING`] since
     /// initialization — the test behind [`Status::Aligning`].
     ///
@@ -1111,13 +1132,12 @@ impl Eskf {
     /// alignment is an event, "the start has been resolved", where
     /// [`validity`](Self::validity) is the live question, "is tilt good enough right now".
     ///
-    /// Conflating the two is what a corpus replay showed costs: with the bar read live, the
-    /// handled log `7592c9b2` flaps `Healthy`/`Aligning` four times in four seconds and every
-    /// static log ends `Aligning`. Not because anything degraded — because a body-frame
-    /// attitude covariance **rotates** with the body (equation (20)), so a 20° yaw prior
-    /// becomes partly a roll-and-pitch prior as the vehicle turns, and back again. That is
-    /// honest about tilt right now, which is [`Validity`]'s job, and useless as a report that
-    /// the filter has not finished starting up. PX4 and ArduPilot both latch it for the same
+    /// Conflating the two is what a corpus replay showed costs. Read live, the bar is crossed
+    /// 703 times on `2c42096b`, a grounded vehicle under a poor sky view whose tilt σ sits
+    /// above [`ALIGNED_TILT`] for 79 % of two hours, and `7592c9b2` and `f16771dd` start
+    /// aligned and end `Aligning`. The counts are the same with tilt read on body axes or on
+    /// navigation ones. That is honest about tilt right now, which is [`Validity`]'s job, and
+    /// useless as a report that the filter has not finished starting up. PX4 and ArduPilot both latch it for the same
     /// reason: `tilt_align` and `tiltAlignComplete` are only ever tested while false
     /// (`src/modules/ekf2/EKF/control.cpp:73-78` at `c4e4ef98e9`,
     /// `libraries/AP_NavEKF3/AP_NavEKF3_Control.cpp:520-525` at `368dc0c428`).
@@ -1179,13 +1199,17 @@ impl Eskf {
         }
     }
 
-    /// Whether roll and pitch are both within `bar`, one standard deviation per axis.
+    /// Whether tilt about north and about east are both within `bar`, one standard
+    /// deviation per axis.
     ///
     /// Shared by [`validity`](Self::validity) and the alignment latch, which ask it against
-    /// different bars; one definition is what keeps the two claims the same shape.
+    /// different bars; one definition is what keeps the two claims the same shape. Read on
+    /// navigation axes through [`AttitudeVariance`], not off `δθ_x` and `δθ_y`, which are
+    /// tilt only while the vehicle is level.
     fn tilt_within(&self, p: &Covariance, bar: Radians) -> bool {
         let sigma = bar.as_radians();
-        within(p, ErrorState::AttitudeX, sigma) && within(p, ErrorState::AttitudeY, sigma)
+        let variance = AttitudeVariance::of(&self.state.attitude, p);
+        variance.tilt_north <= sigma * sigma && variance.tilt_east <= sigma * sigma
     }
 
     /// Whether heading has been established and is within `bar`.
@@ -1193,7 +1217,9 @@ impl Eskf {
     /// A heading nothing observed fails whatever its variance: stillness never observes yaw,
     /// and a prior on a yaw nobody measured is not an estimate of one.
     fn heading_within(&self, p: &Covariance, bar: Radians) -> bool {
-        !self.unestablished.heading && within(p, ErrorState::AttitudeZ, bar.as_radians())
+        let sigma = bar.as_radians();
+        !self.unestablished.heading
+            && AttitudeVariance::of(&self.state.attitude, p).heading <= sigma * sigma
     }
 
     /// Which parts of the estimate the filter expects to be good **if the vehicle left
@@ -1372,7 +1398,8 @@ impl Eskf {
         // time as motion the window could not vouch for; see `init::coarse_sigmas`.
         let (sigma_tilt, sigma_yaw) =
             init::attitude_sigmas(&self.config.init, alignment, measured, state.gyro_bias);
-        let covariance = init::initial_covariance(&self.config.init, sigma_tilt, sigma_yaw);
+        let covariance =
+            init::initial_covariance(&self.config.init, &state.attitude, sigma_tilt, sigma_yaw);
         self.state = state;
         // Before the commit, which counts into them; see `initialize_from`.
         self.diagnostics = Diagnostics::default();
@@ -2505,7 +2532,8 @@ mod tests {
         let _ = filter
             .initialize(&turning(0.0, 0.4, 0.0), Seconds::from_secs(0.25))
             .expect("moving, not unusable");
-        let tilt = filter.covariance().variance(ErrorState::AttitudeX);
+        // On navigation axes: the window is tilted, so body x carries some of the yaw prior.
+        let tilt = filter.attitude_variance().tilt_north;
         assert!(
             (tilt - 0.8 * 0.8).abs() < 1e-4,
             "the covariance carries the widened tilt, got sigma^2 {tilt}"
@@ -3858,5 +3886,109 @@ mod tests {
             .initialize_from(state, Covariance::from_sigmas([2.0; STATES]))
             .expect("a sane seed");
         assert!(!filter.is_aligned());
+    }
+
+    /// A static window of a tailsitter standing on its tail, pitched 90° nose-up: body x
+    /// points up, so the body diagonal of the attitude block is heading, one tilt and the
+    /// other tilt, in that order.
+    fn on_its_tail() -> Eskf {
+        let mut filter = Eskf::new(Config::default());
+        let alignment = filter
+            .initialize(
+                &window_tilted(0.0, core::f32::consts::FRAC_PI_2),
+                Seconds::from_secs(0.25),
+            )
+            .expect("a parked vehicle reads exactly g, however it is standing");
+        assert_eq!(alignment, Alignment::Static);
+        filter
+    }
+
+    #[test]
+    fn validity_reads_tilt_and_heading_about_navigation_axes() {
+        // Tight in heading and in tilt about east, loose in tilt about north. On its tail,
+        // body x is heading and body z is tilt about north, so reading by body axis would
+        // call tilt valid and heading not — the opposite of the attitude it holds.
+        let attitude = attitude_of(0.0, core::f32::consts::FRAC_PI_2, 0.0);
+        let (tight, loose) = (1e-4, 0.25);
+        let block = AttitudeVariance {
+            tilt_north: loose,
+            tilt_east: tight,
+            heading: tight,
+        }
+        .in_body(&attitude);
+        let mut p = *Covariance::from_sigmas([0.1; STATES]).as_matrix();
+        let theta = ErrorState::AttitudeX.index();
+        p.fixed_view_mut::<3, 3>(theta, theta).copy_from(&block);
+
+        let mut filter = Eskf::new(Config::default());
+        let _ = filter
+            .initialize_from(
+                State {
+                    attitude,
+                    ..State::default()
+                },
+                Covariance::from_matrix(p),
+            )
+            .expect("a sane seed");
+
+        let validity = filter.validity();
+        assert!(validity.heading, "heading is known to 0.57°");
+        assert!(!validity.tilt, "tilt about north is 29° uncertain");
+    }
+
+    #[test]
+    fn on_its_tail_the_window_puts_the_yaw_prior_on_heading() {
+        // Equation (8)'s prior is about navigation axes, so on a vehicle standing on its
+        // tail it lands on body x, not z.
+        let filter = on_its_tail();
+        let init = Config::default().init;
+        let variance = filter.attitude_variance();
+        let (tilt, yaw) = (init.sigma_tilt.as_radians(), init.sigma_yaw.as_radians());
+        assert!((variance.heading - yaw * yaw).abs() < 1e-6, "{variance:?}");
+        assert!(
+            (variance.tilt_north - tilt * tilt).abs() < 1e-7,
+            "{variance:?}"
+        );
+        assert!(
+            (variance.tilt_east - tilt * tilt).abs() < 1e-7,
+            "{variance:?}"
+        );
+    }
+
+    #[test]
+    fn on_its_tail_a_heading_adoption_resets_heading_and_leaves_tilt() {
+        let mut filter = on_its_tail();
+        let before = filter.attitude_variance();
+        // The same vehicle turned 1.1 rad about down: a heading, and nothing else, differs.
+        let truth = Attitude::body_to_ned(
+            nalgebra::UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 1.1)
+                * filter.state().attitude.quaternion(),
+        );
+        let field = measured(truth, 0.0);
+        let noise = HeadingNoise::from_sigma(0.05);
+        let adopted = mag::heading_observation(
+            &filter.state,
+            &filter.covariance,
+            field,
+            filter.config.magnetic_declination,
+            noise,
+        )
+        .r_m[0];
+
+        assert!(filter.fuse_mag_heading(field, noise).is_reset());
+
+        let after = filter.attitude_variance();
+        assert!(
+            (after.heading - adopted).abs() < 1e-6 * adopted,
+            "heading carries the adopted variance: {after:?} against {adopted}"
+        );
+        assert!(
+            (after.tilt_north - before.tilt_north).abs() < 1e-9,
+            "{after:?}"
+        );
+        assert!(
+            (after.tilt_east - before.tilt_east).abs() < 1e-9,
+            "{after:?}"
+        );
     }
 }

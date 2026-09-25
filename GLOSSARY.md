@@ -26,7 +26,10 @@ the difference is the kind that costs a day.
   the navigation frame. Equivalently roll, pitch and yaw, or a quaternion, or a 3 × 3 rotation
   matrix.
 * **Roll, pitch, yaw** — rotations about the forward, right and down axes. **Tilt** is roll and
-  pitch together, the part gravity can measure; **heading** is yaw, the part it cannot.
+  pitch together, the part gravity can measure; **heading** is yaw, the part it cannot. Their
+  uncertainties are about **navigation** axes — tilt about north and east, heading about down —
+  so they are the body-axis attitude variances only near level; `AttitudeVariance` in
+  `src/state.rs` owns the difference.
 * **Quaternion** — four numbers representing a rotation, used instead of Euler angles because
   they have no gimbal lock and compose cheaply. The cost is conventions that look alike and are
   not. **Hamilton** vs JPL and **scalar-first** vs scalar-last storage are settled here by

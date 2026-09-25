@@ -6,7 +6,7 @@ use nalgebra::{RealField, SMatrix, SVector, Vector3};
 use crate::frames::Body;
 use crate::init;
 use crate::math::wrap_pi;
-use crate::state::{Covariance, ErrorState, STATES, State};
+use crate::state::{AttitudeVariance, Covariance, ErrorState, STATES, State};
 use crate::units::{HeadingNoise, MagField, Radians};
 use crate::update::Observation;
 
@@ -114,7 +114,9 @@ pub(crate) fn heading_observation(
         y: SVector::<f32, 1>::new(heading_innovation(state, field, declination)),
         h,
         h_b: SVector::<f32, 1>::zeros(),
-        r_m: SVector::<f32, 1>::new(noise.variance() + levelling_variance(covariance, field, &h)),
+        r_m: SVector::<f32, 1>::new(
+            noise.variance() + levelling_variance(state, covariance, field, &h),
+        ),
     }
 }
 
@@ -126,15 +128,18 @@ pub(crate) fn heading_observation(
 /// is navigation down resolved in body axes, which is (36)'s Jacobian row transposed —
 /// `e₃ᵀR(q̂)` read as a column is `R(q̂)ᵀe₃`.
 ///
-/// `σ_tilt²` is the larger of the two horizontal attitude variances rather than their
-/// average, because the two ways of being wrong are not symmetric. Too large only slows
+/// `σ_tilt²` is the larger of the two tilt variances rather than their average, because the
+/// two ways of being wrong are not symmetric. Too large only slows
 /// the heading's correction; too small is what produced 840 falsely-valid attitude
-/// epochs on `moving_start`, where the filter claimed an attitude it did not have.
+/// epochs on `moving_start`, where the filter claimed an attitude it did not have. Both are
+/// read on navigation axes through [`AttitudeVariance`]: the body x and y variances are tilt
+/// only while the vehicle is level, and at 90° of pitch one of them is the heading's own.
 ///
 /// Zero where the field is horizontal — nothing to tip — and zero where
 /// [`heading_sensitivity`](crate::init::heading_sensitivity) refuses a field with no
 /// horizontal part at all, which observes no heading for the tilt to spoil.
 fn levelling_variance(
+    state: &State,
     covariance: &Covariance,
     field: MagField<Body>,
     h: &SMatrix<f32, 1, STATES>,
@@ -147,9 +152,8 @@ fn levelling_variance(
     let Some(tan_dip) = init::heading_sensitivity(field, down_in_body) else {
         return 0.0;
     };
-    let tilt_variance = covariance
-        .variance(ErrorState::AttitudeX)
-        .max(covariance.variance(ErrorState::AttitudeY));
+    let variance = AttitudeVariance::of(&state.attitude, covariance);
+    let tilt_variance = variance.tilt_north.max(variance.tilt_east);
     tan_dip * tan_dip * tilt_variance
 }
 
@@ -444,6 +448,52 @@ pub(crate) mod tests {
         assert_eq!(
             observation.r_m[0],
             HeadingNoise::from_sigma(0.05).variance()
+        );
+    }
+
+    #[test]
+    fn heading_variance_is_the_heading_rows_h_p_ht() {
+        // (36)'s row and `AttitudeVariance` are two statements of what heading
+        // uncertainty is; they must agree at any attitude.
+        let state = state_at(attitude_of(0.4, 1.2, -2.0));
+        let mut p = crate::state::CovarianceMatrix::from_fn(|i, j| 0.01 * (1 + i.min(j)) as f32);
+        p.fill_diagonal(0.2);
+        let covariance = Covariance::from_matrix(p);
+        let h = heading_jacobian(&state);
+        let hpht = (h * covariance.as_matrix() * h.transpose())[0];
+        let heading = AttitudeVariance::of(&state.attitude, &covariance).heading;
+        assert!((hpht - heading).abs() < 1e-6, "{hpht} against {heading}");
+    }
+
+    #[test]
+    fn on_its_tail_the_levelling_reads_tilt_and_not_heading() {
+        // Pitched 90° nose-up, body x is navigation up: the body x and y variances (36′)
+        // once read are heading's and one tilt's. How uncertain heading is has nothing to
+        // do with how badly the field was levelled.
+        let attitude = attitude_of(0.0, core::f32::consts::FRAC_PI_2, 0.3);
+        let state = state_at(attitude);
+        let field = measured(attitude, 0.0);
+        let h = heading_jacobian(&state);
+        let levelling = |heading: f32| {
+            let block = AttitudeVariance {
+                tilt_north: 1e-3,
+                tilt_east: 1e-3,
+                heading,
+            }
+            .in_body(&attitude);
+            let mut p = crate::state::CovarianceMatrix::identity();
+            let theta = ErrorState::AttitudeX.index();
+            p.fixed_view_mut::<3, 3>(theta, theta).copy_from(&block);
+            levelling_variance(&state, &Covariance::from_matrix(p), field, &h)
+        };
+        let (tight, loose) = (levelling(1e-4), levelling(0.5));
+        assert!(
+            tight > 0.0,
+            "a dipping field has a levelling error to price"
+        );
+        assert!(
+            (tight - loose).abs() < 1e-6 * tight.max(1e-9) + 1e-9,
+            "heading's variance leaked into the levelling: {tight} against {loose}"
         );
     }
 }

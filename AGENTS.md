@@ -686,10 +686,10 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
   promotion is measured rather than timed — except heading, which no covariance can promote because
   stillness never observes yaw; that one waits for the first `fuse_mag_heading`. Promotion only: the flag
   **latches**, so `Status::Aligning` reports a start that has not been resolved and never
-  returns, while `Validity::tilt` stays live and does fall back. Read live it flapped
-  `Healthy`/`Aligning` four times in four seconds on `7592c9b2`, because (20)'s attitude block
-  rotates a 20° yaw prior into the tilt axes as the vehicle turns; PX4 and ArduPilot latch
-  theirs for the same reason. The latch is the one thing about `Status` that is not derived on
+  returns, while `Validity::tilt` stays live and does fall back. Read live the bar is crossed
+  703 times on `2c42096b`, whose tilt σ sits over `ALIGNED_TILT` for 79 % of the log, and
+  `7592c9b2` and `f16771dd` end `Aligning`, on body axes and navigation ones alike; PX4 and
+  ArduPilot latch theirs for the same reason. The latch is the one thing about `Status` that is not derived on
   read, which is why every path that can move the attitude covariance calls `note_alignment`.
 - **`Status` is the summary; `State::validity` is the detail.** Six per-quantity flags derived
   from the covariance against `Config::accuracy` (the one knob meant to be supplied, since

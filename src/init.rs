@@ -11,7 +11,7 @@ use crate::config::{GRAVITY, Initialization};
 use crate::frames::{Body, Ned};
 use crate::math::wrap_pi;
 use crate::propagate::ImuSample;
-use crate::state::{Covariance, State};
+use crate::state::{AttitudeVariance, Covariance, State};
 use crate::units::{
     Acceleration, Altitude, AngularRate, Attitude, MagField, MetersPerSecond2, Position, Radians,
     RadiansPerSecond, Seconds, Velocity,
@@ -693,12 +693,23 @@ fn coarse_sigmas(
     (Radians::from_radians(tilt), Radians::from_radians(yaw))
 }
 
-/// The diagonal initial covariance `P₀`. Equation (8).
+/// The initial covariance `P₀`. Equation (8).
 ///
 /// Position, velocity and bias sigmas come from `init`; the attitude sigmas from
 /// [`attitude_sigmas`], because they depend on how good the alignment was.
+///
+/// Tilt and yaw are uncertainties about navigation axes, and the block they land in is the
+/// covariance of the body-frame `δθ`, so they are rotated in through `attitude`, the
+/// alignment's own. Diagonal only at level: on a vehicle standing on its tail, body x points
+/// up and the yaw prior belongs on `δθ_x`.
+///
+/// Writing the block after construction costs a copy of `P`: on `thumbv6m` this frame is
+/// 1056 bytes where a diagonal-only `P₀` inlined to 80, and `Eskf::apply_alignment` grows by
+/// the same 960. The initialization chain then reaches about 3.3 KB, well under the 10 KB of
+/// `fuse_gnss_position` into `update::<3>`, so the crate's peak does not move.
 pub(crate) fn initial_covariance(
     init: &Initialization,
+    attitude: &Attitude,
     sigma_tilt: Radians,
     sigma_yaw: Radians,
 ) -> Covariance {
@@ -712,11 +723,20 @@ pub(crate) fn initial_covariance(
     let sigmas = [
         position,   position,   position,
         velocity,   velocity,   velocity,
-        tilt,       tilt,       yaw,
+        0.0,        0.0,        0.0,
         accel_bias, accel_bias, accel_bias,
         gyro_bias,  gyro_bias,  gyro_bias,
     ];
-    Covariance::from_sigmas(sigmas)
+    let mut covariance = Covariance::from_sigmas(sigmas);
+    covariance.set_attitude_block(
+        AttitudeVariance {
+            tilt_north: tilt * tilt,
+            tilt_east: tilt * tilt,
+            heading: yaw * yaw,
+        }
+        .in_body(attitude),
+    );
+    covariance
 }
 
 /// Standard deviation of a heading known only to lie somewhere on the circle: `π / √3`,

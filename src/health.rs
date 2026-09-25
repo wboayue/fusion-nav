@@ -403,7 +403,10 @@ impl Propagation {
 /// position of either kind.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Validity {
-    /// Roll and pitch.
+    /// Tilt: rotation about north and about east, each within
+    /// [`Accuracy::tilt`](crate::Accuracy::tilt). Read on navigation axes rather than body
+    /// ones, which are tilt only while the vehicle is level; see
+    /// [`AttitudeVariance`](crate::AttitudeVariance).
     pub tilt: bool,
     /// Heading. False until something observes the rotation about gravity: a
     /// magnetometer in the initialization window, or an accepted
