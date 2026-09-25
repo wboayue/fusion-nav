@@ -1011,11 +1011,12 @@ fn scenarios() -> Vec<Scenario> {
         // No static window anywhere: airborne and turning from the first sample. Covers the
         // coarse start, `Status::Aligning`, all three `Fusion::Reset` adoptions -- the position
         // and velocity a moving start never had, and the heading it could not level -- and the
-        // barometric reference a window taken in motion cannot establish.
+        // barometric reference a window taken in motion cannot establish, read from the estimate
+        // instead (#115).
         Scenario {
             name: "moving_start",
-            covers: "airborne from t=0 in a banked turn: coarse alignment, Fusion::Reset, no \
-                     barometric reference, and time to aligned",
+            covers: "airborne from t=0 in a banked turn: coarse alignment, Fusion::Reset, a \
+                     barometric reference read from the estimate, and time to aligned",
             seed: 4,
             duration: 90.0,
             trajectory: banked_turn(),

@@ -129,10 +129,10 @@
 # They were pinned at zero for baro and mag before either fused, so a first
 # non-zero would be a diff rather than a discovery -- the same order rejected=
 # itself was pinned in (#83, before the gate existed). rejected_baro= stayed at
-# zero when (30) landed and is now a live key on four of the five logs: 2026,
-# 4407 and 294 altitudes accepted and none turned down, against a gate of 10.83
-# at one degree of freedom. rejected_mag= is the same story at four times the
-# volume: 49692 headings across all five logs, every one of them accepted. No
+# zero when (30) landed and is now a live key on four of the five logs:
+# 35571, 2026, 4407 and 294 altitudes accepted and none turned down, against a
+# gate of 10.83 at one degree of freedom. rejected_mag= is the same story on
+# all five: 49229 headings accepted, none turned down. No
 # key on this line is structurally zero any more, so a non-zero in any of the
 # four is now a measurement rather than a stage landing.
 #
@@ -360,7 +360,7 @@ b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-
 #
 # Magnetic heading (34)-(36) made that argument a third time, and this time it
 # moved the total: 284 velocity solutions to 278. The magnetometer itself is
-# never turned down here -- 123 headings accepted, rejected_mag=0 -- but
+# never turned down here -- 117 headings accepted, rejected_mag=0 -- but
 # observing yaw turns the estimate under the velocity innovations, and six
 # solutions that sat the wrong side of the gate now sit the right side of it.
 # transitions= and status= are unmoved, so nothing downstream noticed. Six

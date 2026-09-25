@@ -563,7 +563,7 @@ $`-\delta p_D`$ plus the reading's noise, so $`P_{bb} = P_{DD} + R_m`$ and
 $`P_{xb} = -P_{\ast D}`$.
 
 Two alternatives were measured against this and lost. Holding $`\hat\alpha_0`$ constant and
-widening $`R_m`$ by its variance, PX4's `baro_height_control.cpp:86`, fails for the reason above:
+widening $`R_m`$ by its variance, PX4's `baro_height_control.cpp:87`, fails for the reason above:
 on `moving_start` with $`\hat\alpha_0`$ read from the estimate, `nees_pos` is 112.59 without it
 and 14.58 with it. A **consider** state — the same augmentation with $`K_b`$ zeroed, so that
 $`b`$ is carried and never corrected (Zanetti & D'Souza, (26) and (29)) — brings that figure to
