@@ -520,13 +520,57 @@ navigation frame is down-positive:
 z = -(\alpha - \alpha_0), \qquad h(x) = p_D, \qquad H = \begin{bmatrix} e_3^\mathsf{T} & 0 & 0 & 0 & 0 \end{bmatrix}
 ```
 
-$`\alpha_0`$ is the barometric altitude recorded during initialization, which fixes the barometer
-reference to the navigation origin. **It is a constant, not a state.** The 15-state vector (2) has
-no barometer bias, so slow drift in the barometric reference — from weather, from ground effect,
-from sensor warm-up — is not estimated and appears directly as vertical position error. Where
-that matters, the options are to re-establish $`\alpha_0`$ on the ground, to lean on GNSS height
-for the low-frequency component, or to extend the state vector, which is out of scope for this
-filter.
+$`\alpha_0`$ is the barometric altitude that corresponds to the navigation origin: recorded by a
+window taken at rest, or named by the caller. It is not known exactly — a window's mean carries
+its readings' noise — and it does not stay put, since the reference drifts with weather, ground
+effect and sensor warm-up. Its error is shared by every altitude, so no $`R_m`$ can express it:
+(24) treats each reading's error as independent and averages $`S`$ down by about $`N`$ over
+$`N`$ readings however large $`R_m`$ is. (30′) carries it in the covariance instead.
+
+### Barometric offset
+
+The filter holds an estimate $`\hat\alpha_0`$ and a scalar $`b = \hat\alpha_0 - \alpha_0`$, the
+error in it. $`b`$ is appended to the error state for (23)–(27) and nowhere else: it is not a
+component of (1) or (2), and the 15 × 15 $`P`$ a caller reads is the marginal of the state they
+describe. With $`\hat b = 0`$ always, (30) becomes
+
+**(30′)**
+
+```math
+z = -(\alpha - \hat\alpha_0), \qquad h(x, b) = p_D + b, \qquad
+\begin{bmatrix} H & H_b \end{bmatrix} = \begin{bmatrix} e_3^\mathsf{T} & 0 & 0 & 0 & 0 & 1 \end{bmatrix}
+```
+
+```math
+P \leftarrow \begin{bmatrix} P & P_{xb} \\ P_{bx} & P_{bb} \end{bmatrix}, \qquad
+P_{xb} \leftarrow F P_{xb}, \quad P_{bb} \leftarrow P_{bb} + q_b^2\,\Delta t, \qquad
+\hat\alpha_0 \leftarrow \hat\alpha_0 - \delta\hat b
+```
+
+Every other observation has $`H_b = 0`$, and still moves $`P_{xb}`$ and $`\delta\hat b`$ through
+the height the two are correlated with: a GNSS height and a barometer that disagree are what
+makes $`b`$ observable. The update is (23)–(27) on the augmented covariance, taken in blocks so
+that nothing 16 × 16 is formed. An adoption zeroes the adopted rows of $`P_{xb}`$ as it zeroes
+their correlations in $`P`$, and (41) rotates its attitude rows on one side, as it does the bias
+blocks'. $`q_b`$ is `Config::baro_offset_walk`.
+
+Initialization gives $`P_{xb} = 0`$ either way, since the origin is defined where the reference
+was measured, and $`P_{bb}`$ from what was measured: a window at rest takes the sample variance of
+its $`N`$ readings over $`N`$, the standard error of the mean it sets $`\hat\alpha_0`$ to; a caller
+naming $`\alpha_0`$ names its $`\sigma`$ too. A reference read from the estimate,
+$`\hat\alpha_0 = \alpha + \hat p_D`$, is the one start that correlates them: its error is
+$`-\delta p_D`$ plus the reading's noise, so $`P_{bb} = P_{DD} + R_m`$ and
+$`P_{xb} = -P_{\ast D}`$.
+
+Two alternatives were measured against this and lost. Holding $`\hat\alpha_0`$ constant and
+widening $`R_m`$ by its variance, PX4's `baro_height_control.cpp:86`, fails for the reason above:
+on `moving_start` with $`\hat\alpha_0`$ read from the estimate, `nees_pos` is 112.59 without it
+and 14.58 with it. A **consider** state — the same augmentation with $`K_b`$ zeroed, so that
+$`b`$ is carried and never corrected (Zanetti & D'Souza, (26) and (29)) — brings that figure to
+1.035 and fails on the one real barometer that drifts: on `2c42096b` it rejects 29310 barometer
+readings, holding a reference the sensor has left 12 m behind. Estimating $`b`$ is what survives
+both, and $`q_b`$ is what lets it follow: at $`q_b = 0`$ the same log rejects 3825 GNSS heights
+instead.
 
 The barometer measures height, and the navigation frame is a plane. Written as above, (30)
 treats $`-p_D`$ as height, which is off by the plane's rise above the surface, $`d^2 / 2R`$ at a
@@ -657,8 +701,10 @@ exact Jacobian *does* constrain tilt, and using it is worse than dropping the te
 from a scalar carrying 3° of noise a quantity gravity determines an order of magnitude better,
 which took the `mission` scenario to 9.0° of tilt error and 1.26 m/s² of accelerometer bias
 against 0.58° and 0.053 for (36′). What (36′) says is that the heading is less trustworthy than
-its own noise suggests, without claiming it observes the tilt that made it so — the Schmidt
-treatment of a state a measurement depends on and does not constrain. On the `moving_start`
+its own noise suggests, without claiming it observes the tilt that made it so. That is `R`
+inflation with no cross-covariance, and it is enough here because the error it prices does not
+persist: velocity fusion keeps correcting the tilt between headings. An error that is shared
+unchanged across readings needs the cross-covariance as well, which is (30′). On the `moving_start`
 scenario, whose coarse start is where an unpriced levelling error is largest, it is worth
 2.653° → 1.665 of tilt, 3.777° → 0.917 of yaw, 1.634 → 0.226 of `nees_att`, and 840 falsely-valid
 attitude quantity-epochs → 0.
@@ -890,7 +936,7 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | (5)–(8) | static initialization | `init.rs` | `measure`, `level_from_accel`, `heading_from_mag`, `nominal_state`, `classify`, `attitude_sigmas`, `initial_covariance` |
 | (8′) | what a coarse window supports | `init.rs` | `coarse_sigmas`, `window_drift`, `heading_sensitivity` — `tan δ` shared with (36′) |
 | (5′) `ā_n` | in-motion levelling | `init.rs` | `inertial_acceleration`; the correction itself is unbuilt — #59 |
-| (30) `α₀` | barometric reference | `init.rs` | `baro_reference` |
+| (30) `α₀` | barometric reference and its variance | `init.rs` | `baro_reference` |
 | (9)–(11) | bias correction, gravity | `propagate.rs` | `ImuSample`, `corrected_imu` |
 | (12)–(15) | nominal propagation | `propagate.rs` | `propagate_nominal` |
 | (16)–(19) | error dynamics | `propagate.rs` | carried as the derivation on `transition_matrix`; (20) is what the filter computes |
@@ -901,16 +947,17 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | (28) | GNSS position, as a horizontal and a height half | `observation/gnss.rs` | `horizontal_jacobian`, `horizontal_observation`, `height_jacobian`, `height_observation` |
 | (29) | GNSS velocity | `observation/gnss.rs` | `velocity_jacobian`, `velocity_observation` |
 | (30) | barometric altitude | `observation/baro.rs` | `altitude_jacobian`, `altitude_observation` |
+| (30′) | barometric offset | `state.rs`, `update.rs`, `propagate.rs` | `Offset`; `update`'s blocks; `propagate_offset`; `Eskf::establish_reference` |
 | (31)–(33) | magnetometer, three-axis | — | unbuilt and [out of scope](GOALS.md#magnetometer-without-magnetic-field-states); no `field_jacobian` exists |
 | (34)–(36) | magnetometer, heading only | `observation/mag.rs` | `heading_innovation`, `heading_jacobian`, `heading_observation` |
 | (36′) | levelling variance | `observation/mag.rs` | `levelling_variance`, with `tan δ` from `init.rs`'s `heading_sensitivity` |
 | (37) `γ` | gate thresholds | `config.rs` | `Gate::at`, `Gate::new`, `Gates::at` |
 | (37)–(38) | innovation gating, test ratio | `update.rs` | `nis`, `test_ratio`, called by `update` |
 | — | per-source health tracking | `health.rs` | `SourceHealth`, `Status` |
-| (39)–(41) | injection and reset | `update.rs` | `inject`, `reset`, `reparameterize`, called by `update` |
+| (39)–(41) | injection and reset | `update.rs` | `inject`, `reset_jacobian`, `reparameterize`, `reparameterize_offset`, called by `update` |
 | (41) | reset after an adoption | `eskf.rs` | `Eskf::reset_heading_by`, through `update.rs`'s `reparameterize` |
 | (42) | symmetry enforcement | `math.rs` | `enforce_symmetry`, called by `propagate_covariance` and `reparameterize` |
-| (42′) | diagonal variance floor | `math.rs` | `floor_diagonal` and `FLOOR`; applied by `Eskf::commit_covariance` |
+| (42′) | diagonal variance floor | `math.rs` | `floor_diagonal`, `floor_offset` and `FLOOR`; applied by `Eskf::commit_covariance` |
 | (43) | local tangent plane | `geodetic.rs` | `LocalOrigin::to_ned`, `to_geodetic` |
 | (44) | origin placement | `geodetic.rs` | `LocalOrigin::placing`; committed by `Eskf::fuse_gnss_geodetic` |
 | — | skew, quaternion exponential, angle wrap | `math.rs` | `skew`, `exp_quat`, `wrap_pi` |
@@ -925,6 +972,7 @@ simultaneous with the current state, which is not true of GNSS. See
 
 * J. Solà, *Quaternion kinematics for the error-state Kalman filter*, [arXiv:1711.02508](https://arxiv.org/abs/1711.02508) — the primary source for the error-state formulation and the Jacobians above; [Correspondence with Solà](#correspondence-with-solà) says which equation here is which of his
 * P. D. Groves, *Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems*, 2nd ed. — (2.112), the geodetic-to-ECEF conversion of (43), and the one citation here that needs a book. The ellipsoid constants it is evaluated with are cited in `src/geodetic.rs` to NGA.STND.0036, which is free and in [`reference/`](reference/README.md)
+* R. Zanetti and C. D'Souza, *Recursive Implementations of the Consider Filter*, NASA NTRS [20120010515](https://ntrs.nasa.gov/citations/20120010515) — the consider (Schmidt–Kalman) update (30′) was measured against: Joseph form valid for any gain, their (5), and the consider gain as the optimal one with its parameter rows zeroed, (26), leaving $`P_{pp}`$ unchanged, (29). In [`reference/`](reference/README.md)
 * [PX4 EKF2](https://docs.px4.io/main/en/advanced_config/tuning_the_ecl_ekf) — reference for practical behavior, not for derivations
 
 ### Correspondence with Solà

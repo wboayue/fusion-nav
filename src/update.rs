@@ -11,7 +11,7 @@ use nalgebra::{Cholesky, Const, Matrix3, SMatrix, SVector, Vector3};
 use crate::config::Gate;
 use crate::health::Innovation;
 use crate::math::{enforce_symmetry, exp_quat, skew};
-use crate::state::{Covariance, CovarianceMatrix, ErrorState, STATES, State};
+use crate::state::{Covariance, CovarianceMatrix, ErrorState, Offset, STATES, State};
 use crate::units::{Acceleration, AngularRate, Attitude, Position, Velocity};
 
 /// One measurement, reduced to what (23)–(27) read: `y`, `H` and `R_m` for an `M`-dimensional
@@ -24,6 +24,9 @@ pub(crate) struct Observation<const M: usize> {
     pub(crate) y: SVector<f32, M>,
     /// `H`, the Jacobian of `h` with respect to the error state.
     pub(crate) h: SMatrix<f32, M, STATES>,
+    /// `H_b`, the Jacobian of `h` with respect to the barometric offset of (30′): one for
+    /// a barometric altitude, zero for everything else.
+    pub(crate) h_b: SVector<f32, M>,
     /// The diagonal of `R_m`. Every noise type this crate takes is a diagonal, so the
     /// off-diagonal entries are never carried.
     pub(crate) r_m: SVector<f32, M>,
@@ -42,6 +45,9 @@ pub(crate) enum Update {
     Accepted {
         state: State,
         covariance: Covariance,
+        offset: Offset,
+        /// `δb̂`, the correction to the barometric offset.
+        offset_correction: f32,
         ratio: f32,
         innovation: Innovation,
     },
@@ -75,16 +81,23 @@ pub(crate) enum Update {
 /// zero. The unit tests show the difference on an ill-conditioned `P` rather than asserting
 /// it here.
 ///
-/// The frame is the largest in the crate: `update::<3>` is 6848 bytes on both
-/// `thumbv6m-none-eabi` and `thumbv7em-none-eabihf` at `opt-level = 3`, against 2832 for
+/// Every quantity is the sixteen-state one of (30′), the error state and the barometric
+/// offset `b`, and is taken in blocks: `P`, `P_xb` and `P_bb`; `K` as `K_x` and `K_b`; and
+/// `A = I − K H` as `A_xx`, `a_xb`, `a_bx` and `a_bb`, so that (27) is `A P Aᵀ + K R Kᵀ` block by
+/// block. The augmented matrix written out is the obvious form, and the tests compare against
+/// exactly that. Formed here, it cost 4168 bytes more of stack on `thumbv6m` — a 1024-byte
+/// 16 × 16 for each 900-byte temporary, and a copy in and out of it.
+///
+/// The frame is the largest in the crate: `update::<3>` is 7816 bytes on `thumbv6m-none-eabi`
+/// and 7936 on `thumbv7em-none-eabihf` at `opt-level = 3`, against 2832 for
 /// `propagate_covariance`, the largest single frame propagation reaches. Most of it is (27),
-/// whose `I − KH`, its two products and `K R Kᵀ` are each a
-/// 900-byte 15 × 15. That is comfortable on the STM32H7 class `DESIGN.md` names and most of
-/// the RAM of an 8 KB Cortex-M0 part. #41, stack high-water on hardware, is what would say a
-/// less obvious form is worth writing.
+/// whose `A_xx`, its two products and `K R Kᵀ` are each a 900-byte 15 × 15; the offset's blocks
+/// are vectors, and cost 968 bytes over the fifteen-state update. That is comfortable on the
+/// STM32H7 class `DESIGN.md` names and nearly all the RAM of an 8 KB Cortex-M0 part. #41, stack
+/// high-water on hardware, is what would say a less obvious form is worth writing.
 ///
 /// `M` is what the rest scales with, and a scalar source is cheaper rather than free:
-/// `update::<1>` takes 4040 bytes on `thumbv6m` and 3984 on `thumbv7em`, so neither scalar
+/// `update::<1>` takes 6072 bytes on `thumbv6m` and 6176 on `thumbv7em`, so neither scalar
 /// source moves the crate's high-water mark — `update::<3>` still sets it. The two scalar
 /// sources share that one monomorphization: the barometer of (30) paid for it, and the
 /// magnetic heading of (34)–(36) added 1204 bytes of `.text` linking the whole public API for
@@ -96,14 +109,23 @@ pub(crate) enum Update {
 pub(crate) fn update<const M: usize>(
     state: &State,
     covariance: &Covariance,
+    offset: &Offset,
     observation: &Observation<M>,
     gate: Gate<M>,
 ) -> Update {
     let p = covariance.as_matrix();
-    let Observation { y, h, r_m } = observation;
+    let Offset {
+        cross: c,
+        variance: v,
+    } = *offset;
+    let Observation { y, h, h_b, r_m } = observation;
     let r_m = SMatrix::<f32, M, M>::from_diagonal(r_m);
 
-    let s = h * p * h.transpose() + r_m; // (24)
+    // `H P` of the augmented state, by blocks: `[H P_xx + H_b P_bx, H P_xb + H_b P_bb]`.
+    let hp_x = h * p + h_b * c.transpose();
+    let hp_b = h * c + h_b * v;
+
+    let s = hp_x * h.transpose() + hp_b * h_b.transpose() + r_m; // (24)
     let Some(s_factor) = Cholesky::new(s) else {
         return Update::Invalid;
     };
@@ -114,27 +136,53 @@ pub(crate) fn update<const M: usize>(
         return Update::Rejected { ratio, innovation };
     }
 
-    let k = s_factor.solve(&(h * p)).transpose(); // (25)
-    let dx = k * y; // (26), with no prior term: the error state was reset to zero
+    let k_x = s_factor.solve(&hp_x).transpose(); // (25)
+    let k_b = s_factor.solve(&hp_b).transpose();
+    let dx = k_x * y; // (26), with no prior term: the error state was reset to zero
+    let db = k_b.dot(&y.transpose());
 
-    // (27). Joseph form; see above.
-    let i_kh = CovarianceMatrix::identity() - k * h;
-    let p = i_kh * p * i_kh.transpose() + k * r_m * k.transpose();
+    // (27), Joseph form, with `A = I − K H` and `P` both taken in blocks; see above.
+    let a_xx = CovarianceMatrix::identity() - k_x * h;
+    let a_xb = -(k_x * h_b);
+    let a_bx = -(k_b * h);
+    let a_bb = 1.0 - k_b.dot(&h_b.transpose());
+    // The outer products `a_xb cᵀ` and `(AP)_xb a_xbᵀ` are added in place, by `ger`, rather
+    // than formed: each would be another 900-byte 15 × 15 on the crate's largest frame.
+    let mut ap_xx = a_xx * p;
+    ap_xx.ger(1.0, &a_xb, &c, 1.0);
+    let ap_xb = a_xx * c + a_xb * v;
+    let ap_bx = a_bx * p + a_bb * c.transpose();
+    let ap_bb = a_bx.dot(&c.transpose()) + a_bb * v;
+    let kr_x = k_x * r_m;
+    let kr_b = k_b * r_m;
+    let cross = ap_xx * a_bx.transpose() + ap_xb * a_bb + kr_x * k_b.transpose();
+    let variance = ap_bx.dot(&a_bx) + ap_bb * a_bb + kr_b.dot(&k_b);
+    // The cross-covariance is taken from the rows above rather than averaged with its
+    // transpose, which would cost a third 15 × 15 product; (42) for the block is
+    // `reparameterize`'s.
+    let mut p = ap_xx * a_xx.transpose() + kr_x * k_x.transpose();
+    p.ger(1.0, &ap_xb, &a_xb, 1.0);
 
     // `Exp(δθ̂)` of (39) is taken unchecked, so a correction that overflowed is refused before
     // it reaches the quaternion; see `exp_quat`.
-    if !dx.iter().all(|value| value.is_finite()) {
+    if !dx.iter().all(|value| value.is_finite()) || !db.is_finite() {
         return Update::Invalid;
     }
     let state = inject(state, &dx);
-    let covariance = reset(p, attitude_error(&dx));
+    // (41), applied to the block and the offset's row apart: returned together, as a pair,
+    // the two cost a 900-byte copy of `P` on this frame.
+    let g_theta = reset_jacobian(attitude_error(&dx));
+    let offset = reparameterize_offset(&Offset { cross, variance }, g_theta);
+    let covariance = reparameterize(p, g_theta);
 
-    if !state.is_finite() || !covariance.is_finite() {
+    if !state.is_finite() || !covariance.is_finite() || !offset.is_finite() {
         return Update::Invalid;
     }
     Update::Accepted {
         state,
         covariance,
+        offset,
+        offset_correction: db,
         ratio,
         innovation,
     }
@@ -185,7 +233,8 @@ fn attitude_error(dx: &SVector<f32, STATES>) -> Vector3<f32> {
         .clone_owned()
 }
 
-/// Reset the error state to zero and carry the covariance across. Equation (41).
+/// `G_θ`, the attitude block of the reset Jacobian `G` that carries the covariance across
+/// the injection of (39). Equation (41).
 ///
 /// `G` is the exact reset Jacobian, `I − [½δθ̂]ₓ` in its attitude block, rather than the
 /// identity Solà gives as the usual approximation ((285)–(288)). Injecting `δθ̂` moves the
@@ -196,8 +245,8 @@ fn attitude_error(dx: &SVector<f32, STATES>) -> Vector3<f32> {
 /// expected. The exact block costs one 3 × 3 skew.
 ///
 /// The block it is applied to, and what that costs, are [`reparameterize`].
-fn reset(p: CovarianceMatrix, delta_theta: Vector3<f32>) -> Covariance {
-    reparameterize(&p, Matrix3::identity() - skew(0.5 * delta_theta))
+fn reset_jacobian(delta_theta: Vector3<f32>) -> Matrix3<f32> {
+    Matrix3::identity() - skew(0.5 * delta_theta)
 }
 
 /// `G P Gᵀ` with `G` the identity outside its attitude block. Equation (41).
@@ -210,7 +259,7 @@ fn reset(p: CovarianceMatrix, delta_theta: Vector3<f32>) -> Covariance {
 /// — adding `update::<1>` for (30) moved this one without touching a line of it.
 ///
 /// Which `G_θ` to use is the caller's, because the two resets in the crate move the nominal
-/// attitude by different amounts: [`reset`] injects a correction and uses (41)'s first-order
+/// attitude by different amounts: [`update`] injects a correction and uses (41)'s first-order
 /// Jacobian, while the heading adoption behind
 /// [`Fusion::Reset`](crate::Fusion::Reset) turns the nominal by up to π and passes the exact
 /// rotation. The block is the same either way, and so is the reason it has to move: the `δθ`
@@ -219,17 +268,28 @@ fn reset(p: CovarianceMatrix, delta_theta: Vector3<f32>) -> Covariance {
 ///
 /// (42) runs last, as after every covariance operation: both products of (27) and this one
 /// drift off symmetry in f32.
-pub(crate) fn reparameterize(p: &CovarianceMatrix, g_theta: Matrix3<f32>) -> Covariance {
+pub(crate) fn reparameterize(mut p: CovarianceMatrix, g_theta: Matrix3<f32>) -> Covariance {
     let theta = ErrorState::AttitudeX.index();
 
     // `G` from the left rotates the attitude rows, `Gᵀ` from the right the attitude columns.
-    let mut p = *p;
     let rows = g_theta * p.fixed_rows::<3>(theta);
     p.fixed_rows_mut::<3>(theta).copy_from(&rows);
     let columns = p.fixed_columns::<3>(theta) * g_theta.transpose();
     p.fixed_columns_mut::<3>(theta).copy_from(&columns);
     enforce_symmetry(&mut p);
     Covariance::from_matrix(p)
+}
+
+/// [`reparameterize`] for the barometric offset's row of (30′), `G P_xb`.
+///
+/// One side only: the offset is a height and does not turn with the body, so, like the bias
+/// blocks, only its correlations with attitude are rewritten in the new axes.
+pub(crate) fn reparameterize_offset(offset: &Offset, g_theta: Matrix3<f32>) -> Offset {
+    let theta = ErrorState::AttitudeX.index();
+    let mut offset = *offset;
+    let cross = g_theta * offset.cross.fixed_rows::<3>(theta);
+    offset.cross.fixed_rows_mut::<3>(theta).copy_from(&cross);
+    offset
 }
 
 #[cfg(test)]
@@ -264,6 +324,7 @@ mod tests {
         Observation {
             y: SVector::from(y),
             h: observes_position(),
+            h_b: SVector::zeros(),
             r_m: SVector::from([r_m; 3]),
         }
     }
@@ -295,6 +356,7 @@ mod tests {
         let outcome = update(
             &State::default(),
             &prior,
+            &Offset::default(),
             &position([0.5, -0.5, 0.2], 1.0),
             gate(7.8),
         );
@@ -331,6 +393,7 @@ mod tests {
         let (state, covariance, _) = accepted(update(
             &State::default(),
             &Covariance::from_matrix(p),
+            &Offset::default(),
             &position([1.0, 0.0, 0.0], 1.0),
             gate(7.8),
         ));
@@ -343,8 +406,13 @@ mod tests {
     fn zero_innovation_moves_nothing_and_still_shrinks_p() {
         let start = State::default();
         let prior = diagonal(4.0);
-        let (state, covariance, ratio) =
-            accepted(update(&start, &prior, &position([0.0; 3], 1.0), gate(7.8)));
+        let (state, covariance, ratio) = accepted(update(
+            &start,
+            &prior,
+            &Offset::default(),
+            &position([0.0; 3], 1.0),
+            gate(7.8),
+        ));
 
         assert_eq!(state, start);
         assert_eq!(ratio, 0.0);
@@ -371,12 +439,14 @@ mod tests {
                 h[(0, pn)] = 1.0;
                 h
             },
+            h_b: SVector::zeros(),
             r_m: SVector::from([1.0e-6]),
         };
 
         let (_, joseph, _) = accepted(update(
             &State::default(),
             &prior,
+            &Offset::default(),
             &observation,
             gate::<1>(3.84),
         ));
@@ -408,24 +478,37 @@ mod tests {
         let scalar = Observation {
             y: SVector::from([2.0]),
             h: observes_down(),
+            h_b: SVector::zeros(),
             r_m: SVector::from([0.5]),
         };
         let prior = diagonal(0.5);
-        let (_, _, ratio) = accepted(update(&State::default(), &prior, &scalar, gate::<1>(4.0)));
+        let (_, _, ratio) = accepted(update(
+            &State::default(),
+            &prior,
+            &Offset::default(),
+            &scalar,
+            gate::<1>(4.0),
+        ));
         assert_eq!(ratio, 1.0);
 
         // dim 3: y = (1, 2, 2), S = I, so ε = 9 exactly.
         let vector = position([1.0, 2.0, 2.0], 0.5);
-        let (_, _, ratio) = accepted(update(&State::default(), &prior, &vector, gate::<3>(9.0)));
+        let (_, _, ratio) = accepted(update(
+            &State::default(),
+            &prior,
+            &Offset::default(),
+            &vector,
+            gate::<3>(9.0),
+        ));
         assert_eq!(ratio, 1.0);
 
         // Just past it, each rejects.
         assert!(matches!(
-            update(&State::default(), &prior, &scalar, gate::<1>(3.99)),
+            update(&State::default(), &prior, &Offset::default(), &scalar, gate::<1>(3.99)),
             Update::Rejected { ratio, .. } if ratio > 1.0
         ));
         assert!(matches!(
-            update(&State::default(), &prior, &vector, gate::<3>(8.99)),
+            update(&State::default(), &prior, &Offset::default(), &vector, gate::<3>(8.99)),
             Update::Rejected { ratio, .. } if ratio > 1.0
         ));
     }
@@ -438,7 +521,13 @@ mod tests {
         p[(0, 1)] = 0.9;
         p[(1, 0)] = 0.9;
         let prior = Covariance::from_matrix(p);
-        let ratio = |y| match update(&State::default(), &prior, &position(y, 0.1), gate(7.8)) {
+        let ratio = |y| match update(
+            &State::default(),
+            &prior,
+            &Offset::default(),
+            &position(y, 0.1),
+            gate(7.8),
+        ) {
             Update::Accepted { ratio, .. } | Update::Rejected { ratio, .. } => ratio,
             Update::Invalid => panic!("invalid"),
         };
@@ -452,6 +541,7 @@ mod tests {
         let Update::Accepted { innovation, .. } = update(
             &State::default(),
             &prior,
+            &Offset::default(),
             &position([0.5, -0.5, 0.2], 1.0),
             gate(7.8),
         ) else {
@@ -467,6 +557,7 @@ mod tests {
         let Update::Rejected { ratio, innovation } = update(
             &State::default(),
             &prior,
+            &Offset::default(),
             &position([10.0, 0.0, 0.0], 1.0),
             gate(7.8),
         ) else {
@@ -484,9 +575,11 @@ mod tests {
         let outcome = update(
             &State::default(),
             &Covariance::from_matrix(p),
+            &Offset::default(),
             &Observation {
                 y: SVector::from([0.1]),
                 h: observes_down(),
+                h_b: SVector::zeros(),
                 r_m: SVector::from([1.0]),
             },
             gate::<1>(3.84),
@@ -505,6 +598,7 @@ mod tests {
         let outcome = update(
             &start,
             &diagonal(1.0e36),
+            &Offset::default(),
             &position([1.0e32, 0.0, 0.0], 1.0e36),
             Gate::<3>::new(f32::MAX).expect("finite"),
         );
@@ -532,7 +626,10 @@ mod tests {
     #[test]
     fn the_reset_jacobian_is_the_identity_without_an_attitude_correction() {
         let p = *diagonal(2.0).as_matrix();
-        assert_eq!(reset(p, Vector3::zeros()).as_matrix(), &p);
+        assert_eq!(
+            reparameterize(p, reset_jacobian(Vector3::zeros())).as_matrix(),
+            &p
+        );
     }
 
     #[test]
@@ -544,7 +641,7 @@ mod tests {
         );
         p[(theta, pn)] = 0.5;
         p[(pn, theta)] = 0.5;
-        let reset = reset(p, Vector3::new(0.0, 0.0, 0.2));
+        let reset = reparameterize(p, reset_jacobian(Vector3::new(0.0, 0.0, 0.2)));
         let reset = reset.as_matrix();
 
         // `(I − [½δθ]ₓ)` about z mixes attitude x and y: the x–position correlation leaks
@@ -554,5 +651,119 @@ mod tests {
         // Rows outside the attitude block are untouched.
         assert_eq!(reset[(pn, pn)], 2.0);
         assert!(is_symmetric(reset));
+    }
+
+    /// A covariance with the offset correlated to down position and to vertical velocity,
+    /// and nothing correlated with attitude, so that no attitude correction arises and (41)
+    /// leaves the result as (27) produced it.
+    fn correlated_with_the_offset() -> (Covariance, Offset) {
+        let mut p = *diagonal(4.0).as_matrix();
+        let (pd, vd) = (
+            ErrorState::PositionDown.index(),
+            ErrorState::VelocityDown.index(),
+        );
+        p[(pd, vd)] = 1.5;
+        p[(vd, pd)] = 1.5;
+        let mut cross = SVector::<f32, STATES>::zeros();
+        cross[pd] = -2.0;
+        cross[vd] = 0.5;
+        (
+            Covariance::from_matrix(p),
+            Offset {
+                cross,
+                variance: 3.0,
+            },
+        )
+    }
+
+    /// (23)–(27) on the sixteen-state covariance, written as the equations read: what the
+    /// block form in `update` must reproduce.
+    fn augmented_joseph<const M: usize>(
+        covariance: &Covariance,
+        offset: &Offset,
+        observation: &Observation<M>,
+    ) -> (SMatrix<f32, 16, 16>, SVector<f32, 16>) {
+        let mut p = SMatrix::<f32, 16, 16>::zeros();
+        p.fixed_view_mut::<STATES, STATES>(0, 0)
+            .copy_from(covariance.as_matrix());
+        p.fixed_view_mut::<STATES, 1>(0, STATES)
+            .copy_from(&offset.cross);
+        p.fixed_view_mut::<1, STATES>(STATES, 0)
+            .copy_from(&offset.cross.transpose());
+        p[(STATES, STATES)] = offset.variance;
+        let mut h = SMatrix::<f32, M, 16>::zeros();
+        h.fixed_columns_mut::<STATES>(0).copy_from(&observation.h);
+        h.set_column(STATES, &observation.h_b);
+        let r = SMatrix::<f32, M, M>::from_diagonal(&observation.r_m);
+        let s = h * p * h.transpose() + r;
+        let k = p * h.transpose() * s.try_inverse().expect("S is positive-definite");
+        let i_kh = SMatrix::<f32, 16, 16>::identity() - k * h;
+        (
+            i_kh * p * i_kh.transpose() + k * r * k.transpose(),
+            k * observation.y,
+        )
+    }
+
+    fn assert_matches_augmented<const M: usize>(observation: &Observation<M>, gate: Gate<M>) {
+        let (prior, offset) = correlated_with_the_offset();
+        let (want, dx) = augmented_joseph(&prior, &offset, observation);
+        let Update::Accepted {
+            covariance,
+            offset,
+            offset_correction,
+            ..
+        } = update(&State::default(), &prior, &offset, observation, gate)
+        else {
+            panic!("a consistent measurement");
+        };
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-4 * (1.0 + b.abs());
+        for i in 0..STATES {
+            for j in 0..STATES {
+                assert!(
+                    close(covariance.as_matrix()[(i, j)], want[(i, j)]),
+                    "P[{i},{j}]"
+                );
+            }
+            assert!(close(offset.cross[i], want[(i, STATES)]), "P_xb[{i}]");
+        }
+        assert!(close(offset.variance, want[(STATES, STATES)]), "P_bb");
+        assert!(close(offset_correction, dx[STATES]), "δb");
+    }
+
+    #[test]
+    fn the_block_update_is_the_sixteen_state_joseph_update() {
+        let mut h = SMatrix::<f32, 1, STATES>::zeros();
+        h[(0, ErrorState::PositionDown.index())] = 1.0;
+        let baro = Observation {
+            y: SVector::from([0.7]),
+            h,
+            h_b: SVector::from([1.0]),
+            r_m: SVector::from([0.5]),
+        };
+        assert_matches_augmented(&baro, gate::<1>(100.0));
+
+        // A source the offset does not enter still moves its cross-covariance, through the
+        // height the two are correlated with.
+        assert_matches_augmented(&position([0.3, -0.2, 0.9], 1.0), gate::<3>(100.0));
+    }
+
+    #[test]
+    fn an_offset_reset_rotates_its_attitude_entries_and_nothing_else() {
+        let (theta, pd) = (
+            ErrorState::AttitudeX.index(),
+            ErrorState::PositionDown.index(),
+        );
+        let mut cross = SVector::<f32, STATES>::zeros();
+        cross[theta] = 0.5;
+        cross[pd] = -2.0;
+        let offset = Offset {
+            cross,
+            variance: 3.0,
+        };
+        let reset = reparameterize_offset(&offset, reset_jacobian(Vector3::new(0.0, 0.0, 0.2)));
+        assert_eq!(reset.cross[theta], 0.5);
+        assert!((reset.cross[theta + 1] - (-0.1 * 0.5)).abs() < TOLERANCE);
+        assert_eq!(reset.cross[pd], -2.0);
+        assert_eq!(reset.variance, 3.0);
     }
 }

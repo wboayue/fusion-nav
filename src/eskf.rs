@@ -5,10 +5,10 @@ use crate::frames::{Body, Ned};
 use crate::geodetic::{Geodetic, LocalOrigin};
 use crate::health::{Diagnostics, Fusion, GnssFusion, Propagation, SourceHealth, Status, Validity};
 use crate::init::{self, Alignment, Coarse, InitError, Measured, StaticSample, baro_reference};
-use crate::math::{below_floor, exp_quat, floor_diagonal};
+use crate::math::{below_floor, exp_quat, floor_diagonal, floor_offset};
 use crate::observation::{baro, gnss, mag};
 use crate::propagate::{ImuSample, project, propagate};
-use crate::state::{Covariance, ErrorState, State};
+use crate::state::{Covariance, ErrorState, Offset, State};
 use crate::units::{
     Altitude, AltitudeNoise, Attitude, HeadingNoise, MagField, Position, PositionNoise, Radians,
     Seconds, Velocity, VelocityNoise,
@@ -100,6 +100,9 @@ pub struct Eskf {
     covariance: Covariance,
     diagnostics: Diagnostics,
     baro_reference: Option<Altitude>,
+    /// The covariance of the error in `baro_reference`, (30′). Zero while there is no
+    /// reference; [`establish_reference`](Self::establish_reference) keeps the two together.
+    offset: Offset,
     origin: Option<LocalOrigin>,
     unestablished: Unestablished,
     /// Whether the attitude has ever met [`ALIGNED_TILT`] and [`ALIGNED_HEADING`] since
@@ -134,6 +137,7 @@ impl Eskf {
             covariance: Covariance::zero(),
             diagnostics: Diagnostics::default(),
             baro_reference: None,
+            offset: Offset::default(),
             origin: None,
             unestablished: Unestablished::default(),
             aligned: false,
@@ -217,7 +221,10 @@ impl Eskf {
         let state = init::nominal_state(&measured, self.config.magnetic_declination, at_rest);
         self.apply_alignment(alignment, state, &measured, at_rest);
         if at_rest {
-            self.baro_reference = baro_reference(window);
+            self.establish_reference(
+                baro_reference(window)
+                    .map(|(reference, variance)| (reference, Offset::independent(variance))),
+            );
         }
         self.note_alignment();
         Ok(alignment)
@@ -367,7 +374,7 @@ impl Eskf {
         // Diagnostics first: `commit_covariance` counts into them, and a seed sitting on the
         // floor is a fact about this filter's life rather than the last one's.
         self.diagnostics = Diagnostics::default();
-        self.commit_covariance(covariance);
+        self.commit_covariance(covariance, self.surviving_offset());
         // Nothing a seed carries is unestablished: the caller vouched for every quantity,
         // heading included, so no first measurement overwrites one.
         self.unestablished = Unestablished::default();
@@ -377,24 +384,60 @@ impl Eskf {
         Ok(Alignment::Seeded)
     }
 
-    /// Set the barometric reference `α₀` directly. Equation (30).
+    /// Set the barometric reference `α₀` directly, with the σ it is known to. Equations (30)
+    /// and (30′).
     ///
     /// Two uses: completing an [`initialize_from`](Self::initialize_from) seed, which
-    /// carries no reference of its own, and re-establishing the reference on the ground
-    /// when drift in it has become the dominant vertical error. That remedy is the
-    /// application's to apply, because the filter cannot tell a drifting reference from a
-    /// genuine climb.
+    /// carries no reference of its own, and re-establishing the reference on the ground from
+    /// a surveyed height. The filter estimates `α₀` from then on, starting from this σ and
+    /// uncorrelated with the state, so `noise` is the claim that decides how far the first
+    /// disagreement with GNSS height moves it.
     ///
-    /// Returns `false`, changing nothing, for a reference that is not a number: `α₀`
-    /// appears in every barometric measurement for the rest of the flight, so a NaN here
-    /// is not one bad update but the end of barometric aiding.
+    /// Returns `false`, changing nothing, for a reference that is not a number or a σ that is
+    /// not positive: `α₀` appears in every barometric measurement for the rest of the flight,
+    /// so a NaN here is not one bad update but the end of barometric aiding, and a σ of zero
+    /// is a reference no disagreement could ever move.
     #[must_use = "a refused reference leaves barometric fusion returning NoReference"]
-    pub const fn set_baro_reference(&mut self, reference: Altitude) -> bool {
-        if !reference.as_meters().is_finite() {
+    pub fn set_baro_reference(&mut self, reference: Altitude, noise: AltitudeNoise) -> bool {
+        if !reference.as_meters().is_finite() || !noise.is_finite() || !noise.is_positive() {
             return false;
         }
-        self.baro_reference = Some(reference);
+        self.establish_reference(Some((reference, Offset::independent(noise.variance()))));
         true
+    }
+
+    /// Set `α₀` together with the covariance of its error, or clear both. Equation (30′).
+    ///
+    /// One place, because the two describe one thing: a reference with no offset row claims
+    /// to be exact, and an offset row with no reference correlates the estimate with nothing.
+    fn establish_reference(&mut self, reference: Option<(Altitude, Offset)>) {
+        match reference {
+            Some((reference, offset)) => {
+                self.baro_reference = Some(reference);
+                self.commit_offset(offset);
+            }
+            None => {
+                self.baro_reference = None;
+                self.offset = Offset::default();
+            }
+        }
+    }
+
+    /// Store the offset's covariance, floored by (42′) as
+    /// [`commit_covariance`](Self::commit_covariance) floors the rest — while there is a
+    /// reference. Without one the offset is zero by definition and nothing reads it.
+    fn commit_offset(&mut self, mut offset: Offset) {
+        if self.baro_reference.is_some() && floor_offset(&mut offset) {
+            self.diagnostics.floored = self.diagnostics.floored.saturating_add(1);
+        }
+        self.offset = offset;
+    }
+
+    /// The offset a fresh covariance keeps: the reference's own variance, and no correlation
+    /// with an error state that has just been replaced. A start that keeps the reference the
+    /// flight had keeps its error too, since nothing about the reference changed.
+    fn surviving_offset(&self) -> Offset {
+        Offset::independent(self.offset.variance)
     }
 
     /// Put the navigation origin at a known point, such as a surveyed home or a landing
@@ -508,12 +551,20 @@ impl Eskf {
         // Propagated into a local first: (11)–(14) and (22) can both overflow f32 on a
         // finite sample, and a state written before it is checked is one the filter has
         // already published.
-        let propagated = propagate(self.state, self.covariance, imu, dt, &self.config.imu);
+        let propagated = propagate(
+            self.state,
+            self.covariance,
+            self.offset,
+            imu,
+            dt,
+            &self.config.imu,
+            self.config.baro_offset_walk,
+        );
         if !propagated.is_finite() {
             return self.refuse_step(Propagation::StateNotFinite);
         }
         self.state = propagated.state;
-        self.commit_covariance(propagated.covariance);
+        self.commit_covariance(propagated.covariance, propagated.offset);
         self.note_alignment();
         Propagation::Propagated
     }
@@ -541,10 +592,11 @@ impl Eskf {
     /// (42)'s two halves answer different faults. `½(P + Pᵀ)` repairs drift a product
     /// introduces, so it belongs to the product; the floor bounds a value, so it belongs to
     /// the value.
-    fn commit_covariance(&mut self, covariance: Covariance) {
+    fn commit_covariance(&mut self, covariance: Covariance, offset: Offset) {
         let mut matrix = *covariance.as_matrix();
         let raised = floor_diagonal(&mut matrix);
         self.covariance = Covariance::from_matrix(matrix);
+        self.commit_offset(offset);
         self.diagnostics.floored = self.diagnostics.floored.saturating_add(raised);
     }
 
@@ -579,11 +631,19 @@ impl Eskf {
             Update::Accepted {
                 state,
                 covariance,
+                offset,
+                offset_correction,
                 ratio,
                 innovation,
             } => {
                 self.state = state;
-                self.commit_covariance(covariance);
+                self.commit_covariance(covariance, offset);
+                // (30′): `b` is the error in `α₀`, so its estimate comes off it.
+                if let Some(reference) = self.baro_reference {
+                    self.baro_reference = Some(Altitude::from_meters(
+                        reference.as_meters() - offset_correction,
+                    ));
+                }
                 source(&mut self.diagnostics).record_accepted(ratio, Some(innovation));
                 self.note_alignment();
                 Fusion::Accepted { test_ratio: ratio }
@@ -661,6 +721,7 @@ impl Eskf {
                 let outcome = update(
                     &self.state,
                     &self.covariance,
+                    &self.offset,
                     &observation,
                     self.config.gates.gnss_position,
                 );
@@ -674,6 +735,7 @@ impl Eskf {
                 let outcome = update(
                     &self.state,
                     &self.covariance,
+                    &self.offset,
                     &observation,
                     self.config.gates.gnss_height,
                 );
@@ -801,6 +863,7 @@ impl Eskf {
         let outcome = update(
             &self.state,
             &self.covariance,
+            &self.offset,
             &observation,
             self.config.gates.gnss_velocity,
         );
@@ -853,6 +916,7 @@ impl Eskf {
         let outcome = update(
             &self.state,
             &self.covariance,
+            &self.offset,
             &observation,
             self.config.gates.baro_altitude,
         );
@@ -923,6 +987,7 @@ impl Eskf {
         let outcome = update(
             &self.state,
             &self.covariance,
+            &self.offset,
             &observation,
             self.config.gates.mag_heading,
         );
@@ -972,10 +1037,12 @@ impl Eskf {
         self.state.attitude = Attitude::body_to_ned(corrected);
 
         let g_theta = corrected.to_rotation_matrix().inverse() * before;
-        let mut covariance =
-            update::reparameterize(self.covariance.as_matrix(), g_theta.into_inner());
+        let g_theta = g_theta.into_inner();
+        let mut covariance = update::reparameterize(*self.covariance.as_matrix(), g_theta);
+        let mut offset = update::reparameterize_offset(&self.offset, g_theta);
         covariance.reset_state(ErrorState::AttitudeZ, variance);
-        self.commit_covariance(covariance);
+        offset.decorrelate(ErrorState::AttitudeZ);
+        self.commit_covariance(covariance, offset);
         self.unestablished.heading = false;
     }
 
@@ -1165,14 +1232,15 @@ impl Eskf {
         }
     }
 
-    /// The barometric reference `α₀` fixed at initialization, or `None` if no
-    /// initialization has established one — a window with no barometer sample in it, or a
-    /// start in motion, which keeps whatever reference the flight already had rather than
-    /// calling its own altitude the ground. Equation (30).
+    /// The barometric reference `α₀` as currently estimated, or `None` if no initialization
+    /// has established one — a window with no barometer sample in it, or a start in motion,
+    /// which keeps whatever reference the flight already had rather than calling its own
+    /// altitude the ground. Equations (30) and (30′).
     ///
-    /// Exposed because it is the one initialization output an application may need to
-    /// keep: it is what the filter's zero altitude means, and re-establishing it on the
-    /// ground is the documented remedy for reference drift.
+    /// Exposed because it is what the filter's zero altitude means: the barometer reading
+    /// the filter would call the origin's height. It moves as barometer and GNSS height
+    /// disagree, at the rate [`Config::baro_offset_walk`](crate::Config::baro_offset_walk)
+    /// allows.
     pub const fn baro_reference(&self) -> Option<Altitude> {
         self.baro_reference
     }
@@ -1203,8 +1271,7 @@ impl Eskf {
             return false;
         }
         self.state.position = position;
-        let mut covariance = self.covariance;
-        covariance.reset_block(
+        self.reset_block(
             [
                 ErrorState::PositionNorth,
                 ErrorState::PositionEast,
@@ -1212,7 +1279,6 @@ impl Eskf {
             ],
             noise.variance().into(),
         );
-        self.commit_covariance(covariance);
         self.unestablished.position = false;
         true
     }
@@ -1230,8 +1296,7 @@ impl Eskf {
             return false;
         }
         self.state.velocity = velocity;
-        let mut covariance = self.covariance;
-        covariance.reset_block(
+        self.reset_block(
             [
                 ErrorState::VelocityNorth,
                 ErrorState::VelocityEast,
@@ -1239,9 +1304,21 @@ impl Eskf {
             ],
             noise.variance().into(),
         );
-        self.commit_covariance(covariance);
         self.unestablished.velocity = false;
         true
+    }
+
+    /// Give three states the variances of a measurement adopted for them, dropping their
+    /// correlations with everything else — the barometric offset of (30′) included, since the
+    /// new error is the measurement's and has nothing to do with the reference's.
+    fn reset_block(&mut self, states: [ErrorState; 3], variances: [f32; 3]) {
+        let mut covariance = self.covariance;
+        covariance.reset_block(states, variances);
+        let mut offset = self.offset;
+        for state in states {
+            offset.decorrelate(state);
+        }
+        self.commit_covariance(covariance, offset);
     }
 
     /// Commit an alignment: take the nominal state equation (7) built, and reset the
@@ -1271,7 +1348,7 @@ impl Eskf {
         self.state = state;
         // Before the commit, which counts into them; see `initialize_from`.
         self.diagnostics = Diagnostics::default();
-        self.commit_covariance(covariance);
+        self.commit_covariance(covariance, self.surviving_offset());
         self.unestablished = Unestablished::after(settled, measured.field.is_some());
         if settled {
             self.origin = None;
@@ -1429,8 +1506,11 @@ mod tests {
     /// fusion needs a reference, so the window carries one.
     fn aided() -> Eskf {
         let mut filter = Eskf::new(Config::default());
+        // A barometer with some scatter, as a real one has: eight identical readings measure
+        // the reference's variance as zero, which the floor of (42′) would raise and count.
+        let window = window_with_baro([99.5, 100.5, 100.0, 100.0, 99.8, 100.2, 100.0, 100.0]);
         let _ = filter
-            .initialize(&window_with_baro([100.0; 8]), Seconds::from_secs(0.25))
+            .initialize(&window, Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
         assert!(
             filter
@@ -2047,7 +2127,10 @@ mod tests {
         // of (37) makes of an altitude. The seed holds p_D = 0 at σ = 0.5 m, so the 60 m
         // asked for above would be 8 m of innovation on a 2 m sensor — ε = 15.1 against
         // the 10.83 of `Gate::<1>::at(P999)` — and is turned down on its merits.
-        assert!(filter.set_baro_reference(Altitude::from_meters(52.0)));
+        assert!(filter.set_baro_reference(
+            Altitude::from_meters(52.0),
+            AltitudeNoise::from_sigma(0.001)
+        ));
         assert!(
             filter
                 .fuse_baro_altitude(Altitude::from_meters(52.0), AltitudeNoise::from_sigma(2.0))
@@ -2067,6 +2150,81 @@ mod tests {
             Some(Altitude::from_meters(100.0)),
             "the barometer did not change when the filter restarted"
         );
+    }
+
+    #[test]
+    fn a_window_at_rest_measures_its_own_reference_variance() {
+        let mut filter = Eskf::new(Config::default());
+        let window = window_with_baro([99.5, 100.5, 100.0, 100.0, 99.8, 100.2, 100.0, 100.0]);
+        let _ = filter
+            .initialize(&window, Seconds::from_secs(0.25))
+            .expect("a 2 s window of stillness");
+        assert_eq!(filter.offset.cross.norm(), 0.0);
+        // Squared deviations of 0.58 m² over seven degrees of freedom, then over eight
+        // readings: the standard error of their mean.
+        let want = 0.58 / 7.0 / 8.0;
+        assert!(
+            (filter.offset.variance - want).abs() < 2e-3 * want,
+            "{}",
+            filter.offset.variance
+        );
+    }
+
+    #[test]
+    fn a_barometer_the_receiver_disagrees_with_moves_its_reference() {
+        // The barometer reads 3 m above where the receiver puts the vehicle, every time. A
+        // constant `α₀` would split the difference in the height for ever; an estimated one
+        // takes the disagreement into the reference, and the height follows the receiver.
+        let mut filter = aided();
+        for step in 0..3000 {
+            assert_eq!(filter.predict(still().imu, DT), Propagation::Propagated);
+            if step % 10 == 0 {
+                let _ = filter.fuse_gnss_position(
+                    Position::ned(0.0, 0.0, 0.0),
+                    PositionNoise::from_sigma(1.0, 1.0, 1.0),
+                );
+                let _ = filter.fuse_baro_altitude(
+                    Altitude::from_meters(103.0),
+                    AltitudeNoise::from_sigma(0.5),
+                );
+            }
+        }
+        let reference = filter
+            .baro_reference()
+            .expect("the window set one")
+            .as_meters();
+        assert!(reference > 102.0, "α₀ = {reference}");
+        assert!(filter.state().position.vector()[2].abs() < 0.5);
+    }
+
+    #[test]
+    fn an_adopted_position_carries_no_correlation_with_the_reference() {
+        let mut filter = aided();
+        for _ in 0..100 {
+            assert_eq!(filter.predict(still().imu, DT), Propagation::Propagated);
+        }
+        let _ =
+            filter.fuse_baro_altitude(Altitude::from_meters(100.0), AltitudeNoise::from_sigma(0.5));
+        let down = ErrorState::PositionDown.index();
+        assert!(
+            filter.offset.cross[down] != 0.0,
+            "the altitude correlated the two"
+        );
+
+        assert!(filter.reset_position_to(
+            Position::ned(1.0, 2.0, -3.0),
+            PositionNoise::from_sigma(1.0, 1.0, 1.0)
+        ));
+        assert_eq!(filter.offset.cross.fixed_rows::<3>(0).norm(), 0.0);
+    }
+
+    #[test]
+    fn a_reference_with_no_uncertainty_is_refused() {
+        let mut filter = initialized();
+        assert!(
+            !filter.set_baro_reference(Altitude::from_meters(52.0), AltitudeNoise::from_sigma(0.0))
+        );
+        assert_eq!(filter.baro_reference(), None);
     }
 
     #[test]
@@ -3121,7 +3279,10 @@ mod tests {
         let _ = filter
             .initialize(&moving_window_at(100.0), Seconds::from_secs(0.25))
             .expect("moving, not unusable");
-        assert!(filter.set_baro_reference(Altitude::from_meters(100.0)));
+        assert!(filter.set_baro_reference(
+            Altitude::from_meters(100.0),
+            AltitudeNoise::from_sigma(0.001)
+        ));
         assert!(
             filter
                 .fuse_baro_altitude(Altitude::from_meters(100.0), AltitudeNoise::from_sigma(2.0))
@@ -3286,7 +3447,10 @@ mod tests {
     #[test]
     fn every_source_refuses_a_measurement_that_is_not_a_number() {
         let mut filter = initialized();
-        assert!(filter.set_baro_reference(Altitude::from_meters(52.0)));
+        assert!(filter.set_baro_reference(
+            Altitude::from_meters(52.0),
+            AltitudeNoise::from_sigma(0.001)
+        ));
         let nan = f32::NAN;
         assert_eq!(
             filter
@@ -3321,7 +3485,10 @@ mod tests {
     #[test]
     fn every_source_refuses_a_variance_no_sensor_could_have() {
         let mut filter = initialized();
-        assert!(filter.set_baro_reference(Altitude::from_meters(52.0)));
+        assert!(filter.set_baro_reference(
+            Altitude::from_meters(52.0),
+            AltitudeNoise::from_sigma(0.001)
+        ));
         assert_eq!(
             filter.fuse_gnss_position(
                 Position::ned(1.0, 2.0, 3.0),
@@ -3407,13 +3574,19 @@ mod tests {
         ));
         assert_eq!(filter.state().velocity, Velocity::zero());
 
-        assert!(!filter.set_baro_reference(Altitude::from_meters(f32::NAN)));
+        assert!(!filter.set_baro_reference(
+            Altitude::from_meters(f32::NAN),
+            AltitudeNoise::from_sigma(0.001)
+        ));
         assert_eq!(
             filter.baro_reference(),
             None,
             "a NaN alpha_0 would end barometric aiding for the flight, not one update"
         );
-        assert!(filter.set_baro_reference(Altitude::from_meters(52.0)));
+        assert!(filter.set_baro_reference(
+            Altitude::from_meters(52.0),
+            AltitudeNoise::from_sigma(0.001)
+        ));
     }
 
     #[test]

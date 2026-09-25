@@ -531,6 +531,26 @@ pub struct Config {
     /// Magnetic declination at the operating site, added to magnetic heading to give
     /// true heading. Equation (6).
     pub magnetic_declination: Radians,
+    /// Random walk of the barometric offset, m s⁻¹ / √Hz: the `q_b` of equation (30′).
+    ///
+    /// `α₀`, the reference a barometer's altitude is measured against, is estimated rather
+    /// than held constant, and this is how fast the filter lets it move. A barometer's
+    /// reference drifts with the weather and the sensor, which no window can measure, so it
+    /// is configured as [`ImuNoise`] is.
+    ///
+    /// The default is PX4's `baro_bias_nsd`, `src/modules/ekf2/EKF/common.h:347` at
+    /// `c4e4ef98e9`, and the corpus's one drifting barometer agrees with it: `2c42096b`'s
+    /// climbs about 12 m start to end over 2 h, and at 0.02 the filter rejects 20 of its GNSS
+    /// heights, at 0.05 five, at this value none. Zero is a constant reference, which on that
+    /// log rejects 3825 — the estimate settles on the barometer and then refuses the receiver
+    /// the barometer has drifted away from.
+    ///
+    /// What it costs is height where the barometer does not drift. The simulator's never
+    /// does, and there `mission` scores 0.249 m of vertical RMSE here against 0.078 at zero:
+    /// the offset walks away from what the barometer knew, and GNSS height takes over the low
+    /// frequencies. A barometer characterized on the bench as more stable than this is the
+    /// reason to lower it.
+    pub baro_offset_walk: f32,
 }
 
 impl Default for Config {
@@ -545,6 +565,7 @@ impl Default for Config {
             accuracy: Accuracy::default(),
             max_predict_dt: Seconds::from_secs(0.1),
             magnetic_declination: Radians::ZERO,
+            baro_offset_walk: 0.13,
         }
     }
 }

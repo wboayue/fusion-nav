@@ -193,3 +193,43 @@ impl Default for Covariance {
         Self::zero()
     }
 }
+
+/// The barometric offset's share of the augmented covariance of equation (30′): `P_xb`, its
+/// cross-covariance with the error state in the [`ErrorState`] ordering, and `P_bb`, its own
+/// variance.
+///
+/// Beside [`Covariance`] rather than inside it, so that the 15 × 15 a caller reads stays the
+/// covariance of the navigation state. The offset `b` is the error in `α₀`, the barometric
+/// reference, and is never a component of [`State`]: its estimate is folded into `α₀` at
+/// every update, so all it keeps between them is this row.
+///
+/// All zero while there is no reference: nothing then correlates with it and nothing reads it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Offset {
+    /// `P_xb`.
+    pub(crate) cross: SVector<f32, STATES>,
+    /// `P_bb`.
+    pub(crate) variance: f32,
+}
+
+impl Offset {
+    /// An offset uncorrelated with the error state, of variance `variance`: a reference
+    /// measured apart from the estimate, as a window at rest or a caller measures one.
+    pub(crate) fn independent(variance: f32) -> Self {
+        Self {
+            cross: SVector::zeros(),
+            variance,
+        }
+    }
+
+    /// Drop the offset's correlation with one error-state component, as
+    /// [`Covariance::reset_state`] drops that component's correlations with the rest.
+    pub(crate) fn decorrelate(&mut self, state: ErrorState) {
+        self.cross[state.index()] = 0.0;
+    }
+
+    /// Whether every entry is finite.
+    pub(crate) fn is_finite(&self) -> bool {
+        self.variance.is_finite() && self.cross.iter().all(|entry| entry.is_finite())
+    }
+}

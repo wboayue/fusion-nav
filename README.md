@@ -167,16 +167,17 @@ and GNSS velocity. From the window the filter takes:
   what makes the bias observable rather than the vehicle's own turn rate. A window taken in
   motion starts it at zero, as both PX4 and ArduPilot do at every start. The accelerometer bias
   is not separable from tilt at rest either way, and starts at zero
-* **the barometric reference** `α₀` — the altitude the barometer read at the origin. It is a
-  constant, so a window with no barometer samples leaves altitudes with nothing to be relative
-  to, and `fuse_baro_altitude` returns `Fusion::NoReference` for the whole flight.
+* **the barometric reference** `α₀` — the altitude the barometer read at the origin, with the
+  variance of that reading. The filter goes on estimating it, since a barometer's reference
+  drifts, but only from a start: a window with no barometer samples leaves altitudes with nothing
+  to be relative to, and `fuse_baro_altitude` returns `Fusion::NoReference` for the whole flight.
 
 A window taken **at rest** establishes `α₀`, including one too short to align an attitude from: a
 vehicle sitting on the ground has an honest reference whatever the window length, and that altitude
 is what zero will mean. A window taken in motion — a restart at altitude, most obviously — keeps the
 reference the flight began with rather than calling its own altitude the ground.
-`set_baro_reference(α₀)` names one instead, which is also how an `initialize_from` seed gets one; it
-returns `false` for a value that is not a number.
+`set_baro_reference(α₀, σ)` names one instead, which is also how an `initialize_from` seed gets
+one; it returns `false` for a value that is not a number or a σ that is not positive.
 
 A window that is short or moving is **not refused**. It gives a coarse start: attitude
 uncertainty bounded by what that window itself supports — equations (5)–(6) level its *averages*,
@@ -471,9 +472,10 @@ Known and deliberate, stated here rather than discovered in flight.
   are fused as though current; the error grows with speed. PX4 fuses at a delayed horizon and
   propagates forward from it (`src/modules/ekf2/EKF/output_predictor/output_predictor.cpp`). See
   [measurement latency](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#measurement-latency).
-* **No barometer bias state.** Drift in the reference — weather, ground effect, warm-up — becomes
-  vertical position error. See
-  [barometric reference as a constant](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#barometric-reference-as-a-constant).
+* **Barometer drift costs height where there is none.** The reference is estimated and allowed to
+  walk, at PX4's rate by default, so GNSS height carries the low frequencies and a barometer
+  more stable than that is trusted less than it could be. See
+  [barometric reference as an estimated offset](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#barometric-reference-as-an-estimated-offset).
 * **No magnetic-field states.** Hard- and soft-iron calibration is the application's job; an
   uncalibrated magnetometer gives a heading bias the filter cannot detect.
 * **Heading needs a magnetometer.** It is the only heading source the filter has, so a vehicle

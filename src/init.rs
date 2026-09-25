@@ -27,9 +27,10 @@ use crate::units::{
 /// [`sigma_yaw`](crate::Initialization::sigma_yaw) is a prior and would otherwise read as
 /// an estimate of a quantity nothing measured.
 ///
-/// The barometer is optional in the same way, but less forgivingly: its reference is a
-/// constant rather than a state, so a window carrying none leaves nothing for a later
-/// altitude to be relative to and barometric fusion is refused for the whole flight.
+/// The barometer is optional in the same way, but less forgivingly: its reference is
+/// established by a start and only refined after one (30′), so a window carrying none leaves
+/// nothing for a later altitude to be relative to and barometric fusion is refused for the
+/// whole flight.
 ///
 /// GNSS velocity is the one field a window taken **in motion** can use, and the only
 /// reason this type is not simply an IMU sample plus what stillness needs: see
@@ -52,8 +53,9 @@ pub struct StaticSample {
     ///
     /// Without it there is no reference and
     /// [`Eskf::fuse_baro_altitude`](crate::Eskf::fuse_baro_altitude) refuses with
-    /// [`Fusion::NoReference`](crate::Fusion::NoReference). `α₀` is a constant rather
-    /// than a state, so it is established here or not at all.
+    /// [`Fusion::NoReference`](crate::Fusion::NoReference). `α₀` is refined in flight by
+    /// (30′) but established here or not at all, and the scatter of these readings is the
+    /// variance it starts with, so a window needs two of them.
     pub baro: Option<Altitude>,
     /// GNSS velocity in the navigation frame, if the vehicle has a receiver.
     ///
@@ -778,22 +780,37 @@ pub(crate) fn inertial_acceleration(
     (span > 0.0).then(|| Acceleration::from_vector((last.vector() - first.vector()) / span))
 }
 
-/// Mean barometric altitude over the samples that carry one: `α₀` of equation (30).
-/// `None` if none do.
+/// Mean barometric altitude over the samples that carry one, `α₀` of equation (30), and the
+/// variance of that mean, `P_bb` of (30′). `None` if fewer than two do.
+///
+/// The variance is the window's own: the sample variance of the readings over their count,
+/// the standard error of a mean. It is measured rather than asked for, because the window
+/// is the one moment the barometer's scatter can be read with the vehicle known to be still
+/// (GOALS.md differentiator 7), and a reading's `R` on the corpus is a constant the
+/// converter substitutes. It assumes the readings independent; a correlated barometer
+/// averages down more slowly than this says.
+///
+/// One reading is refused rather than given a variance: it has no scatter to measure, and
+/// a reference whose error is invented is what (30′) exists to stop.
 ///
 /// Accumulated in `f64`: a window is up to a few thousand samples and an altitude is
 /// metres above mean sea level, so an `f32` running sum of 800 readings near 1000 m has
 /// already lost more precision than the reference is worth.
-pub(crate) fn baro_reference(window: &[StaticSample]) -> Option<Altitude> {
-    let mut sum = 0.0f64;
-    let mut count = 0u32;
-    for sample in window {
-        if let Some(altitude) = sample.baro {
-            sum += f64::from(altitude.as_meters());
-            count += 1;
-        }
+pub(crate) fn baro_reference(window: &[StaticSample]) -> Option<(Altitude, f32)> {
+    let readings = || {
+        window
+            .iter()
+            .filter_map(|sample| sample.baro)
+            .map(|a| f64::from(a.as_meters()))
+    };
+    let count = readings().count();
+    if count < 2 {
+        return None;
     }
-    (count > 0).then(|| Altitude::from_meters((sum / f64::from(count)) as f32))
+    let n = count as f64;
+    let mean = readings().sum::<f64>() / n;
+    let scatter = readings().map(|a| (a - mean) * (a - mean)).sum::<f64>() / (n - 1.0);
+    Some((Altitude::from_meters(mean as f32), (scatter / n) as f32))
 }
 
 #[cfg(test)]
@@ -1363,7 +1380,10 @@ pub(crate) mod tests {
                 baro: Some(Altitude::from_meters(altitude)),
                 ..still()
             });
-        let reference = baro_reference(&window).expect("the window carried barometer samples");
+        let (reference, variance) =
+            baro_reference(&window).expect("the window carried barometer samples");
+        // Squared deviations sum to 2.5 m², over 7 degrees of freedom and then 8 readings.
+        assert!((variance - 2.5 / 7.0 / 8.0).abs() < 1e-7, "{variance}");
         assert!(
             (reference.as_meters() - 100.0).abs() < 1e-4,
             "mean of the window is 100 m, got {}",
@@ -1378,7 +1398,17 @@ pub(crate) mod tests {
         let mut window = [still(); 8];
         window[0].baro = Some(Altitude::from_meters(10.0));
         window[7].baro = Some(Altitude::from_meters(20.0));
-        assert_eq!(baro_reference(&window), Some(Altitude::from_meters(15.0)));
+        assert_eq!(
+            baro_reference(&window),
+            Some((Altitude::from_meters(15.0), 25.0))
+        );
+    }
+
+    #[test]
+    fn one_reading_is_no_reference_because_it_has_no_scatter_to_measure() {
+        let mut window = [still(); 8];
+        window[3].baro = Some(Altitude::from_meters(10.0));
+        assert_eq!(baro_reference(&window), None);
     }
 
     /// A window whose GNSS reports the vehicle gaining 4 m/s of north velocity over the

@@ -130,7 +130,10 @@ fn drive() {
 
     let _ = black_box(filter.reset_position_to(position, position_noise));
     let _ = black_box(filter.reset_velocity_to(velocity, velocity_noise));
-    let _ = black_box(filter.set_baro_reference(Altitude::from_meters(black_box(100.0))));
+    let _ = black_box(filter.set_baro_reference(
+        Altitude::from_meters(black_box(100.0)),
+        AltitudeNoise::from_sigma(black_box(0.1)),
+    ));
     let _ = black_box(filter.set_origin(fix));
 
     let _ = black_box(filter.state());

@@ -154,10 +154,13 @@ rather than waiting for the position error it would become.
 Barometric altitude is the vertical observation that is available when GNSS is not, and at a
 higher rate when it is.
 
-The barometer reference is captured once at initialization and held as a constant. There is no
-barometer bias state, so slow drift in that reference — weather, ground effect, sensor warm-up —
-is not estimated and appears directly as vertical position error. See
-[barometric reference as a constant](GOALS.md#barometric-reference-as-a-constant).
+The barometer reference is captured at initialization and estimated from then on: its error is
+an offset carried beside the 15-state covariance, correlated with height and corrected whenever
+a barometer and a GNSS height disagree, and it walks so that slow drift — weather, ground effect,
+sensor warm-up — can be followed rather than becoming vertical position error. `State` and
+`Covariance` do not carry it. See
+[barometric reference as an estimated offset](GOALS.md#barometric-reference-as-an-estimated-offset)
+and [equation (30′)](EQUATIONS.md#barometric-offset).
 
 ### Magnetometer
 
