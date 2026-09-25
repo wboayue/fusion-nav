@@ -1016,6 +1016,16 @@ class Fixture:
         self.data = fields
 
 
+class FixtureLog:
+    """A stand-in for a pyulog `ULog`: the datasets, and `get_dataset` by name."""
+
+    def __init__(self, *datasets):
+        self.data_list = list(datasets)
+
+    def get_dataset(self, name):
+        return next(d for d in self.data_list if d.name == name)
+
+
 def self_test():
     """Literal fixtures for what no corpus log can check about the converter.
 
@@ -1092,6 +1102,14 @@ def self_test():
         {"type": "fw", "mode_changes": "0"})
     expect("receiver with no eph", screen_gnss(Fixture("sensor_gps", timestamp=[0]))["eph_max"],
            "none")
+    # LPE's `7592c9b2` logs `vibe[2]` and never fills it: zero throughout is unmeasured.
+    lpe = FixtureLog(Fixture("estimator_status", **{"vibe[2]": [0.0, 0.0, 0.0]}))
+    expect("vibration never computed", screen_vibration(lpe)["vib_p95"], "none")
+    imus = FixtureLog(
+        Fixture("vehicle_imu_status", accel_vibration_metric=[0.01] * 19 + [0.55]),
+        Fixture("vehicle_imu_status", accel_vibration_metric=[0.02] * 20),
+    )
+    expect("vibration pooled, touchdown excluded", screen_vibration(imus)["vib_p95"], "0.020")
     expect("release", release(0x010B03FF), "v1.11.3")
     expect("rc", release(0x011000C0), "v1.16.0-rc")
     expect("dev", release(0x010A0000), "v1.10.0-dev")
