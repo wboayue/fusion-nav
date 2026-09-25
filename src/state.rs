@@ -222,6 +222,17 @@ impl Offset {
         }
     }
 
+    /// The offset of a reference read from the estimate, `α̂₀ = α + p̂_D`: its error is
+    /// `−δp_D` plus the reading's noise, so `P_xb = −P[:, D]` and `P_bb = P_DD + R_m`.
+    /// Equation (30′).
+    pub(crate) fn from_estimate(covariance: &Covariance, noise_variance: f32) -> Self {
+        let down = ErrorState::PositionDown;
+        Self {
+            cross: -covariance.as_matrix().column(down.index()),
+            variance: covariance.variance(down) + noise_variance,
+        }
+    }
+
     /// Drop the offset's correlation with one error-state component, as
     /// [`Covariance::reset_state`] drops that component's correlations with the rest.
     pub(crate) fn decorrelate(&mut self, state: ErrorState) {

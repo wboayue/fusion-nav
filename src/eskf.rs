@@ -332,8 +332,10 @@ impl Eskf {
     ///
     /// `state.status` is ignored: status is derived from aiding, never asserted.
     /// [`baro_reference`](Self::baro_reference) is left alone, so re-initializing in
-    /// flight keeps the reference the flight began with; a filter that never had one
-    /// takes it from the first altitude, read against the seeded position. [`origin`](Self::origin) is left alone for the same reason, and
+    /// flight keeps the reference the flight began with; a filter that never had one takes
+    /// it from the first altitude, read against the seeded position (see
+    /// [`fuse_baro_altitude`](Self::fuse_baro_altitude)). [`origin`](Self::origin) is left
+    /// alone for the same reason, and
     /// `state.position` is taken as relative to it — or, with no origin yet, to the one
     /// the first [`fuse_gnss_geodetic`](Self::fuse_gnss_geodetic) will place around it.
     ///
@@ -386,11 +388,13 @@ impl Eskf {
     /// Set the barometric reference `α₀` directly, with the σ it is known to. Equations (30)
     /// and (30′).
     ///
-    /// For re-establishing the reference on the ground when drift in it has become the
-    /// dominant vertical error. That remedy is the application's to apply, because the
-    /// filter cannot tell a drifting reference from a genuine climb. A filter with no
-    /// reference at all needs none of this: the first altitude after position is
-    /// established sets one; see [`fuse_baro_altitude`](Self::fuse_baro_altitude).
+    /// For a reference known better than the estimate: a surveyed pad, or the ground
+    /// re-established before takeoff. A filter with no reference needs none of this, since
+    /// [`fuse_baro_altitude`](Self::fuse_baro_altitude) takes one from the estimate unless
+    /// [`Config::baro_reference_from_estimate`](crate::Config::baro_reference_from_estimate)
+    /// says otherwise. The filter estimates `α₀` from then on, starting from this σ and
+    /// uncorrelated with the state, so `noise` is the claim that decides how far the first
+    /// disagreement with GNSS height moves it.
     ///
     /// Returns `false`, changing nothing, for a reference that is not a number or a σ that is
     /// not positive: `α₀` appears in every barometric measurement for the rest of the flight,
@@ -889,22 +893,24 @@ impl Eskf {
     /// a `Gate<3>` in that field does not compile.
     ///
     /// With no reference held, the first altitude offered once position is established
-    /// sets one, `α₀ = α + p̂_D`, so that it lands on the estimate — PX4's
-    /// `baro_height_control.cpp:79` at `c4e4ef98`, and not the offset tracking at `:112`
-    /// that `GOALS.md` declines. That covers a start in motion after its first GNSS fix, a
-    /// window with no barometer in it, and a seed. The altitude is spent placing the
-    /// reference rather than fused, as a first fix is spent placing the origin in
-    /// [`fuse_gnss_geodetic`](Self::fuse_gnss_geodetic), and is reported the same way:
-    /// accepted with a zero test ratio, since nothing was inconsistent. Leaving it to the
-    /// caller cost `2c42096b`, a coarse start, all 35575 of its altitudes: every
-    /// application would write the same line, and one that forgot flew on GNSS height
-    /// alone with nothing but [`Fusion::NoReference`] on a source nobody reads to say so.
+    /// sets one, `α̂₀ = α + p̂_D`, so that it lands on the estimate — PX4's
+    /// `baro_height_control.cpp:79` at `c4e4ef98`. That covers every start that leaves no
+    /// reference: one in motion after its first GNSS fix, a window with no barometer in it,
+    /// and a seed. Leaving it to the caller cost `2c42096b`, a coarse start, all 35575 of its
+    /// altitudes, with nothing but [`Fusion::NoReference`] on a source nobody reads to say
+    /// so. [`Config::baro_reference_from_estimate`](crate::Config::baro_reference_from_estimate)
+    /// turns it off for a caller that names its own.
     ///
-    /// The reference inherits the height error of the estimate it was read against —
-    /// after a coarse start, the first fix's `epv` — as a constant offset between the
-    /// barometer and GNSS. It is the offset a static start carries once
-    /// [`fuse_gnss_geodetic`](Self::fuse_gnss_geodetic) places its origin, and one
-    /// sample's noise is small beside it, which is why no window is averaged here.
+    /// The reference inherits the height error of the estimate it was read against, so it is
+    /// seeded correlated with it, `P_bb = P_DD + R_m` and `P_xb = −P[:, D]` of (30′), rather
+    /// than as an independent σ. That is what keeps the error the first fix left in `α̂₀`
+    /// from reading as a hundred barometer readings' worth of agreement: held constant and
+    /// uncorrelated, it took `moving_start`'s `nees_pos` to 112.59.
+    ///
+    /// The altitude is spent placing the reference rather than fused, as a first fix is
+    /// spent placing the origin in [`fuse_gnss_geodetic`](Self::fuse_gnss_geodetic), and is
+    /// reported the same way: accepted with a zero test ratio, since nothing was
+    /// inconsistent. Fusing it as well would count its noise twice, once in `P_bb`.
     ///
     /// Until position is established there is no estimate to read the reference against,
     /// and the altitude is refused with [`Fusion::NoReference`] rather than adopted: a
@@ -921,13 +927,14 @@ impl Eskf {
             return refuse(&mut self.diagnostics.baro_altitude, Fusion::InvalidNoise);
         }
         let Some(reference) = self.baro_reference else {
-            if self.unestablished.position {
+            if self.unestablished.position || !self.config.baro_reference_from_estimate {
                 return refuse(&mut self.diagnostics.baro_altitude, Fusion::NoReference);
             }
             // (30) solved for α₀ with z = p̂_D: the altitude lands on the estimate.
-            self.baro_reference = Some(Altitude::from_meters(
-                altitude.as_meters() + self.state.position.vector()[2],
-            ));
+            let reference =
+                Altitude::from_meters(altitude.as_meters() + self.state.position.vector()[2]);
+            let offset = Offset::from_estimate(&self.covariance, noise.variance());
+            self.establish_reference(Some((reference, offset)));
             self.diagnostics.baro_altitude.record_accepted(0.0, None);
             return Fusion::Accepted { test_ratio: 0.0 };
         };
@@ -1251,10 +1258,12 @@ impl Eskf {
         }
     }
 
-    /// The barometric reference `α₀`, equation (30): fixed by a window taken at rest, or
-    /// read against the estimate by the first altitude once position is established. `None`
-    /// until one of those has happened — a start in motion keeps whatever reference the
-    /// flight already had rather than calling its own altitude the ground.
+    /// The barometric reference `α₀` as currently estimated, equations (30) and (30′):
+    /// measured by a window taken at rest, named by
+    /// [`set_baro_reference`](Self::set_baro_reference), or read against the estimate by the
+    /// first altitude once position is established. `None` until one of those has happened —
+    /// a start in motion keeps whatever reference the flight already had rather than calling
+    /// its own altitude the ground.
     ///
     /// Exposed because it is what the filter's zero altitude means: the barometer reading
     /// the filter would call the origin's height. It moves as barometer and GNSS height
@@ -2015,15 +2024,52 @@ mod tests {
         assert_eq!(filter.state().position, before, "spent on α₀, not fused");
         assert_eq!(filter.diagnostics().baro_altitude.accepted, 1);
 
-        // Two metres higher on the next one is two metres of innovation, fused.
-        let outcome =
-            filter.fuse_baro_altitude(Altitude::from_meters(132.0), AltitudeNoise::from_sigma(2.0));
-        assert!(
-            matches!(outcome, Fusion::Accepted { test_ratio } if test_ratio > 0.0),
-            "{outcome:?}"
+        // Seeded correlated with the height it was read against, (30′): P_bb = P_DD + R_m,
+        // P_xb = −P[:, D]. An independent σ here is the constant offset that took
+        // `moving_start`'s `nees_pos` to 112.59.
+        let down = ErrorState::PositionDown;
+        let p_dd = filter.covariance().variance(down);
+        assert!((filter.offset.variance - (p_dd + 4.0)).abs() < 1e-4);
+        assert_eq!(
+            filter.offset.cross,
+            -filter.covariance().as_matrix().column(down.index())
         );
-        assert!(filter.state().position.vector()[2] < -30.0, "pulled up");
-        assert_eq!(filter.baro_reference(), Some(Altitude::from_meters(100.0)));
+
+        // So the barometer alone says nothing about absolute height: h = p_D + b has no
+        // covariance with p_D, and a second reading two metres higher moves α₀, not the
+        // estimate. Only GNSS height, disagreeing with both, can.
+        assert!(
+            filter
+                .fuse_baro_altitude(Altitude::from_meters(132.0), AltitudeNoise::from_sigma(2.0))
+                .is_accepted()
+        );
+        assert!((filter.state().position.vector()[2] + 30.0).abs() < 1e-3);
+        let reference = filter.baro_reference().expect("held").as_meters();
+        assert!(reference > 100.5, "{reference}");
+    }
+
+    #[test]
+    fn with_the_seed_turned_off_an_altitude_waits_for_a_named_reference() {
+        let mut filter = Eskf::new(Config {
+            baro_reference_from_estimate: false,
+            ..Config::default()
+        });
+        let _ = filter
+            .initialize(&[still(); 8], Seconds::from_secs(0.25))
+            .expect("a 2 s window of stillness");
+        assert_eq!(
+            filter.fuse_baro_altitude(Altitude::from_meters(60.0), AltitudeNoise::from_sigma(2.0)),
+            Fusion::NoReference
+        );
+        assert_eq!(filter.baro_reference(), None);
+        assert!(
+            filter.set_baro_reference(Altitude::from_meters(60.0), AltitudeNoise::from_sigma(0.5))
+        );
+        assert!(
+            filter
+                .fuse_baro_altitude(Altitude::from_meters(60.0), AltitudeNoise::from_sigma(2.0))
+                .is_accepted()
+        );
     }
 
     #[test]

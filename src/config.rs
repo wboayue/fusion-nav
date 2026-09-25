@@ -551,6 +551,22 @@ pub struct Config {
     /// frequencies. A barometer characterized on the bench as more stable than this is the
     /// reason to lower it.
     pub baro_offset_walk: f32,
+    /// Whether a filter holding no barometric reference takes one from the estimate, at the
+    /// first altitude once position is established. Equations (30) and (30′).
+    ///
+    /// On by default, because every start that leaves no reference — one in motion, a window
+    /// with no barometer, a seed — otherwise discards the barometer for the whole flight:
+    /// `2c42096b`, a coarse start, refuses all 35575 of its altitudes. PX4 does the same at
+    /// `baro_height_control.cpp:79` at `c4e4ef98`. See
+    /// [`Eskf::fuse_baro_altitude`](crate::Eskf::fuse_baro_altitude) for how the reference is
+    /// seeded.
+    ///
+    /// Off is for an application that names its own reference with
+    /// [`Eskf::set_baro_reference`](crate::Eskf::set_baro_reference) — a surveyed pad, say —
+    /// and would rather altitudes were refused with
+    /// [`Fusion::NoReference`](crate::Fusion::NoReference) until it does than referred to the
+    /// estimate's height at whatever moment the first reading arrived.
+    pub baro_reference_from_estimate: bool,
 }
 
 impl Default for Config {
@@ -566,6 +582,7 @@ impl Default for Config {
             max_predict_dt: Seconds::from_secs(0.1),
             magnetic_declination: Radians::ZERO,
             baro_offset_walk: 0.13,
+            baro_reference_from_estimate: true,
         }
     }
 }
