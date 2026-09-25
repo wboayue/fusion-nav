@@ -28,7 +28,7 @@ longer blocked: #131 (#133) reads tilt and heading on navigation axes, `diag(R P
 `AttitudeVariance`, in `Validity`, the latch, (36′), the heading adoption and (8)'s prior, and the
 `tilt`/`yaw`/`false_valid` score keys moved with it — tilt² + yaw² unchanged, the body split had
 booked heading error as tilt (`gnss_latency` `false_valid_att` 120 → 50). (36′)'s "larger of two
-tilt variances" still depends on which pair of axes is taken; an axis-free form is unfiled.
+tilt variances" still depends on which pair of axes is taken; #134 owns the axis-free form.
 
 **Every source the crate publishes is fused; no `fuse_*` is a stub.** Initialization is real —
 equations (5)–(8), so the filter starts at the attitude and biases the window yields — `predict`
