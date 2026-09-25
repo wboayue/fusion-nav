@@ -423,7 +423,8 @@ aiding clause on its own — the current answer widened by what is being accepte
   the floor is set well below anything the filter reaches, so a count climbing there says a
   covariance is being driven toward zero by an `R` far tighter than what the measurement observes.
 * `covariance()` — the 15 × 15 covariance, indexed by name: `p.variance(ErrorState::AttitudeZ)`.
-* `baro_reference()` — the `α₀` initialization fixed, if any.
+* `baro_reference()` — `α₀` as currently estimated, if a start established one. It moves as the
+  barometer and GNSS height disagree; see equation (30′).
 
 ## Recovery is the application's job
 

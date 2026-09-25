@@ -780,8 +780,15 @@ pub(crate) fn inertial_acceleration(
     (span > 0.0).then(|| Acceleration::from_vector((last.vector() - first.vector()) / span))
 }
 
-/// Mean barometric altitude over the samples that carry one, `α₀` of equation (30), and the
-/// variance of that mean, `P_bb` of (30′). `None` if fewer than two do.
+/// Mean barometric altitude over the readings in the window, `α₀` of equation (30), and the
+/// variance of that mean, `P_bb` of (30′). `None` for fewer than two readings.
+///
+/// A reading is a value that differs from the previous sample's, because
+/// [`StaticSample::baro`] may be held across IMU epochs: a 20 Hz barometer held on a 200 Hz
+/// IMU would otherwise count each reading ten times and report a variance ten times too
+/// small, and one reading held across the whole window would pass for many with no scatter.
+/// Two genuine readings that happen to agree are merged by the same test, which can only
+/// make the variance larger.
 ///
 /// The variance is the window's own: the sample variance of the readings over their count,
 /// the standard error of a mean. It is measured rather than asked for, because the window
@@ -800,8 +807,13 @@ pub(crate) fn baro_reference(window: &[StaticSample]) -> Option<(Altitude, f32)>
     let readings = || {
         window
             .iter()
-            .filter_map(|sample| sample.baro)
-            .map(|a| f64::from(a.as_meters()))
+            .scan(None, |previous, sample| {
+                let fresh = sample.baro.filter(|altitude| Some(*altitude) != *previous);
+                *previous = sample.baro;
+                Some(fresh)
+            })
+            .flatten()
+            .map(|altitude| f64::from(altitude.as_meters()))
     };
     let count = readings().count();
     if count < 2 {
@@ -1376,14 +1388,14 @@ pub(crate) mod tests {
     #[test]
     fn the_baro_reference_is_the_mean_over_the_window() {
         let window =
-            [99.0, 101.0, 100.0, 100.0, 99.5, 100.5, 100.0, 100.0].map(|altitude| StaticSample {
+            [99.0, 101.0, 100.0, 99.5, 100.5, 100.0, 99.8, 100.2].map(|altitude| StaticSample {
                 baro: Some(Altitude::from_meters(altitude)),
                 ..still()
             });
         let (reference, variance) =
             baro_reference(&window).expect("the window carried barometer samples");
-        // Squared deviations sum to 2.5 m², over 7 degrees of freedom and then 8 readings.
-        assert!((variance - 2.5 / 7.0 / 8.0).abs() < 1e-7, "{variance}");
+        // Squared deviations sum to 2.58 m², over 7 degrees of freedom and then 8 readings.
+        assert!((variance - 2.58 / 7.0 / 8.0).abs() < 1e-6, "{variance}");
         assert!(
             (reference.as_meters() - 100.0).abs() < 1e-4,
             "mean of the window is 100 m, got {}",
@@ -1402,6 +1414,28 @@ pub(crate) mod tests {
             baro_reference(&window),
             Some((Altitude::from_meters(15.0), 25.0))
         );
+    }
+
+    #[test]
+    fn a_held_reading_counts_once() {
+        // Two readings at 20 Hz on an IMU four times faster, each held until the next: the
+        // mean and variance of two readings, not of eight samples.
+        let window =
+            [10.0, 10.0, 10.0, 10.0, 20.0, 20.0, 20.0, 20.0].map(|altitude| StaticSample {
+                baro: Some(Altitude::from_meters(altitude)),
+                ..still()
+            });
+        assert_eq!(
+            baro_reference(&window),
+            Some((Altitude::from_meters(15.0), 25.0))
+        );
+
+        // One reading held across the window is one reading, however many samples carry it.
+        let held = [StaticSample {
+            baro: Some(Altitude::from_meters(10.0)),
+            ..still()
+        }; 8];
+        assert_eq!(baro_reference(&held), None);
     }
 
     #[test]

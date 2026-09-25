@@ -1485,6 +1485,13 @@ mod tests {
         filter
     }
 
+    /// The same window with a barometer reading on every sample, scattered about `altitude`
+    /// as a real one is. Eight identical readings are one reading held, which sets no
+    /// reference. The offsets are exact in binary, so the mean is exactly `altitude`.
+    fn window_at(altitude: f32) -> [StaticSample; 8] {
+        window_with_baro([-0.5, 0.5, 0.0, -0.25, 0.25, 0.0, -0.125, 0.125].map(|d| altitude + d))
+    }
+
     /// The same window with a barometer reading on every sample.
     fn window_with_baro(altitudes: [f32; 8]) -> [StaticSample; 8] {
         altitudes.map(|altitude| StaticSample {
@@ -1506,11 +1513,8 @@ mod tests {
     /// fusion needs a reference, so the window carries one.
     fn aided() -> Eskf {
         let mut filter = Eskf::new(Config::default());
-        // A barometer with some scatter, as a real one has: eight identical readings measure
-        // the reference's variance as zero, which the floor of (42′) would raise and count.
-        let window = window_with_baro([99.5, 100.5, 100.0, 100.0, 99.8, 100.2, 100.0, 100.0]);
         let _ = filter
-            .initialize(&window, Seconds::from_secs(0.25))
+            .initialize(&window_at(100.0), Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
         assert!(
             filter
@@ -1973,7 +1977,7 @@ mod tests {
     fn an_altitude_above_the_reference_pulls_the_estimate_up_and_moves_nothing_sideways() {
         let mut filter = Eskf::new(Config::default());
         let _ = filter
-            .initialize(&window_with_baro([100.0; 8]), Seconds::from_secs(0.25))
+            .initialize(&window_at(100.0), Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
 
         // Two metres above the reference the window fixed, on a sensor claiming 0.5 m.
@@ -2000,7 +2004,7 @@ mod tests {
     fn an_altitude_the_gate_turns_down_leaves_the_estimate_where_it_was() {
         let mut filter = Eskf::new(Config::default());
         let _ = filter
-            .initialize(&window_with_baro([100.0; 8]), Seconds::from_secs(0.25))
+            .initialize(&window_at(100.0), Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
         let before = filter.state().position;
 
@@ -2018,7 +2022,7 @@ mod tests {
         let mut filter = aided();
         assert_eq!(filter.baro_reference(), Some(Altitude::from_meters(100.0)));
         let alignment = filter
-            .initialize(&window_with_baro([250.0; 8]), Seconds::from_secs(0.25))
+            .initialize(&window_at(250.0), Seconds::from_secs(0.25))
             .expect("a 2 s window");
         assert_eq!(alignment, Alignment::Static);
         assert_eq!(
@@ -2030,7 +2034,7 @@ mod tests {
 
     /// A window taken while the vehicle was moving, reading 250 m: a restart in flight.
     fn moving_window_at(altitude: f32) -> [StaticSample; 8] {
-        let mut window = window_with_baro([altitude; 8]);
+        let mut window = window_at(altitude);
         window[3].imu.gyro = AngularRate::body(0.0, 0.4, 0.0);
         window
     }
@@ -2073,7 +2077,7 @@ mod tests {
         // cost it barometric aiding for the whole flight with nothing saying so.
         let mut filter = Eskf::new(Config::default());
         let alignment = filter
-            .initialize(&window_with_baro([112.0; 8]), Seconds::from_secs(0.1))
+            .initialize(&window_at(112.0), Seconds::from_secs(0.1))
             .expect("short, so coarse");
         assert!(matches!(alignment, Alignment::Coarse(..)));
         assert_eq!(filter.baro_reference(), Some(Altitude::from_meters(112.0)));
@@ -2155,14 +2159,14 @@ mod tests {
     #[test]
     fn a_window_at_rest_measures_its_own_reference_variance() {
         let mut filter = Eskf::new(Config::default());
-        let window = window_with_baro([99.5, 100.5, 100.0, 100.0, 99.8, 100.2, 100.0, 100.0]);
+        let window = window_at(100.0);
         let _ = filter
             .initialize(&window, Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
         assert_eq!(filter.offset.cross.norm(), 0.0);
-        // Squared deviations of 0.58 m² over seven degrees of freedom, then over eight
+        // Squared deviations of 0.65625 m² over seven degrees of freedom, then over eight
         // readings: the standard error of their mean.
-        let want = 0.58 / 7.0 / 8.0;
+        let want = 0.65625 / 7.0 / 8.0;
         assert!(
             (filter.offset.variance - want).abs() < 2e-3 * want,
             "{}",
@@ -2362,7 +2366,7 @@ mod tests {
     fn a_coarse_start_reports_aligning_once_something_is_aiding_it() {
         let mut filter = Eskf::new(Config::default());
         let _ = filter
-            .initialize(&window_with_baro([100.0; 8]), Seconds::from_secs(0.1))
+            .initialize(&window_at(100.0), Seconds::from_secs(0.1))
             .expect("short, not unusable");
         assert_eq!(
             filter.state().status,
@@ -2762,11 +2766,10 @@ mod tests {
     fn a_covariance_growing_past_the_bar_ends_validity_but_not_alignment() {
         // Aided *and* aligned: the baro gives a source timer to keep the status out of
         // `DeadReckoning`, and the magnetometer is what makes heading an estimate.
-        let window = [StaticSample {
-            baro: Some(Altitude::from_meters(100.0)),
+        let window = window_at(100.0).map(|sample| StaticSample {
             mag: Some(MagField::body(0.22, 0.0, 0.44)),
-            ..still()
-        }; 8];
+            ..sample
+        });
         let mut filter = Eskf::new(Config::default());
         assert_eq!(
             filter.initialize(&window, Seconds::from_secs(0.25)),
