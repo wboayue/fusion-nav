@@ -94,7 +94,7 @@ pub mod prelude {
     };
     pub use crate::init::{Alignment, Coarse, InitError, StaticSample};
     pub use crate::propagate::ImuSample;
-    pub use crate::state::{Covariance, ErrorState, State};
+    pub use crate::state::{AttitudeVariance, Covariance, ErrorState, State};
     pub use crate::units::{
         Acceleration, Altitude, AltitudeNoise, AngularRate, Attitude, HeadingNoise, MagField,
         Meters, MetersPerSecond, MetersPerSecond2, Position, PositionNoise, Radians,

@@ -1,6 +1,6 @@
 //! The navigation state estimate and the error-state covariance.
 
-use nalgebra::{SMatrix, SVector};
+use nalgebra::{Matrix3, SMatrix, SVector, Vector3};
 
 use crate::frames::{Body, Ned};
 use crate::health::{Status, Validity};
@@ -150,9 +150,6 @@ impl Covariance {
     /// uncorrelated with the errors the filter accumulated before it. Zeroing the row and
     /// column is what makes the second part true; leaving them would let the old
     /// correlation pull the reset value straight back.
-    ///
-    /// One component rather than a block, because the magnetic heading of (34)–(36)
-    /// adopts yaw alone and leaves the tilt it was levelled by exactly as it was.
     pub(crate) fn reset_state(&mut self, state: ErrorState, variance: f32) {
         let i = state.index();
         for k in 0..STATES {
@@ -160,6 +157,28 @@ impl Covariance {
             self.0[(k, i)] = 0.0;
         }
         self.0[(i, i)] = variance;
+    }
+
+    /// [`reset_state`](Self::reset_state) along a direction of the attitude block rather
+    /// than one of its axes: the component `uᵀδθ` gets `variance` and loses its correlations,
+    /// and everything orthogonal to it is left as it was.
+    ///
+    /// Heading adoption needs it because heading is rotation about navigation down, which
+    /// is the body axis `u = R(q̂)ᵀe₃` and not `δθ_z` unless the vehicle is level — at 90°
+    /// of pitch, resetting `δθ_z` would reset a tilt. With `M = I − uuᵀ` the projection onto
+    /// the rest, the attitude rows become `M P_θ·`, the block `M P_θθ M + variance · uuᵀ`,
+    /// and `u = eᵢ` is [`reset_state`](Self::reset_state) exactly. `u` must be a unit vector.
+    pub(crate) fn reset_attitude_direction(&mut self, u: Vector3<f32>, variance: f32) {
+        let theta = ErrorState::AttitudeX.index();
+        let m = Matrix3::identity() - u * u.transpose();
+        let rows = m * self.0.fixed_rows::<3>(theta);
+        self.0.fixed_rows_mut::<3>(theta).copy_from(&rows);
+        let columns = self.0.fixed_columns::<3>(theta) * m;
+        self.0.fixed_columns_mut::<3>(theta).copy_from(&columns);
+        let block = self.0.fixed_view::<3, 3>(theta, theta) + u * u.transpose() * variance;
+        self.0
+            .fixed_view_mut::<3, 3>(theta, theta)
+            .copy_from(&block);
     }
 
     /// [`reset_state`](Self::reset_state) over a whole block, for the position and
@@ -185,6 +204,60 @@ impl Covariance {
     /// (11)–(14) do.
     pub(crate) fn is_finite(&self) -> bool {
         self.0.iter().all(|entry| entry.is_finite())
+    }
+}
+
+/// How uncertain the attitude is about each navigation axis, in radians squared: tilt about
+/// north and east, heading about down.
+///
+/// The covariance cannot be read for these directly. Its attitude block is the covariance of
+/// `δθ`, a rotation vector in **body** axes (equations (2)–(4)), and (36) states the
+/// navigation-frame rotation it stands for as `R(q̂) δθ`. So the body x and y diagonal is tilt,
+/// and z heading, only while the vehicle is level: at 90° of pitch body x points down, and
+/// `P[δθ_x]` is the heading's variance. These are the diagonal of `R(q̂) P_θθ R(q̂)ᵀ`, which
+/// holds at any attitude, and which is what PX4 publishes too — `getTiltVariance` and
+/// `getYawVar` read the same components of its navigation-frame covariance
+/// (`src/modules/ekf2/EKF/ekf_helper.cpp:938-947` at `c4e4ef98e9`).
+///
+/// `heading` is exactly `H P Hᵀ` for the heading Jacobian of (36), whose row is the third of
+/// `R(q̂)`: a heading source and this struct agree on what heading uncertainty is.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct AttitudeVariance {
+    /// About north: the tilt a roll reads while the vehicle faces north.
+    pub tilt_north: f32,
+    /// About east: the tilt a pitch reads while the vehicle faces north.
+    pub tilt_east: f32,
+    /// About down.
+    pub heading: f32,
+}
+
+impl AttitudeVariance {
+    /// Resolve `covariance`'s attitude block on the navigation axes of `attitude`.
+    ///
+    /// The attitude is an argument rather than read from a filter because the covariance
+    /// is: [`Eskf::predicted_validity`](crate::Eskf::predicted_validity) asks this of a
+    /// covariance projected forward, which the nominal attitude it was projected from
+    /// still describes.
+    pub(crate) fn of(attitude: &Attitude, covariance: &Covariance) -> Self {
+        let r = attitude.quaternion().to_rotation_matrix().into_inner();
+        let theta = ErrorState::AttitudeX.index();
+        let p_theta = covariance.as_matrix().fixed_view::<3, 3>(theta, theta);
+        let ned = r * p_theta * r.transpose();
+        Self {
+            tilt_north: ned[(0, 0)],
+            tilt_east: ned[(1, 1)],
+            heading: ned[(2, 2)],
+        }
+    }
+
+    /// The body-frame attitude block whose navigation-frame covariance is these three
+    /// variances and nothing correlated between them: `R(q̂)ᵀ diag(·) R(q̂)`, the inverse of
+    /// [`of`](Self::of). Equation (8).
+    pub(crate) fn in_body(self, attitude: &Attitude) -> Matrix3<f32> {
+        let r = attitude.quaternion().to_rotation_matrix().into_inner();
+        let ned =
+            Matrix3::from_diagonal(&Vector3::new(self.tilt_north, self.tilt_east, self.heading));
+        r.transpose() * ned * r
     }
 }
 
@@ -239,8 +312,108 @@ impl Offset {
         self.cross[state.index()] = 0.0;
     }
 
+    /// Drop the offset's correlation with the attitude component `uᵀδθ`, as
+    /// [`Covariance::reset_attitude_direction`] drops that component's correlations with the
+    /// rest.
+    pub(crate) fn decorrelate_attitude_direction(&mut self, u: Vector3<f32>) {
+        let theta = ErrorState::AttitudeX.index();
+        let m = Matrix3::identity() - u * u.transpose();
+        let cross = m * self.cross.fixed_rows::<3>(theta);
+        self.cross.fixed_rows_mut::<3>(theta).copy_from(&cross);
+    }
+
     /// Whether every entry is finite.
     pub(crate) fn is_finite(&self) -> bool {
         self.variance.is_finite() && self.cross.iter().all(|entry| entry.is_finite())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::f32::consts::FRAC_PI_2;
+    use nalgebra::UnitQuaternion;
+
+    fn attitude_of(roll: f32, pitch: f32, yaw: f32) -> Attitude {
+        Attitude::body_to_ned(UnitQuaternion::from_euler_angles(roll, pitch, yaw))
+    }
+
+    fn with_attitude_block(block: Matrix3<f32>) -> Covariance {
+        let mut p = CovarianceMatrix::identity();
+        let theta = ErrorState::AttitudeX.index();
+        p.fixed_view_mut::<3, 3>(theta, theta).copy_from(&block);
+        Covariance::from_matrix(p)
+    }
+
+    #[test]
+    fn level_and_facing_north_the_body_diagonal_is_tilt_and_heading() {
+        let p = with_attitude_block(Matrix3::from_diagonal(&Vector3::new(1.0, 2.0, 3.0)));
+        let variance = AttitudeVariance::of(&Attitude::default(), &p);
+        assert_eq!((variance.tilt_north, variance.tilt_east), (1.0, 2.0));
+        assert_eq!(variance.heading, 3.0);
+    }
+
+    #[test]
+    fn on_its_tail_body_x_is_the_heading_axis() {
+        // Pitched 90° nose-up, body x points up, so the variance about it is heading's.
+        // Mutating `of` to read the body diagonal reports it as tilt instead.
+        let p = with_attitude_block(Matrix3::from_diagonal(&Vector3::new(1.0, 2.0, 3.0)));
+        let variance = AttitudeVariance::of(&attitude_of(0.0, FRAC_PI_2, 0.0), &p);
+        assert!((variance.heading - 1.0).abs() < 1e-6, "{variance:?}");
+        assert!((variance.tilt_east - 2.0).abs() < 1e-6, "{variance:?}");
+        assert!((variance.tilt_north - 3.0).abs() < 1e-6, "{variance:?}");
+    }
+
+    #[test]
+    fn in_body_is_the_inverse_of_of() {
+        let attitude = attitude_of(0.4, 1.2, -2.0);
+        let ned = AttitudeVariance {
+            tilt_north: 1e-4,
+            tilt_east: 4e-4,
+            heading: 0.1,
+        };
+        let p = with_attitude_block(ned.in_body(&attitude));
+        let back = AttitudeVariance::of(&attitude, &p);
+        assert!((back.tilt_north - ned.tilt_north).abs() < 1e-7, "{back:?}");
+        assert!((back.tilt_east - ned.tilt_east).abs() < 1e-7, "{back:?}");
+        assert!((back.heading - ned.heading).abs() < 1e-6, "{back:?}");
+    }
+
+    #[test]
+    fn a_reset_along_a_body_axis_is_reset_state() {
+        let mut p = CovarianceMatrix::from_fn(|i, j| 0.01 * (1 + i.min(j)) as f32);
+        p.fill_diagonal(1.0);
+        let mut along = Covariance::from_matrix(p);
+        along.reset_attitude_direction(Vector3::z(), 0.25);
+        let mut axis = Covariance::from_matrix(p);
+        axis.reset_state(ErrorState::AttitudeZ, 0.25);
+        assert_eq!(along, axis);
+    }
+
+    #[test]
+    fn a_reset_along_a_direction_leaves_the_orthogonal_components_alone() {
+        // `u` between body y and z: the reset component gets the variance and nothing else,
+        // and the component orthogonal to `u` in that plane keeps its variance.
+        let u = Vector3::new(0.0, 0.6, 0.8);
+        let w = Vector3::new(0.0, 0.8, -0.6);
+        let mut p = CovarianceMatrix::from_fn(|i, j| 0.01 * (1 + i.min(j)) as f32);
+        p.fill_diagonal(1.0);
+        let theta = ErrorState::AttitudeX.index();
+        let before = p.fixed_view::<3, 3>(theta, theta).into_owned();
+        let mut covariance = Covariance::from_matrix(p);
+        covariance.reset_attitude_direction(u, 0.25);
+        let q = covariance.as_matrix();
+        let block = q.fixed_view::<3, 3>(theta, theta).into_owned();
+
+        assert!(((u.transpose() * block * u)[0] - 0.25).abs() < 1e-6);
+        assert!((u.transpose() * block * w)[0].abs() < 1e-6);
+        assert!(((w.transpose() * block * w)[0] - (w.transpose() * before * w)[0]).abs() < 1e-6);
+        for k in (0..STATES).filter(|k| !(theta..theta + 3).contains(k)) {
+            let cross = u.dot(&q.fixed_view::<3, 1>(theta, k).into_owned());
+            assert!(
+                cross.abs() < 1e-6,
+                "the reset component correlates with {k}: {cross}"
+            );
+        }
     }
 }

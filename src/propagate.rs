@@ -826,6 +826,7 @@ mod tests {
         let mut state = tilted_and_moving();
         let mut covariance = init::initial_covariance(
             &Initialization::default(),
+            &state.attitude,
             Radians::from_radians(0.02),
             Radians::from_radians(0.35),
         );
@@ -1049,6 +1050,7 @@ mod projection_steps {
             State::default(),
             init::initial_covariance(
                 &Initialization::default(),
+                &State::default().attitude,
                 Radians::from_radians(0.02),
                 Radians::from_radians(0.35),
             ),

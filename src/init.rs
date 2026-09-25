@@ -11,7 +11,7 @@ use crate::config::{GRAVITY, Initialization};
 use crate::frames::{Body, Ned};
 use crate::math::wrap_pi;
 use crate::propagate::ImuSample;
-use crate::state::{Covariance, State};
+use crate::state::{AttitudeVariance, Covariance, ErrorState, State};
 use crate::units::{
     Acceleration, Altitude, AngularRate, Attitude, MagField, MetersPerSecond2, Position, Radians,
     RadiansPerSecond, Seconds, Velocity,
@@ -693,12 +693,18 @@ fn coarse_sigmas(
     (Radians::from_radians(tilt), Radians::from_radians(yaw))
 }
 
-/// The diagonal initial covariance `P₀`. Equation (8).
+/// The initial covariance `P₀`. Equation (8).
 ///
 /// Position, velocity and bias sigmas come from `init`; the attitude sigmas from
 /// [`attitude_sigmas`], because they depend on how good the alignment was.
+///
+/// Tilt and yaw are uncertainties about navigation axes, and the block they land in is the
+/// covariance of the body-frame `δθ`, so they are rotated in through `attitude`, the
+/// alignment's own. Diagonal only at level: on a vehicle standing on its tail, body x points
+/// down and the yaw prior belongs on `δθ_x`.
 pub(crate) fn initial_covariance(
     init: &Initialization,
+    attitude: &Attitude,
     sigma_tilt: Radians,
     sigma_yaw: Radians,
 ) -> Covariance {
@@ -712,11 +718,21 @@ pub(crate) fn initial_covariance(
     let sigmas = [
         position,   position,   position,
         velocity,   velocity,   velocity,
-        tilt,       tilt,       yaw,
+        0.0,        0.0,        0.0,
         accel_bias, accel_bias, accel_bias,
         gyro_bias,  gyro_bias,  gyro_bias,
     ];
-    Covariance::from_sigmas(sigmas)
+    let mut p = *Covariance::from_sigmas(sigmas).as_matrix();
+    let attitude_block = AttitudeVariance {
+        tilt_north: tilt * tilt,
+        tilt_east: tilt * tilt,
+        heading: yaw * yaw,
+    }
+    .in_body(attitude);
+    let theta = ErrorState::AttitudeX.index();
+    p.fixed_view_mut::<3, 3>(theta, theta)
+        .copy_from(&attitude_block);
+    Covariance::from_matrix(p)
 }
 
 /// Standard deviation of a heading known only to lie somewhere on the circle: `π / √3`,
