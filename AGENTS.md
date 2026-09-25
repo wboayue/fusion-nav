@@ -25,10 +25,13 @@ leaves no reference, correlated with the height it was read against (`P_xb = −
 follows the barometer's ~12 m climb, this filter GNSS height's low frequencies — #8's to explain.
 Order: #89 (the gate the remedies are judged by), #117, #116, then #8. #86's tailsitter is no
 longer blocked: #131 (#133) reads tilt and heading on navigation axes, `diag(R P_θθ Rᵀ)` through
-`AttitudeVariance`, in `Validity`, the latch, (36′), the heading adoption and (8)'s prior, and the
+`AttitudeVariance`, in `Validity`, the latch, the heading adoption and (8)'s prior, and the
 `tilt`/`yaw`/`false_valid` score keys moved with it — tilt² + yaw² unchanged, the body split had
-booked heading error as tilt (`gnss_latency` `false_valid_att` 120 → 50). (36′)'s "larger of two
-tilt variances" still depends on which pair of axes is taken; #134 owns the axis-free form.
+booked heading error as tilt (`gnss_latency` `false_valid_att` 120 → 50). #134 (#135) made (36′)
+axis-free: its tilt variance is the largest eigenvalue of the horizontal tilt block, not the larger
+of two diagonals. The exact field-axis term `f̂ᵀPf̂` was measured and lost (`gnss_outage` `pos_h`
+2.630 m against 2.227), because consecutive headings share a tilt error that (24) treats as
+independent; only `f16771dd` re-pinned (`nu_mag_yaw` −0.025485 → −0.024121).
 
 **Every source the crate publishes is fused; no `fuse_*` is a stub.** Initialization is real —
 equations (5)–(8), so the filter starts at the attitude and biases the window yields — `predict`
