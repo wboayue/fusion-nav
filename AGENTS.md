@@ -21,7 +21,7 @@ barometric offset beside the 15-state covariance, equation (30′), walking at
 records why estimated rather than a consider state — 1.035 on `moving_start`, but 29310 barometer
 rejections on `2c42096b`. That unblocks #115, parked on `115-coarse-baro`, whose `R` inflation
 (`548cc57`) it supersedes: seed the offset from the estimate instead. Order: #115, then #89 (the
-gate the remedies are judged by), #117, then #8.
+gate the remedies are judged by), #117, #116, then #8.
 
 **Every source the crate publishes is fused; no `fuse_*` is a stub.** Initialization is real —
 equations (5)–(8), so the filter starts at the attitude and biases the window yields — `predict`
@@ -30,7 +30,9 @@ a barometric altitude or a magnetic heading corrects both: the update of (23)–
 the observation models (28), (29), (30) and (34)–(36) with the levelling variance (36′), the gate
 of (37)–(38) and the injection and reset of (39)–(41) all exist, in `src/update.rs` and
 `src/observation/{gnss,baro,mag}.rs`. So `mission` scores 0.240 m of horizontal RMSE, 0.188 m/s of
-velocity and 0.083 m of height where dead reckoning scored 1261.
+velocity and 0.249 m of height where dead reckoning scored 1261 — 0.083 before (30′), whose
+walking offset hands the low frequencies to GNSS height, which a simulated barometer that never
+drifts reads as pure loss (`data/scenarios.txt`).
 The gate turns a fix down rather than taking everything offered — on the corpus, where
 `a299e722` refuses 278 of its 609 velocity solutions, a receiver its own differenced positions
 contradict (#105 settled that the harness does *not* floor `R` as both production estimators do,
@@ -494,7 +496,7 @@ The rule reaches past *computing* a number, and the extension is the one that ha
 A statistic that **audits a filter claim** must falsify it in the shape the filter states it, not
 merely read its verdict. `false_valid` took `Validity` off the filter exactly as intended and then
 tested the 2-D norm of the horizontal error, while `Eskf::validity` states the claim per axis
-(`within(PositionNorth) && within(PositionEast)`, `src/eskf.rs:696-698`) — a bar √2 tighter than
+(`within(PositionNorth) && within(PositionEast)`, `src/eskf.rs:1144-1145`) — a bar √2 tighter than
 the one the filter asserted, diverging from it precisely as the estimate approaches it, which is
 the only regime where such a count says anything. Reading the verdict and re-deriving the geometry
 is still two implementations of one claim. It applies to every scoring statistic still to land:
@@ -727,13 +729,13 @@ Every source touches the same ten places, and three of them are public:
   `update::update` and `Eskf::apply`. This is the cheap part, and the only one the compiler checks:
   a `Gate<M>` of the wrong dimension does not build.
 - `Diagnostics` gains a field and `sources()`'s return type changes length
-  (`src/health.rs:698-751`) — `#[non_exhaustive]` covers the new field, but not the array length,
+  (`src/health.rs:703-744`) — `#[non_exhaustive]` covers the new field, but not the array length,
   so settle the source set before publishing.
 - `Gates` gains a field, a `Gate<DOF>` at the observation's dimension — the type states the degrees
   of freedom, and `Gates::at` needs a line for the new field.
 - A source is a verdict, not a sensor: a GNSS fix is two, `gnss_position` and `gnss_height`, gated
   apart (#118), so a sensor whose components fail independently wants a source per component.
-- `Timeouts` is **global**, not per-source (`src/config.rs:84-95`): there is no per-source entry to
+- `Timeouts` is **global**, not per-source (`src/config.rs:297-308`): there is no per-source entry to
   add, and giving a source its own threshold is a design change. See #56.
 - `Validity` and `predicted_validity`: decide whether the source constrains a quantity, and say so.
 - A `summary` key in `examples/replay.rs`, pinned per log in `data/manifest.txt`, plus a corpus log
