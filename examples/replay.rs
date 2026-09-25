@@ -344,6 +344,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 .row(line, &mut out)
                 .map_err(|e| format!("{}:{}: {e}", input.display(), n + 1))?;
         }
+        replay.finish(&mut out)?;
     }
     epoch_out.flush()?;
     fusion_out.flush()?;
@@ -377,7 +378,7 @@ fn thresholds(gates: Gates) -> [f32; SOURCES.len()] {
 /// statistic exists to find. The two-pass definition has no such subtraction. The cost is
 /// bounded and small: the longest series in the corpus is the 2 h log's 35 631 magnetometer
 /// rows, 143 KB, in a host-side example that already allocates per row.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Series {
     nu_sum: f64,
     normalized: Vec<f32>,
@@ -437,6 +438,7 @@ impl Series {
 /// apart. For the barometer and the magnetometer it tests a constant `tools/ulog2replay.py`
 /// invented, PX4 logging no variance for either; for GNSS it tests the receiver's own
 /// `eph`/`epv`/`s_variance_m_s`. `data/README.md` carries that caveat beside the keys.
+#[derive(Clone)]
 struct Consistency {
     /// Per source, per axis, trimmed to the observation's dimension by what is pushed.
     axes: [[Series; 3]; SOURCES.len()],
@@ -556,7 +558,7 @@ fn measured(value: Option<f64>, places: usize) -> String {
 /// filter's tilt error and the attitude initialization committed, which is how it found
 /// bias walks read as densities without conversion (#137); the manifest note has the
 /// figures.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Excursion {
     origin: Option<(f32, f32)>,
     extent: Option<f32>,
@@ -607,7 +609,27 @@ struct Sinks<'a> {
     fusions: &'a mut dyn Write,
 }
 
+/// A start that could still be committed on its still prefix, kept while the harness
+/// waits to see whether a static window arrives. See [`Replay::onset_of_motion`].
+#[derive(Clone)]
+struct Fallback {
+    /// The replay as it stood at the onset of motion.
+    at: Box<Replay>,
+    /// Timestamp of the last still sample, where the prefix ends.
+    t: f64,
+    /// Samples in the prefix.
+    still: usize,
+    dt: Seconds,
+    /// The sample that moved, the first the filter would propagate.
+    onset: (f64, ImuSample),
+    /// Every line since the onset.
+    lines: Vec<String>,
+    /// The fusion rows those lines wrote while the filter was not initialized.
+    fusions: Vec<u8>,
+}
+
 /// Everything the loop carries between rows.
+#[derive(Clone)]
 struct Replay {
     filter: Eskf,
     /// Candidate static window, slid forward one sample at a time until `initialize`
@@ -620,6 +642,12 @@ struct Replay {
     still_since_start: bool,
     /// Samples in the longest prefix of the log the filter has read as still.
     still_prefix: usize,
+    /// The still prefix and everything since, while `PATIENCE` has yet to say whether a
+    /// static window will arrive instead. Boxed because it holds a whole `Replay`.
+    fallback: Option<Box<Fallback>>,
+    /// Set by `accumulate` when `PATIENCE` ran out with a fallback pending, for `row` to act
+    /// on with the sinks the replayed rows belong in.
+    fall_back_due: bool,
     /// IMU sample period, taken as the median of the first `PROBE` intervals.
     ///
     /// The log supplies the rate rather than the example assuming one. The median, not
@@ -717,6 +745,8 @@ impl Replay {
             filled: 0,
             still_since_start: true,
             still_prefix: 0,
+            fallback: None,
+            fall_back_due: false,
             interval: None,
             probe: [0.0f64; PROBE],
             probed: 0,
@@ -746,6 +776,37 @@ impl Replay {
     }
 
     fn row(&mut self, line: &str, out: &mut Sinks) -> Result<(), Box<dyn Error>> {
+        // Held until `PATIENCE` decides between a static window and the still prefix: the
+        // line, to replay if it is the prefix, and the fusion rows it writes, to keep if not.
+        let Some(fallback) = self.fallback.as_mut() else {
+            return self.record(line, out);
+        };
+        fallback.lines.push(line.to_string());
+        let mut fusions = core::mem::take(&mut fallback.fusions);
+        let result = self.record(
+            line,
+            &mut Sinks {
+                epochs: out.epochs,
+                fusions: &mut fusions,
+            },
+        );
+        let Some(mut fallback) = self.fallback.take() else {
+            return result;
+        };
+        fallback.fusions = fusions;
+        if self.fall_back_due {
+            return self.fall_back(*fallback, out);
+        }
+        if self.filter.is_initialized() {
+            out.fusions.write_all(&fallback.fusions)?;
+        } else {
+            self.fallback = Some(fallback);
+        }
+        result
+    }
+
+    /// Replay one row of the log.
+    fn record(&mut self, line: &str, out: &mut Sinks) -> Result<(), Box<dyn Error>> {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') || line.starts_with("t_s") {
             return Ok(());
@@ -761,7 +822,7 @@ impl Replay {
                 if self.filter.is_initialized() {
                     self.propagate(r.t, imu, out)?;
                 } else {
-                    self.accumulate(r.t, imu, out)?;
+                    self.accumulate(r.t, imu)?;
                 }
             }
             "gnss_pos" => {
@@ -813,12 +874,7 @@ impl Replay {
     /// Before initialization the filter refuses measurements with
     /// [`Fusion::NotInitialized`], so aiding rows in this stretch of the log are simply
     /// recorded and dropped.
-    fn accumulate(
-        &mut self,
-        t: f64,
-        imu: ImuSample,
-        out: &mut Sinks,
-    ) -> Result<(), Box<dyn Error>> {
+    fn accumulate(&mut self, t: f64, imu: ImuSample) -> Result<(), Box<dyn Error>> {
         self.first_imu.get_or_insert(t);
         let previous = self.previous_imu;
         self.probe_rate(t);
@@ -842,10 +898,15 @@ impl Replay {
             if let Some(still) = self.onset_of_motion(alignment)
                 && let Some(previous) = previous
             {
-                self.commit(previous, 0..still, dt)?;
-                // The sample that moved is the first the filter propagates.
-                self.previous_imu = Some(previous);
-                return self.propagate(t, imu, out).map_err(Into::into);
+                self.fallback = Some(Box::new(Fallback {
+                    at: Box::new(self.clone()),
+                    t: previous,
+                    still,
+                    dt,
+                    onset: (t, imu),
+                    lines: Vec::new(),
+                    fusions: Vec::new(),
+                }));
             }
         }
         if self.filled < needed {
@@ -856,7 +917,48 @@ impl Replay {
         if !self.worth_committing(t, alignment) {
             return Ok(());
         }
+        if !alignment.is_static() && self.fallback.is_some() {
+            // `row` rewinds, since it holds the sinks the buffered rows belong in.
+            self.fall_back_due = true;
+            return Ok(());
+        }
         self.commit(t, window, dt)
+    }
+
+    /// Initialize on the still prefix a [`Fallback`] kept, then replay what came after it.
+    ///
+    /// The state is the one captured at the onset of motion, so everything the waiting
+    /// did — the window it slid, the fusion rows it refused as not initialized, the
+    /// counters those rows moved — is discarded rather than undone.
+    fn fall_back(&mut self, fallback: Fallback, out: &mut Sinks) -> Result<(), Box<dyn Error>> {
+        let Fallback {
+            at,
+            t,
+            still,
+            dt,
+            onset: (onset_t, onset_imu),
+            lines,
+            ..
+        } = fallback;
+        *self = *at;
+        self.commit(t, 0..still, dt)?;
+        // The sample that moved is the first the filter propagates.
+        self.previous_imu = Some(t);
+        self.propagate(onset_t, onset_imu, out)?;
+        for line in &lines {
+            self.row(line, out)?;
+        }
+        Ok(())
+    }
+
+    /// Release what a pending [`Fallback`] was holding when the log ends before
+    /// `PATIENCE` decides it: the log never initialized, and its rows are written as the
+    /// refusals they were.
+    fn finish(&mut self, out: &mut Sinks) -> io::Result<()> {
+        match self.fallback.take() {
+            Some(fallback) => out.fusions.write_all(&fallback.fusions),
+            None => Ok(()),
+        }
     }
 
     /// Initialize on `self.window[range]`, the window ending at the sample stamped `t`.
@@ -938,17 +1040,19 @@ impl Replay {
         alignment.is_static() || waited >= PATIENCE
     }
 
-    /// The other half of the policy: a vehicle still since the log began that starts to
-    /// move before a full window has passed is initialized on what it had, at the onset,
-    /// rather than `PATIENCE` later on a window taken in motion.
+    /// The fallback half of the policy: a vehicle still since the log began that starts
+    /// to move before a full window has passed leaves a still prefix behind, and if no
+    /// static window arrives within `PATIENCE` the start is that prefix rather than a
+    /// window taken in motion. A static window still wins when one comes: a vehicle
+    /// bumped 0.33 s in and then left alone is a static start, not a 0.33 s one.
     ///
     /// `alignment` is the prefix from the first sample through the newest. Returns how
-    /// many samples to commit — all but the newest — when the newest is the one that
+    /// many samples the prefix keeps — all but the newest — when the newest is the one that
     /// turned it `NotStationary`, and `None` otherwise: the prefix before it must itself
     /// have been read still, so a log that moved before the rate was fixed commits
     /// nothing here. Stillness is a peak test (`init::at_rest`), so once a prefix has
     /// moved no longer one is still, and the check stops. The rate probe is therefore the
-    /// floor on how short a start this commits.
+    /// floor on how short a start this keeps.
     ///
     /// What an application does when it arms a vehicle that has been sitting for less
     /// than `Initialization::min_duration`: the filter reports the start as
@@ -1775,6 +1879,7 @@ fn scenario_of(text: &str) -> Option<(String, u64)> {
 }
 
 /// The truth file, and how far through it the replay has got.
+#[derive(Clone)]
 struct Truth {
     rows: Vec<TruthRow>,
     cursor: usize,
@@ -2036,7 +2141,7 @@ const QUANTITIES: [Quantity; 6] = [
 /// Sums in `f64` while the states are `f32`: squared position errors over tens of thousands
 /// of epochs lose precision in `f32` fast enough that the RMSE would depend on how long the
 /// log ran.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Score {
     scored: u32,
     /// Epochs the truth file had no row for. Zero on a paired file; anything else means the
@@ -2203,6 +2308,7 @@ impl Score {
 }
 
 /// A truth file and the score being accumulated against it.
+#[derive(Clone)]
 struct Scoring {
     path: PathBuf,
     truth: Truth,
@@ -2460,6 +2566,7 @@ mod tests {
             for line in log.0.lines() {
                 replay.row(line, &mut out).map_err(|e| e.to_string())?;
             }
+            replay.finish(&mut out).map_err(|e| e.to_string())?;
         }
         Ok((replay, String::from_utf8(fusions).expect("utf-8")))
     }
@@ -2813,11 +2920,11 @@ mod tests {
     }
 
     #[test]
-    fn a_log_still_for_less_than_a_window_starts_short_at_the_onset_of_motion() {
-        // 80 still samples, 1.58 s, then turning: never a full window to be static, and
-        // committed at the sample that moved rather than at `PATIENCE` on one that had.
-        // Three barometer readings in the still stretch, so `alpha0=` can say the short
-        // window was taken at rest.
+    fn a_log_still_for_less_than_a_window_falls_back_to_its_still_start() {
+        // 80 still samples, 1.58 s, then turning: never a full window to be static, so at
+        // `PATIENCE` the start is the still prefix rather than a window taken in motion,
+        // dated where the prefix ended. Three barometer readings in the still stretch, so
+        // `alpha0=` can say the short window was taken at rest.
         let log = Log::new()
             .baro(0.0, 41.5)
             .run(0.0, 30, DT, STILL)
@@ -2825,7 +2932,7 @@ mod tests {
             .run(0.6, 30, DT, STILL)
             .baro(1.2, 42.0)
             .run(1.2, 20, DT, STILL)
-            .run(1.6, 400, DT, TURNING);
+            .run(1.6, 450, DT, TURNING);
         let replay = replay(&log);
         let summary = replay.summary();
         assert_eq!(key(&summary, "align"), "short");
@@ -2836,6 +2943,57 @@ mod tests {
             (at - 1.58).abs() < 1e-9,
             "at the last still sample, not {at}"
         );
+    }
+
+    #[test]
+    fn a_static_window_after_a_bump_beats_the_still_start_before_it() {
+        // Still for 80 samples, bumped for one, then still for 100: the prefix is kept as
+        // a fallback and never used, because a full static window arrives inside
+        // `PATIENCE`.
+        let log = Log::new()
+            .run(0.0, 80, DT, STILL)
+            .imu(1.6, TURNING)
+            .run(1.62, 100, DT, STILL);
+        let replay = replay(&log);
+        assert_eq!(key(&replay.summary(), "align"), "static");
+        assert_eq!(key(&replay.summary(), "window"), "100");
+        assert!(
+            replay.fallback.is_none(),
+            "released once the static start committed"
+        );
+    }
+
+    #[test]
+    fn a_fallback_replays_what_came_after_the_prefix_once() {
+        // A fix during the wait is refused as not initialized, then replayed onto the
+        // committed prefix: one fusion row for it, not two, and the fusion file carries no
+        // trace of the refusal the rewind discarded.
+        let log = Log::new()
+            .run(0.0, 80, DT, STILL)
+            .run(1.6, 200, DT, TURNING)
+            .gnss_pos(5.6, 1.0, 2.0, -3.0)
+            .run(5.6, 250, DT, TURNING);
+        let (replay, rows) = drive(&log, None).expect("fixture replays");
+        assert_eq!(key(&replay.summary(), "align"), "short");
+        assert_eq!(
+            rows.lines().count(),
+            2,
+            "one row each for position and height"
+        );
+        assert!(!rows.contains("not_initialized"), "{rows}");
+    }
+
+    #[test]
+    fn a_log_that_ends_before_patience_writes_its_refusals() {
+        // Nothing decides the fallback, so the log never initializes and the fix it held
+        // is written as the refusal it was.
+        let log = Log::new()
+            .run(0.0, 80, DT, STILL)
+            .run(1.6, 50, DT, TURNING)
+            .gnss_pos(2.6, 1.0, 2.0, -3.0);
+        let (replay, rows) = drive(&log, None).expect("fixture replays");
+        assert!(!replay.filter.is_initialized());
+        assert_eq!(rows.lines().count(), 2, "{rows}");
     }
 
     #[test]
