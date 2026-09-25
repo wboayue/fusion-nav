@@ -275,5 +275,6 @@ flight           8  pos_h<=2.524 pos_v<=0.345 vel<=0.694 pos_h_max<=6.244  tilt<
 # and `vel` 0.687 to 0.689. `nees_att` fell on every line but `static`, up to 1.4 % on
 # `moving_start` (0.2241 to 0.2210) -- a larger `R`, so a covariance more conservative about
 # attitude rather than more certain. The exact first-order price, `f^T P f` about the field's
-# horizontal direction, was measured and not taken: `gnss_outage` `pos_h` 2.232 to 2.630 and
-# `yaw` looser on every line but `static`. EQUATIONS.md, (36'), says why.
+# horizontal direction, was measured and not taken: `gnss_outage` `pos_h` 2.630 against 2.227
+# under the eigenvalue and 2.232 under the diagonals, and `yaw` looser on every line but
+# `static`. EQUATIONS.md, (36'), says why.
