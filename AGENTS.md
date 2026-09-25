@@ -15,11 +15,13 @@ fixes no `α₀`, so 35575 barometer rows are refused (#115); every corpus sourc
 4603 of 4604 fixes (#117); and that overconfidence is the lockout precondition "report, do not
 self-recover" accepted, which #116 replaces with recovery on by default behind per-correction
 `Config` opt-outs. #118 gated GNSS height apart from horizontal
-position, which removed the lockout fusing that barometer caused. #115's `α₀` from the estimate
-is parked on `115-coarse-baro`: it bakes the first fix's height error into a constant no state
-carries (`moving_start` `nees_pos` 112.59, or 14.58 with the variance in `R`). It is blocked on
-#119, the barometric offset as a consider state; GOALS' "Barometric reference as a constant" is
-reopened for it (#120), so what #119 has left is the implementation. Order: #119, then #115, then #89 (the gate the remedies are judged by), #117, then #8.
+position, which removed the lockout fusing that barometer caused. #119 (#122) estimates the
+barometric offset beside the 15-state covariance, equation (30′), walking at
+`Config::baro_offset_walk` (PX4's 0.13); GOALS' "Barometric reference as an estimated offset"
+records why estimated rather than a consider state — 1.035 on `moving_start`, but 29310 barometer
+rejections on `2c42096b`. That unblocks #115, parked on `115-coarse-baro`, whose `R` inflation
+(`548cc57`) it supersedes: seed the offset from the estimate instead. Order: #115, then #89 (the
+gate the remedies are judged by), #117, then #8.
 
 **Every source the crate publishes is fused; no `fuse_*` is a stub.** Initialization is real —
 equations (5)–(8), so the filter starts at the attitude and biases the window yields — `predict`
@@ -52,8 +54,8 @@ attitude that is finally observed approaches 1 from below, which is #89's to rea
 into `R` — `tan²δ · σ_tilt²`, the `tan δ` of (8′) read off the field rather than configured — is
 worth `moving_start` `tilt` 2.653° → 1.665, `yaw` 3.777 → 0.917, `nees_att` 1.634 → 0.226 and 840
 falsely-valid attitude quantity-epochs → 0. It widens `S` without claiming the heading observes the
-tilt that spoiled it, which is the Schmidt treatment of a state a measurement depends on and does
-not constrain; the alternative was measured, and the exact Jacobian took `mission` to 9.0° of tilt.
+tilt that spoiled it — `R` inflation, which holds because velocity fusion keeps correcting the
+tilt it prices, where an error that persists needs (30′)'s cross-covariance; the alternative was measured, and the exact Jacobian took `mission` to 9.0° of tilt.
 The same `R` prices the **adoption**, where the tilt doing the levelling is worst — on
 `moving_start` the adopted yaw variance is 0.582 rather than 0.01, σ = 0.76 rad against an
 `Accuracy::heading` of 0.5236, so the heading is reported established and *invalid* rather than
@@ -70,9 +72,9 @@ gain is ~94× the correlation the two carry and the sensor's own noise arrives s
 It is still worth having — the end-of-gap error is 1.39 m against 11.93 without it. And `static`'s
 `nees_pos` went 1.06 → 2.04, more accurate and more overconfident in one diff, which is #89's case:
 a 20 Hz barometer averages its noise down faster than the true error falls, and the accelerometer
-bias walk is what stops the error following. `baro_drift` is the same mechanism at full size —
-`pos_v` 2.052 m, `nees_pos` 257 — and `GOALS.md` now carries that figure under
-"Barometric reference as a constant", which had recorded the cost in words only. **What stage 9 added.** (42′), a per-group diagonal variance floor, applied at
+bias walk is what stops the error following — or so it read; #119 showed the reference was most of
+it, `static` 2.04 → 1.02 once the offset walks. `baro_drift` was the same at full size, `nees_pos`
+257 → 1.19 under (30′). **What stage 9 added.** (42′), a per-group diagonal variance floor, applied at
 `Eskf::commit_covariance` so the invariant belongs to the filter — *every covariance it commits
 has been floored* — and reaches the ones no product built: an adoption, a `reset_*_to`, the (8) a
 window commits. It is unreachable and that is measured: `floored=0` on all five corpus logs,
@@ -553,8 +555,9 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
   is tested against a synthetic `H`. One Cholesky factorization of `S` serves the gate and the
   gain, and the gate runs first, so a rejection computes nothing it could commit. `Eskf::apply` is
   the one path that commits what it returns and records it. Its stack frame is the largest in the
-  crate — `update::<3>`, 6848 bytes on `thumbv6m` and on `thumbv7em`, `Eskf::apply` itself inlining
-  away — which is why `reparameterize` applies `G P Gᵀ` block-wise; the figure
+  crate — `update::<3>`, 7816 bytes on `thumbv6m` and 7936 on `thumbv7em`, `Eskf::apply` itself
+  inlining away — which is why `reparameterize` applies `G P Gᵀ` block-wise and (30′)'s offset
+  enters (27) in blocks rather than as a 16 × 16 (+4168 bytes measured); the figure
   and the #41 that would revisit it are in the doc comments.
 - `src/observation/` — one module per sensor, each forming `y`, `H` and diagonal `R_m` and
   nothing else. `gnss.rs` holds (28) and (29), `baro.rs` holds (30), and `mag.rs` holds (34)–(36)
@@ -769,7 +772,8 @@ down by about N however large `R` is. Measured on #115: `α₀` read from the es
 fix's height error into every barometer reading, and adding that variance to `R` (PX4's
 `baro_height_control.cpp:86`) takes `moving_start`'s `nees_pos` from 112.59 only to 14.58, while
 `σ_pos_d` still falls 1.80 m → 0.16 m under a constant 1.1 m error. A shared error belongs in the
-covariance with its correlations: #119's consider state, or a state. (36′) is `R` inflation too,
+covariance with its correlations — (30′), where #119 measured a consider state against an estimated
+one and the corpus chose the second. (36′) is `R` inflation too,
 and it works because velocity fusion keeps correcting the tilt it prices. Before pricing an
 error into `R`, ask whether it persists across readings.
 
@@ -778,8 +782,10 @@ A window taken **at rest** also fixes `α₀`, the barometric reference (`Static
 already had, since it cannot claim the altitude it reads is the ground. Measured by
 `init::at_rest`, not read off the `Alignment`: `classify` reports a short window as
 `Coarse::WindowTooShort` *before* it ever measures motion, so a still 0.8 s window on the ground
-has an honest reference while a moving window of any length does not. It is neither of the three above: a constant, not noise
-and not a state, and the only initialization output an application may need to keep. A window
+has an honest reference while a moving window of any length does not. Its variance is the
+window's own scatter over its count of distinct readings — a held value is one reading, and one
+reading sets no reference — and from then on (30′) estimates it, so it is none of the three above:
+an initialization output that the filter goes on refining. A window
 with no barometer sample leaves it unset and `fuse_baro_altitude` returns `Fusion::NoReference`
 rather than referring altitudes to an invented origin — the LPE log in the corpus
 (`7592c9b2…`) yields no barometer rows at all and covers that path.
