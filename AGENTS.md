@@ -206,8 +206,8 @@ per question answered, never per importance.
   this and not the obvious alternative* (`Fusion::Reset` takes the zero-information limit exactly
   rather than approaching it with an invented variance), *what breaks otherwise* (`InvalidNoise`:
   a negative variance written into `P` reads back as an excellent estimate), *where the number
-  came from* (`degraded_after`: 76 status flaps in 124 s). A paragraph that is none of the three,
-  or that the signature already answers, is cut.
+  came from* (`degraded_after`: 7992 status flaps at 1.0 s on `2c42096b`, 888 at 2.5 s). A
+  paragraph that is none of the three, or that the signature already answers, is cut.
 - **Cite instead of restating.** An equation number, a `file:line` at a pinned PX4/ArduPilot
   revision, a GOALS.md differentiator by number, a measured figure. A citation is what lets a
   short sentence be checked; paraphrase is what makes a long one rot.
@@ -495,7 +495,11 @@ end, RMS, mean — whenever two numbers are put next to each other.
 vibrating vehicle under a poor sky view for two hours, not a flight. Its numbers pin *behaviour*
 (what the filter does when two height sources disagree), and tuning toward them would be fitting
 a bench test. Check peak speed and extent from the CSV before a log's figures argue for a change,
-and say what the log is in its manifest note, as that entry now does.
+and say what the log is in its manifest note, as that entry now does. Check first whether it is
+real. `3949f175` was the corpus's "baseline" and the evidence for `degraded_after` until
+`ver_hw=PX4_SITL` showed it was a simulation. Its receiver reports `eph` 0.90 and 10 satellites on
+every message, so its fix jitter was the scheduler's. Flight Review hosts SITL logs beside real
+ones, and a SITL log is synthetic data without the simulator's truth.
 
 **One statistic, one implementation.** The Rust replay harness is the only thing that *computes* a
 statistic; it emits per-fusion rows and scalar keys on the `summary` and `score` lines. The Python
@@ -533,8 +537,8 @@ check.
 ## How defaults get decided
 
 Three defaults are no longer placeholders, and each records its evidence in its doc comment:
-`Timeouts::degraded_after` (replay showed 76 status flaps in 124 s), `ImuNoise` (PX4 and
-ArduPilot agree within 2x and both sit 10-15x above datasheet), and `Initialization`'s
+`Timeouts::degraded_after` (replay showed 7992 status flaps at 1.0 s on `2c42096b`), `ImuNoise`
+(PX4 and ArduPilot agree within 2x and both sit 10-15x above datasheet), and `Initialization`'s
 stationarity tolerances (the old ones failed four of five corpus logs on vehicles sitting on the
 ground). Follow that pattern rather than adjusting a number quietly.
 

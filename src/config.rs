@@ -310,11 +310,12 @@ pub struct Timeouts {
 impl Default for Timeouts {
     /// Sized for a 1 Hz GNSS, the slowest source in common use.
     ///
-    /// Not the 1.0 s that period suggests: on a PX4 log whose fix intervals run
-    /// 0.988-1.024 s, a 1.0 s threshold puts 37 of 122 fixes over it and flaps the status
-    /// between `Healthy` and `Degraded` 76 times in 124 seconds. 2.5 s clears two missed
-    /// fixes and still leaves half the window to
-    /// [`dead_reckoning_after`](Timeouts::dead_reckoning_after).
+    /// Not the 1.0 s that period suggests: a real 1 Hz receiver jitters either side of
+    /// its period. On `2c42096b`, 3289 of 4615 fix intervals exceed 1.0 s, and a 1.0 s
+    /// threshold flaps the status between `Healthy` and `Degraded` 7992 times in two
+    /// hours; at 2.5 s it is 888, two per interval longer than 2.5 s, so what remains
+    /// is the receiver's real outages. 2.5 s clears two missed fixes and still leaves
+    /// half the window to [`dead_reckoning_after`](Timeouts::dead_reckoning_after).
     fn default() -> Self {
         Self {
             degraded_after: Seconds::from_secs(2.5),

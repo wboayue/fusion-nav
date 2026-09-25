@@ -297,19 +297,15 @@
 # inside a thousandth is pinned to -0.001000..0.001000 instead, because what
 # is being claimed there is the absence of an offset rather than its size.
 
-# 124 s quadrotor mission flight, PX4 v1.16.0, EKF2, rated "great".
-# The baseline: all four sources present and healthy throughout, at 250 Hz
-# IMU and 1 Hz GNSS. Its fix intervals of 0.988-1.024 s are what showed the
-# old 1.0 s Timeouts::degraded_after default flapping 76 times in 124 s.
-# Source: PX4 Flight Review (CC BY 4.0).
-
-# 124 s quadrotor mission flight, PX4 v1.16.0, EKF2, rated "great".
-# The baseline: all four sources present and healthy throughout, at 250 Hz IMU
-# and 1 Hz GNSS. Its fix intervals of 0.988-1.024 s are what showed the old
-# 1.0 s Timeouts::degraded_after default flapping 76 times in 124 s. Its
-# roll0 and pitch0 of 0.01 deg are a parked quadrotor dead level, which is
-# also the one start here that would notice nothing if (6)'s levelling were
-# dropped -- the tilt it levels by is zero.
+# 124 s quadrotor mission, PX4 v1.16.0-rc1, EKF2 -- in SITL, not a real
+# vehicle: ver_hw=PX4_SITL on Linux, a barometer at a constant 288 K, a
+# receiver reporting eph 0.90 and 10 satellites on every message with zero
+# noise, and no vibration. So nothing it reads is evidence about a sensor.
+# What it uniquely covers is format: the v1.16 sensor_gps spelling
+# (latitude_deg) and the 25-state estimator_states layout. Its roll0 and
+# pitch0 of 0.01 deg are a simulated ground plane, which makes it the one
+# start here that would notice nothing if (6)'s levelling were dropped --
+# the tilt it levels by is zero. #86 owns replacing it as a real baseline.
 # Source: PX4 Flight Review (CC BY 4.0).
 b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-4425-b118-7b7187331a98.ulg  https://cdn.logs.px4.io/3949f175-26b4-4425-b118-7b7187331a98.ulg  rate=250 window=500 align=static an=none alpha0=window heading=valid roll0=0.01 pitch0=0.01 yaw0=24.38 resets=0 aligned_at=0.00 attitude_lost=never r_policy=raw rejected=0 rejected_gnss_pos=0 rejected_gnss_hgt=0 rejected_gnss_vel=0 rejected_baro=0 rejected_mag=0 discarded=0 refused=0 invalid=0 floored=0 transitions=2 status=Healthy nis_gnss_pos=0.0055..0.0057 nis_gnss_hgt=0.0047..0.0049 nis_gnss_vel=0.0424..0.0434 nis_baro=0.0066..0.0068 nis_mag=0.1566..0.1598 nis_over95_gnss_pos=0.0000 nis_over95_gnss_hgt=0.0000 nis_over95_gnss_vel=0.0000 nis_over95_baro=0.0000 nis_over95_mag=0.0034..0.0036 nu_gnss_pos_n=-0.011593..-0.011363 nu_gnss_pos_e=0.006062..0.006186 nu_gnss_hgt_d=-0.042746..-0.041898 nu_gnss_vel_n=-0.012084..-0.011844 nu_gnss_vel_e=0.006636..0.006772 nu_gnss_vel_d=0.007788..0.007946 nu_baro_d=-0.006715..-0.006581 nu_mag_yaw=0.001507..0.001539 acf1_gnss_pos=0.5801..0.5919 acf1_gnss_hgt=0.6571..0.6705 acf1_gnss_vel=0.4286..0.4374 acf1_baro=0.2621..0.2675 acf1_mag=0.9752..0.9950
 
@@ -334,10 +330,10 @@ b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-
 # that its 1.1 cm position quantization is worth 0.01 m/s -- disagrees with
 # its own reported velocity by 0.25 m/s horizontally and 0.22 m/s vertically,
 # while the s_variance_m_s it reports is sigma_v = 0.039 m/s. It claims six
-# times the accuracy its own two solutions show against each other. The two
-# genuine PX4 builds here report the other way round: 3949f175 claims 0.400
-# against a 0.28 disagreement, 2c42096b 0.392 against 0.08. The rejected rows
-# average 0.5-1.1 m/s of innovation per axis against an accepted 0.14-0.21,
+# times the accuracy its own two solutions show against each other. The PX4
+# builds here report the other way round: 2c42096b claims 0.392 against a
+# 0.08 disagreement, and 3949f175, a simulated receiver, 0.400 against 0.28.
+# The rejected rows average 0.5-1.1 m/s of innovation per axis against an accepted 0.14-0.21,
 # so the gate is separating them rather than firing at random, and its IMU
 # timing is not the cause -- the interval median is 19.96 ms against a 20.00
 # mean, so the bursts are in the logging and not in the integration.
