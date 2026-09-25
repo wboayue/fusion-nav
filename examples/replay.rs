@@ -74,12 +74,15 @@
 //!
 //! Every key describes one error vector, `δx = truth ⊖ estimate` in the error-state
 //! ordering of equation (2) — see [`error_state`], which is the only place it is computed.
+//! `tilt`, `yaw` and the attitude half of `false_valid` read its attitude on navigation axes
+//! instead, from [`attitude_error_ned`]: tilt is rotation about north and east, heading about
+//! down, and `δθ`'s body axes are those only while the vehicle is level.
 //!
 //! | key | what it is |
 //! | --- | --- |
 //! | `pos_h`, `pos_v`, `vel` | RMSE, m and m s⁻¹ |
 //! | `pos_h_max` | worst horizontal position error, m — the excursion an RMSE hides |
-//! | `tilt`, `yaw` | RMS attitude error, degrees |
+//! | `tilt`, `yaw` | RMS attitude error about the horizontal axes and about down, degrees |
 //! | `ba`, `bg` | RMS bias error, m s⁻² and rad s⁻¹ — the estimate against the bias applied |
 //! | `in3s` | fraction of axis-epochs within 3σ, over all 15 states |
 //! | `nees_pos`, `nees_vel`, `nees_att` | mean NEES per degree of freedom; ≈1 is consistent |
@@ -1741,6 +1744,18 @@ fn horizontal(error: &SVector<f32, STATES>, x: ErrorState, y: ErrorState) -> f32
     at(error, x).hypot(at(error, y))
 }
 
+/// The attitude error on navigation axes, `(north, east, down)`: tilt about the first two,
+/// heading about the third.
+///
+/// `R(q̂) δθ`, which is how `Eskf::validity` resolves the covariance of `δθ` before testing
+/// it — and computed here without that rotation, as the rotation vector of `q ⊗ q̂⁻¹`. The two
+/// are the same vector exactly (`q ⊗ q̂⁻¹ = q̂ ⊗ δq ⊗ q̂⁻¹`), so the audit states the claim in
+/// the filter's shape without borrowing its geometry: a transposed `R` in the filter would
+/// be mirrored by a harness that reused it, and is not by this.
+fn attitude_error_ned(state: &State, truth: &TruthRow) -> Vector3<f32> {
+    (truth.attitude * state.attitude.quaternion().inverse()).scaled_axis()
+}
+
 /// `ε = δxᵀ P⁻¹ δx` over the three-component block starting at `first`, or `None` if that
 /// block is singular.
 ///
@@ -1768,9 +1783,9 @@ struct Quantity {
     /// Which flag on [`Validity`] this is. Read off the filter rather than re-derived from
     /// the covariance: a recomputation would test a copy of the claim instead of the claim.
     flag: fn(Validity) -> bool,
-    /// The error states the claim covers.
-    states: &'static [ErrorState],
-    /// The [`Accuracy`] field those states are judged against.
+    /// The components the claim covers.
+    components: &'static [Component],
+    /// The [`Accuracy`] field those components are judged against.
     bar: fn(&Accuracy) -> f32,
 }
 
@@ -1782,17 +1797,45 @@ impl Quantity {
     /// outside the bar. Testing the 2-D norm instead would hold the filter to a bar √2
     /// tighter than the one it asserted, and would diverge from the claim exactly as the
     /// estimate approached it — the regime this count exists to watch.
+    ///
+    /// Attitude is per navigation axis for the same reason: the filter tests tilt about
+    /// north and east and heading about down, so those are what a truth error falsifies.
     fn falsified(
         &self,
         error: &SVector<f32, STATES>,
+        attitude_ned: &Vector3<f32>,
         validity: Validity,
         accuracy: &Accuracy,
     ) -> bool {
         (self.flag)(validity)
             && self
-                .states
+                .components
                 .iter()
-                .any(|state| at(error, *state).abs() > (self.bar)(accuracy))
+                .any(|component| component.of(error, attitude_ned).abs() > (self.bar)(accuracy))
+    }
+}
+
+/// One component a [`Validity`] claim is stated on.
+#[derive(Clone, Copy)]
+enum Component {
+    /// A position or velocity axis, which the error state already carries on navigation axes.
+    State(ErrorState),
+    /// Tilt about north, from [`attitude_error_ned`].
+    TiltNorth,
+    /// Tilt about east.
+    TiltEast,
+    /// Heading: rotation about down.
+    Heading,
+}
+
+impl Component {
+    fn of(self, error: &SVector<f32, STATES>, attitude_ned: &Vector3<f32>) -> f32 {
+        match self {
+            Self::State(state) => at(error, state),
+            Self::TiltNorth => attitude_ned.x,
+            Self::TiltEast => attitude_ned.y,
+            Self::Heading => attitude_ned.z,
+        }
     }
 }
 
@@ -1801,37 +1844,43 @@ const QUANTITIES: [Quantity; 6] = [
     Quantity {
         name: "tilt",
         flag: |v| v.tilt,
-        states: &[ErrorState::AttitudeX, ErrorState::AttitudeY],
+        components: &[Component::TiltNorth, Component::TiltEast],
         bar: |a| a.tilt.as_radians(),
     },
     Quantity {
         name: "heading",
         flag: |v| v.heading,
-        states: &[ErrorState::AttitudeZ],
+        components: &[Component::Heading],
         bar: |a| a.heading.as_radians(),
     },
     Quantity {
         name: "position (h)",
         flag: |v| v.horizontal_position,
-        states: &[ErrorState::PositionNorth, ErrorState::PositionEast],
+        components: &[
+            Component::State(ErrorState::PositionNorth),
+            Component::State(ErrorState::PositionEast),
+        ],
         bar: |a| a.position.as_meters(),
     },
     Quantity {
         name: "position (v)",
         flag: |v| v.vertical_position,
-        states: &[ErrorState::PositionDown],
+        components: &[Component::State(ErrorState::PositionDown)],
         bar: |a| a.position.as_meters(),
     },
     Quantity {
         name: "velocity (h)",
         flag: |v| v.horizontal_velocity,
-        states: &[ErrorState::VelocityNorth, ErrorState::VelocityEast],
+        components: &[
+            Component::State(ErrorState::VelocityNorth),
+            Component::State(ErrorState::VelocityEast),
+        ],
         bar: |a| a.velocity.as_m_per_s(),
     },
     Quantity {
         name: "velocity (v)",
         flag: |v| v.vertical_velocity,
-        states: &[ErrorState::VelocityDown],
+        components: &[Component::State(ErrorState::VelocityDown)],
         bar: |a| a.velocity.as_m_per_s(),
     },
 ];
@@ -1878,6 +1927,7 @@ impl Score {
     ) {
         use ErrorState::*;
         let error = error_state(state, truth);
+        let attitude_ned = attitude_error_ned(state, truth);
         self.scored += 1;
 
         let horizontal_error = f64::from(horizontal(&error, PositionNorth, PositionEast));
@@ -1891,8 +1941,8 @@ impl Score {
                 .fixed_rows::<BLOCK>(VelocityNorth.index())
                 .norm_squared(),
         );
-        self.tilt += f64::from(horizontal(&error, AttitudeX, AttitudeY)).powi(2);
-        self.yaw += f64::from(at(&error, AttitudeZ)).powi(2);
+        self.tilt += f64::from(attitude_ned.x.hypot(attitude_ned.y)).powi(2);
+        self.yaw += f64::from(attitude_ned.z).powi(2);
         // Whole blocks, the way `velocity` is scored: a bias is estimated per axis but
         // wrong as one vector, and no part of `Accuracy` splits it.
         self.accel_bias += f64::from(error.fixed_rows::<BLOCK>(AccelBiasX.index()).norm_squared());
@@ -1919,7 +1969,7 @@ impl Score {
         }
 
         for (count, quantity) in self.false_valid.iter_mut().zip(&QUANTITIES) {
-            if quantity.falsified(&error, state.validity, accuracy) {
+            if quantity.falsified(&error, &attitude_ned, state.validity, accuracy) {
                 *count += 1;
             }
         }
@@ -3534,6 +3584,34 @@ mod tests {
         );
         assert!((y - 0.0389).abs() < 1e-3, "body y: {y}");
         assert!((z - 0.0921).abs() < 1e-3, "body z: {z}");
+    }
+
+    #[test]
+    fn on_its_tail_a_heading_error_is_scored_as_heading() {
+        // Pitched 90° nose-up and the truth 0.6 rad further round about down. Body x is the
+        // vertical there, so `δθ` is 0.6 about body x: read by body axis that is a tilt
+        // error and no heading error. On navigation axes it is heading alone — outside
+        // `Accuracy::heading`'s 0.52 rad, and nowhere near the tilt bar's. Reverting the
+        // score to `error_state`'s body axes swaps both counts.
+        let pitch = core::f32::consts::FRAC_PI_2;
+        let state = state_at(0.0, pitch, 0.0);
+        let turned =
+            UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 0.6) * state.attitude.quaternion();
+        let mut truth = truth_at(0.0, 0.0, 0.0);
+        truth.attitude = turned;
+        let score = score_one(&state, &Covariance::from_sigmas([0.5; STATES]), &truth);
+        assert!(
+            score.rms(score.tilt) < 1e-5,
+            "tilt: {}",
+            score.rms(score.tilt)
+        );
+        assert!(
+            (score.rms(score.yaw) - 0.6).abs() < 1e-5,
+            "yaw: {}",
+            score.rms(score.yaw)
+        );
+        assert_eq!(score.false_valid[0], 0, "tilt was not wrong");
+        assert_eq!(score.false_valid[1], 1, "heading was");
     }
 
     #[test]
