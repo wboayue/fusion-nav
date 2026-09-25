@@ -244,7 +244,7 @@ fn stationary_sample(i: usize) -> StaticSample {
         // reads as 8 m above the origin rather than as an absolute altitude, and the
         // scatter is how well it is fixed: one reading held across the window has none
         // and fixes nothing. Without it `fuse_baro_altitude` refuses.
-        baro: Some(Altitude::from_meters(if i % 2 == 0 {
+        baro: Some(Altitude::from_meters(if i.is_multiple_of(2) {
             52.25
         } else {
             51.75
