@@ -420,9 +420,9 @@ struct ImuErrors {
 /// A well-isolated airframe carrying a current MEMS IMU: a few times a datasheet, and well below
 /// what the filter assumes.
 ///
-/// `ImuNoise::default()`'s white noise is PX4's, which sits far above datasheet deliberately —
-/// its `Q` absorbs vibration, scale-factor error, timing jitter and the coning a first-order
-/// propagation drops. None of that is in this simulator, so matching those numbers here would be
+/// `ImuNoise::default()`'s white noise is ten times PX4's density, far above datasheet
+/// deliberately — its `Q` absorbs vibration, scale-factor error, timing jitter and the coning a
+/// first-order propagation drops. None of that is in this simulator, so matching those numbers here would be
 /// simulating PX4's modelling allowance rather than an IMU. The consequence for scoring is worth
 /// stating plainly: against this table the filter's white noise is two orders of magnitude
 /// conservative and its bias walks one, so every scenario should come out *under*-confident,

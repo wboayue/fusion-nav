@@ -23,8 +23,7 @@ leaves no reference, correlated with the height it was read against (`P_xb = −
 `rejected_gnss_hgt=0`, `Healthy`; 3825 rejected at `baro_offset_walk = 0`), `moving_start`
 `nees_pos` 1.0877. Beside EKF2 there, horizontal agrees within metres and height does not: EKF2
 follows the barometer's ~12 m climb, this filter GNSS height's low frequencies — #8's to explain.
-Order: #138 (`ImuNoise`'s white noise is PX4's per-step σ read as a density, the half #137
-left), #89 (the gate the remedies are judged by), #117, #116, then #8. #86's tailsitter is no
+Order: #89 (the gate the remedies are judged by), #117, #116, then #8. #86's tailsitter is no
 longer blocked: #131 (#133) reads tilt and heading on navigation axes, `diag(R P_θθ Rᵀ)` through
 `AttitudeVariance`, in `Validity`, the latch, the heading adoption and (8)'s prior, and the
 `tilt`/`yaw`/`false_valid` score keys moved with it — tilt² + yaw² unchanged, the body split had
@@ -549,8 +548,9 @@ check.
 
 Three defaults are no longer placeholders, and each records its evidence in its doc comment:
 `Timeouts::degraded_after` (replay showed 7992 status flaps at 1.0 s on `2c42096b`), `ImuNoise`
-(PX4's white noise; ArduPilot's bias walks converted from per-step σ to density, which took
-`2c42096b`'s tilt peak from 5.2° to 2.5°), and `Initialization`'s
+(ArduPilot's bias walks converted from per-step σ to density, which took `2c42096b`'s tilt
+peak from 5.2° to 2.5°; white noise at ten times PX4's density, which vibration, a raw `R` and
+GNSS latency were each measured spending), and `Initialization`'s
 stationarity tolerances (the old ones failed four of five corpus logs on vehicles sitting on the
 ground). Follow that pattern rather than adjusting a number quietly.
 
