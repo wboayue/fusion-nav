@@ -152,7 +152,7 @@ pin_pairs() {
             delta = (value < 0 ? -value : value) * 0.01
             if (delta < unit) delta = unit
             # 1e-6 of a unit absorbs the binary error in `value * scale`; without it a bound
-            # that lands on the grid, as 0.0035 - 0.0001 does, rounds out one more unit.
+            # that lands on the grid, as 0.0006 - 0.0001 does, rounds out one more unit.
             return sprintf(format ".." format,
                            floor((value - delta) * scale + 1e-6) / scale,
                            ceil((value + delta) * scale - 1e-6) / scale)
@@ -290,9 +290,12 @@ self_test() {
     }
     p '1 % of the value'        'summary nis_gnss_vel=7.5592' 'nis_gnss_vel=7.4836..7.6348'
     p 'negative, outward'       'summary nu_baro_d=-0.011616' 'nu_baro_d=-0.011733..-0.011499'
-    # 1 % of 0.0035 is under a unit of 0.0001, so the unit is the half-width. A bound that
-    # lands on the grid must not round out a second unit: 0.0033..0.0037 is that mutation.
-    p 'one unit, on the grid'   'summary nis_over95_mag=0.0035' 'nis_over95_mag=0.0034..0.0036'
+    # 1 % of 0.0035 is under a unit of 0.0001, so the unit is the half-width.
+    p 'one unit'                'summary nis_over95_mag=0.0035' 'nis_over95_mag=0.0034..0.0036'
+    # Bounds that land on the grid, where `value * scale` carries binary error: without the
+    # 1e-6 these read 0.0004..0.0007 and 0.0004..0.0007 -- a second unit out on one side.
+    p 'on the grid, below'      'summary nis_over95_mag=0.0006' 'nis_over95_mag=0.0005..0.0007'
+    p 'on the grid, above'      'summary nis_over95_mag=0.0005' 'nis_over95_mag=0.0004..0.0006'
     p 'no offset'               'summary nu_mag_yaw=0.000400' 'nu_mag_yaw=-0.001000..0.001000'
     p 'the thousandth is nu only' 'summary acf1_mag=0.0004' 'acf1_mag=0.0003..0.0005'
     p 'zero and none stay exact' 'summary nis_over95_baro=0.0000 nis_baro=none' \
