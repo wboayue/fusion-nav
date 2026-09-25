@@ -254,6 +254,19 @@ const SIGMAS: [(ErrorState, &str); 15] = [
     (ErrorState::GyroBiasZ, "sigma_bg_z"),
 ];
 
+/// The attitude's σ on navigation axes, from `Eskf::attitude_variance`: tilt about north and
+/// east, heading about down.
+///
+/// Beside `SIGMAS`' body-axis attitude rather than instead of it. The body diagonal is what
+/// NEES and `in3s` compare `δθ` against; these are what a tilt or heading panel can be banded
+/// with, which the body diagonal cannot be at 90° of pitch and cannot be rotated into without
+/// the off-diagonals the row does not carry.
+const ATTITUDE_SIGMAS: [(&str, fn(AttitudeVariance) -> f32); 3] = [
+    ("sigma_tilt_n", |v| v.tilt_north),
+    ("sigma_tilt_e", |v| v.tilt_east),
+    ("sigma_heading", |v| v.heading),
+];
+
 /// Source names as the input spells them, in `Diagnostics` order, so a fusion row names the
 /// row it came from. The constants below index this and `RATIOS` alike.
 ///
@@ -1110,6 +1123,10 @@ impl Replay {
         let covariance = self.filter.covariance();
         for (component, _) in SIGMAS {
             write!(out, ",{:.6}", covariance.variance(component).sqrt())?;
+        }
+        let attitude = self.filter.attitude_variance();
+        for (_, variance) in ATTITUDE_SIGMAS {
+            write!(out, ",{:.6}", variance(attitude).sqrt())?;
         }
         for ratio in self.ratios {
             match ratio {
@@ -2175,6 +2192,9 @@ fn write_header(out: &mut impl Write) -> io::Result<()> {
         write!(out, ",{name}")?;
     }
     for (_, name) in SIGMAS {
+        write!(out, ",{name}")?;
+    }
+    for (name, _) in ATTITUDE_SIGMAS {
         write!(out, ",{name}")?;
     }
     for name in RATIOS {
@@ -3832,7 +3852,7 @@ mod tests {
 
     #[test]
     fn the_header_names_one_column_per_field_in_a_row() {
-        // `ESTIMATE`, `SIGMAS` and `RATIOS` drive both sides, and this is what says they
+        // `ESTIMATE`, `SIGMAS`, `ATTITUDE_SIGMAS` and `RATIOS` drive both sides, and this is what says they
         // still do.
         let mut out = Vec::new();
         write_header(&mut out).expect("header");
@@ -3856,7 +3876,7 @@ mod tests {
             row.split(',').count(),
             "header:\n{header}\nrow:\n{row}"
         );
-        assert_eq!(header.split(',').count(), 2 + 16 + 15 + 5);
+        assert_eq!(header.split(',').count(), 2 + 16 + 15 + 3 + 5);
     }
 
     #[test]

@@ -271,11 +271,13 @@ Three boundaries follow, and they are properties of the logs rather than of the 
   navigation frame — `getRotVarNed` returns the diagonal as stored while `getRotVarBody` rotates
   it by `Rᵀ(·)R`, `EKF/ekf_helper.cpp:926-937` at `c4e4ef98` — while this crate's `δθ` is a local
   body-frame perturbation and (36) gives the navigation-frame error as `R(q̂) δθ`. The columns are
-  named `sigma_att_n/e/d` for that reason, and `sigma_att_total` is emitted beside them: a trace
-  is invariant under rotation, so it is the one attitude scalar comparable to the epoch file's
-  `sigma_att_x/y/z` with no off-diagonal needed on either side. A tilt or a yaw σ is deliberately
-  *not* emitted — PX4's `getTiltVariance` sums two NED variances where (36′) takes the larger of
-  two body-frame ones, and naming those alike would compare two different quantities.
+  named `sigma_att_n/e/d` for that reason, and they compare with the epoch file's
+  `sigma_tilt_n`, `sigma_tilt_e` and `sigma_heading`, which the replay reads off
+  `Eskf::attitude_variance` in the same frame. `sigma_att_total` is emitted beside them: a trace
+  is invariant under rotation, so it also compares with the body-axis `sigma_att_x/y/z`. A
+  single tilt σ is deliberately *not* emitted — PX4's `getTiltVariance` sums the two horizontal
+  variances where (36′) and `Validity` read each against the bar, and naming those alike would
+  compare two different quantities.
 - **Two of five logs report no origin** (`xy_global` false, the reference fields all zero), so
   EKF2's `x,y,z` there are origin-relative with no origin and cannot be aligned to this filter's.
   The origin is a `#` header line, not a column, since it is one geodetic point per log.
