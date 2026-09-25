@@ -35,6 +35,7 @@ wheel is in a tool that never runs in CI.
 from __future__ import annotations
 
 import argparse
+import array
 import base64
 import html
 import io
@@ -66,15 +67,26 @@ STATUS_SHADES = {
     "Healthy": None,
 }
 
+# The vehicle's flight regime, from the reference's `vehicle_mode` rows, drawn as
+# a strip along the top of each panel so it never hides the Status shade beneath.
+# Multicopter flight is the unshaded default, as Healthy is.
+MODE_SHADES = {
+    "fw": "#3a7ca5",
+    "to_fw": "#8e5ea2",
+    "to_mc": "#8e5ea2",
+}
+
 # State groups plotted together, as (title, unit, columns, sigma columns). The
 # reference's names match the epoch file's for everything except attitude, whose
-# frames differ -- see reference_states in tools/ulog2replay.py.
+# frames differ -- see reference_states in tools/ulog2replay.py. Attitude has no
+# columns to plot as they stand: it is a quaternion, and attitude_figure draws
+# what is derived from it. Its sigmas still belong to the covariance figure.
 STATE_GROUPS = [
     ("Position NED", "m", ["pos_n", "pos_e", "pos_d"],
      ["sigma_pos_n", "sigma_pos_e", "sigma_pos_d"]),
     ("Velocity NED", "m/s", ["vel_n", "vel_e", "vel_d"],
      ["sigma_vel_n", "sigma_vel_e", "sigma_vel_d"]),
-    ("Attitude", "deg", ["roll", "pitch", "yaw"],
+    ("Attitude", "deg", None,
      ["sigma_att_x", "sigma_att_y", "sigma_att_z"]),
     ("Accelerometer bias", "m/s^2", ["ba_x", "ba_y", "ba_z"],
      ["sigma_ba_x", "sigma_ba_y", "sigma_ba_z"]),
@@ -82,7 +94,13 @@ STATE_GROUPS = [
      ["sigma_bg_x", "sigma_bg_y", "sigma_bg_z"]),
 ]
 
-DEGREES = {"roll", "pitch", "yaw"}
+QUATERNION = ["q0", "q1", "q2", "q3"]
+
+#: Past this tilt heading is not drawn. The swing-twist heading below is
+#: singular only when the vehicle is inverted, where `q0` and `q3` both vanish,
+#: and a few degrees short of that it turns small attitude noise into large
+#: heading swings.
+INVERTED = math.radians(170.0)
 
 #: Shorter names for the sigma figure, whose panels are a fifth of a page tall
 #: and whose full titles overlap each other down the shared axis.
@@ -92,6 +110,83 @@ SHORT_LABELS = {
     "Accelerometer bias": "Accel bias",
     "Gyroscope bias": "Gyro bias",
 }
+
+
+# ---------------------------------------------------------------- attitude
+#
+# Pictures of a quaternion, derived here because drawing is this tool's job and
+# none of them is a statistic the harness publishes. Every function takes the
+# Hamilton scalar-first body-to-NED convention the epoch and reference files
+# both write (`Attitude::body_to_ned`), elementwise over numpy arrays.
+
+
+def quaternion_from_euler(roll, pitch, yaw):
+    """ZYX Euler to quaternion, `R = Rz(yaw) Ry(pitch) Rx(roll)`.
+
+    Only the truth file is still Euler (`examples/simulate.rs`). This direction
+    is defined at every attitude, so truth passes through 90 deg of pitch
+    losslessly; only the reverse is ambiguous.
+    """
+    cr, sr = np.cos(roll / 2), np.sin(roll / 2)
+    cp, sp = np.cos(pitch / 2), np.sin(pitch / 2)
+    cy, sy = np.cos(yaw / 2), np.sin(yaw / 2)
+    return (
+        cr * cp * cy + sr * sp * sy,
+        sr * cp * cy - cr * sp * sy,
+        cr * sp * cy + sr * cp * sy,
+        cr * cp * sy - sr * sp * cy,
+    )
+
+
+def tilt_heading(q0, q1, q2, q3):
+    """Tilt and heading, radians, from the swing-twist split about NED down.
+
+    `q = twist(down) * swing(horizontal axis)`: the twist is heading, the
+    swing's angle is tilt, the angle between body down and navigation down.
+    These are the two quantities `Validity` and `Accuracy` split attitude into,
+    and unlike ZYX roll and yaw they separate at 90 deg of pitch, where a
+    tailsitter cruises. Heading is NaN past `INVERTED`, where the split is
+    singular. `q` and `-q` give the same pair.
+    """
+    tilt = np.arccos(np.clip(1.0 - 2.0 * (q1 * q1 + q2 * q2), -1.0, 1.0))
+    heading = np.mod(2.0 * np.arctan2(q3, q0) + math.pi, 2.0 * math.pi) - math.pi
+    return tilt, np.where(tilt > INVERTED, np.nan, heading)
+
+
+def rotation_difference(a, b):
+    """The rotation vector of `a^-1 * b`, in `a`'s body axes, radians.
+
+    `b = a * exp(d)`, the local perturbation of equation (3), which is the
+    frame the epoch file's `sigma_att_x/y/z` are in -- so a band drawn from them
+    around `d` compares like with like at any attitude. The shorter of the two
+    rotations `q` and `-q` describe is taken.
+    """
+    a0, a1, a2, a3 = a
+    b0, b1, b2, b3 = b
+    w = a0 * b0 + a1 * b1 + a2 * b2 + a3 * b3
+    # a0 b_v - b0 a_v - a_v x b_v: the vector part of conj(a) * b.
+    x = a0 * b1 - b0 * a1 - (a2 * b3 - a3 * b2)
+    y = a0 * b2 - b0 * a2 - (a3 * b1 - a1 * b3)
+    z = a0 * b3 - b0 * a3 - (a1 * b2 - a2 * b1)
+    sign = np.where(w < 0.0, -1.0, 1.0)
+    w, x, y, z = w * sign, x * sign, y * sign, z * sign
+    norm = np.sqrt(x * x + y * y + z * z)
+    angle = 2.0 * np.arctan2(norm, w)
+    # angle / norm tends to 2 as the rotation vanishes; guard the 0 / 0.
+    scale = np.where(norm > 1e-12, angle / np.where(norm > 1e-12, norm, 1.0), 2.0)
+    return x * scale, y * scale, z * scale
+
+
+def nearest(times, at, tolerance):
+    """For each of `at`, the index of the nearest of the sorted `times`, or -1.
+
+    `tolerance` refuses a pairing across a gap: a reference sample with no
+    epoch near it compares against nothing rather than against the far side.
+    """
+    right = np.clip(np.searchsorted(times, at), 1, len(times) - 1)
+    left = right - 1
+    pick = np.where(np.abs(times[left] - at) <= np.abs(times[right] - at), left, right)
+    return np.where(np.abs(times[pick] - at) <= tolerance, pick, -1)
 
 
 # ----------------------------------------------------------------- readers
@@ -224,6 +319,51 @@ def read_series(path, wanted, points, source=None, source_column="source"):
     return notes, decimator.done()
 
 
+def read_columns(path, names, source=None, source_column="source"):
+    """Undecimated `(t, {name: array})` for rows carrying every one of `names`.
+
+    For columns that mean nothing apart -- a quaternion's four components --
+    which read_series would decimate one envelope at a time into a rotation
+    nobody held, the mistake read_path exists to avoid for a track. Derive from
+    these rows first, then `decimate` what was derived.
+    """
+    stream = read_header_and_rows(path)
+    _, columns = next(stream)
+    if not all(name in columns for name in names):
+        return None
+    index = [columns.index(name) for name in names]
+    kind = columns.index(source_column) if source_column in columns else None
+    # array('d') rather than lists: on the 2 h log these are 1.4 M rows, and a
+    # list of Python floats holds them in four times the memory.
+    t, values = array.array("d"), [array.array("d") for _ in names]
+    for _, cells in stream:
+        if kind is not None and source is not None and cells[kind] != source:
+            continue
+        cells_here = [cells[i] for i in index]
+        if not all(cells_here):
+            continue
+        t.append(float(cells[0]))
+        for column_values, cell in zip(values, cells_here):
+            column_values.append(float(cell))
+    if not t:
+        return None
+    return np.frombuffer(t), {n: np.frombuffer(v) for n, v in zip(names, values)}
+
+
+def decimate(t, series, points):
+    """read_series's envelope, over arrays already in memory.
+
+    Non-finite samples are skipped, so a NaN heading past `INVERTED` leaves a
+    gap rather than a bucket extreme.
+    """
+    decimator = Decimator(series, len(t), points)
+    arrays = list(series.items())
+    for k, when in enumerate(t):
+        decimator.add(when, {name: float(y[k]) for name, y in arrays
+                             if math.isfinite(y[k])})
+    return decimator.done()
+
+
 def read_times(path, source, source_column="source"):
     """Every timestamp for one row kind, undecimated.
 
@@ -305,23 +445,33 @@ def read_path(path, x_name, y_name, points, source=None, source_column="source")
     return (np.array(x), np.array(y)) if x else None
 
 
-def read_status(path, points):
-    """Contiguous `(start, end, status)` runs, for shading a time axis."""
+def read_runs(path, column, source=None, until=None, source_column="source"):
+    """Contiguous `(start, end, value)` runs of one column, for shading a time axis.
+
+    `until` extends the last run to a time the file itself does not reach: the
+    reference writes a `vehicle_mode` row per change, so its last regime has no
+    row marking where it ends.
+    """
     stream = read_header_and_rows(path)
     _, columns = next(stream)
-    if "status" not in columns:
+    if column not in columns:
         return []
-    position = columns.index("status")
+    position = columns.index(column)
+    kind = columns.index(source_column) if source_column in columns else None
     runs, current = [], None
     for _, cells in stream:
-        t, status = float(cells[0]), cells[position]
-        if current is None or current[2] != status:
+        if kind is not None and source is not None and cells[kind] != source:
+            continue
+        t, value = float(cells[0]), cells[position]
+        if current is None or current[2] != value:
             if current is not None:
                 current[1] = t
-            current = [t, t, status]
+            current = [t, t, value]
             runs.append(current)
         else:
             current[1] = t
+    if runs and until is not None:
+        runs[-1][1] = max(runs[-1][1], until)
     return runs
 
 
@@ -532,11 +682,25 @@ def figure(build, caption, width=11.0, height=4.4):
     return buffer.getvalue(), caption
 
 
-def shade_status(axes, runs):
-    for start, end, status in runs:
-        shade = STATUS_SHADES.get(status)
+def shade_runs(axes, runs, palette, alpha, span=(0.0, 1.0)):
+    for start, end, value in runs:
+        shade = palette.get(value)
         if shade and end > start:
-            axes.axvspan(start, end, color=shade, alpha=0.18, linewidth=0)
+            axes.axvspan(start, end, ymin=span[0], ymax=span[1], color=shade,
+                         alpha=alpha, linewidth=0)
+
+
+class Backdrop:
+    """What every time-axis panel shades behind its traces: `Status` over the
+    whole height, and the flight regime as a strip along the top."""
+
+    def __init__(self, status_runs, mode_runs=()):
+        self.status_runs = status_runs
+        self.mode_runs = mode_runs
+
+    def draw(self, axes):
+        shade_runs(axes, self.status_runs, STATUS_SHADES, 0.18)
+        shade_runs(axes, self.mode_runs, MODE_SHADES, 0.45, span=(0.93, 1.0))
 
 
 def gap_threshold(times, multiple=5.0):
@@ -590,22 +754,21 @@ def track_figure(epochs, reference, fixes):
     return build
 
 
-def state_figure(group, epochs, reference, truth, status_runs, resets=()):
+def state_figure(group, epochs, reference, truth, backdrop):
     title, unit, columns, sigmas = group
 
     def build(fig):
         axes = fig.subplots(len(columns), 1, sharex=True)
         for row, (column, sigma) in enumerate(zip(columns, sigmas)):
             plot = axes[row]
-            shade_status(plot, status_runs)
-            scale = 180.0 / math.pi if column in DEGREES else 1.0
+            backdrop.draw(plot)
             ours = epochs.get(column)
             if ours is None:
                 continue
-            t, y = ours[0], ours[1] * scale
+            t, y = ours
             band = epochs.get(sigma)
             if band is not None and len(band[1]) == len(y):
-                spread = 3.0 * band[1] * scale
+                spread = 3.0 * band[1]
                 plot.fill_between(t, y - spread, y + spread, color="#1b1b1b",
                                   alpha=0.12, linewidth=0, label="+/-3 sigma")
             plot.plot(t, y, "-", color="#1b1b1b", linewidth=0.9, label="fusion-nav")
@@ -613,14 +776,78 @@ def state_figure(group, epochs, reference, truth, status_runs, resets=()):
                                          (truth, "#c05a2f", "truth")):
                 series = (other or {}).get(column)
                 if series is not None:
-                    plot.plot(series[0], series[1] * scale, "-", color=colour,
+                    plot.plot(series[0], series[1], "-", color=colour,
                               linewidth=0.9, alpha=0.85, label=label)
-            for when in resets:
-                plot.axvline(when, color="#3a7ca5", linestyle=":", linewidth=1.0)
             plot.set_ylabel(f"{column} ({unit})", fontsize=8)
             plot.grid(alpha=0.25)
             if row == 0:
                 plot.legend(loc="upper right", fontsize=7, ncol=4)
+        axes[-1].set_xlabel("t (s)")
+    return build
+
+
+def attitude_figure(ours, reference, truth, backdrop, resets):
+    """Tilt and heading, each `{"tilt": (t, y), "heading": (t, y)}` in radians.
+
+    No sigma band, and deliberately: the epoch file's attitude sigmas are
+    body-axis, tilt and heading are navigation-frame, and turning one into the
+    other needs off-diagonals the file does not carry. Near level the body split
+    passes for tilt and heading; at 90 deg of pitch it does not (#131). The band
+    is on the difference figure, whose frame matches it.
+
+    Heading is drawn as points, not a line: it wraps at +/-180 deg, and a line or
+    a min/max bucket across the wrap draws a vertical stroke the vehicle never
+    made.
+    """
+    def build(fig):
+        axes = fig.subplots(2, 1, sharex=True)
+        for plot, name in zip(axes, ("tilt", "heading")):
+            backdrop.draw(plot)
+            style = ("-", {"linewidth": 0.9}) if name == "tilt" else (".", {"markersize": 1.2})
+            for series, colour, label in ((ours, "#1b1b1b", "fusion-nav"),
+                                          (reference, "#3a7ca5", "EKF2"),
+                                          (truth, "#c05a2f", "truth")):
+                trace = (series or {}).get(name)
+                if trace is not None and len(trace[0]):
+                    plot.plot(trace[0], np.degrees(trace[1]), style[0], color=colour,
+                              alpha=0.85, label=label, **style[1])
+            for when in resets:
+                plot.axvline(when, color="#3a7ca5", linestyle=":", linewidth=1.0)
+            plot.set_ylabel(f"{name} (deg)", fontsize=8)
+            plot.grid(alpha=0.25)
+        axes[1].set_ylim(-185.0, 185.0)
+        axes[0].legend(loc="upper right", fontsize=7, ncol=3, markerscale=6)
+        axes[-1].set_xlabel("t (s)")
+    return build
+
+
+def difference_figure(difference, epochs, backdrop, resets):
+    """This filter's attitude relative to EKF2's, in body axes, with its own band.
+
+    `difference` is `{"d_x": (t, y), ...}`, radians, from rotation_difference.
+    The band is this filter's `sigma_att_x/y/z` around zero -- the same frame as
+    the trace it surrounds, at any attitude.
+    """
+    def build(fig):
+        axes = fig.subplots(3, 1, sharex=True)
+        for plot, axis in zip(axes, "xyz"):
+            backdrop.draw(plot)
+            band = epochs.get(f"sigma_att_{axis}")
+            if band is not None:
+                spread = 3.0 * np.degrees(band[1])
+                plot.fill_between(band[0], -spread, spread, color="#1b1b1b",
+                                  alpha=0.12, linewidth=0,
+                                  label="fusion-nav +/-3 sigma")
+            trace = difference.get(f"d_{axis}")
+            if trace is not None:
+                plot.plot(trace[0], np.degrees(trace[1]), "-", color="#3a7ca5",
+                          linewidth=0.9, label="fusion-nav relative to EKF2")
+            for when in resets:
+                plot.axvline(when, color="#3a7ca5", linestyle=":", linewidth=1.0)
+            plot.axhline(0.0, color="#888888", linewidth=0.6)
+            plot.set_ylabel(f"body {axis} (deg)", fontsize=8)
+            plot.grid(alpha=0.25)
+        axes[0].legend(loc="upper right", fontsize=7, ncol=2)
         axes[-1].set_xlabel("t (s)")
     return build
 
@@ -654,7 +881,7 @@ def positive(series):
     return (t[keep], y[keep]) if keep.any() else None
 
 
-def sigma_figure(epochs, reference, gaps, status_runs):
+def sigma_figure(epochs, reference, gaps, backdrop):
     """One panel per state group, ours solid and EKF2's dashed.
 
     Split by group rather than shared, because a position sigma in metres and a
@@ -665,11 +892,11 @@ def sigma_figure(epochs, reference, gaps, status_runs):
         plots = fig.subplots(len(STATE_GROUPS), 1, sharex=True, squeeze=False)
         for row, (title, unit, _columns, sigmas) in enumerate(STATE_GROUPS):
             plot = plots[row][0]
-            # Attitude sigmas are radians in both files, while the state panel
-            # plots roll/pitch/yaw and its band in degrees. Converted here too,
-            # so the two panels read in one unit and the label is true.
+            # Attitude sigmas are radians in both files, while the attitude
+            # figures draw in degrees. Converted here too, so every panel reads
+            # in one unit and the label is true.
             scale = 180.0 / math.pi if title == "Attitude" else 1.0
-            shade_status(plot, status_runs)
+            backdrop.draw(plot)
             shade_gaps(plot, gaps)
             for sigma in sigmas:
                 series = positive(epochs.get(sigma))
@@ -713,14 +940,14 @@ def innovation_axes(entry):
     return max((sum(1 for cell in row if cell) for row in entry["nu"]), default=0)
 
 
-def innovation_figure(source, entry, gate, status_runs):
+def innovation_figure(source, entry, gate, backdrop):
     axes_count = innovation_axes(entry)
 
     def build(fig):
         plots = fig.subplots(max(1, axes_count), 1, sharex=True, squeeze=False)
         for axis in range(max(1, axes_count)):
             plot = plots[axis][0]
-            shade_status(plot, status_runs)
+            backdrop.draw(plot)
             t, normalized = [], []
             for k, (nu, s) in enumerate(zip(entry["nu"], entry["s"])):
                 if axis >= len(nu) or not nu[axis] or not s[axis]:
@@ -903,25 +1130,24 @@ def key_table(keys):
 
 def build_report(args):
     epoch_rows = count_rows(args.replay)
-    status_runs = read_status(args.replay, args.points)
+    status_runs = read_runs(args.replay, "status")
 
     epoch_columns = ["pos_n", "pos_e", "pos_d", "vel_n", "vel_e", "vel_d",
-                     "roll", "pitch", "yaw", "ba_x", "ba_y", "ba_z",
-                     "bg_x", "bg_y", "bg_z"]
+                     "ba_x", "ba_y", "ba_z", "bg_x", "bg_y", "bg_z"]
     for _title, _unit, _columns, sigmas in STATE_GROUPS:
         epoch_columns.extend(sigmas)
     epoch_columns.extend(RATIOS)
     _, epochs = read_series(args.replay, epoch_columns, args.points)
+    ours_q = read_columns(args.replay, QUATERNION)
 
     gates, sources = read_fusion(fusion_path(args.replay))
 
     reference, reference_notes, resets = {}, [], []
+    reference_q, mode_runs = None, []
     if args.reference:
         reference_notes, local = read_series(
             args.reference, ["pos_n", "pos_e", "pos_d", "vel_n", "vel_e", "vel_d"],
             args.points, source="ekf2_local")
-        _, attitude = read_series(args.reference, ["roll", "pitch", "yaw"],
-                                  args.points, source="ekf2_att")
         # Every remaining reference column is read here, which is what makes a
         # wrong entry in EKF2_LAYOUTS visible: the bias *states* sit at the same
         # index in both eras, so only these sigmas exercise the era-specific map.
@@ -936,12 +1162,20 @@ def build_report(args):
             args.points, source="ekf2_states")
         _, ratios = read_series(args.reference, RATIOS, args.points,
                                 source="ekf2_ratio")
-        reference = {**local, **attitude, **states, **ratios}
+        reference = {**local, **states, **ratios}
         resets = read_resets(args.reference)
+        reference_q = read_columns(args.reference, QUATERNION, source="ekf2_att")
+        end = float(ours_q[0][-1]) if ours_q else None
+        mode_runs = read_runs(args.reference, "mode", source="vehicle_mode", until=end)
 
-    truth, truth_notes = {}, []
+    truth, truth_notes, truth_q = {}, [], None
     if args.truth:
         truth_notes, truth = read_series(args.truth, epoch_columns, args.points)
+        euler = read_columns(args.truth, ["roll", "pitch", "yaw"])
+        if euler:
+            t, angles = euler
+            truth_q = t, dict(zip(QUATERNION, quaternion_from_euler(
+                angles["roll"], angles["pitch"], angles["yaw"])))
 
     problems = check_pairing(read_notes(args.input), reference_notes, truth_notes)
     keys = read_summary(args.summary) if args.summary else {}
@@ -954,6 +1188,30 @@ def build_report(args):
 
     # `gnss_pos` carries north in v0 and east in v1, the replay input's union
     # schema. Paired from one row, never from two decimated columns.
+    backdrop = Backdrop(status_runs, mode_runs)
+
+    def attitude_of(pair):
+        if pair is None:
+            return None
+        t, q = pair
+        tilt, heading = tilt_heading(*(q[n] for n in QUATERNION))
+        return decimate(t, {"tilt": tilt, "heading": heading}, args.points)
+
+    difference = None
+    if ours_q and reference_q:
+        # EKF2 publishes attitude slower than the IMU epochs arrive, so each of
+        # its samples is paired with the nearest epoch, never interpolated.
+        # Two epoch intervals of tolerance: a reference sample in a gap in the
+        # replay compares against nothing.
+        (t_ours, q_ours), (t_ref, q_ref) = ours_q, reference_q
+        tolerance = 2.0 * float(np.median(np.diff(t_ours))) if len(t_ours) > 1 else 0.0
+        pick = nearest(t_ours, t_ref, tolerance)
+        keep = pick >= 0
+        d = rotation_difference(tuple(q_ref[n][keep] for n in QUATERNION),
+                                tuple(q_ours[n][pick[keep]] for n in QUATERNION))
+        difference = decimate(t_ref[keep], dict(zip(("d_x", "d_y", "d_z"), d)),
+                              args.points)
+
     fixes = read_path(args.input, "v0", "v1", args.points, source="gnss_pos")
     gaps = read_times(args.input, "gnss_pos") if fixes is not None else None
 
@@ -1000,24 +1258,69 @@ def build_report(args):
             width=7.5, height=7.0)
         blocks.append(png_block(png, caption))
 
+    shading = ("Background shading is <code>Status</code>: amber Aligning, "
+               "yellow Degraded, red DeadReckoning.")
+    if mode_runs:
+        regimes = sorted({run[2] for run in mode_runs})
+        shading += (" The strip along the top of each panel is the vehicle's "
+                    "flight regime from the reference: blue fixed-wing, purple "
+                    "transition, unshaded multicopter. This log reads "
+                    + ", ".join(f"<code>{html.escape(r)}</code>" for r in regimes)
+                    + ".")
+    resets_note = (" Blue dotted verticals are EKF2's own "
+                   "<code>quat_reset_counter</code> changing &mdash; a step across "
+                   "one of those is an event in their filter, not divergence from "
+                   "this one.")
+
     blocks.append("<h2>States</h2>")
     for group in STATE_GROUPS:
-        title = group[0]
-        if group[2][0] not in epochs:
+        title, _unit, columns, _sigmas = group
+        if columns is None:
+            if ours_q is None:
+                continue
+            png, caption = figure(
+                attitude_figure(attitude_of(ours_q), attitude_of(reference_q),
+                                attitude_of(truth_q), backdrop, resets),
+                "Tilt, the angle between body down and navigation down, and "
+                "heading, the rotation about navigation down that remains "
+                "&mdash; the split <code>Validity</code> reports attitude in, "
+                "derived from each file's quaternion (truth's from its Euler "
+                "angles). Unlike roll and yaw both stay separate at 90&deg; of "
+                "pitch; heading is left undrawn past 170&deg; of tilt, where the "
+                "split is singular. No sigma band: the published sigmas are "
+                "body-axis, and only near level do they pass for tilt and "
+                "heading (#131). " + shading + resets_note,
+                height=4.6)
+            blocks.append(png_block(png, caption))
+            continue
+        if columns[0] not in epochs:
             continue
         png, caption = figure(
-            state_figure(group, epochs, reference, truth, status_runs,
-                         resets if title == "Attitude" else ()),
+            state_figure(group, epochs, reference, truth, backdrop),
             f"{html.escape(title)}, with the filter's own +/-3 sigma band. "
-            "Background shading is <code>Status</code>: amber Aligning, yellow "
-            "Degraded, red DeadReckoning."
-            + (" EKF2's attitude is plotted from the same quaternion convention; "
-               "its sigma is in NED where this filter's is body-frame, so the "
-               "band is this filter's only. Blue dotted verticals are EKF2's own "
-               "<code>quat_reset_counter</code> changing &mdash; a step across "
-               "one of those is an event in their filter, not divergence from "
-               "this one."
-               if title == "Attitude" else ""),
+            + shading,
+            height=6.2)
+        blocks.append(png_block(png, caption))
+
+    if difference is not None:
+        blocks.append("<h2>Attitude relative to EKF2</h2>")
+        png, caption = figure(
+            difference_figure(difference, epochs, backdrop, resets),
+            "This filter's attitude relative to EKF2's, as the rotation vector "
+            "of <code>q<sub>EKF2</sub><sup>-1</sup> q&#770;</code> in body axes, "
+            "each EKF2 sample paired with the nearest epoch. The band is this "
+            "filter's own +/-3 sigma, in the same body axes as the trace, so the "
+            "comparison holds at any attitude. Tilt compares cleanly, since both "
+            "filters level off gravity, and heading does not at an instant: EKF2 "
+            "resets yaw in the first seconds, and after that the residue is a "
+            "declination difference &mdash; the replay harness fixes declination "
+            "at -0.06 rad where EKF2 reads the world magnetic model at an origin "
+            "two corpus logs do not report. Body x and y are the tilt difference "
+            "only while the headings agree: a heading difference lands partly on "
+            "them, by the sine of the tilt &mdash; 2.4&deg; on f16771dd at 2 s, "
+            "headings 162&deg; apart at 1&deg; of tilt. The tilt panel above "
+            "compares tilt directly. "
+            + shading + resets_note,
             height=6.2)
         blocks.append(png_block(png, caption))
 
@@ -1025,7 +1328,7 @@ def build_report(args):
     floor = gap_threshold(gaps) if gaps else None
     outages = find_gaps(gaps, floor)
     png, caption = figure(
-        sigma_figure(epochs, reference, outages, status_runs),
+        sigma_figure(epochs, reference, outages, backdrop),
         "Every published standard deviation, one panel per state group, with "
         "EKF2's own dashed where the two are the same quantity &mdash; attitude "
         "excepted, whose diagonals are in different frames, so only its "
@@ -1046,7 +1349,7 @@ def build_report(args):
         if not any(any(cell for cell in row) for row in entry["nu"]):
             continue
         png, caption = figure(
-            innovation_figure(source, entry, gates.get(source), status_runs),
+            innovation_figure(source, entry, gates.get(source), backdrop),
             f"Per-axis normalized innovation for <code>{html.escape(source)}</code>, "
             "&nu;<sub>i</sub>&nbsp;/&nbsp;&radic;S<sub>ii</sub>. Red verticals are "
             "gate rejections. Note this is <em>not</em> what the <code>nu_*</code> "
@@ -1115,7 +1418,82 @@ def fusion_path(replay):
     return path.with_suffix(".fusion.csv")
 
 
+def self_test():
+    """Literal fixtures for the attitude pictures, at the attitudes that break Euler.
+
+    No corpus log tilts past 7 deg, where tilt and heading read as roll/pitch and
+    yaw whatever the convention, so a quaternion read scalar-last would pass on
+    every one of them. These pin the convention at 90 deg of pitch.
+    """
+    failures = []
+
+    def near(what, got, want, tolerance=1e-9):
+        got, want = np.atleast_1d(got), np.atleast_1d(want)
+        same = np.isnan(got) == np.isnan(want)
+        close = np.isnan(want) | (np.abs(np.nan_to_num(got) - np.nan_to_num(want))
+                                  <= tolerance)
+        if not (same.all() and close.all()):
+            failures.append(f"{what}: got {got}, want {want}")
+
+    d = math.radians
+    half = math.sqrt(0.5)
+
+    # ZYX composition, against a hand-derived value: pitched 90 deg is
+    # (cos 45, 0, sin 45, 0), and yawed 90 deg (cos 45, 0, 0, sin 45).
+    near("euler pitch 90", quaternion_from_euler(0.0, d(90), 0.0), (half, 0, half, 0))
+    near("euler yaw 90", quaternion_from_euler(0.0, 0.0, d(90)), (half, 0, 0, half))
+
+    def attitude(roll, pitch, yaw):
+        return tilt_heading(*quaternion_from_euler(d(roll), d(pitch), d(yaw)))
+
+    near("level", attitude(0, 0, 30), (0.0, d(30)))
+    near("rolled 10", attitude(10, 0, -45), (d(10), d(-45)))
+    # Pitched 90 deg and yawed 30: ZYX roll and yaw are inseparable here, and
+    # the split is not -- a tailsitter's cruise.
+    near("pitched 90", attitude(0, 90, 30), (d(90), d(30)))
+    near("pitched 90, rolled", attitude(20, 90, 30)[0], d(90), 1e-9)
+    near("inverted", attitude(178, 0, 30), (d(178), np.nan))
+    near("-q", tilt_heading(*(-c for c in quaternion_from_euler(0.1, 0.2, 2.9))),
+         attitude(math.degrees(0.1), math.degrees(0.2), math.degrees(2.9)))
+    # Scalar-last read of a scalar-first quaternion: still a rotation, the
+    # wrong one. Level and yawed 30 deg, read as (q1, q2, q3, q0).
+    q = quaternion_from_euler(0.0, 0.0, d(30))
+    if abs(tilt_heading(q[1], q[2], q[3], q[0])[0] - 0.0) < 1e-6:
+        failures.append("a scalar-last read is indistinguishable from the right one")
+
+    # The difference is body-frame: 5 deg about body x on a vehicle pitched
+    # 90 deg is (5, 0, 0), where a navigation-frame one would read it on down.
+    def compose(p, r):
+        p0, p1, p2, p3 = p
+        r0, r1, r2, r3 = r
+        return (p0 * r0 - p1 * r1 - p2 * r2 - p3 * r3,
+                p0 * r1 + p1 * r0 + p2 * r3 - p3 * r2,
+                p0 * r2 - p1 * r3 + p2 * r0 + p3 * r1,
+                p0 * r3 + p1 * r2 - p2 * r1 + p3 * r0)
+
+    pitched = quaternion_from_euler(0.0, d(90), d(30))
+    nudge = (math.cos(d(2.5)), math.sin(d(2.5)), 0.0, 0.0)
+    near("difference in body axes", rotation_difference(pitched, compose(pitched, nudge)),
+         (d(5), 0.0, 0.0))
+    near("difference of q and -q", rotation_difference(pitched, tuple(-c for c in pitched)),
+         (0.0, 0.0, 0.0))
+    near("no difference", rotation_difference(pitched, pitched), (0.0, 0.0, 0.0))
+
+    near("nearest", nearest(np.array([0.0, 1.0, 2.0]), np.array([0.4, 1.6, 9.0]), 0.5),
+         (0, 2, -1))
+    t, y = decimate(np.array([0.0, 1.0, 2.0]), {"h": np.array([1.0, np.nan, 3.0])},
+                    10)["h"]
+    near("decimate skips NaN", np.unique(y), (1.0, 3.0))
+
+    for failure in failures:
+        print(f"FAIL {failure}", file=sys.stderr)
+    print(f"replay_report self-test: {'FAIL' if failures else 'ok'}", file=sys.stderr)
+    return 1 if failures else 0
+
+
 def main():
+    if sys.argv[1:] == ["--self-test"]:
+        return self_test()
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )

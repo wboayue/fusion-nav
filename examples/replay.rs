@@ -206,16 +206,23 @@ type Column = fn(&State) -> f32;
 
 /// The estimate columns: each name next to the value it reads. Drives both the header and
 /// the row, so the two cannot drift apart.
-const ESTIMATE: [(&str, Column); 15] = [
+///
+/// Attitude is the quaternion `Attitude::body_to_ned` names, Hamilton and scalar-first,
+/// rather than Euler angles: ZYX Euler cannot separate roll from yaw at 90° of pitch, where a
+/// tailsitter cruises, while the quaternion is the rotation itself at every attitude. What a
+/// reader wants drawn from it — tilt, heading, the difference from EKF2 — is derived by
+/// `tools/replay_report.py`.
+const ESTIMATE: [(&str, Column); 16] = [
     ("pos_n", |s| s.position.x()),
     ("pos_e", |s| s.position.y()),
     ("pos_d", |s| s.position.z()),
     ("vel_n", |s| s.velocity.x()),
     ("vel_e", |s| s.velocity.y()),
     ("vel_d", |s| s.velocity.z()),
-    ("roll", |s| s.attitude.euler_angles().0),
-    ("pitch", |s| s.attitude.euler_angles().1),
-    ("yaw", |s| s.attitude.euler_angles().2),
+    ("q0", |s| s.attitude.quaternion().w),
+    ("q1", |s| s.attitude.quaternion().i),
+    ("q2", |s| s.attitude.quaternion().j),
+    ("q3", |s| s.attitude.quaternion().k),
     ("ba_x", |s| s.accel_bias.x()),
     ("ba_y", |s| s.accel_bias.y()),
     ("ba_z", |s| s.accel_bias.z()),
@@ -3771,6 +3778,33 @@ mod tests {
             row.split(',').count(),
             "header:\n{header}\nrow:\n{row}"
         );
-        assert_eq!(header.split(',').count(), 2 + 15 + 15 + 5);
+        assert_eq!(header.split(',').count(), 2 + 16 + 15 + 5);
+    }
+
+    #[test]
+    fn the_attitude_columns_are_the_quaternion_scalar_first() {
+        // Pitched 90° about body y: `q = (cos 45°, 0, sin 45°, 0)`. A scalar-last write
+        // still reads as a valid rotation — a half turn about a tilted axis — so only the
+        // position of the one non-zero pair says which convention reached the file.
+        let state = State {
+            attitude: Attitude::body_to_ned(UnitQuaternion::from_euler_angles(
+                0.0,
+                core::f32::consts::FRAC_PI_2,
+                0.0,
+            )),
+            ..State::default()
+        };
+        let column = |name: &str| {
+            let (_, read) = ESTIMATE
+                .iter()
+                .find(|(n, _)| *n == name)
+                .expect("column exists");
+            read(&state)
+        };
+        let half = core::f32::consts::FRAC_1_SQRT_2;
+        assert!((column("q0") - half).abs() < 1e-6, "q0 {}", column("q0"));
+        assert!(column("q1").abs() < 1e-6, "q1 {}", column("q1"));
+        assert!((column("q2") - half).abs() < 1e-6, "q2 {}", column("q2"));
+        assert!(column("q3").abs() < 1e-6, "q3 {}", column("q3"));
     }
 }
