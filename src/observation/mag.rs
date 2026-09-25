@@ -1,12 +1,12 @@
 //! Magnetometer observation models. Equations (34)–(36), and the levelling variance
 //! (36′) that the heading's own noise does not cover.
 
-use nalgebra::{RealField, SMatrix, SVector, Vector3};
+use nalgebra::{ComplexField, RealField, SMatrix, SVector, Vector3};
 
 use crate::frames::Body;
 use crate::init;
 use crate::math::wrap_pi;
-use crate::state::{AttitudeVariance, Covariance, ErrorState, STATES, State};
+use crate::state::{Covariance, ErrorState, STATES, State};
 use crate::units::{HeadingNoise, MagField, Radians};
 use crate::update::Observation;
 
@@ -110,13 +110,15 @@ pub(crate) fn heading_observation(
     noise: HeadingNoise,
 ) -> Observation<1> {
     let h = heading_jacobian(state);
+    // Navigation down in body axes, `R(q̂)ᵀe₃`: (36)'s row read back as a column.
+    let down = h
+        .fixed_view::<1, 3>(0, ErrorState::AttitudeX.index())
+        .transpose();
     Observation {
         y: SVector::<f32, 1>::new(heading_innovation(state, field, declination)),
         h,
         h_b: SVector::<f32, 1>::zeros(),
-        r_m: SVector::<f32, 1>::new(
-            noise.variance() + levelling_variance(state, covariance, field, &h),
-        ),
+        r_m: SVector::<f32, 1>::new(noise.variance() + levelling_variance(covariance, field, down)),
     }
 }
 
@@ -125,42 +127,49 @@ pub(crate) fn heading_observation(
 /// `tan δ` is [`init::heading_sensitivity`](crate::init::heading_sensitivity), the same
 /// ratio (8′) uses, read off this field rather than configured. It is an angle between a
 /// field and a direction, so the frame the two share does not matter; the direction here
-/// is navigation down resolved in body axes, which is (36)'s Jacobian row transposed —
-/// `e₃ᵀR(q̂)` read as a column is `R(q̂)ᵀe₃`.
+/// is `down`, navigation down resolved in body axes, which is (36)'s Jacobian row
+/// transposed — `e₃ᵀR(q̂)` read as a column is `R(q̂)ᵀe₃`. It must be a unit vector, as a
+/// row of a rotation is, or `d × f̂` below is not one.
 ///
-/// `σ_tilt²` is the larger of the two tilt variances rather than their average, because the
-/// two ways of being wrong are not symmetric. Too large only slows
-/// the heading's correction; too small is what produced 840 falsely-valid attitude
-/// epochs on `moving_start`, where the filter claimed an attitude it did not have. Both are
-/// read on navigation axes through [`AttitudeVariance`]: the body x and y variances are tilt
-/// only while the vehicle is level, and at 90° of pitch one of them is the heading's own.
+/// `σ_tilt²` is the largest eigenvalue of the tilt block, the attitude covariance on the
+/// horizontal plane: the variance of tilt about the worst horizontal axis. To first order
+/// only tilt about the field's own horizontal direction `f̂` leaks, so `f̂ᵀ P f̂` is the exact
+/// price of one reading, and it measured worse than the bound: consecutive headings share a
+/// tilt error that velocity fusion corrects only over seconds, and (24) takes them as
+/// independent. `EQUATIONS.md` has the derivation and the measurement.
+///
+/// The eigenvalue depends on no choice of axes, where the larger of two diagonals does: on
+/// an anisotropic block the north/east and body x/y pairs give different maxima, and the
+/// north/east one moves with yaw. It is never below either diagonal, so it errs toward an
+/// `R` too large, which only slows the heading's correction, rather than too small, which is
+/// what produced 840 falsely-valid attitude epochs on `moving_start` without the term.
+///
+/// The block is taken on the basis `f̂`, `down × f̂` in body axes; the eigenvalue is the same on any orthonormal basis of the plane, and
+/// this one needs no rotation of `P`, which stays in the body axes of (2).
 ///
 /// Zero where the field is horizontal — nothing to tip — and zero where
 /// [`heading_sensitivity`](crate::init::heading_sensitivity) refuses a field with no
 /// horizontal part at all, which observes no heading for the tilt to spoil.
-fn levelling_variance(
-    state: &State,
-    covariance: &Covariance,
-    field: MagField<Body>,
-    h: &SMatrix<f32, 1, STATES>,
-) -> f32 {
-    let down_in_body = Vector3::new(
-        h[(0, ErrorState::AttitudeX.index())],
-        h[(0, ErrorState::AttitudeY.index())],
-        h[(0, ErrorState::AttitudeZ.index())],
-    );
-    let Some(tan_dip) = init::heading_sensitivity(field, down_in_body) else {
+fn levelling_variance(covariance: &Covariance, field: MagField<Body>, down: Vector3<f32>) -> f32 {
+    let Some(sensitivity) = init::heading_sensitivity(field, down) else {
         return 0.0;
     };
-    let variance = AttitudeVariance::of(&state.attitude, covariance);
-    let tilt_variance = variance.tilt_north.max(variance.tilt_east);
-    tan_dip * tan_dip * tilt_variance
+    let f = sensitivity.horizontal;
+    let g = down.cross(&f);
+    let theta = ErrorState::AttitudeX.index();
+    let p_theta = covariance.as_matrix().fixed_view::<3, 3>(theta, theta);
+    let (pf, pg) = (p_theta * f, p_theta * g);
+    let (a, b, d) = (f.dot(&pf), f.dot(&pg), g.dot(&pg));
+    let half = 0.5 * (a - d);
+    let tilt_variance = 0.5 * (a + d) + ComplexField::sqrt(half * half + b * b);
+    sensitivity.tan_dip * sensitivity.tan_dip * tilt_variance
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
     use crate::init::heading_from_mag;
+    use crate::state::AttitudeVariance;
     use crate::units::Attitude;
     use core::f32::consts::PI;
     use nalgebra::{UnitQuaternion, Vector3};
@@ -465,15 +474,95 @@ pub(crate) mod tests {
         assert!((hpht - heading).abs() < 1e-6, "{hpht} against {heading}");
     }
 
+    /// Navigation down in body axes, `R(q̂)ᵀe₃`, derived from the attitude rather than read
+    /// off (36)'s row the way `heading_observation` reads it.
+    fn down_of(attitude: Attitude) -> Vector3<f32> {
+        attitude.quaternion().inverse() * Vector3::z()
+    }
+
+    /// A body-frame covariance whose tilt block is anisotropic and correlated, the case in
+    /// which a choice of axes shows: 0.02 about one horizontal direction, 0.002 about the
+    /// other, on a vehicle rolled and pitched far enough that body x/y are not horizontal.
+    fn anisotropic(attitude: &Attitude) -> Covariance {
+        let r = attitude.quaternion().to_rotation_matrix().into_inner();
+        let azimuth = nalgebra::Rotation3::from_axis_angle(&Vector3::z_axis(), 0.6).into_inner();
+        let ned = azimuth
+            * nalgebra::Matrix3::from_diagonal(&Vector3::new(0.02, 0.002, 0.3))
+            * azimuth.transpose();
+        let mut p = crate::state::CovarianceMatrix::identity();
+        let theta = ErrorState::AttitudeX.index();
+        p.fixed_view_mut::<3, 3>(theta, theta)
+            .copy_from(&(r.transpose() * ned * r));
+        Covariance::from_matrix(p)
+    }
+
+    #[test]
+    fn the_levelling_variance_prices_the_worst_horizontal_axis() {
+        // The largest eigenvalue of the north/east block, found here by rotating `P` onto
+        // navigation axes and decomposing it — the long way round the code does not take.
+        // The field lies 1.1 rad from the axis tilt is least certain about, so pricing the
+        // field axis alone, or the larger of the north and east diagonals, comes out smaller.
+        let attitude = attitude_of(0.3, -0.4, 0.9);
+        let state = state_at(attitude);
+        let covariance = anisotropic(&attitude);
+        let observation = heading_observation(
+            &state,
+            &covariance,
+            measured(attitude, 1.7),
+            Radians::from_radians(1.7),
+            HeadingNoise::from_sigma(0.05),
+        );
+        let r = attitude.quaternion().to_rotation_matrix().into_inner();
+        let theta = ErrorState::AttitudeX.index();
+        let ned = r * covariance.as_matrix().fixed_view::<3, 3>(theta, theta) * r.transpose();
+        let largest = ned
+            .fixed_view::<2, 2>(0, 0)
+            .into_owned()
+            .symmetric_eigenvalues()
+            .max();
+        let expected = HeadingNoise::from_sigma(0.05).variance() + DIP.tan() * DIP.tan() * largest;
+        assert!(
+            (observation.r_m[0] - expected).abs() < 1e-5 * expected,
+            "R = {} rather than {expected}",
+            observation.r_m[0]
+        );
+        let diagonal = DIP.tan() * DIP.tan() * ned[(0, 0)].max(ned[(1, 1)]);
+        assert!(observation.r_m[0] - HeadingNoise::from_sigma(0.05).variance() > 1.1 * diagonal);
+    }
+
+    #[test]
+    fn the_levelling_variance_does_not_depend_on_where_the_vehicle_points() {
+        // One vehicle, one covariance, one field in body axes, turned about down through
+        // five yaws spanning the circle with the field turning with it: nothing the magnetometer or the
+        // filter holds has changed, only the heading of both. The larger of the north and
+        // east diagonals fails this, since turning an anisotropic tilt block through yaw
+        // moves variance between them — the axis choice that moved `f16771dd`'s
+        // `nu_mag_yaw` with nothing about the log changing.
+        let levelling = |yaw: f32| {
+            let attitude = attitude_of(0.3, -0.4, yaw);
+            let covariance = anisotropic(&attitude_of(0.3, -0.4, 0.0));
+            // The same body-frame block at every yaw: `anisotropic` rotated onto yaw zero.
+            let field = measured(attitude, yaw + 1.7);
+            levelling_variance(&covariance, field, down_of(attitude))
+        };
+        let at_zero = levelling(0.0);
+        for yaw in [0.5, 1.3, 2.9, -2.2, -0.7] {
+            let turned = levelling(yaw);
+            assert!(
+                (turned - at_zero).abs() < 1e-5 * at_zero,
+                "at yaw {yaw} the price is {turned} against {at_zero}"
+            );
+        }
+    }
+
     #[test]
     fn on_its_tail_the_levelling_reads_tilt_and_not_heading() {
         // Pitched 90° nose-up, body x is navigation up: the body x and y variances (36′)
         // once read are heading's and one tilt's. How uncertain heading is has nothing to
         // do with how badly the field was levelled.
         let attitude = attitude_of(0.0, core::f32::consts::FRAC_PI_2, 0.3);
-        let state = state_at(attitude);
         let field = measured(attitude, 0.0);
-        let h = heading_jacobian(&state);
+        let down = down_of(attitude);
         let levelling = |heading: f32| {
             let block = AttitudeVariance {
                 tilt_north: 1e-3,
@@ -484,7 +573,7 @@ pub(crate) mod tests {
             let mut p = crate::state::CovarianceMatrix::identity();
             let theta = ErrorState::AttitudeX.index();
             p.fixed_view_mut::<3, 3>(theta, theta).copy_from(&block);
-            levelling_variance(&state, &Covariance::from_matrix(p), field, &h)
+            levelling_variance(&Covariance::from_matrix(p), field, down)
         };
         let (tight, loose) = (levelling(1e-4), levelling(0.5));
         assert!(

@@ -567,15 +567,32 @@ fn angle_between(first: Vector3<f32>, second: Vector3<f32>) -> f32 {
 /// heading at any tilt, so there is no error to scale rather than an infinite one.
 ///
 /// Shared with [`observation::mag`](crate::observation::mag), which needs the same `tan δ`
-/// for the levelling variance of (36′). The ratio is between the field and a direction,
-/// so it is the same number in any frame the two are expressed in together: the window
-/// passes the body-frame gravity direction, and the update passes the body-frame
-/// navigation down axis.
-pub(crate) fn heading_sensitivity(field: MagField<Body>, down: Vector3<f32>) -> Option<f32> {
+/// for the levelling variance of (36′), and the direction the field lies in as well: only
+/// tilt about that horizontal direction leaks. The ratio is between the field and a
+/// direction, so it is the same number in any frame the two are expressed in together:
+/// the window passes the body-frame gravity direction, and the update passes the
+/// body-frame navigation down axis.
+pub(crate) fn heading_sensitivity(
+    field: MagField<Body>,
+    down: Vector3<f32>,
+) -> Option<HeadingSensitivity> {
     let field = field.vector();
     let vertical = field.dot(&down);
-    let horizontal = (field - down * vertical).norm();
-    (horizontal > 0.0).then(|| vertical.abs() / horizontal)
+    let horizontal = field - down * vertical;
+    let norm = horizontal.norm();
+    (norm > 0.0).then(|| HeadingSensitivity {
+        tan_dip: vertical.abs() / norm,
+        horizontal: horizontal / norm,
+    })
+}
+
+/// What [`heading_sensitivity`] measures of a field about a down axis.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct HeadingSensitivity {
+    /// `tan δ`, the field's vertical component over its horizontal one.
+    pub(crate) tan_dip: f32,
+    /// `f̂`, the unit horizontal direction of the field, in the frame `down` was given in.
+    pub(crate) horizontal: Vector3<f32>,
 }
 
 /// Initial tilt and yaw standard deviations for an alignment: the attitude block of
@@ -681,10 +698,10 @@ fn coarse_sigmas(
     let yaw = down
         .zip(measured.field)
         .and_then(|(down, field)| heading_sensitivity(field, down))
-        .map_or(circle, |dip| {
+        .map_or(circle, |sensitivity| {
             init.sigma_yaw
                 .as_radians()
-                .max(dip * tilt)
+                .max(sensitivity.tan_dip * tilt)
                 .max(about)
                 .max(heading_drift.unwrap_or(0.0))
                 .min(circle)
@@ -1340,7 +1357,8 @@ pub(crate) mod tests {
         for (roll, pitch) in TILTS {
             let down = -gravity_at(roll, pitch, 0.4).vector().normalize();
             let measured = heading_sensitivity(field_at(roll, pitch, 0.4, 0.0), down)
-                .expect("a field with a horizontal part");
+                .expect("a field with a horizontal part")
+                .tan_dip;
             assert!(
                 (measured - dip_gain()).abs() < 1e-4,
                 "at ({roll}, {pitch}) got {measured}, want {}",

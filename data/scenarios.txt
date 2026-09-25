@@ -265,3 +265,16 @@ flight           8  pos_h<=2.524 pos_v<=0.345 vel<=0.694 pos_h_max<=6.244  tilt<
 # difference is inside 1 % either way on three seeds; with `sigma_yaw` raised to 0.6 to match
 # it, the cost stays. So it follows the size of the error, not a mismatched prior. The prior is
 # the correct one to first order and the ceiling moves.
+#
+# #134 takes (36')'s tilt variance as the largest eigenvalue of the horizontal tilt block
+# rather than the larger of its north and east diagonals, which depended on the axes chosen.
+# Nothing moved past the margin and no ceiling moved. The magnetometer lines tightened by less
+# than 1 %: `mission` `yaw` 0.677 to 0.676 and `bg` 0.001015 to 0.001014, `mag_disturbance`
+# `yaw` 0.753 to 0.752, `gnss_latency` `false_valid` 342 to 340 and `false_valid_att` 50 to 48,
+# `moving_start` `bg` 0.002663 to 0.002644. `flight` loosened as little: `pos_h` 2.499 to 2.503
+# and `vel` 0.687 to 0.689. `nees_att` fell on every line but `static`, up to 1.4 % on
+# `moving_start` (0.2241 to 0.2210) -- a larger `R`, so a covariance more conservative about
+# attitude rather than more certain. The exact first-order price, `f^T P f` about the field's
+# horizontal direction, was measured and not taken: `gnss_outage` `pos_h` 2.630 against 2.227
+# under the eigenvalue and 2.232 under the diagonals, and `yaw` looser on every line but
+# `static`. EQUATIONS.md, (36'), says why.

@@ -232,7 +232,8 @@ is $`R(\hat q)\,\delta\theta`$, as (36) uses. So the attitude block is the navig
 diagonal rotated into body axes, and it is diagonal only when the start is level. On a vehicle
 standing on its tail, body x points up and the yaw prior belongs on $`\delta\theta_x`$. Every
 reader of tilt and heading takes the same diagonal back out, $`\mathrm{diag}(R\, P_{\theta\theta} R^\mathsf{T})`$
-(`AttitudeVariance`): `Validity`, the alignment latch, (36′) and the heading adoption.
+(`AttitudeVariance`): `Validity`, the alignment latch and the heading adoption. (36′) reads the
+same block's largest horizontal eigenvalue instead.
 
 Yaw uncertainty $`\sigma_{\psi,0}`$ is set much larger than tilt uncertainty
 $`\sigma_{\text{tilt},0}`$: roll and pitch come from gravity and are well determined, whereas yaw
@@ -693,16 +694,44 @@ R_m = \sigma_\psi^2 + \tan^2\!\delta \cdot \sigma_{\text{tilt}}^2,
 \qquad
 \tan\delta = \frac{\bigl| \tilde m_n \cdot e_3 \bigr|}{\bigl\lVert (I - e_3 e_3^\mathsf{T})\, \tilde m_n \bigr\rVert},
 \qquad
-\sigma_{\text{tilt}}^2 = \max\bigl( [R P_{\theta\theta} R^\mathsf{T}]_{NN},\; [R P_{\theta\theta} R^\mathsf{T}]_{EE} \bigr)
+\sigma_{\text{tilt}}^2 = \lambda_{\max}\bigl( Q^\mathsf{T} P_{\theta\theta}\, Q \bigr),
+\qquad
+Q = \bigl[\, \hat f_b \;\; d_b \times \hat f_b \,\bigr]
 ```
 
 $`\tan\delta`$ is the ratio (8′) already defines, measured off this field rather than
 configured, and it is an angle between a field and a direction — the same number in whichever
 frame the two are expressed together, so the implementation reads it in body axes, where
-navigation down is (36)'s Jacobian row transposed. The larger of the north and east variances is
-taken rather than their average because the two errors are not symmetric: a $`\sigma`$ too large
-only slows the heading's correction, while one too small is a filter claiming an attitude it does
-not have.
+navigation down is (36)'s Jacobian row transposed. $`d_b = R^\mathsf{T} e_3`$ is that axis and
+$`\hat f_b`$ the unit horizontal part of $`m_b`$ about it, so $`Q`$ is an orthonormal basis of the
+horizontal plane in body axes and $`Q^\mathsf{T} P_{\theta\theta} Q`$ is the tilt block: the
+eigenvalue is the variance of tilt about the worst horizontal axis, the same on any basis of
+the plane, which is what frees it from a choice of axes.
+
+To first order only tilt about $`\hat f`$ leaks: the error tips the field's vertical component
+sideways by $`\delta\theta_t \times v e_3`$, whose part across $`\hat f`$ is
+$`-v\, \hat f \cdot \delta\theta_t`$, so $`\delta\psi = -\tan\delta\; \hat f \cdot \delta\theta_t`$ and
+the exact price of one reading is $`\tan^2\!\delta \cdot \hat f^\mathsf{T} P_{\text{tilt}} \hat f`$. The
+bound is taken over it on purpose, because one reading is not what (24) is wrong about.
+Velocity fusion corrects the tilt error over seconds while headings arrive every 50 ms in the
+simulator, so consecutive headings share most of it, and (24) takes each reading's error as
+independent: priced exactly per reading, a run of headings is believed too much in aggregate.
+Measured, the field-axis form took `gnss_outage` to 2.630 m of horizontal error against 2.227
+for the eigenvalue and loosened yaw on every magnetometer scenario but `static`, whose tilt
+block is isotropic and where every form agrees. Adding the tilt–heading covariance that `R`
+inflation drops, which makes $`S`$ exact per reading, measured the same as the field axis alone
+(2.620 m), so it is the correlation across readings and not the one within a reading that the
+margin stands in for. The eigenvalue is never below either diagonal, and a $`\sigma`$ too large
+only slows the heading's correction while one too small is a filter claiming an attitude it
+does not have.
+
+The larger of the north and east diagonals is the axis-dependent form this replaces: on an
+anisotropic block it moves with the vehicle's yaw, which is what moved `f16771dd`'s mean heading
+innovation when the pair was re-chosen from body axes to north/east and nothing about the log
+changed. Against it the eigenvalue is ahead or level on every scenario but `flight`, 0.1–0.3 %
+behind there on `pos_h`, `vel` and `tilt` (`pos_h` 2.503 m against 2.499), and its `nees_att` sits up to 1.4 % lower, the direction of a
+larger `R`: a covariance a little more conservative about attitude, not a filter more certain of
+it.
 
 Widening $`R_m`$ rather than extending $`H`$ is deliberate, and the alternative was measured. The
 exact Jacobian *does* constrain tilt, and using it is worse than dropping the term: it corrects
@@ -958,7 +987,7 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | (30′) | barometric offset | `state.rs`, `update.rs`, `propagate.rs` | `Offset`; `update`'s blocks; `propagate_offset`; `Eskf::establish_reference` |
 | (31)–(33) | magnetometer, three-axis | — | unbuilt and [out of scope](GOALS.md#magnetometer-without-magnetic-field-states); no `field_jacobian` exists |
 | (34)–(36) | magnetometer, heading only | `observation/mag.rs` | `heading_innovation`, `heading_jacobian`, `heading_observation` |
-| (36′) | levelling variance | `observation/mag.rs` | `levelling_variance`, with `tan δ` from `init.rs`'s `heading_sensitivity` and `σ_tilt²` from `state.rs`'s `AttitudeVariance::of` |
+| (36′) | levelling variance | `observation/mag.rs` | `levelling_variance`, with `tan δ` and `f̂_b` from `init.rs`'s `heading_sensitivity` |
 | (37) `γ` | gate thresholds | `config.rs` | `Gate::at`, `Gate::new`, `Gates::at` |
 | (37)–(38) | innovation gating, test ratio | `update.rs` | `nis`, `test_ratio`, called by `update` |
 | — | per-source health tracking | `health.rs` | `SourceHealth`, `Status` |
