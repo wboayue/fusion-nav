@@ -258,8 +258,10 @@ flight           8  pos_h<=2.524 pos_v<=0.345 vel<=0.694 pos_h_max<=6.244  tilt<
 # `flight` is the one line the filter itself moved: `pos_h` 2.431 m to 2.499, `vel` 0.660 to
 # 0.687, `bg` 0.003270 to 0.003656, `nees_att` 0.1766 to 0.1918. That is (8) alone -- reverting
 # its rotation restores 2.417 -- which gives the prior the tilt/heading correlation a 0.35 deg
-# start puts in body axes, about 8 %. It costs on eight of nine seeds (`pos_h` 2-8 % worse,
-# `ba` about 1 % on all nine), and the reason is the scenario: truth yaw starts 0.6 rad off on
-# every seed against a `sigma_yaw` of 0.35, and a correlation derived from a heading variance
-# that understates the error steers tilt corrections that the uncorrelated body prior never
-# made. The prior is the correct one for the variance it is given; the ceiling moves.
+# start puts in body axes, about 8 %. It costs on eight of nine noise seeds (`pos_h` 2-8 %
+# worse, `ba` about 1 % on all nine), but the seeds share one trajectory, and the trajectory is
+# what decides it: truth yaw starts 0.6 rad from the unobserved estimate, 34 deg, far outside
+# the small angle a first-order correlation describes. With that offset at 0.0 or 0.2 rad the
+# difference is inside 1 % either way on three seeds; with `sigma_yaw` raised to 0.6 to match
+# it, the cost stays. So it follows the size of the error, not a mismatched prior. The prior is
+# the correct one to first order and the ceiling moves.
