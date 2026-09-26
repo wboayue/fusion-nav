@@ -2605,6 +2605,46 @@ mod tests {
     }
 
     #[test]
+    fn a_rejected_fix_restarts_the_interval_and_a_refused_half_does_not() {
+        // A rejected fix carried an error the next shares, so the next is 10 ms after it rather
+        // than 110 ms after the last accepted one. A fix whose height alone was refused carried
+        // no height error, so the next height is timed from the last one the gate saw, while
+        // its horizontal half, which did reach the gate, restarts that clock.
+        let fix = |filter: &mut Eskf, position: Position<Ned>, noise: PositionNoise<Ned>| {
+            let _ = filter.fuse_gnss_position(position, noise);
+        };
+        let one = PositionNoise::from_sigma(1.0, 1.0, 1.0);
+        let steps = |filter: &mut Eskf, n: usize| {
+            for _ in 0..n {
+                assert_eq!(filter.predict(still().imu, DT), Propagation::Propagated);
+            }
+        };
+        let (mut rejected, mut half, mut clean) = (aided(), aided(), aided());
+        for filter in [&mut rejected, &mut half, &mut clean] {
+            fix(filter, Position::ned(0.0, 0.0, 0.0), one);
+            steps(filter, 10);
+        }
+        let outcome = rejected.fuse_gnss_position(Position::ned(1000.0, 0.0, 1000.0), one);
+        assert!(
+            matches!(outcome.horizontal, Fusion::Rejected { .. }),
+            "{outcome:?}"
+        );
+        let outcome = half.fuse_gnss_position(
+            Position::ned(0.0, 0.0, 0.0),
+            PositionNoise::horizontal_vertical(1.0, f32::NAN),
+        );
+        assert_eq!(outcome.height, Fusion::NotFinite);
+        for filter in [&mut rejected, &mut half, &mut clean] {
+            steps(filter, 1);
+            fix(filter, Position::ned(0.0, 0.0, 0.0), one);
+        }
+        let (north, down) = (ErrorState::PositionNorth, ErrorState::PositionDown);
+        let variance = |filter: &Eskf, axis| filter.covariance().variance(axis);
+        assert!(variance(&rejected, north) > variance(&clean, north));
+        assert_eq!(variance(&half, down), variance(&clean, down));
+    }
+
+    #[test]
     fn the_interval_of_24_prime_restarts_with_the_filter() {
         // The filter's clock restarts at initialization, so the fix before it is not the
         // previous one. Were it kept, the first fix after 0.2 s of the new clock would be
