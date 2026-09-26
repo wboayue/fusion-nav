@@ -8,6 +8,7 @@
 use nalgebra::{ComplexField, RealField, Rotation3, UnitQuaternion, Vector3};
 
 use crate::config::{GRAVITY, Initialization};
+use crate::display::{Decimals, Fixed};
 use crate::frames::{Body, Ned};
 use crate::math::wrap_pi;
 use crate::propagate::ImuSample;
@@ -253,6 +254,7 @@ pub(crate) fn measure(window: &[StaticSample], dt: Seconds) -> Result<Measured, 
 /// filter says which it got rather than refusing to run. See
 /// [`Status::Aligning`](crate::Status::Aligning).
 #[must_use = "whether the filter aligned or only started coarsely changes what the estimate is worth"]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Alignment {
     /// The window was long enough and genuinely still: tilt from averaged gravity, gyro
@@ -278,11 +280,22 @@ impl Alignment {
     }
 }
 
+impl core::fmt::Display for Alignment {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Static => f.write_str("static"),
+            Self::Coarse(coarse) => write!(f, "coarse, {coarse}"),
+            Self::Seeded => f.write_str("seeded"),
+        }
+    }
+}
+
 /// Why alignment was coarse rather than static.
 ///
 /// Carries what was measured, so "not stationary" is diagnosable rather than a bare
 /// verdict: an integrator tuning
 /// [`Initialization`](crate::Initialization) needs to know by how much.
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Coarse {
     /// The vehicle held still, but the window spans less than
@@ -325,6 +338,34 @@ pub enum Coarse {
     },
 }
 
+/// What was measured, in the units [`Initialization`](crate::Initialization) is tuned in.
+/// `inertial_accel` is left out while (5′) only reports it.
+impl core::fmt::Display for Coarse {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let three = |value| Fixed::new(value, Decimals::Three);
+        match *self {
+            Self::WindowTooShort { required, provided } => write!(
+                f,
+                "window of {} s, {} s required",
+                three(provided.as_secs()),
+                three(required.as_secs())
+            ),
+            Self::NotStationary {
+                peak_gyro,
+                peak_accel_deviation,
+                span,
+                ..
+            } => write!(
+                f,
+                "moving: peak rate {} rad/s, specific force {} m/s² off gravity, over {} s",
+                three(peak_gyro.as_rad_per_s()),
+                three(peak_accel_deviation.as_m_per_s2()),
+                three(span.as_secs())
+            ),
+        }
+    }
+}
+
 /// Why initialization could not run at all.
 ///
 /// Distinct from [`Coarse`]: these are inputs the filter can make nothing of, not starts
@@ -332,6 +373,7 @@ pub enum Coarse {
 /// is why they are checked rather than trusted — a seed in particular crosses a boundary
 /// the filter does not control, arriving from another estimator or from storage that may
 /// be stale or corrupt.
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum InitError {
     /// The window held no samples, so there is nothing to align from.
@@ -373,7 +415,8 @@ impl core::fmt::Display for InitError {
         match self {
             Self::NoSamples => write!(f, "initialization window held no samples"),
             Self::InvalidStep { dt } => {
-                write!(f, "initialization dt of {} s is not usable", dt.as_secs())
+                let dt = Fixed::new(dt.as_secs(), Decimals::Three);
+                write!(f, "initialization dt of {dt} s is not usable")
             }
             Self::NotFinite => write!(f, "initialization input was not finite"),
             Self::InvalidVariance => {
@@ -871,7 +914,30 @@ pub(crate) fn baro_reference(window: &[StaticSample]) -> Option<(Altitude, f32)>
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::format;
+
     use super::*;
+
+    #[test]
+    fn a_coarse_start_reads_as_what_was_measured() {
+        let short = Alignment::Coarse(Coarse::WindowTooShort {
+            required: Seconds::from_secs(2.0),
+            provided: Seconds::from_secs(0.8),
+        });
+        assert_eq!(
+            format!("{short}"),
+            "coarse, window of 0.800 s, 2.000 s required"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                InitError::InvalidStep {
+                    dt: Seconds::from_secs(-0.0025)
+                }
+            ),
+            "initialization dt of -0.003 s is not usable"
+        );
+    }
 
     /// A sample from a vehicle genuinely sitting still: no rotation, gravity the only
     /// specific force. `StaticSample::default()` is not this — its zero acceleration is

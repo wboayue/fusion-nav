@@ -25,6 +25,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets --no-deps
+      - run: cargo clippy --all-targets --no-deps --features defmt
       # `tools/check-anchors.sh` owns what this checks and why; its fixtures run first for
       # the reason `data/expect.sh --self-test` does below. The README's snippets are
       # checked by `cargo test --doc`, through the `include_str!` in `src/lib.rs`.
@@ -77,6 +78,11 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --lib --target ${{ matrix.target }}
+      # The integration a reader copies, built as a program: a `std` call in it is a build
+      # error here. Then both again under `defmt`, whose impls nothing else compiles.
+      - run: cargo build --example embedded --target ${{ matrix.target }}
+      - run: cargo build --lib --features defmt --target ${{ matrix.target }}
+      - run: cargo build --example embedded --features defmt --target ${{ matrix.target }}
 
   msrv:
     name: msrv (1.89)

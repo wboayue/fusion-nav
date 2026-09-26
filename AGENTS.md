@@ -293,6 +293,7 @@ llvm-readobj --stack-sizes target/thumbv6m-none-eabi/release/libfusion_nav.rlib 
 
 cargo run --example basic         # minimal integration loop
 cargo run --example degradation   # timeouts, status transitions, application-driven recovery
+cargo build --example embedded --target thumbv7em-none-eabihf [--features defmt]   # no_std; CI builds, never runs
 cargo run --example replay        # replays data/flight.csv -> target/replay.csv (CI smoke test)
 cargo run --example replay -- <input.csv> <output.csv> [truth.csv]   # truth adds a `score` line
 cargo run --example replay -- data/flight.csv target/replay.csv data/flight.truth.csv
@@ -626,7 +627,8 @@ look at what those two publish before inventing something.
 ## Architecture
 
 One published crate, `no_std`, `forbid(unsafe_code)`, `deny(missing_docs)`, allocation-free,
-edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
+edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`), plus `defmt` behind an
+off-by-default feature of the same name.
 
 - `src/eskf.rs` — `Eskf`, the whole public filter: `initialize`, `initialize_from`, `predict`,
   `fuse_*`, `state`, `reset_*_to`. `initialize_from` is stage 1
@@ -705,6 +707,11 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
   change that breaks them shows only when they are run and their output diffed against main's.
   #122's held-reading rule turned every `degradation` altitude into `NoReference` with every
   test green.
+- `examples/embedded.rs` — the integration loop as firmware: `no_std` and `no_main` on
+  `target_os = "none"`, an empty `main` on a host so `clippy --all-targets` reads it. CI builds it
+  for both thumb targets, with and without `defmt`, and never runs it. Its `log!` macro is the
+  one place both logging routes are exercised at a call site; a `std` call in it is a build
+  error there and nowhere else.
 - `panic-check/` — a second, unpublished crate: a bare-metal binary calling the whole public
   API, plus `run.sh`, which links it and reads the panic paths back out of the ELF. A workspace
   member so that one `Cargo.lock` covers both, but not a *default* member, so `cargo test`,
@@ -794,7 +801,10 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
   `core::panicking` reference, which catches the indexing nobody wrote down as well as the
   `unwrap` somebody did. It also refuses to run if `panic-check/src/main.rs` is missing any
   `pub fn` in `src/`, so a new entry point has to be linked into it — matched on the name, so
-  one call per name is enough and a rename is what breaks it. `README.md` owns the two
+  one call per name is enough and a rename is what breaks it. Every `Display` impl in `src/` is
+  held the same way, through a `show::<T>(` call, because core's `f32` formatting reaches
+  `core::panicking`: an impl printing a float with `{}` fails the gate, and `src/display.rs`'s
+  `Fixed` is what prints one instead. `README.md` owns the two
   boundaries: `debug-assertions = false`, and `opt-level = 3` or `"s"`.
 - Frames and units are fixed at the boundary: NED navigation frame, FRD body, Hamilton
   quaternion scalar-first, down-positive gravity. Not configurable.

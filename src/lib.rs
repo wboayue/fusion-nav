@@ -3,7 +3,11 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+#[cfg(test)]
+extern crate std;
+
 mod config;
+mod display;
 mod eskf;
 mod frames;
 mod geodetic;

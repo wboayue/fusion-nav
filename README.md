@@ -100,11 +100,13 @@ loop {
 ```
 
 `fusion_nav::prelude` carries the whole integration surface. Three runnable programs show it in
-full:
+full, and a fourth is the embedded counterpart, `no_std` with no `println!`: where `dt` comes
+from, sources at their own rates, every outcome handled and logged where it is returned.
 
 ```console
 $ cargo run --example basic         # the integration loop on its own
 $ cargo run --example degradation   # dropouts, diagnostics, an application-driven reset
+$ cargo build --example embedded --target thumbv7em-none-eabihf   # the loop on a microcontroller
 $ cargo run --example replay        # a recorded flight in, the estimate out, as CSV
 ```
 
@@ -430,6 +432,30 @@ aiding clause on its own — the current answer widened by what is being accepte
 * `baro_reference()` — `α₀` as currently estimated, if a start established one. It moves as the
   barometer and GNSS height disagree; see equation (30′).
 
+### Logging an outcome
+
+Every outcome, `Status` and `Validity` implement `Display`, one line each and without the
+source, which the outcome does not know:
+
+```rust
+use core::fmt::Write;
+use fusion_nav::prelude::*;
+
+fn fuse(filter: &mut Eskf, log: &mut impl Write, fix: Geodetic) -> core::fmt::Result {
+    let outcome = filter.fuse_gnss_geodetic(fix, PositionNoise::horizontal_vertical(1.5, 3.0));
+    if !outcome.is_accepted() {
+        writeln!(log, "gnss position {outcome}")?; // gnss position rejected, ratio 2.70
+    }
+    let state = filter.state();
+    writeln!(log, "{} {}", state.status, state.validity) // degraded att:TH pos:HV vel:-V
+}
+```
+
+With the `defmt` feature the same types, and `State` and `Diagnostics` besides, implement
+`defmt::Format`. It is off by default, so the default build keeps its one dependency.
+The numbers are printed in fixed point through integer formatting, because core's `f32`
+formatting can panic; see [the library cannot panic](#the-library-cannot-panic).
+
 ## Recovery from gate lockout
 
 A gate rejects what disagrees with the estimate, so an estimate that has gone wrong — a logging
@@ -487,6 +513,14 @@ Two boundaries, both real:
   sized `Matrix3 * Vector3` indexes in bounds and leaves the check in as dead code, reached from
   `LocalOrigin::to_ned`. That is the optimizer giving up, not a path this crate can take, and
   gating it would put CI at the mercy of someone else's codegen.
+
+The `Display` impls are in the gate too, and are why none of them prints an `f32` with `{}`:
+core's float formatting reaches `core::panicking` on both targets at both levels, which the gate
+measured the first time one was linked. So they print fixed point through integer formatting,
+which passes, and `run.sh` refuses a `Display` impl that `panic-check/src/main.rs` does not
+format. That covers what this crate prints and nothing the caller does: a `{}` or `{:?}` of an
+`f32` in application code, including the derived `Debug` of any type here, brings the path back.
+`defmt` sends floats as raw bytes and formats them on the host, so it never takes the path.
 
 The crate is also `#![forbid(unsafe_code)]`, `no_std`, and allocation-free.
 

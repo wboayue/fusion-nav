@@ -18,6 +18,7 @@ pub const STATES: usize = 15;
 /// is in hand rather than behind a second call that is easy not to make.
 ///
 /// [`status`]: State::status
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct State {
     /// Rotation from body to NED.
