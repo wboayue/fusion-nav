@@ -47,9 +47,10 @@ longer blocked: #131 (#133) reads tilt and heading on navigation axes, `diag(R P
 `tilt`/`yaw`/`false_valid` score keys moved with it — tilt² + yaw² unchanged, the body split had
 booked heading error as tilt (`gnss_latency` `false_valid_att` 120 → 50). #134 (#135) made (36′)
 axis-free: its tilt variance is the largest eigenvalue of the horizontal tilt block, not the larger
-of two diagonals. The exact field-axis term `f̂ᵀPf̂` was measured and lost (`gnss_outage` `pos_h`
-2.630 m against 2.227), because consecutive headings share a tilt error that (24) treats as
-independent; only `f16771dd` re-pinned (`nu_mag_yaw` −0.025485 → −0.024121).
+of two diagonals. The exact field-axis term `f̂ᵀPf̂` lost while headings were fused as white
+(`gnss_outage` `pos_h` 2.630 m against 2.227), because consecutive headings share a tilt error;
+under (24′) the two agree (1.255 against 1.252, #153), and the eigenvalue stays as the bound
+rather than for a margin. Only `f16771dd` re-pinned (`nu_mag_yaw` −0.025485 → −0.024121).
 #86's PR 2 (#141) made the corpus eight logs: `89a498ce` is the real baseline (RTK, 4.07 km, #124's
 log), `eb799954` carries the first `rejected_mag` (3), and `cd7e0001` is the coarse start and the
 first `floored=` (21, a raw 0.43 mm/s σ_v). `2c42096b` now starts `short` on a 0.80 s still prefix:
