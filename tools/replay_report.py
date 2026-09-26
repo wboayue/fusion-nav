@@ -368,19 +368,10 @@ def read_resets(path):
     seconds of a flight, and without the marks that step reads as divergence
     from this filter rather than as an event in theirs.
     """
-    _, columns, stream = rows_of(path, "ekf2_att")
-    if "att_reset" not in columns or "source" not in columns:
+    table = read_table(path, ["att_reset"], source="ekf2_att")
+    if table is None or "att_reset" not in table[1]:
         return []
-    counter = columns.index("att_reset")
-    times, previous = [], None
-    for cells in stream:
-        if not cells[counter]:
-            continue
-        value = cells[counter]
-        if previous is not None and value != previous:
-            times.append(float(cells[0]))
-        previous = value
-    return times
+    return list(agreement.change_times(table[0], table[1]["att_reset"]))
 
 
 def read_path(path, x_name, y_name, points, source=None, source_column="source"):
@@ -673,8 +664,11 @@ class Backdrop:
         shade_runs(axes, self.mode_runs, MODE_SHADES, 0.45, span=(0.93, 1.0))
 
 
-def gap_threshold(times, multiple=5.0):
+def gap_threshold(times, multiple=agreement.HOLD):
     """How long a silence has to be, for this source, to count as an outage.
+
+    The multiple is the one `agreement.HOLD` holds a rejection for, so a shaded
+    outage and a rejection that stops being counted mean the same silence.
 
     Relative to the source's own cadence rather than an absolute number of
     seconds, which means different things at 1 Hz and at 10 Hz. At a fixed 2 s
@@ -1120,10 +1114,18 @@ REFERENCE_KINDS = {
 }
 
 #: Harness keys printed beside the agreement ones, read off the `summary` line
-#: and never recomputed: what each filter fused and how often it stepped.
-HARNESS_KEYS = ["r_policy", "alpha0", "resets", "recovered", "rejected_gnss_pos",
-                "rejected_gnss_hgt", "rejected_gnss_vel", "rejected_baro", "rejected_mag",
-                "nis_gnss_pos", "nis_gnss_hgt", "nis_gnss_vel", "nis_baro", "nis_mag"]
+#: and never recomputed: what each filter fused and how often it stepped. The
+#: per-source ones are found by prefix, so a new source needs no edit here.
+HARNESS_KEYS = ["r_policy", "alpha0", "resets", "recovered"]
+HARNESS_PREFIXES = ("rejected_", "nis_")
+
+
+def harness_keys(keys):
+    """The summary keys printed beside the agreement ones, in the line's order."""
+    return [k for k in keys
+            if k in HARNESS_KEYS
+            or (k.startswith(HARNESS_PREFIXES) and not k.startswith("nis_over95_"))]
+
 
 #: The corpus table's sections, each a set of key prefixes, in reading order.
 AGREEMENT_SECTIONS = [
@@ -1132,7 +1134,7 @@ AGREEMENT_SECTIONS = [
     ("Attitude", ("tilt_", "heading_", "att_nd2")),
     ("Biases", ("ba_", "bg_")),
     ("Rejections, seconds", ("rej_s_",)),
-    ("Resets and harness keys", ("estimator", "ekf2_", *HARNESS_KEYS)),
+    ("Resets and harness keys", ("estimator", "ekf2_", *HARNESS_KEYS, *HARNESS_PREFIXES)),
 ]
 
 
@@ -1164,12 +1166,12 @@ def reference_height(notes):
     return None
 
 
-def agreement_of(replay, reference, sources):
-    """Every agreement key for one run, from its epoch file, the reference beside
-    it, and its fusion rows grouped by source (read_fusion)."""
-    ours = read_table(replay, AGREEMENT_EPOCH_COLUMNS)
+def agreement_of(ours, reference, sources):
+    """Every agreement key for one run, from its epochs as
+    `(t, {AGREEMENT_EPOCH_COLUMNS: array})`, the reference beside it, and its
+    fusion rows grouped by source (read_fusion)."""
     if ours is None:
-        raise ReportError(f"{replay}: no epochs to compare")
+        raise ReportError("no epochs to compare")
     notes = read_notes(reference)
     ekf2 = {}
     for kind, (source, names) in REFERENCE_KINDS.items():
@@ -1187,13 +1189,13 @@ def agreement_of(replay, reference, sources):
     return {"estimator": reference_estimator(notes), **values}
 
 
-def agreement_line(values, keys, harness=True):
+def agreement_line(values, keys):
     """`key=value ...`: `r_policy`, the agreement keys, then the harness keys read
-    beside them unless `harness` is false."""
+    beside them. Every key, always: which of them `data/ekf2.txt` pins is
+    `data/fetch.sh`'s decision, since it owns the manifest that pins the rest."""
     pairs = [("r_policy", keys.get("r_policy", "none"))]
     pairs += [(k, agreement.format_value(v)) for k, v in values.items()]
-    if harness:
-        pairs += [(k, keys[k]) for k in HARNESS_KEYS if k in keys and k != "r_policy"]
+    pairs += [(k, keys[k]) for k in harness_keys(keys) if k != "r_policy"]
     return " ".join(f"{k}={v}" for k, v in pairs)
 
 
@@ -1227,20 +1229,11 @@ def agreement_tables(runs):
 
 
 AGREEMENT_CAPTION = (
-    "Distance from EKF2's own solution on the same log, or from whichever PX4 "
-    "estimator <code>estimator</code> names where that is not EKF2. EKF2 is not truth: a "
-    "figure here is agreement, and a divergence is a finding to explain before it "
-    "is an error on either side. Positions after aligning EKF2's origin into this "
-    "filter's frame, from the reference header; height as each filter's climb, first "
-    "60 s mean to last, since the two converge to different references "
-    "(<code>height_reference_ekf2</code>); <code>_nd2</code> is the mean squared "
-    "difference over the sum of both filters' variances, a scale rather than a "
-    "chi-square, since both read the same sensors; heading after EKF2's first "
-    "attitude reset once this filter runs; rejections as seconds each filter "
-    "spent over its gate and the seconds both did. <code>none</code> is a quantity "
-    "this log cannot supply. "
-    "Harness keys are read from the summary, never recomputed. "
-    "See data/README.md, \"Agreement with EKF2\"."
+    "Distance from EKF2's own solution on the same log (or from the PX4 estimator "
+    "<code>estimator</code> names): agreement, not accuracy, and <code>none</code> "
+    "where the log cannot supply a quantity. What each key is and what it cannot "
+    "say: <a href=\"https://github.com/wboayue/fusion-nav/blob/main/data/README.md"
+    "#agreement-with-ekf2\">data/README.md, Agreement with EKF2</a>."
 )
 
 
@@ -1267,19 +1260,20 @@ def build_corpus(directory):
             replay = summary.with_suffix(".csv")
             keys = read_summary(summary)
             _, sources = read_fusion(fusion_path(replay))
+            # One pass over the epochs serves both the row count the provenance
+            # check reads and the comparison.
+            ours = read_table(replay, AGREEMENT_EPOCH_COLUMNS)
+            epoch_rows = 0 if ours is None else len(ours[0])
             problems = check_pairing(read_notes(input_path), reference_notes, [])
-            problems += check_provenance(keys, count_rows(replay), sources, reference_notes)
+            problems += check_provenance(keys, epoch_rows, sources, reference_notes)
             if keys.get("r_policy") != summary.stem:
                 problems.append(f"{summary.name} says r_policy={keys.get('r_policy')}")
             if problems:
                 raise ReportError(f"{log.name}/{summary.stem}: these files do not "
                                   "describe the same run:\n  - " + "\n  - ".join(problems))
-            values = agreement_of(replay, reference, sources) if reference else {}
-            # A raw run's harness keys are data/manifest.txt's to pin, so its line
-            # leaves them to it; any other policy's are pinned nowhere else.
-            lines.append(f"agreement log={log.name} "
-                         + agreement_line(values, keys, harness=summary.stem != "raw"))
+            values = agreement_of(ours, reference, sources) if reference else {}
             line = agreement_line(values, keys)
+            lines.append(f"agreement log={log.name} {line}")
             runs.append((f"{log.name[:8]} {summary.stem}",
                          dict(token.split("=", 1) for token in line.split())))
     if not runs:
@@ -1314,7 +1308,13 @@ def build_report(args):
     for _title, _unit, _columns, sigmas in STATE_GROUPS:
         epoch_columns.extend(sigmas)
     epoch_columns.extend(RATIOS)
-    _, epochs, ours_q = scan(args.replay, epoch_columns, args.points, keep=QUATERNION)
+    # The agreement section's columns ride on this pass, undecimated, rather than
+    # costing a pass of their own: 5.4 s of the 2 h log's 33.
+    _, epochs, ours_table = scan(args.replay, epoch_columns, args.points,
+                                 keep=AGREEMENT_EPOCH_COLUMNS)
+    ours_q = None
+    if ours_table is not None:
+        ours_q = ours_table[0], {n: ours_table[1][n] for n in QUATERNION}
 
     gates, sources = read_fusion(fusion_path(args.replay))
 
@@ -1552,7 +1552,7 @@ def build_report(args):
     blocks.append(png_block(png, caption))
 
     if args.reference:
-        values = agreement_of(args.replay, args.reference, sources)
+        values = agreement_of(ours_table, args.reference, sources)
         line = dict(token.split("=", 1) for token in agreement_line(values, keys).split())
         blocks.append("<h2>Agreement with EKF2</h2>")
         blocks.append(agreement_tables([(keys.get("r_policy", "?"), line)]))
@@ -1624,6 +1624,39 @@ def self_test():
     Path(handle.name).unlink()
     if runs != [[0.5, 5.0, "fw"], [5.0, 9.0, "to_mc"]]:
         failures.append(f"read_runs since/until: got {runs}")
+
+    # The reference header's lines, as tools/ulog2replay.py's own self-test writes
+    # them. A reworded line must fail here rather than read as "no origin".
+    def same(what, got, want):
+        if got != want:
+            failures.append(f"{what}: got {got!r}, want {want!r}")
+
+    same("offset", reference_offset(["EKF2 origin in replay frame: 110.574 111.320 -9.998 m"]),
+         (110.574, 111.32, -9.998))
+    down = reference_offset(["EKF2 origin in replay frame: 0.000 0.000 none m"])
+    if down is None or down[:2] != (0.0, 0.0) or not math.isnan(down[2]):
+        failures.append(f"offset with no MSL height: got {down!r}")
+    same("no offset", reference_offset(["EKF2 origin in replay frame: none (EKF2 reports "
+                                        "no origin)"]), None)
+    same("height reference", reference_height([
+        "EKF2 aiding: height reference baro (EKF2_HGT_MODE 0); share of control_mode_flags "
+        "samples: gnss_pos 1.00"]), "baro")
+    same("no height reference", reference_height([
+        "EKF2 aiding: height reference unknown (no EKF2_HGT_REF or EKF2_HGT_MODE)"]), None)
+    same("estimator", reference_estimator(["Estimator: lpe (SYS_MC_EST_GROUP 1)"]), "lpe")
+    with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as handle:
+        handle.write("# note\nt_s,source,a,b\n0.5,k,1,\n1.5,other,9,9\n2.5,k,,4\n")
+    table = read_table(handle.name, ["a", "b", "missing"], source="k")
+    Path(handle.name).unlink()
+    # A blank is NaN and its row stays; a column the file lacks is absent.
+    if (list(table[0]) != [0.5, 2.5] or sorted(table[1]) != ["a", "b"]
+            or not (table[1]["a"][0] == 1.0 and math.isnan(table[1]["a"][1]))):
+        failures.append(f"read_table: got {table!r}")
+    same("agreement line", agreement_line(
+        {"pos_n_rms": 0.31, "climb": None},
+        {"r_policy": "px4", "rate": "250", "nis_mag": "0.1", "nis_over95_mag": "0.0",
+         "resets": "1"}),
+        "r_policy=px4 pos_n_rms=0.3100 climb=none nis_mag=0.1 resets=1")
 
     for failure in failures:
         print(f"FAIL {failure}", file=sys.stderr)
