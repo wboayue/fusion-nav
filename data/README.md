@@ -252,8 +252,8 @@ with `compare_pairs` after sourcing the file. `sw=` carries the firmware type (`
 `ekf2=` names the covariance layout `--reference` will read — `err24`, `err23` or `quat24`, the
 table below — or says `unmapped` (LPE) or `none`. `vib_metric=` says which quantity `vib_p95=`
 is, since PX4 `f2ae8ae814` changed it under one field name: `dv`, a filtered Δv difference in m/s
-before v1.13, `accel`, an acceleration difference in m/s² from it, or `unknown` for a v1.12 dev
-build or a vendor's own version. `2c42096b`'s 0.094 `dv` and a v1.15 log's 32.8 `accel` are not
+before v1.13, `accel`, an acceleration difference in m/s² from v1.13's betas on, or `unknown`
+for a v1.12 or v1.13 build short of beta, which could be either, or a vendor's own version. `2c42096b`'s 0.094 `dv` and a v1.15 log's 32.8 `accel` are not
 a quiet airframe and a loud one, and no rescaling makes them one quantity, so compare `vib_p95`
 only within one metric. What a pair cannot say is in prose:
 
