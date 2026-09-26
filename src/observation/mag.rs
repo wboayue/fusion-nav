@@ -137,11 +137,12 @@ pub(crate) fn heading_observation(
 /// `σ_tilt²` is the largest eigenvalue of the tilt block, the attitude covariance on the
 /// horizontal plane: the variance of tilt about the worst horizontal axis. To first order
 /// only tilt about the field's own horizontal direction `f̂` leaks, so `f̂ᵀ P f̂` is the exact
-/// price of one reading, and it measured worse than the bound: consecutive headings share a
-/// tilt error that velocity fusion corrects only over seconds, and (24) took them as
-/// independent. That was measured with headings fused as white; (24′) now prices part of that
-/// sharing, and the comparison has not been run again. `EQUATIONS.md` has the derivation and
-/// the measurement.
+/// price of one reading. The bound is kept because it is the bound, not for a margin: fused
+/// as white, the exact form lost (`gnss_outage` `pos_h` 2.630 m against 2.227), since
+/// consecutive headings share a tilt error velocity fusion corrects only over seconds; under
+/// (24′), which prices that sharing as the magnetometer's `τ`, the two agree to 0.3 % on
+/// position and neither is overconfident on 50 seeds. `EQUATIONS.md` has the derivation and
+/// both measurements.
 ///
 /// The eigenvalue depends on no choice of axes, where the larger of two diagonals does: on
 /// an anisotropic block the north/east and body x/y pairs give different maxima, and the
