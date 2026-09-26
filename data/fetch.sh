@@ -7,6 +7,8 @@
 #   data/fetch.sh --add URL [NAME]   download once, record its checksum, append to manifest
 #   data/fetch.sh --check            convert and replay each log, assert its expectations
 #   data/fetch.sh --pin NAME         convert and replay one log, print expectations to commit
+#   data/fetch.sh --compare [--pin]  replay every log beside EKF2 under both R policies,
+#                                    assert data/ekf2.txt (or print its lines to commit)
 #   data/fetch.sh --list             show the manifest
 #   data/fetch.sh --venv             create .venv with the pyulog version the converter pins
 #
@@ -90,6 +92,73 @@ replay_summary() {
         return 1
     fi
     echo "$summary"
+}
+
+# Convert one log with EKF2's reference and replay it under each R policy, into the layout
+# `tools/replay_report.py --corpus` reads: `<out>/<log>/{input,reference}.csv` and, per policy,
+# `<policy>.csv`, its `.fusion.csv` and the captured `<policy>.summary`. A failure leaves a
+# FAILED file beside them rather than an exit status, because these run in the background.
+compare_one() {
+    local name=$2 dir="$out/${2%.ulg}"
+    local ulg="$dest/$name"
+    mkdir -p "$dir"
+    if [ ! -f "$ulg" ]; then
+        echo "missing — run data/fetch.sh first" > "$dir/FAILED"
+        return 0
+    fi
+    if ! "$python" "$root/tools/ulog2replay.py" "$ulg" -o "$dir/input.csv" \
+        --reference "$dir/reference.csv" >/dev/null 2>&1; then
+        echo "convert failed" > "$dir/FAILED"
+        return 0
+    fi
+    local policy
+    for policy in raw px4; do
+        "$replay" --r-policy "$policy" "$dir/input.csv" "$dir/$policy.csv" \
+            > "$dir/$policy.summary" 2>/dev/null ||
+            { echo "replay --r-policy $policy failed" > "$dir/FAILED"; return 0; }
+    done
+}
+spawn_compare() { compare_one "$@" & }
+
+# The keys a log's manifest entry pins, one per line: a raw run's agreement line repeats them,
+# and `--compare --pin` leaves them to the manifest rather than pinning them twice.
+manifest_keys() {
+    local name=$1 sum entry url expect pair
+    [ -f "$manifest" ] || return 0
+    while read -r sum entry url expect; do
+        [ "$entry" = "$name" ] || continue
+        for pair in $expect; do
+            pair=${pair%%<=*} pair=${pair%%>=*}
+            echo "${pair%%=*}"
+        done
+    done < "$manifest"
+}
+
+# `line` without the pairs whose key is one of `keys` (newline-separated).
+without_keys() {
+    local line=$1 keys=$2 word out=""
+    local restore_glob=0
+    case $- in *f*) ;; *) restore_glob=1; set -f ;; esac
+    for word in $line; do
+        if ! printf '%s\n' "$keys" | grep -qxF "${word%%=*}"; then
+            out="${out:+$out }$word"
+        fi
+    done
+    [ "$restore_glob" = 1 ] && set +f
+    echo "$out"
+}
+
+# The expectations data/ekf2.txt holds for one `agreement` line: `<log> <policy> pairs...`.
+ekf2_expectations() {
+    local log=$1 policy=$2 name want_policy expect
+    [ -f "$ekf2" ] || return 0
+    while read -r name want_policy expect; do
+        case "$name" in ''|\#*) continue ;; esac
+        if [ "$name" = "$log" ] && [ "$want_policy" = "$policy" ]; then
+            echo "$expect"
+            return 0
+        fi
+    done < "$ekf2"
 }
 
 # Replay one log, asserting the manifest's expectations against its `summary` line.
@@ -198,6 +267,64 @@ case "$cmd" in
     failed=0
     each_entry check_one || failed=1
     [ "$failed" = 0 ] || die "one or more entries did not match their expectations"
+    ;;
+
+--compare)
+    [ -f "$manifest" ] || die "no manifest at $manifest"
+    require_pinned_pyulog
+    command -v uv >/dev/null || die "uv not found; tools/replay_report.py runs through it"
+    pin=0
+    [ "${2:-}" = "--pin" ] && pin=1
+    ekf2="$root/data/ekf2.txt"
+    echo "building"
+    (cd "$root" && cargo build --quiet --release --example replay) || die "build failed"
+    # Where cargo put it, which CARGO_TARGET_DIR or build.target-dir can move out of target/.
+    target=$(cd "$root" && cargo metadata --format-version 1 --no-deps |
+        python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])') ||
+        die "cargo metadata failed"
+    replay="$target/release/examples/replay"
+    out="$target/compare"
+    rm -rf "$out"
+    mkdir -p "$out"
+    # Stamped so the table names the build that produced it; `-dirty` says when that is not
+    # a commit anyone can check out.
+    git -C "$root" describe --always --dirty > "$out/commit"
+    echo "replaying the corpus beside EKF2, raw and px4"
+    each_entry spawn_compare
+    wait
+    failed=0
+    for marker in "$out"/*/FAILED; do
+        [ -e "$marker" ] || continue
+        echo "  FAILED   $(basename "$(dirname "$marker")"): $(cat "$marker")" >&2
+        failed=1
+    done
+    [ "$failed" = 0 ] || die "one or more logs did not replay"
+    lines=$(cd "$root" && uv run --quiet tools/replay_report.py --corpus "$out" \
+        -o "$out/agreement.html") || die "tools/replay_report.py --corpus failed"
+    while read -r _ line; do
+        # By key, not by position, so the line's order is the writer's to choose.
+        log=$(pair_value "$line" log) || die "an agreement line with no log=: $line"
+        policy=$(pair_value "$line" r_policy) || die "an agreement line with no r_policy=: $line"
+        rest=$(without_keys "$line" "log")
+        if [ "$pin" = 1 ]; then
+            # The manifest pins the raw policy's summary keys already.
+            [ "$policy" = raw ] && rest=$(without_keys "$rest" "$(manifest_keys "$log.ulg")")
+            echo "$log $policy $(pin_pairs "agreement $rest" --decimal)"
+            continue
+        fi
+        expect=$(ekf2_expectations "$log" "$policy")
+        if [ -z "$expect" ]; then
+            echo "  no expectations  $log $policy"
+            failed=1
+        elif compare_pairs "$line" "$expect" "$log $policy"; then
+            echo "  ok       $log $policy"
+        else
+            echo "    got $rest" >&2
+            failed=1
+        fi
+    done <<< "$lines"
+    echo "table: $out/agreement.html"
+    [ "$pin" = 1 ] || [ "$failed" = 0 ] || die "one or more runs did not match data/ekf2.txt"
     ;;
 
 --pin)

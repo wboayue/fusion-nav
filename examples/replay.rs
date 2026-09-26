@@ -13,9 +13,12 @@
 //! ```text
 //! cargo run --example replay -- data/flight.csv target/replay.csv
 //! cargo run --example replay -- data/flight.csv target/replay.csv data/flight.truth.csv
+//! cargo run --example replay -- --r-policy px4 data/logs/<log>.csv target/replay.csv
 //! ```
 //!
 //! The third argument is optional and turns on scoring against truth; see *Scoring* below.
+//! `--r-policy`, anywhere on the line, picks what GNSS rows are fused with: `raw`, the
+//! default, or `px4`; see [`RPolicy`].
 //! It also writes `<out>.nees.csv`, `ε` per block per epoch, which `data/anees.sh` averages
 //! across seeds (#89).
 //!
@@ -24,7 +27,9 @@
 //! One row per measurement, sorted by time. `#` comments and the header are skipped, and
 //! blank cells are those not applicable to that source. One comment is read: a leading
 //! `# Magnetic declination <rad> rad` line sets `Config::magnetic_declination`, since the site
-//! and not the harness decides it, and a log without one is replayed at zero.
+//! and not the harness decides it, and a log without one is replayed at zero. A
+//! `# GNSS noise parameters` line is read only under `--r-policy px4`, which refuses a log
+//! without one.
 //!
 //! ```text
 //! t_s,source,v0,v1,v2,v3,v4,v5,var0,var1,var2
@@ -196,19 +201,88 @@ const PROBE: usize = 64;
 /// whose vehicle is already moving still has to replay.
 const PATIENCE: f64 = 10.0;
 
-/// What the harness hands each `fuse_*` as `R`, reported on the `summary` line.
+/// What the harness hands each GNSS `fuse_*` as `R`, reported as `r_policy=` on the `summary`
+/// line.
 ///
-/// `raw` means every measurement is fused with the variance its row carries, unbounded,
-/// where both production estimators floor a receiver's reported accuracy first — the
-/// parameters and lines are on `PositionNoise::clamped` and `VelocityNoise::clamped`, and
-/// `data/README.md` carries why this harness applies neither.
+/// `Raw`, the default and the only policy `data/manifest.txt` pins, fuses every measurement
+/// with the variance its row carries, unbounded, where both production estimators floor a
+/// receiver's reported accuracy first — the parameters and lines are on
+/// `PositionNoise::clamped` and `VelocityNoise::clamped`, and `data/README.md` carries why
+/// this harness applies neither by default.
 ///
-/// A published figure is a claim about an `R` policy as much as about the filter: EKF2's
-/// solution on the same log is fused with a floored `R`, so a comparison that does not
-/// state the difference attributes it to the estimator. Nothing else on this line would
-/// distinguish a raw run from a floored one — `rejected=`, `transitions=` and every `nis_`
-/// would simply read differently, with no key saying why.
-const R_POLICY: &str = "raw";
+/// `Px4` applies EKF2's own rule, with the parameters the log's EKF2 flew, so a comparison
+/// against its solution (#8) has one `R` policy in it rather than two. A published figure is a
+/// claim about an `R` policy as much as about the filter, and nothing else on the `summary`
+/// line would distinguish a raw run from a floored one — `rejected=`, `transitions=` and
+/// every `nis_` would simply read differently, with no key saying why.
+///
+/// GNSS only: PX4 logs no barometer or heading variance, so those rows already carry the
+/// converter's constants under either policy.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum RPolicy {
+    Raw,
+    Px4(GnssNoiseParameters),
+}
+
+/// `EKF2_GPS_P_NOISE`, `EKF2_GPS_V_NOISE` and `EKF2_NOAID_NOISE` as the log's header states
+/// them — the converter supplies PX4's default for one the log lacks, and says so.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct GnssNoiseParameters {
+    position: f32,
+    velocity: f32,
+    no_aid: f32,
+}
+
+impl RPolicy {
+    fn name(self) -> &'static str {
+        match self {
+            RPolicy::Raw => "raw",
+            RPolicy::Px4(_) => "px4",
+        }
+    }
+
+    /// A GNSS position row's `R`, from the variances it carries.
+    ///
+    /// Under `Px4`, horizontal is `min(max(σ_h, p), noaid)`, floored at 0.01 m, and vertical
+    /// `min(max(σ_v, 1.5 p), noaid)` (`EKF/aid_sources/gnss/gps_control.cpp:358-368` and
+    /// `gnss_height_control.cpp:62-76` at c4e4ef98). Not `PositionNoise::clamped`, whose one
+    /// floor serves both axes. PX4 caps horizontal only while GNSS is the sole horizontal
+    /// aiding, which it always is here, and vertical only while it is *not* the sole vertical
+    /// source; the cap is applied to both, and it binds only where a receiver claims worse
+    /// than 10 m.
+    ///
+    /// A variance that is not a finite non-negative number passes through untouched, so the
+    /// filter refuses the row as it would under `Raw`: `f32::max` ignores a NaN, and flooring
+    /// one would turn a corrupt row into a confident fix.
+    fn position(self, var: [f32; 3]) -> PositionNoise<Ned> {
+        let RPolicy::Px4(p) = self else {
+            return PositionNoise::from_variance(var[0], var[1], var[2]);
+        };
+        if !var.iter().all(|v| v.is_finite() && *v >= 0.0) {
+            return PositionNoise::from_variance(var[0], var[1], var[2]);
+        }
+        let horizontal = var[0].sqrt().max(p.position).min(p.no_aid).max(0.01);
+        let vertical = var[2].sqrt().max(1.5 * p.position).min(p.no_aid);
+        PositionNoise::from_sigma(horizontal, horizontal, vertical)
+    }
+
+    /// A GNSS velocity row's `R`.
+    ///
+    /// Under `Px4`, `max(sacc, v, 0.01)` on every axis and vertical then widened by 1.5, after
+    /// the floor (`EKF/aid_sources/gnss/gps_control.cpp:320-321` at c4e4ef98) — which is why
+    /// this is not `VelocityNoise::clamped(s, 1.5 s, …)`, which floors after widening. The
+    /// row's first variance is `sacc²`, as the converter writes it to all three.
+    fn velocity(self, var: [f32; 3]) -> VelocityNoise<Ned> {
+        let RPolicy::Px4(p) = self else {
+            return VelocityNoise::from_variance(var[0], var[1], var[2]);
+        };
+        if !var.iter().all(|v| v.is_finite() && *v >= 0.0) {
+            return VelocityNoise::from_variance(var[0], var[1], var[2]);
+        }
+        let sigma = var[0].sqrt().max(p.velocity).max(0.01);
+        VelocityNoise::from_sigma(sigma, sigma, 1.5 * sigma)
+    }
+}
 
 /// Reads one estimate column out of a `State`.
 type Column = fn(&State) -> f32;
@@ -311,7 +385,17 @@ fn main() {
 }
 
 fn run() -> Result<(), Box<dyn Error>> {
+    let mut policy = None;
+    let mut positional = Vec::new();
     let mut args = env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--r-policy" {
+            policy = Some(args.next().ok_or("--r-policy wants `raw` or `px4`")?);
+        } else {
+            positional.push(arg);
+        }
+    }
+    let mut args = positional.into_iter();
     let input = args.next().map_or_else(default_input, PathBuf::from);
     let output = args.next().map_or_else(default_output, PathBuf::from);
     let truth = args.next();
@@ -320,6 +404,14 @@ fn run() -> Result<(), Box<dyn Error>> {
     let config = Config {
         magnetic_declination: declination_of(&text),
         ..Config::default()
+    };
+    let policy = match policy.as_deref() {
+        None | Some("raw") => RPolicy::Raw,
+        Some("px4") => RPolicy::Px4(gnss_noise_of(&text).ok_or(
+            "--r-policy px4 needs a `# GNSS noise parameters` header line; \
+             reconvert the log with tools/ulog2replay.py",
+        )?),
+        Some(other) => return Err(format!("--r-policy `{other}`: want `raw` or `px4`").into()),
     };
     // Optional, and absent on every corpus log: no truth file, no `score` line. Opened with
     // the log in hand, so a truth file belonging to another scenario is refused here rather
@@ -336,7 +428,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     write_header(&mut epoch_out)?;
     write_fusion_header(&mut fusion_out, config.gates)?;
 
-    let mut replay = Replay::new(config, scoring);
+    let mut replay = Replay::new(config, policy, scoring);
     {
         let mut out = Sinks {
             epochs: &mut epoch_out,
@@ -742,10 +834,11 @@ struct Replay {
     /// given. One field rather than two, so that "no truth, no `score` line" is structural:
     /// there is no way to reach the accumulators without the rows that filled them.
     scoring: Option<Scoring>,
+    policy: RPolicy,
 }
 
 impl Replay {
-    fn new(config: Config, scoring: Option<Scoring>) -> Self {
+    fn new(config: Config, policy: RPolicy, scoring: Option<Scoring>) -> Self {
         Self {
             consistency: Consistency::new(config.gates),
             filter: Eskf::new(config),
@@ -780,6 +873,7 @@ impl Replay {
             status: Status::default(),
             transitions: Vec::new(),
             scoring,
+            policy,
         }
     }
 
@@ -839,7 +933,8 @@ impl Replay {
                 // accuracy, and it degrades before it drops out.
                 let outcome = self.filter.fuse_gnss_position(
                     Position::ned(r.value(0)?, r.value(1)?, r.value(2)?),
-                    PositionNoise::from_variance(r.variance(0)?, r.variance(1)?, r.variance(2)?),
+                    self.policy
+                        .position([r.variance(0)?, r.variance(1)?, r.variance(2)?]),
                 );
                 self.observe(r.t, GNSS_POS, outcome.horizontal, out)?;
                 self.observe(r.t, GNSS_HGT, outcome.height, out)?;
@@ -852,7 +947,8 @@ impl Replay {
                 self.pending_velocity = Some(velocity);
                 let outcome = self.filter.fuse_gnss_velocity(
                     velocity,
-                    VelocityNoise::from_variance(r.variance(0)?, r.variance(1)?, r.variance(2)?),
+                    self.policy
+                        .velocity([r.variance(0)?, r.variance(1)?, r.variance(2)?]),
                 );
                 self.observe(r.t, GNSS_VEL, outcome, out)?;
             }
@@ -1629,7 +1725,7 @@ impl Replay {
         format!(
             "summary rate={:.0} window={} {} align={} an={} alpha0={} heading={} \
              roll0={roll0:.2} pitch0={pitch0:.2} yaw0={yaw0:.2} declination={:.2} resets={} \
-             recovered={} aligned_at={} attitude_lost={} r_policy={R_POLICY} rejected={}{} discarded={} refused={} \
+             recovered={} aligned_at={} attitude_lost={} r_policy={} rejected={}{} discarded={} refused={} \
              invalid={} floored={} epochs={}{} \
              transitions={} status={:?}",
             self.interval.map_or(0.0, |interval| 1.0 / interval),
@@ -1695,6 +1791,7 @@ impl Replay {
             // because it is the only key that moves when propagation's uncertainty model
             // changes, and because the update of (23)–(28) should push it to `never`.
             self.attitude_lost_after(),
+            self.policy.name(),
             // The gate's verdict, which no other key on this line reports: `refused=` and
             // `invalid=` are propagation steps, not measurements, so a change that started
             // turning down every fix in the corpus would pass `--check` unmoved without
@@ -1915,6 +2012,27 @@ fn declination_of(text: &str) -> Radians {
         .find_map(|line| line.strip_prefix("# Magnetic declination "))
         .and_then(|rest| rest.split_whitespace().next()?.parse().ok())
         .map_or(Radians::ZERO, Radians::from_radians)
+}
+
+/// The floors a `# GNSS noise parameters` header line names, which `--r-policy px4` fuses
+/// with. `None` for a log converted before the converter wrote one, which that policy refuses
+/// rather than filling in a default the log's EKF2 may not have run.
+fn gnss_noise_of(text: &str) -> Option<GnssNoiseParameters> {
+    let rest = text
+        .lines()
+        .take_while(|line| line.starts_with('#'))
+        .find_map(|line| line.strip_prefix("# GNSS noise parameters: "))?;
+    let value = |name: &str| -> Option<f32> {
+        rest.split(',')
+            .find_map(|cell| cell.trim().strip_prefix(name)?.split_whitespace().next())?
+            .parse()
+            .ok()
+    };
+    Some(GnssNoiseParameters {
+        position: value("EKF2_GPS_P_NOISE")?,
+        velocity: value("EKF2_GPS_V_NOISE")?,
+        no_aid: value("EKF2_NOAID_NOISE")?,
+    })
 }
 
 fn scenario_of(text: &str) -> Option<(String, u64)> {
@@ -2660,7 +2778,17 @@ mod tests {
         config: Config,
         scoring: Option<Scoring>,
     ) -> Result<(Replay, String), String> {
-        let mut replay = Replay::new(config, scoring);
+        drive_under(log, config, RPolicy::Raw, scoring)
+    }
+
+    /// [`drive_with`] under an `R` policy other than the default.
+    fn drive_under(
+        log: &Log,
+        config: Config,
+        policy: RPolicy,
+        scoring: Option<Scoring>,
+    ) -> Result<(Replay, String), String> {
+        let mut replay = Replay::new(config, policy, scoring);
         let mut fusions = Vec::new();
         {
             let mut out = Sinks {
@@ -2887,6 +3015,55 @@ mod tests {
         let late = "t_s,source\n# Magnetic declination 0.5 rad\n";
         assert_eq!(declination_of(late), Radians::ZERO);
         assert_eq!(declination_of("# nothing\n"), Radians::ZERO);
+    }
+
+    #[test]
+    fn the_gnss_noise_parameters_come_from_the_header_or_not_at_all() {
+        let header = "# GNSS noise parameters: EKF2_GPS_P_NOISE 0.5, EKF2_GPS_V_NOISE 0.25, \
+                      EKF2_NOAID_NOISE 10 (PX4 default; not in the log)\nt_s\n";
+        assert_eq!(
+            gnss_noise_of(header),
+            Some(GnssNoiseParameters {
+                position: 0.5,
+                velocity: 0.25,
+                no_aid: 10.0,
+            })
+        );
+        // A line missing one parameter is refused whole rather than defaulted here: the
+        // converter is where a default is chosen and said.
+        let partial = "# GNSS noise parameters: EKF2_GPS_P_NOISE 0.5, EKF2_GPS_V_NOISE 0.3\n";
+        assert_eq!(gnss_noise_of(partial), None);
+        assert_eq!(
+            gnss_noise_of("t_s\n# GNSS noise parameters: EKF2_GPS_P_NOISE 1\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn px4_floors_each_axis_by_its_own_rule() {
+        let px4 = RPolicy::Px4(GnssNoiseParameters {
+            position: 0.5,
+            velocity: 0.3,
+            no_aid: 10.0,
+        });
+        let sigmas = |noise: [f32; 3]| noise.map(|v| (v.sqrt() * 1000.0).round() / 1000.0);
+        // A 5 cm RTK fix: horizontal floored at p, vertical at 1.5 p — not at p, which is
+        // what `PositionNoise::clamped` with one floor would give.
+        let fix = px4.position([0.0025, 0.0025, 0.0025]).variance();
+        assert_eq!(sigmas([fix.x, fix.y, fix.z]), [0.5, 0.5, 0.75]);
+        // A 40 m claim is capped at `no_aid` on both axes.
+        let wild = px4.position([1600.0, 1600.0, 1600.0]).variance();
+        assert_eq!(sigmas([wild.x, wild.y, wild.z]), [10.0, 10.0, 10.0]);
+        // Velocity floors first, then widens vertical: 0.1 m/s reads 0.3 / 0.45, where
+        // widening first and flooring after would read 0.3 / 0.3.
+        let slow = px4.velocity([0.01, 0.01, 0.01]).variance();
+        assert_eq!(sigmas([slow.x, slow.y, slow.z]), [0.3, 0.3, 0.45]);
+        // A NaN is not floored into a fix: `f32::max` would return the floor.
+        assert!(px4.position([f32::NAN, 1.0, 1.0]).variance().x.is_nan());
+        assert!(px4.velocity([-1.0, 1.0, 1.0]).variance().x < 0.0);
+        // `Raw` is the row, untouched.
+        let raw = RPolicy::Raw.velocity([0.01, 0.01, 0.01]).variance();
+        assert_eq!(sigmas([raw.x, raw.y, raw.z]), [0.1, 0.1, 0.1]);
     }
 
     #[test]
@@ -3365,10 +3542,10 @@ mod tests {
     fn r_is_fused_as_the_row_reports_it_however_small() {
         // `r_policy=raw` as a fixture rather than a restatement of its own constant: the
         // same 1 m/s innovation twice, differing only in the variance beside it. At
-        // σ_v = 0.01 m/s the gate turns it down; at 0.5 — PX4's `ekf2_gps_v_noise`, which
-        // sits above 13163 of the corpus's 13676 velocity solutions — the same innovation is
-        // accepted. So a floor applied in `Replay::row` would flip the first assertion,
-        // which is the mutation this guards and the one `a299e722` runs 266 times.
+        // σ_v = 0.01 m/s the gate turns it down; at 0.5, the highest `EKF2_GPS_V_NOISE` the
+        // corpus flies, the same innovation is accepted. So a floor reaching a `Raw` row
+        // would flip the first assertion, which is the mutation this guards and the one
+        // `a299e722` runs 266 times.
         let moving = |var: &str| {
             still_start().raw(&format!(
                 "2.000000,gnss_vel,1.0,0.0,0.0,,,,{var},{var},{var}"
@@ -3387,6 +3564,60 @@ mod tests {
         assert_eq!(key(&floored, "rejected"), "0", "{floored}");
         assert_eq!(key(&floored, "discarded"), "0", "{floored}");
         assert_ne!(key(&floored, "nis_gnss_vel"), "none", "{floored}");
+
+        // The first row again, under `--r-policy px4`: floored to 0.5 m/s in the harness,
+        // the same innovation is accepted, and the line says which policy did it.
+        let px4 = RPolicy::Px4(GnssNoiseParameters {
+            position: 0.5,
+            velocity: 0.5,
+            no_aid: 10.0,
+        });
+        let (replay, _) = drive_under(
+            &moving("0.0001"),
+            Config {
+                magnetic_declination: Radians::from_radians(-0.06),
+                ..Config::default()
+            },
+            px4,
+            None,
+        )
+        .expect("fixture replays");
+        let px4 = replay.summary();
+        assert_eq!(key(&px4, "rejected"), "0", "{px4}");
+        assert_ne!(key(&px4, "nis_gnss_vel"), "none", "{px4}");
+        assert_eq!(key(&px4, "r_policy"), "px4", "{px4}");
+    }
+
+    #[test]
+    fn px4_reaches_gnss_position_rows_too() {
+        // `S = H P Hᵀ + R`, so on the same fix from the same state the published `S_n` differs
+        // by exactly the `R` each policy fused: 0.5² − 0.01² under PX4's `p` of 0.5 m. The
+        // velocity fixture above cannot see a position row fused raw under `px4`.
+        let log = still_start().raw("2.000000,gnss_pos,0.1,0.1,0,,,,0.0001,0.0001,0.0001");
+        let s_n = |policy| {
+            let (_, rows) =
+                drive_under(&log, Config::default(), policy, None).expect("fixture replays");
+            let row = rows
+                .lines()
+                .find(|row| row.contains(",gnss_pos,"))
+                .expect("a position row")
+                .to_string();
+            row.split(',')
+                .nth(5)
+                .expect("S_n")
+                .parse::<f64>()
+                .expect("a number")
+        };
+        let px4 = RPolicy::Px4(GnssNoiseParameters {
+            position: 0.5,
+            velocity: 0.3,
+            no_aid: 10.0,
+        });
+        let widened = s_n(px4) - s_n(RPolicy::Raw);
+        assert!(
+            (widened - (0.25 - 0.0001)).abs() < 1e-4,
+            "S_n widened by {widened}"
+        );
     }
 
     #[test]
@@ -4371,7 +4602,7 @@ mod tests {
         // still do.
         let mut out = Vec::new();
         write_header(&mut out).expect("header");
-        let mut replay = Replay::new(Config::default(), None);
+        let mut replay = Replay::new(Config::default(), RPolicy::Raw, None);
         let log = still_start().run(2.0, 1, DT, STILL);
         {
             let mut sinks = Sinks {

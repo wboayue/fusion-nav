@@ -311,6 +311,7 @@ data/bench.sh mission static      # only these
 data/expect.sh --self-test        # the comparator both bench.sh and the manifest rules read
 data/anees.sh                     # every scenario on 50 seeds against data/anees.txt; a CI gate
 python3 tools/anees.py --self-test   # the ensemble aggregator's fixtures (stdlib, no uv)
+uv run tools/agreement.py --self-test    # agreement with EKF2; replay_report's self-test runs it too
 ```
 
 ## Replay corpus
@@ -327,6 +328,7 @@ data/fetch.sh --verify            # checksums only, no network
 data/fetch.sh --check             # convert each .ulg and replay it, assert expectations
 data/fetch.sh --add <url> [name]  # download once, append a manifest line to commit
 data/fetch.sh --pin <name>        # replay one log, print the expectations to append
+data/fetch.sh --compare [--pin]   # every log beside EKF2, raw and px4, against data/ekf2.txt
 uv run tools/ulog2replay.py log.ulg --screen   # what a candidate could cover; data/README.md
 uv run tools/ulog2replay.py log.ulg -o log.csv [--reference]   # ULog -> replay CSV
 uv run tools/replay_report.py in.csv out.csv [truth.csv] \
@@ -338,7 +340,9 @@ index map is keyed on the pair `(n_states, covariance entries)`, because EKF2's 
 changed three times and neither count alone separates the eras: `n_states=24` is both the
 state-indexed layout and v1.15's error-state one, and no field spelling distinguishes them either.
 Three of the twelve corpus logs therefore supply no attitude σ at all, two supply no origin, and the
-LPE log is refused outright. `data/README.md`, "What `--reference` writes, and what it cannot", owns
+LPE log's rows are LPE's, which its `Estimator:` header line says. EKF2's origin arrives already in
+the replay frame, moved from MSL onto the ellipsoidal datum the replay origin is on: unshifted, the
+geoid height is the whole of the down offset (−25.41 m on `eb799954`). `data/README.md`, "What `--reference` writes, and what it cannot", owns
 those boundaries and the bias-scaling factor; the map itself lives in `tools/ulog2replay.py` and
 nowhere else, so a consumer reads column names and never the layout.
 
@@ -353,7 +357,7 @@ Prefer a field whose values an outside standard fixes, such as MAVLink's `MAV_VT
 whose name changed when its meaning did. #129 applies this to flight mode.
 
 The report tool computes no statistic: it plots the per-fusion rows and prints the `summary` and
-`score` keys. It refuses a set of files that do not describe one run — `epochs=` against the epoch
+`score` keys, and the agreement-with-EKF2 table `tools/agreement.py` returns. It refuses a set of files that do not describe one run — `epochs=` against the epoch
 row count, `rejected_<source>=` against the fusion CSV's tally, the source `.ulg` both the
 reference and the replay input name, the scenario and seed in a truth file's header, and the
 reference's IMU interval against `rate=` — that last one guarding the only quantity the converter
@@ -414,9 +418,10 @@ restate `transitions=`). `floored=` is the odd one: it pins behaviour that must
 nothing else on the line would notice if it started — a floored variance only makes the estimate
 more conservative, so it moves neither `rejected=` nor `transitions=`. A key whose interesting
 value is the one it does not have still earns its place. `r_policy=` is odder still and earns it
-differently: a compile-time constant rather than a count, so it cannot regress and a fixture in
-`examples/replay.rs` carries the guard instead. What it buys is that a published figure names the
-`R` policy that produced it, which #8's comparison against EKF2 has to state either way.
+differently: a choice rather than a count, `raw` on every manifest entry and `px4` only under
+`--r-policy px4`, so it cannot regress and fixtures in `examples/replay.rs` carry the guard
+instead. What it buys is that a published figure names the `R` policy that produced it, which the
+comparison against EKF2 (`data/ekf2.txt`) runs under both.
 Renaming or removing a key breaks every
 entry at once.
 
@@ -562,7 +567,8 @@ statistic; it emits per-fusion rows and scalar keys on the `summary` and `score`
 tools read those and aggregate, plot, or compare against the EKF2 reference — they never recompute
 a number the harness already defines. A quantity that could be produced by both paths belongs to
 the harness, because that is the one CI runs. Cross-log and against-reference metrics are defined
-once, in Python.
+once, in Python: distance from EKF2 in `tools/agreement.py`, which reads no file, so the report
+and `--corpus` both hand it arrays.
 
 The rule reaches past *computing* a number, and the extension is the one that has actually bitten.
 A statistic that **audits a filter claim** must falsify it in the shape the filter states it, not
@@ -844,6 +850,11 @@ Every source touches the same ten places, and three of them are public:
 - The README fusion table, the `Eskf` and `prelude` doctests, and `EQUATIONS.md`'s mapping
   table.
 - `tools/ulog2replay.py`, which has to find the source in a ULog and name its variance columns.
+- The comparison with EKF2, if EKF2 judges the source: its test ratio in `EKF2_RATIOS`
+  (`tools/ulog2replay.py`) and `REFERENCE_KINDS["ratio"]` (`tools/replay_report.py`), the pairing
+  in `RATIO_OF` (`tools/agreement.py`), and a new `rej_s_` key in every line of `data/ekf2.txt`.
+  If the source reports its own `R` and EKF2 floors it, `RPolicy` in `examples/replay.rs` owns the
+  floor. Harness keys reach the table by prefix (`rejected_`, `nis_`), so those need nothing.
 - `examples/simulate.rs`, which has to model it — an error table, a `sample`, a row — and the
   column legend its generated headers carry. Nothing connects these two to the replay format at
   compile time, which is why they are on this list rather than left to be discovered.
@@ -853,6 +864,14 @@ The *truth* format is the one coupling of this kind that is guarded: `write_trut
 scorer checks the header against its own and refuses the file, so a column renamed or reordered
 stops the run instead of scoring one quantity against another. A new *state* — not a new source —
 is what moves those columns.
+
+The converter's `#` header lines are the other coupling, and they are guarded less. Each is an
+f-string in `tools/ulog2replay.py` and a parser elsewhere: `# Magnetic declination` and
+`# GNSS noise parameters` read by `examples/replay.rs`, `Estimator:`, `EKF2 origin in replay frame:`
+and `EKF2 aiding:` by `tools/replay_report.py`. Both sides carry fixtures on the same literal
+strings, so rewording one side fails a self-test; nothing stops the two sets of literals drifting
+apart together. A parser that finds nothing reads its absence (declination zero, no origin)
+rather than failing, which is why the report's fixtures exist.
 
 ### Reports are `#[non_exhaustive]`, outcomes are not
 

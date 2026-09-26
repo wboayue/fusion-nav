@@ -82,6 +82,17 @@ GNSS_GEODETIC = [
     (("lat", "lon", "alt"), 1e-7, 1e-3),
 ]
 
+# The MSL height beside each height field above, and its scale: the datum EKF2's
+# `ref_alt` is in (`msg/versioned/VehicleLocalPosition.msg:57`, `EKF2.cpp:1738`
+# at c4e4ef98), which the first fix's own two heights convert to. An MSL field
+# is its own counterpart.
+MSL_OF = {
+    "altitude_ellipsoid_m": ("altitude_msl_m", 1.0),
+    "alt_ellipsoid": ("alt", 1e-3),
+    "altitude_msl_m": ("altitude_msl_m", 1.0),
+    "alt": ("alt", 1e-3),
+}
+
 # Aggregate innovation ratios. PX4 renamed mag_test_ratio to hdg_test_ratio.
 EKF2_RATIOS = [
     ("pos_test_ratio",),
@@ -260,6 +271,8 @@ def convert_gnss(ulog, rows, used):
             + " and ".join("/".join(c[0]) for c in GNSS_GEODETIC)
         )
     (lat_f, lon_f, alt_f), angle_scale, alt_scale = geodetic
+    msl_f, msl_scale = MSL_OF[alt_f]
+    msl = dataset.data.get(msl_f)
     before = len(rows)
 
     t = stamps(dataset)
@@ -288,12 +301,15 @@ def convert_gnss(ulog, rows, used):
         lam = float(lon[k]) * angle_scale
         height = float(alt[k]) * alt_scale
         if origin is None:
-            origin = (phi, lam, height)
+            # The same fix's MSL height rides along, None where the receiver logs
+            # none, so a consumer can move an MSL altitude onto this datum.
+            at_msl = float(msl[k]) * msl_scale if msl is not None and msl[k] else None
+            origin = (phi, lam, height, at_msl)
             print(
                 f"navigation origin: {phi:.7f}, {lam:.7f}, {height:.2f} m",
                 file=sys.stderr,
             )
-        north, east, down = geodetic_to_ned(phi, lam, height, *origin)
+        north, east, down = geodetic_to_ned(phi, lam, height, *origin[:3])
         # eph/epv are standard deviations; the filter wants variances. Passed through
         # unfloored, deliberately: this file reproduces what the receiver reported, and
         # PX4's own max(eph, EKF2_GPS_P_NOISE) is a fusion-time decision the consumer
@@ -466,8 +482,12 @@ def convert(path, baro_variance, mag_variance):
     # replay output depends on it.
     t = stamps(sensor_combined)
     imu_dt = median([(b - a) * 1e-6 for a, b in zip(t, t[1:]) if b > a])
-    declination = declination_note(ulog.initial_parameters, origin and origin[:2])
-    return rows, used, note, imu_dt, declination
+    # Header lines the harness configures itself from: what EKF2 on this log used.
+    parameters = [
+        declination_note(ulog.initial_parameters, origin and origin[:2]),
+        gnss_noise_note(ulog.initial_parameters),
+    ]
+    return rows, used, note, imu_dt, parameters, origin
 
 
 def write_rows(rows, out, note):
@@ -543,6 +563,7 @@ def ekf2_update_period(ulog, imu_dt):
 # replay input handles sources of different arities.
 REFERENCE_COLUMNS = [
     "pos_n", "pos_e", "pos_d", "vel_n", "vel_e", "vel_d",
+    "xy_reset", "z_reset", "vxy_reset", "vz_reset",
     "q0", "q1", "q2", "q3", "att_reset",
     "ba_x", "ba_y", "ba_z", "bg_x", "bg_y", "bg_z",
     "sigma_pos_n", "sigma_pos_e", "sigma_pos_d",
@@ -555,13 +576,27 @@ REFERENCE_COLUMNS = [
 ]
 
 
+# EKF2's own reset counters, beside the states they step. A reset is an event in
+# that filter, and without the counter a step across one reads as divergence from
+# this one -- the same reason `att_reset` carries `quat_reset_counter`.
+LOCAL_RESETS = [
+    ("xy_reset", "xy_reset_counter"),
+    ("z_reset", "z_reset_counter"),
+    ("vxy_reset", "vxy_reset_counter"),
+    ("vz_reset", "vz_reset_counter"),
+]
+
+
 def reference_local(local, rows):
-    """EKF2's position and velocity, from `vehicle_local_position`."""
+    """EKF2's position and velocity, from `vehicle_local_position`, and its reset counters."""
     t = stamps(local)
     names = ["pos_n", "pos_e", "pos_d", "vel_n", "vel_e", "vel_d"]
     columns = [column(local, f) for f in ("x", "y", "z", "vx", "vy", "vz")]
+    resets = [(n, local.data[f]) for n, f in LOCAL_RESETS if f in local.data]
     for k in range(len(t)):
-        rows.append((t[k], "ekf2_local", {n: c[k] for n, c in zip(names, columns)}))
+        values = {n: c[k] for n, c in zip(names, columns)}
+        values.update((n, int(c[k])) for n, c in resets)
+        rows.append((t[k], "ekf2_local", values))
 
 
 def reference_attitude(attitude, rows):
@@ -762,8 +797,13 @@ def layout_label(key):
     return layout["name"] if layout is not None else "unmapped"
 
 
-def write_reference(ulog, out, t0, imu_dt, source_name):
-    """EKF2's own solution and innovation ratios, for a side-by-side diff."""
+def write_reference(ulog, out, t0, imu_dt, source_name, origin):
+    """EKF2's own solution and innovation ratios, for a side-by-side diff.
+
+    `origin` is the replay input's navigation origin, the first 3D fix as
+    (lat, lon, height, MSL height) in degrees and metres, or None when the log
+    has no fix.
+    """
     local = pick(ulog, ["vehicle_local_position"])
     attitude = pick(ulog, ["vehicle_attitude"])
     status = pick(ulog, ["estimator_status"])
@@ -810,8 +850,9 @@ def write_reference(ulog, out, t0, imu_dt, source_name):
     rows.sort(key=lambda r: r[0])
 
     with open(out, "w", newline="") as handle:
-        for line in reference_note(local, attitude, states, layout, key,
-                                   period, provenance, ratio_fields, mode, source_name):
+        for line in reference_note(local, attitude, states, layout, key, period,
+                                   provenance, ratio_fields, mode, source_name,
+                                   status, origin, ulog.initial_parameters):
             handle.write(f"# {line}\n")
         handle.write("t_s,source," + ",".join(REFERENCE_COLUMNS) + "\n")
         for timestamp, source, values in rows:
@@ -829,7 +870,7 @@ def write_reference(ulog, out, t0, imu_dt, source_name):
 
 
 def reference_note(local, attitude, states, layout, key, period, provenance,
-                   ratio_fields, mode, source_name):
+                   ratio_fields, mode, source_name, status, origin, params):
     """The `#` header: what each row kind came from, and every caveat on it."""
     kinds = []
     if local is not None:
@@ -880,13 +921,17 @@ def reference_note(local, attitude, states, layout, key, period, provenance,
                 "body-frame, and rotating either needs off-diagonals no log "
                 "carries. Compare sigma_att_total, a trace being invariant."
             )
-    note.append(ekf2_origin_note(local))
+    note.append(estimator_note(params))
+    ekf2_origin, origin_note = ekf2_origin_of(local)
+    note.append(origin_note)
+    note.append(origin_offset_note(ekf2_origin, origin))
+    note.append(ekf2_aiding_note(status, params))
     note.append("Same timebase as the replay CSV: rebased to its first sample.")
     return note
 
 
-def ekf2_origin_note(local):
-    """EKF2's local-position origin, which #8 needs before it can align tracks.
+def ekf2_origin_of(local):
+    """EKF2's local-position origin as (lat, lon, alt) or None, and its header line.
 
     A `#` line rather than a column because it does not move: it is one geodetic
     point per log, and the replay harness already parses a `#` header for the
@@ -895,16 +940,112 @@ def ekf2_origin_note(local):
     origin -- which is a fact about those logs and has to be said, not filled in.
     """
     if local is None:
-        return "EKF2 origin: none (no vehicle_local_position)"
+        return None, "EKF2 origin: none (no vehicle_local_position)"
     if "xy_global" not in local.data or "ref_lat" not in local.data:
-        return "EKF2 origin: none (vehicle_local_position carries no reference fields)"
+        return None, "EKF2 origin: none (vehicle_local_position carries no reference fields)"
     if not any(local.data["xy_global"]):
-        return "EKF2 origin: none (xy_global false)"
+        return None, "EKF2 origin: none (xy_global false)"
     index = next(k for k, flag in enumerate(local.data["xy_global"]) if flag)
-    lat = local.data["ref_lat"][index]
-    lon = local.data["ref_lon"][index]
-    alt = local.data["ref_alt"][index]
-    return f"EKF2 origin: {lat:.9g} {lon:.9g} {alt:.9g}"
+    origin = tuple(float(local.data[f][index]) for f in ("ref_lat", "ref_lon", "ref_alt"))
+    return origin, "EKF2 origin: {:.9g} {:.9g} {:.9g}".format(*origin)
+
+
+def origin_offset_note(ekf2_origin, origin):
+    """Where EKF2's origin sits in the replay input's frame, which #8 aligns tracks by.
+
+    Written here because this file already owns `geodetic_to_ned` and the replay
+    origin, so a consumer adds three numbers rather than carrying a second
+    geodetic conversion. The two origins are both first fixes, but of different
+    runs of the receiver: on `2c42096b` EKF2's was set 770 s before logging began,
+    3.67 m south and 2.14 m east of the first fix the log holds -- metres, so
+    aligning is not optional.
+
+    Heights are on two datums. The replay origin is the fix's ellipsoidal height
+    where the receiver logs one, and EKF2's `ref_alt` is MSL, so EKF2's origin is
+    moved onto the ellipsoid by the first fix's own difference between the two,
+    the geoid height there. Read raw, that difference is the whole of the down
+    offset: -25.41 m on `eb799954` in Oklahoma and +20.58 on `89a498ce` in Korea.
+    Where the fix logs no MSL height, down is `none`.
+    """
+    if ekf2_origin is None:
+        return "EKF2 origin in replay frame: none (EKF2 reports no origin)"
+    if origin is None:
+        return "EKF2 origin in replay frame: none (the replay input has no GNSS fix)"
+    lat0, lon0, height0, msl0 = origin
+    lat, lon, ref_alt = ekf2_origin
+    shift = 0.0 if msl0 is None else height0 - msl0
+    north, east, down = geodetic_to_ned(lat, lon, ref_alt + shift, lat0, lon0, height0)
+    # `+ 0.0` turns a rounded -0.0 into 0.0, which prints without its sign.
+    north, east, down = (round(v, 3) + 0.0 for v in (north, east, down))
+    down_text = "none" if msl0 is None else f"{down:.3f}"
+    return f"EKF2 origin in replay frame: {north:.3f} {east:.3f} {down_text} m"
+
+
+def estimator_note(params):
+    """Which PX4 estimator published the reference, from the parameters that select it.
+
+    The row kinds are named `ekf2_*` whatever produced them, and on one corpus log
+    (`7592c9b2`) that is LPE: `vehicle_local_position` and `vehicle_attitude` are
+    the vehicle's estimate, not EKF2's. `SYS_MC_EST_GROUP` selected it until the
+    per-module switches replaced it, 1 for LPE with attitude_estimator_q and 2 for
+    EKF2 since 66ffc834d3 dropped INAV's 0 (`src/modules/systemlib/system_params.c:98-99`
+    at that commit); `EKF2_EN` and `LPE_EN` after.
+    """
+    group = params.get("SYS_MC_EST_GROUP")
+    if params.get("EKF2_EN") == 1 or group == 2:
+        name = "ekf2"
+    elif params.get("LPE_EN") == 1 or group == 1:
+        name = "lpe"
+    else:
+        name = "unknown"
+    chosen = ", ".join(f"{k} {params[k]}" for k in ("SYS_MC_EST_GROUP", "EKF2_EN", "LPE_EN")
+                       if k in params)
+    return f"Estimator: {name} ({chosen or 'no selection parameter'})"
+
+
+# `control_mode_flags` bits that say which aiding EKF2 fused, the ones this
+# comparison needs to name a divergence's cause. Their positions have not moved
+# since the constants were written into the message (`msg/estimator_status.msg:30-39`
+# at e5d428bd65, 2018) and still match `filter_control_status_u`
+# (`src/modules/ekf2/EKF/common.h:574-586` at c4e4ef98), which covers every
+# corpus log. A ULog records the bitmask, never these names -- see AGENTS.md, "A
+# ULog field name does not pin its meaning" -- so the table is checked against
+# both ends of that range rather than trusted to the field name.
+EKF2_AIDING = [(2, "gnss_pos"), (4, "mag_hdg"), (5, "mag_3d"), (9, "baro_hgt"), (11, "gps_hgt")]
+
+# The height source EKF2 converges to, under either name the parameter has had:
+# `EKF2_HGT_REF` since 8962cf2d25 (`src/modules/ekf2/module.yaml:87-104` at
+# c4e4ef98) and `EKF2_HGT_MODE` before it, one enum in both
+# (`ekf2_params.c:642-649` at 8962cf2d25^).
+HEIGHT_REFERENCES = {0: "baro", 1: "gps", 2: "range", 3: "vision"}
+
+
+def ekf2_aiding_note(status, params):
+    """The share of `control_mode_flags` samples on which each aiding flag is set,
+    and the height reference EKF2 was configured to converge to.
+
+    A share rather than a yes or no because a height source can start or stop
+    mid-log, and a comparison of height has to know whether it did. Both halves
+    because neither alone names the reference: on `2c42096b` (`EKF2_HGT_MODE`
+    baro) `baro_hgt` reads 1.00 and `gps_hgt` 0.00, but a build with
+    `EKF2_HGT_REF` fuses both at once, reading 1.00 on each, and the parameter is
+    what says which one the estimate follows at low frequency.
+    """
+    name = next((n for n in ("EKF2_HGT_REF", "EKF2_HGT_MODE") if n in params), None)
+    if name is None:
+        reference = "height reference unknown (no EKF2_HGT_REF or EKF2_HGT_MODE)"
+    else:
+        value = int(params[name])
+        reference = f"height reference {HEIGHT_REFERENCES.get(value, value)} ({name} {value})"
+    if status is None or "control_mode_flags" not in status.data or not len(status.data["control_mode_flags"]):
+        return f"EKF2 aiding: {reference}; flags unknown (no control_mode_flags)"
+    flags = [int(v) for v in status.data["control_mode_flags"]]
+    shares = [
+        f"{flag} {sum(1 for v in flags if v >> bit & 1) / len(flags):.2f}"
+        for bit, flag in EKF2_AIDING
+    ]
+    return (f"EKF2 aiding: {reference}; share of control_mode_flags samples: "
+            + ", ".join(shares))
 
 
 SCREEN_TOPICS = GNSS_TOPICS + [
@@ -1047,6 +1188,34 @@ def declination_note(params, origin):
         degrees = float(params.get("ATT_MAG_DECL", 0.0))
         source = "ATT_MAG_DECL" if "ATT_MAG_DECL" in params else "no declination parameter, so zero"
     return f"Magnetic declination {math.radians(degrees):.6f} rad ({degrees:.2f} deg, {source})"
+
+
+# The parameters PX4 floors and caps a receiver's reported accuracy with, and
+# their defaults at c4e4ef98 (`src/modules/ekf2/params_gnss.yaml:30-72`,
+# `module.yaml:67-71` for EKF2_NOAID_NOISE) for a log that does not carry one.
+GNSS_NOISE_PARAMETERS = [
+    ("EKF2_GPS_P_NOISE", 0.5),
+    ("EKF2_GPS_V_NOISE", 0.3),
+    ("EKF2_NOAID_NOISE", 10.0),
+]
+
+
+def gnss_noise_note(params):
+    """The header line `examples/replay.rs --r-policy px4` reads its floors from.
+
+    The values this log's EKF2 bounded its receiver with, so a floored replay is
+    compared against the `R` EKF2 actually fused rather than a default it may not
+    have run: `2c42096b` flew `EKF2_GPS_V_NOISE` 0.3, not the 0.5 #113 floored it
+    at. A parameter the log does not carry falls back to PX4's default and says so. The rule the harness applies to them is its own, cited
+    there; this line carries values only.
+    """
+    cells = []
+    for name, default in GNSS_NOISE_PARAMETERS:
+        if name in params:
+            cells.append(f"{name} {float(params[name]):.6g}")
+        else:
+            cells.append(f"{name} {default:.6g} (PX4 default; not in the log)")
+    return "GNSS noise parameters: " + ", ".join(cells)
 
 
 def vibration_metric(encoded):
@@ -1343,6 +1512,9 @@ def self_test():
                   altitude_ellipsoid_m=numpy.array([0.0, 70.0, 71.0]),
                   eph=[1.0] * 3, epv=[1.0] * 3)
     expect("origin at the first 3D fix", convert_gnss(FixtureLog(gps), [], {})[:2], (56.41, 43.76))
+    gps.data["altitude_msl_m"] = numpy.array([0.0, 52.0, 53.0])
+    expect("the first fix's MSL height beside it", convert_gnss(FixtureLog(gps), [], {})[2:],
+           (70.0, 52.0))
     geo = {"EKF2_DECL_TYPE": 3, "EKF2_MAG_DECL": 0.0}
     expect("bit 0 and a fix: the table", declination_note(geo, (56.41, 43.76)).split(" (")[0],
            f"Magnetic declination {math.radians(table_declination(56.41, 43.76)):.6f} rad")
@@ -1365,6 +1537,51 @@ def self_test():
     expect("rc", release(0x011000C0), "v1.16.0-rc")
     expect("dev", release(0x010A0000), "v1.10.0-dev")
     expect("no release", release(0), "none")
+
+    # Reset counters ride on the position rows, as integers, and an era without
+    # them leaves the cells blank rather than zero.
+    rows = []
+    local = Fixture("vehicle_local_position", timestamp=[0], x=[1.0], y=[2.0], z=[3.0],
+                    vx=[0.0], vy=[0.0], vz=[0.0], xy_reset_counter=[2], z_reset_counter=[0])
+    reference_local(local, rows)
+    expect("reset counters", {k: rows[0][2].get(k) for k in ("xy_reset", "z_reset", "vxy_reset")},
+           {"xy_reset": 2, "z_reset": 0, "vxy_reset": None})
+    # At the equator a thousandth of a degree is a(1 - e^2) pi/180e3 = 110.574 m of
+    # latitude and (a + 10 m) pi/180e3 = 111.320 m of longitude at 10 m up, and 110 m of arc drops
+    # 2 mm below the tangent plane: an origin north, east and 10 m above reads
+    # positive, positive, and -9.998. A swapped argument order negates all three.
+    expect("origin offset", origin_offset_note((0.001, 0.001, 10.0), (0.0, 0.0, 0.0, 0.0)),
+           "EKF2 origin in replay frame: 110.574 111.320 -9.998 m")
+    # A replay origin at 30 m on the ellipsoid and 5 m MSL, a geoid height of 25 m:
+    # an EKF2 origin at 5 m MSL is the same height, not 25 m below it.
+    expect("datum", origin_offset_note((0.0, 0.0, 5.0), (0.0, 0.0, 30.0, 5.0)),
+           "EKF2 origin in replay frame: 0.000 0.000 0.000 m")
+    expect("no MSL height", origin_offset_note((0.0, 0.0, 5.0), (0.0, 0.0, 30.0, None)),
+           "EKF2 origin in replay frame: 0.000 0.000 none m")
+    expect("no EKF2 origin", origin_offset_note(None, (0.0, 0.0, 0.0, 0.0)).split(" (")[0],
+           "EKF2 origin in replay frame: none")
+    expect("no replay origin", origin_offset_note((0.0, 0.0, 0.0), None).split(" (")[0],
+           "EKF2 origin in replay frame: none")
+    # One bit per sample beside a pair, so each share names its bit: an off-by-one
+    # position moves a share to its neighbour.
+    status = Fixture("estimator_status",
+                     control_mode_flags=[1 << 2 | 1 << 9, 1 << 4, 1 << 5 | 1 << 11, 1 << 9])
+    expect("aiding shares", ekf2_aiding_note(status, {"EKF2_HGT_REF": 1}),
+           "EKF2 aiding: height reference gps (EKF2_HGT_REF 1); share of control_mode_flags "
+           "samples: gnss_pos 0.25, mag_hdg 0.25, mag_3d 0.25, baro_hgt 0.50, gps_hgt 0.25")
+    expect("the older name", ekf2_aiding_note(None, {"EKF2_HGT_MODE": 0}).split(";")[0],
+           "EKF2 aiding: height reference baro (EKF2_HGT_MODE 0)")
+    expect("neither", ekf2_aiding_note(None, {}).split(" (")[0],
+           "EKF2 aiding: height reference unknown")
+    expect("7592c9b2's estimator", estimator_note({"SYS_MC_EST_GROUP": 1}),
+           "Estimator: lpe (SYS_MC_EST_GROUP 1)")
+    expect("a later one", estimator_note({"EKF2_EN": 1, "LPE_EN": 0}),
+           "Estimator: ekf2 (EKF2_EN 1, LPE_EN 0)")
+    expect("no selection", estimator_note({}), "Estimator: unknown (no selection parameter)")
+    expect("noise from the log and a default",
+           gnss_noise_note({"EKF2_GPS_P_NOISE": 0.5, "EKF2_GPS_V_NOISE": 0.30000001192092896}),
+           "GNSS noise parameters: EKF2_GPS_P_NOISE 0.5, EKF2_GPS_V_NOISE 0.3, "
+           "EKF2_NOAID_NOISE 10 (PX4 default; not in the log)")
 
     for failure in failures:
         print(f"FAIL {failure}", file=sys.stderr)
@@ -1415,12 +1632,12 @@ def main():
 
     output = args.output or args.ulog.with_suffix(".csv")
     try:
-        rows, used, dropout_note, imu_dt, declination = convert(
+        rows, used, dropout_note, imu_dt, parameters, origin = convert(
             args.ulog, args.baro_variance, args.mag_variance
         )
         note = [
             f"Converted from {args.ulog.name} by tools/ulog2replay.py",
-            declination,
+            *parameters,
             "Topics used: " + ", ".join(f"{k}={v}" for k, v in sorted(used.items())),
             f"baro variance {args.baro_variance} m^2 and mag heading variance "
             f"{args.mag_variance} rad^2 are assumed; PX4 logs neither.",
@@ -1440,7 +1657,7 @@ def main():
             # one want disjoint topics, and the largest corpus log is 219 MB.
             # Do not fold them into one unfiltered open.
             reference = open_ulog(args.ulog, REFERENCE_TOPICS)
-            if write_reference(reference, target, t0, imu_dt, args.ulog.name):
+            if write_reference(reference, target, t0, imu_dt, args.ulog.name, origin):
                 print(f"reference -> {target}", file=sys.stderr)
     except ConversionError as e:
         print(f"ulog2replay: {e}", file=sys.stderr)
