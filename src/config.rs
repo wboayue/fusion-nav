@@ -595,7 +595,8 @@ pub struct Config {
     ///
     /// On by default, because every start that leaves no reference — one in motion, a window
     /// with no barometer, a seed — otherwise discards the barometer for the whole flight:
-    /// `2c42096b`, a coarse start, refuses all 35575 of its altitudes. PX4 does the same at
+    /// `cd7e0001`, a coarse start, refuses all 3530 of its altitudes, as `2c42096b` refused
+    /// 35575 while it started coarse. PX4 does the same at
     /// `baro_height_control.cpp:79` at `c4e4ef98`. See
     /// [`Eskf::fuse_baro_altitude`](crate::Eskf::fuse_baro_altitude) for how the reference is
     /// seeded.

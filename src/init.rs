@@ -631,11 +631,11 @@ pub(crate) fn attitude_sigmas(
 ///
 /// Equations (5)–(6) level the *averaged* specific force, so what bounds the attitude
 /// they yield is how far that average is from what a still vehicle reads — not how far
-/// the worst sample in the window was. The two differ by two orders of magnitude on
-/// `2c42096b`, the corpus's one moving start: its peak `|f| − γ` is 5.46 m/s² (31.9°) on
-/// a vehicle vibrating with its props spinning, while the mean vector sits 0.06 m/s²
-/// (0.33°) off gravity and levels to the `roll0=0.42 pitch0=-0.89` that `data/manifest.txt`
-/// pins, under a degree off plumb. Vibration averages out; a peak does not know that.
+/// the worst sample in the window was. The two differed by two orders of magnitude on the
+/// moving window `2c42096b` offered at `PATIENCE` (#77): its peak `|f| − γ` was 5.46 m/s²
+/// (31.9°) on a vehicle vibrating in place, while the mean vector sat 0.06 m/s² (0.33°)
+/// off gravity and levelled to roll 0.42° and pitch −0.89°, under a degree off plumb.
+/// Vibration averages out; a peak does not know that.
 ///
 /// A prior that wide is not free. [`Status::Aligning`](crate::Status::Aligning) outranks
 /// `Degraded`, so a start that cannot resolve masks every aiding transition behind it: on

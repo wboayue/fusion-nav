@@ -896,7 +896,7 @@ impl Eskf {
     /// sets one, `α̂₀ = α + p̂_D`, so that it lands on the estimate — PX4's
     /// `baro_height_control.cpp:79` at `c4e4ef98`. That covers every start that leaves no
     /// reference: one in motion after its first GNSS fix, a window with no barometer in it,
-    /// and a seed. Leaving it to the caller cost `2c42096b`, a coarse start, all 35575 of its
+    /// and a seed. Leaving it to the caller costs `cd7e0001`, a coarse start, all 3530 of its
     /// altitudes, with nothing but [`Fusion::NoReference`] on a source nobody reads to say
     /// so. [`Config::baro_reference_from_estimate`](crate::Config::baro_reference_from_estimate)
     /// turns it off for a caller that names its own.
@@ -1578,9 +1578,10 @@ mod tests {
         filter
     }
 
-    /// The floor of (42′) exists to be unreachable, and this is the only place CI asserts
-    /// it: `data/fetch.sh --check` pins `floored=0` on all five corpus logs, and it needs a
-    /// network and PX4 tooling, so it runs locally. The margin between the floor and
+    /// The floor of (42′) exists to be unreachable by an honest source, and this is the only
+    /// place CI asserts it: `data/fetch.sh --check` pins `floored=` per corpus log — zero on
+    /// seven, and 21 on `cd7e0001`, whose receiver claims 0.43 mm/s — and it needs a network
+    /// and PX4 tooling, so it runs locally. The margin between the floor and
     /// anything a filter that is propagating and fusing reaches is measured in `math.rs`'s
     /// `FLOOR` — a count here means the floor is masking a collapse rather than preventing
     /// one, and the `sigma_*` columns of `examples/replay.rs` say which state.

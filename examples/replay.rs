@@ -20,7 +20,9 @@
 //! # Input
 //!
 //! One row per measurement, sorted by time. `#` comments and the header are skipped, and
-//! blank cells are those not applicable to that source.
+//! blank cells are those not applicable to that source. One comment is read: a leading
+//! `# Magnetic declination <rad> rad` line sets `Config::magnetic_declination`, since the site
+//! and not the harness decides it, and a log without one is replayed at zero.
 //!
 //! ```text
 //! t_s,source,v0,v1,v2,v3,v4,v5,var0,var1,var2
@@ -1621,7 +1623,7 @@ impl Replay {
             // `ā_n` of (5′): only a moving start reports one, and only when its window
             // carried two dated GNSS velocities. `none` therefore covers both "the start
             // was static" and "the window had no GNSS in it", which is why it is pinned
-            // rather than derived — on the one log that starts in motion it is the only
+            // rather than derived — on the one log that starts in motion, `cd7e0001`, it is the only
             // key that would notice the velocity disappearing out of the window, and
             // in-motion levelling has nothing to correct with when it does.
             if self.inertial_accel().is_some() {
@@ -2918,7 +2920,7 @@ mod tests {
 
     #[test]
     fn a_coarse_start_sets_the_reference_at_the_first_altitude_after_a_fix() {
-        // `2c42096b`'s shape: a coarse start, a fix, then the barometer.
+        // `cd7e0001`'s shape: a coarse start, a fix, then the barometer.
         let log = coarse_start()
             .gnss_pos(10.02, 1.0, 2.0, -3.0)
             .baro(10.04, 42.0)
@@ -3281,9 +3283,9 @@ mod tests {
         // `r_policy=raw` as a fixture rather than a restatement of its own constant: the
         // same 1 m/s innovation twice, differing only in the variance beside it. At
         // σ_v = 0.01 m/s the gate turns it down; at 0.5 — PX4's `ekf2_gps_v_noise`, which
-        // sits above 4885 of the corpus's 5348 velocity solutions — the same innovation is
+        // sits above 8365 of the corpus's 8830 velocity solutions — the same innovation is
         // accepted. So a floor applied in `Replay::row` would flip the first assertion,
-        // which is the mutation this guards and the one `a299e722` runs 283 times.
+        // which is the mutation this guards and the one `a299e722` runs 287 times.
         let moving = |var: &str| {
             still_start().raw(&format!(
                 "2.000000,gnss_vel,1.0,0.0,0.0,,,,{var},{var},{var}"
