@@ -35,13 +35,12 @@
 # removed, so the line is rewritten in the diff that fixes it rather than left passing silently.
 #
 #   gnss_latency     position and velocity: fixes 150 ms stale that `R` does not describe; #52
-#                    owns latency. anees_pos=4.06, anees_vel=1.09. (24') took it from 56.39 and
-#                    its attitude under the bound: a stale fix is one more error that persists
-#                    from fix to fix.
+#                    owns latency. anees_pos=4.06, anees_vel=1.09. (24') took it from 56.39: a
+#                    stale fix is one more error that persists from fix to fix.
 #   correlated       position only: every aiding error correlated, slower than
 #                    `Config::correlation`'s defaults, which are the corpus's medians and
 #                    understate it (`examples/simulate.rs`). (24') fuses it at too small a
-#                    variance: anees_pos=1.45, over_pos=0.95, any_pos=5166. Fused as white it read
+#                    variance: anees_pos=1.45, over_pos=0.95, any_pos=5212. Fused as white it read
 #                    anees_pos=29.16 and anees_att=3.48, over on every epoch of both. A sensor's
 #                    `tau` measured offline (#51) is what removes it. #117.
 #   logging_dropout  1.2 s refused at speed, then ~7 s of rejected fixes before the recovery;
@@ -49,12 +48,14 @@
 #                    took it from 10.94 and 1847.5, the fixes before the gap no longer having
 #                    averaged the covariance down.
 #
-# Three lines (24') rewrote from failing to passing, each on attitude. `moving_start` (#150) was
-# four magnetometer headings sharing one levelling tilt error in the 0.2 s after the heading
-# adoption, priced by (36') as though independent: peak_att 1.80, now 0.88, which is this failure
-# exactly. `harsh_imu` (#149), whose accelerometer bias is fixed at 1.86 of the prior on y and
-# shared by every seed: peak_att 2.20, now 0.60. `gnss_latency`, whose attitude went under the
-# bound with its position's move.
+# Three lines (24') rewrote from failing to passing, each on attitude, and only one of them for
+# its cause. `moving_start` (#150) was four magnetometer headings sharing one levelling tilt error
+# in the 0.2 s after the heading adoption, priced by (36') as though independent: peak_att 1.80,
+# now 0.89, which is the failure itself removed. `harsh_imu` (#149) passes by a wider covariance
+# rather than a smaller error: its accelerometer bias is still fixed at 1.86 of the prior on y
+# and shared by every seed, and single-seed `tilt` moved only 1.188 deg to 1.117 while `nees_att`
+# went 0.7563 to 0.2137; peak_att 2.20, now 0.60. `gnss_latency`'s attitude passes the same way.
+# Both causes stand, and the lines would pass whether or not they were fixed.
 #
 # `runs=` repeats the column as an expectation, so an ensemble that lost a run breaches rather than
 # being scored against the looser bound of fewer seeds.

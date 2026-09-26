@@ -13,8 +13,9 @@ use crate::state::{CovarianceMatrix, ErrorState, Offset, STATES};
 use crate::units::Seconds;
 
 /// The most (24′) multiplies a variance by: a measurement fused at a millionth of its
-/// information adds none worth counting, and any variance a receiver reports stays finite
-/// times this, so (27)'s `K R Kᵀ` does too.
+/// information adds none worth counting. Any variance under about 3e32 stays finite times this,
+/// so (27)'s `K R Kᵀ` does too; one above it overflows and the update is refused as
+/// `StateInvalid`: a σ of 1.7e16, which no sensor reports.
 const MAX_INFLATION: f32 = 1.0e6;
 
 /// `(1 + ρ) / (1 − ρ)`, `ρ = exp(−Δt / τ)`: what (24′) multiplies a correlated measurement's

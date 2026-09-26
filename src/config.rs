@@ -412,15 +412,16 @@ impl Correlation {
 impl Default for Correlation {
     /// The corpus's: `τ = −T / ln ρ` from each real log's `acf1_` for the source, read with
     /// every measurement fused as white, at that log's own sample interval, and the median over
-    /// the logs whose autocorrelation is positive (the SITL log and the RTK log excluded):
+    /// the real logs whose autocorrelation is positive (the SITL log excluded, and the RTK
+    /// log's GNSS, a receiver whose innovations alternate):
     ///
     /// | source | logs | range, s | median, s |
     /// | ------ | ---- | -------- | --------- |
     /// | GNSS horizontal position | 8 | 2.1–15.8 | 4.2 |
     /// | GNSS height | 8 | 3.7–70 | 14 |
     /// | GNSS velocity | 5 | 0.31–2.2 | 0.50 |
-    /// | barometer | 9 | 0.006–4.2 | 0.22 |
-    /// | magnetometer | 9 | 0.006–14.6 | 1.7 |
+    /// | barometer | 10 | 0.006–4.2 | 0.20 |
+    /// | magnetometer | 10 | 0.006–14.6 | 1.2 |
     ///
     /// Three receivers' velocity innovations and one magnetometer's alternate in sign, which no
     /// `τ` describes, and are left out rather than read as white.
@@ -429,8 +430,8 @@ impl Default for Correlation {
             gnss_position: Some(Seconds::from_secs(4.2)),
             gnss_height: Some(Seconds::from_secs(14.0)),
             gnss_velocity: Some(Seconds::from_secs(0.5)),
-            baro_altitude: Some(Seconds::from_secs(0.22)),
-            mag_heading: Some(Seconds::from_secs(1.7)),
+            baro_altitude: Some(Seconds::from_secs(0.2)),
+            mag_heading: Some(Seconds::from_secs(1.2)),
         }
     }
 }

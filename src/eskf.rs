@@ -893,6 +893,10 @@ impl Eskf {
     /// A solution inconsistent with the estimate at
     /// [`Gates::gnss_velocity`](crate::Gates) is [`Fusion::Rejected`] and changes nothing
     /// but the source's health. One joint test over all three axes, as (28)'s is.
+    ///
+    /// Fused at the variance (24′) leaves for a solution whose error persists from the last,
+    /// [`Config::correlation`](crate::Config::correlation)'s `gnss_velocity`;
+    /// the gate reads `noise` itself.
     pub fn fuse_gnss_velocity(
         &mut self,
         velocity: Velocity<Ned>,
@@ -977,6 +981,10 @@ impl Eskf {
     /// and the altitude is refused with [`Fusion::NoReference`] rather than adopted: a
     /// height is not a quantity this source can establish, because `α₀` is what relates
     /// it to the origin.
+    ///
+    /// Fused at the variance (24′) leaves for an altitude whose error persists from the last,
+    /// [`Config::correlation`](crate::Config::correlation)'s `baro_altitude`;
+    /// the gate reads `noise` itself.
     pub fn fuse_baro_altitude(&mut self, altitude: Altitude, noise: AltitudeNoise) -> Fusion {
         if !self.initialized {
             return refuse(&mut self.diagnostics.baro_altitude, Fusion::NotInitialized);
@@ -1058,6 +1066,10 @@ impl Eskf {
     /// rather than producing NaN — gateable once yaw is established, and adopted where it
     /// is not, which is the strongest reason to check a magnetometer before the first
     /// call rather than after it.
+    ///
+    /// Fused at the variance (24′) leaves for a heading whose error persists from the last,
+    /// [`Config::correlation`](crate::Config::correlation)'s `mag_heading`;
+    /// the gate reads `noise` itself.
     pub fn fuse_mag_heading(&mut self, field: MagField<Body>, noise: HeadingNoise) -> Fusion {
         if !self.initialized {
             return refuse(&mut self.diagnostics.mag_heading, Fusion::NotInitialized);

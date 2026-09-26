@@ -82,7 +82,8 @@ pub(crate) enum Update {
 /// itself. A correlated measurement is the exception, gated on its own `R_m` and gained on the
 /// larger `R̃` of (24′), so its gain is solved against a second factor; where `r_gain` is
 /// `r_m` the second factor is the first. The second costs 272 bytes of `update::<3>`'s frame
-/// on `thumbv6m` and 24 on `thumbv7em`, 296 and 40 of `update::<1>`'s.
+/// on `thumbv6m` and 64 on `thumbv7em`, 320 and 64 of `update::<1>`'s, measured by building
+/// each without it.
 ///
 /// The factorization is also the check that `S` is positive-definite. With `R_m > 0` and `P`
 /// positive semi-definite it always is, so a failure means `P` has lost that property in f32 —
