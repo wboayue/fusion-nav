@@ -1,0 +1,66 @@
+# scenario  runs  bounds
+#
+# The covariance's own promise, per scenario, asserted by `data/anees.sh` in CI (#89). Each
+# scenario is flown on seeds 1..runs and `tools/anees.py` averages NEES across them at every
+# epoch; the keys it prints, and why the bounds are chi-square quantiles rather than measured
+# ceilings, are in its docstring. `data/scenarios.txt` asks whether one flight got less
+# accurate; this asks whether the filter says how inaccurate it is, which no ceiling can: a
+# ceiling passes a filter that grew more accurate and more overconfident at once.
+#
+# One-sided. The simulator's IMU sits one to two orders below `ImuNoise::default()`, on purpose
+# (AGENTS.md), so every honest scenario is underconfident and a lower bound would fail them all.
+#
+# Two bounds per block, for two shapes of fault:
+#
+#   any_=0       no epoch past `bound_any`, the 95 % quantile made family-wise over the log's
+#                epochs by Bonferroni. Valid however correlated the epochs are, so it is derived
+#                rather than measured: an honest filter crosses it with probability at most 5 %.
+#                It is what catches a transient -- a lockout, an adoption -- that is a sliver of
+#                the log.
+#   over_<=0.10  at most a tenth of epochs past `bound`, the per-epoch 95 % quantile. An honest
+#                filter reads 0.05 in expectation; consecutive epochs share their error, so one
+#                ensemble scatters around that, and twice the honest rate is the allowance. What
+#                it catches is a mild overconfidence that never lets up and never spikes: at
+#                N=50 a covariance 20 % too small puts about half the epochs past `bound`.
+#
+# Measured at 50 seeds on the filter these bounds were written against: every block that passes
+# reads `over_` 0.000-0.032 and `any_`=0. With `ImuNoise` scaled down by ten, `harsh_imu`,
+# `moving_start` and `flight` fail `any_att` (35937, 440 and 377 epochs) and `harsh_imu`
+# `any_vel` (8848), while the five whose IMU is nominal still pass -- correctly, because a tenth
+# of the default is still at or above that IMU's noise (the gyroscope bias walk to within 10 %),
+# and `over_pos` rises only from 0.02-0.03 to 0.04-0.09 there.
+#
+# A scenario the filter fails today asserts the failure (`any_>=1`) on the blocks that fail, and
+# gates its other blocks as usual. Each names its cause; the assertion trips when the cause is
+# removed, so the line is rewritten in the diff that fixes it rather than left passing silently.
+#
+#   gnss_latency     fixes 150 ms stale that `R` does not describe; #52 owns latency.
+#                    anees_pos=56.39, and every block fails.
+#   logging_dropout  1.2 s refused at speed, then ~7 s of rejected fixes before the recovery;
+#                    #144 would coast the gap. anees_pos=10.94, peak_pos=1847.5 at 61.2 s.
+#   harsh_imu        attitude only: its accelerometer bias is fixed at [0.129, -0.186, 0.081]
+#                    m/s^2, 1.86 of `Initialization`'s 0.1 prior on y, and a horizontal
+#                    accelerometer bias reads as tilt. Every seed shares it, so the ensemble
+#                    cannot average it away. At the nominal IMU's bias the same line reads
+#                    any_att=0 and peak_att 0.65 (2.22 as fixed); raising `gyro_bias_walk` to cover
+#                    its gyroscope walk moves nothing.
+#   moving_start     attitude only: in the 0.2 s after the heading adoption at initialization and
+#                    before the first GNSS velocity fusion, four magnetometer headings share one
+#                    levelling tilt error that (36') prices into each `R` as though independent.
+#                    peak_att 1.80 at 10.16 s; once velocity fuses it corrects that tilt and the
+#                    ensemble is back under the bound.
+#
+# Seeds 1..runs rather than the pinned seed of `data/scenarios.txt`, which is one of them for
+# most scenarios and is not special here. The departures from `mission` fly the same seeds, so
+# they stay paired with it at every seed.
+
+static           50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
+mission          50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
+harsh_imu        50  any_pos=0   any_vel=0   any_att>=1  over_pos<=0.10 over_vel<=0.10
+gnss_outage      50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
+moving_start     50  any_pos=0   any_vel=0   any_att>=1  over_pos<=0.10 over_vel<=0.10 over_att<=0.10
+baro_drift       50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
+gnss_latency     50  any_pos>=1  any_vel>=1  any_att>=1
+mag_disturbance  50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
+logging_dropout  50  any_pos>=1  any_vel>=1  any_att>=1
+flight           50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
