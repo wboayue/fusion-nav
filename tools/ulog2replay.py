@@ -937,15 +937,39 @@ def release(encoded):
 # PX4's magnetic declination table and its lookup, ported from
 # src/lib/world_magnetic_model/geo_magnetic_tables.hpp and geo_mag_declination.cpp:56-108
 # at PX4-Autopilot c4e4ef98 (table last regenerated at f2bca92221: WMM-2020, epoch 2024.41).
-# EKF2 applies exactly this to its first GNSS fix when EKF2_DECL_TYPE bit 0 is set, so a
-# replay configured with it is replayed at the declination the log's own estimator used.
+# EKF2 applies the table compiled into its own firmware to its first GNSS fix when
+# EKF2_DECL_TYPE bit 0 is set. This is PX4's current one, so on an older build the value
+# can differ from what that build applied by the model's secular change -- a few tenths of
+# a degree on the corpus, where the saved EKF2_MAG_DECL and this table disagree by at most
+# 0.36 deg -- rather than being that build's value exactly.
+#
+# The table and lookup are PX4's, under its licence, retained here as it requires:
 #
 # Copyright (c) 2020-2024 PX4 Development Team. All rights reserved.
-# Redistribution and use in source and binary forms, with or without modification, are
-# permitted under the BSD 3-Clause licence: redistributions must retain this notice, the
-# list of conditions and the disclaimer in PX4's source, and the PX4 name may not be used
-# to endorse derived products. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
-# KIND.
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+# 1. Redistributions of source code must retain the above copyright
+# notice, this list of conditions and the following disclaimer.
+# 2. Redistributions in binary form must reproduce the above copyright
+# notice, this list of conditions and the following disclaimer in
+# the documentation and/or other materials provided with the
+# distribution.
+# 3. Neither the name PX4 nor the names of its contributors may be
+# used to endorse or promote products derived from this software
+# without specific prior written permission.
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+# FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+# COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+# INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+# BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+# OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED
+# AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+# LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+# ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
 #
 # Rows are latitude -90 to 90, columns longitude -180 to 180, 10 deg apart, in units of
 # DECLINATION_SCALE degrees.
@@ -999,8 +1023,10 @@ def declination_note(params, origin):
     The declination the log's own EKF2 applied, by its own rule
     (`Ekf::getMagDeclination`, EKF/aid_sources/magnetometer/mag_control.cpp:617-636 at
     c4e4ef98): with `EKF2_DECL_TYPE` bit 0 set and a fix, PX4's table at that fix --
-    `origin`, the first 3D fix, as (lat, lon) in degrees. Otherwise the parameter,
-    `EKF2_MAG_DECL`, or `ATT_MAG_DECL` on LPE, degrees east-positive as `Config`'s is.
+    `origin`, the first 3D fix, as (lat, lon) in degrees. Otherwise `EKF2_MAG_DECL` only
+    when bit 1 (save) is set and it is non-zero, and zero if not -- EKF2 ignores a stale
+    parameter it was not told to keep. LPE's `ATT_MAG_DECL` is taken as it reads. Degrees
+    east-positive, as `Config`'s is.
 
     Not the parameter first, because with bit 0 set the parameter is only what an earlier
     flight saved at disarm: `7ce66f0d` reads 0 there, a first flight at its site, while its
@@ -1011,10 +1037,15 @@ def declination_note(params, origin):
     if decl_type & 1 and origin is not None:
         degrees = table_declination(*origin)
         source = "PX4's table at the first fix, as EKF2_DECL_TYPE bit 0 has EKF2 use"
+    elif "EKF2_DECL_TYPE" in params or "EKF2_MAG_DECL" in params:
+        saved = float(params.get("EKF2_MAG_DECL", 0.0))
+        if decl_type & 2 and saved != 0.0:
+            degrees, source = saved, "EKF2_MAG_DECL"
+        else:
+            degrees, source = 0.0, "EKF2 had neither a fix to look one up nor a saved value"
     else:
-        name = next((n for n in ("EKF2_MAG_DECL", "ATT_MAG_DECL") if n in params), None)
-        degrees = float(params[name]) if name is not None else 0.0
-        source = name or "no declination parameter, so zero"
+        degrees = float(params.get("ATT_MAG_DECL", 0.0))
+        source = "ATT_MAG_DECL" if "ATT_MAG_DECL" in params else "no declination parameter, so zero"
     return f"Magnetic declination {math.radians(degrees):.6f} rad ({degrees:.2f} deg, {source})"
 
 
@@ -1315,8 +1346,11 @@ def self_test():
     geo = {"EKF2_DECL_TYPE": 3, "EKF2_MAG_DECL": 0.0}
     expect("bit 0 and a fix: the table", declination_note(geo, (56.41, 43.76)).split(" (")[0],
            f"Magnetic declination {math.radians(table_declination(56.41, 43.76)):.6f} rad")
-    expect("bit 0 and no fix: the parameter", declination_note(geo, None),
-           "Magnetic declination 0.000000 rad (0.00 deg, EKF2_MAG_DECL)")
+    expect("bit 0, no fix, saved 0: zero", declination_note(geo, None).split(" rad")[0],
+           "Magnetic declination 0.000000")
+    expect("both bits clear: a stale parameter is ignored",
+           declination_note({"EKF2_DECL_TYPE": 0, "EKF2_MAG_DECL": 13.0}, (56.41, 43.76)).split(" rad")[0],
+           "Magnetic declination 0.000000")
     expect("bit 0 clear: the parameter",
            declination_note({"EKF2_DECL_TYPE": 2, "EKF2_MAG_DECL": 13.746335}, (56.41, 43.76)),
            "Magnetic declination 0.239919 rad (13.75 deg, EKF2_MAG_DECL)")
