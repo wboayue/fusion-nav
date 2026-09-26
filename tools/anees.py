@@ -132,6 +132,8 @@ def ensemble(runs):
     if len(set(seeds)) != len(seeds):
         raise ValueError("a seed appears twice; the runs are not independent")
     times = runs[0][2]
+    if not times:
+        raise ValueError(f"seed {runs[0][1]} has no epochs; the replay never scored")
     for run in runs[1:]:
         if run[2] != times:
             raise ValueError(f"seed {run[1]} has other epochs than seed {runs[0][1]}")
@@ -197,6 +199,7 @@ def self_test():
 
     refused("two scenarios", [run(1, [1.0]), run(2, [1.0], scenario="other")])
     refused("a repeated seed", [run(1, [1.0]), run(1, [1.0])])
+    refused("no epochs", [run(1, [])])
     refused("misaligned epochs", [run(1, [1.0]), run(2, [1.0], times=["0.0050"])])
 
     for failure in failures:

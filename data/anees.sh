@@ -44,8 +44,12 @@ selected() {
 echo "building"
 (cd "$root" && cargo build --quiet --release --example simulate --example replay) ||
     die "build failed"
-simulate="$root/target/release/examples/simulate"
-replay="$root/target/release/examples/replay"
+# Where cargo put them, which CARGO_TARGET_DIR or build.target-dir can move out of target/.
+target=$(cd "$root" && cargo metadata --format-version 1 --no-deps |
+    python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])') ||
+    die "cargo metadata failed"
+simulate="$target/release/examples/simulate"
+replay="$target/release/examples/replay"
 
 # One seed of one scenario: generate, replay, keep the .nees.csv. Exported for xargs, which
 # runs each in its own shell.
@@ -56,7 +60,9 @@ fly() {
         { echo "anees: simulate $name seed $seed failed" >&2; return 1; }
     "$replay" "$dir/$name.csv" "$dir/replay.csv" "$dir/$name.truth.csv" >/dev/null ||
         { echo "anees: replay $name seed $seed failed" >&2; return 1; }
-    mv "$dir/replay.nees.csv" "$3/$2.nees.csv"
+    # A lost run must fail rather than shrink the ensemble: fewer files is a looser bound.
+    mv "$dir/replay.nees.csv" "$3/$2.nees.csv" ||
+        { echo "anees: $name seed $seed wrote no .nees.csv" >&2; return 1; }
     rm -rf "$dir"
 }
 export -f fly

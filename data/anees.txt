@@ -50,17 +50,20 @@
 #                    peak_att 1.80 at 10.16 s; once velocity fuses it corrects that tilt and the
 #                    ensemble is back under the bound. #150.
 #
+# `runs=` repeats the column as an expectation, so an ensemble that lost a run breaches rather than
+# being scored against the looser bound of fewer seeds.
+#
 # Seeds 1..runs rather than the pinned seed of `data/scenarios.txt`, which is one of them for
 # most scenarios and is not special here. The departures from `mission` fly the same seeds, so
 # they stay paired with it at every seed.
 
-static           50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
-mission          50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
-harsh_imu        50  any_pos=0   any_vel=0   any_att>=1  over_pos<=0.10 over_vel<=0.10
-gnss_outage      50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
-moving_start     50  any_pos=0   any_vel=0   any_att>=1  over_pos<=0.10 over_vel<=0.10 over_att<=0.10
-baro_drift       50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
-gnss_latency     50  any_pos>=1  any_vel>=1  any_att>=1
-mag_disturbance  50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
-logging_dropout  50  any_pos>=1  any_vel>=1  any_att>=1
-flight           50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
+static           50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
+mission          50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
+harsh_imu        50  runs=50  any_pos=0   any_vel=0   any_att>=1  over_pos<=0.10 over_vel<=0.10
+gnss_outage      50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
+moving_start     50  runs=50  any_pos=0   any_vel=0   any_att>=1  over_pos<=0.10 over_vel<=0.10 over_att<=0.10
+baro_drift       50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
+gnss_latency     50  runs=50  any_pos>=1  any_vel>=1  any_att>=1
+mag_disturbance  50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
+logging_dropout  50  runs=50  any_pos>=1  any_vel>=1  any_att>=1
+flight           50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
