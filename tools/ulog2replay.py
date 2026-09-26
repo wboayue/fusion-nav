@@ -249,7 +249,7 @@ def convert_gnss(ulog, rows, used):
     dataset = pick(ulog, GNSS_TOPICS)
     if dataset is None:
         print("warning: no GNSS topic; position and velocity aiding omitted", file=sys.stderr)
-        return
+        return None
     # Some drivers declare the ellipsoid field and never fill it; an all-zero height
     # column would flatten every fix onto the origin's height. Skip to the MSL one.
     filled = [c for c in GNSS_GEODETIC if c[0][2] not in dataset.data or dataset.data[c[0][2]].any()]
@@ -311,6 +311,7 @@ def convert_gnss(ulog, rows, used):
     if origin is None:
         print("warning: no 3D GNSS fix in the log", file=sys.stderr)
     tally(rows, before, used, "gnss", f"{dataset.name} ({lat_f})")
+    return origin
 
 
 def from_sensor_combined(dataset, value_fields, relative_field, rows, source, variances):
@@ -457,7 +458,7 @@ def convert(path, baro_variance, mag_variance):
     used = {}
     note = dropouts(ulog)
     sensor_combined = convert_imu(ulog, rows, used)
-    convert_gnss(ulog, rows, used)
+    origin = convert_gnss(ulog, rows, used)
     convert_baro(ulog, rows, used, baro_variance, sensor_combined)
     convert_mag(ulog, rows, used, mag_variance, sensor_combined)
     # The IMU sample interval, for --reference's bias scaling only. Taken here
@@ -465,7 +466,8 @@ def convert(path, baro_variance, mag_variance):
     # replay output depends on it.
     t = stamps(sensor_combined)
     imu_dt = median([(b - a) * 1e-6 for a, b in zip(t, t[1:]) if b > a])
-    return rows, used, note, imu_dt
+    declination = declination_note(ulog.initial_parameters, origin and origin[:2])
+    return rows, used, note, imu_dt, declination
 
 
 def write_rows(rows, out, note):
@@ -932,22 +934,87 @@ def release(encoded):
     return f"v{(encoded >> 24) & 0xFF}.{(encoded >> 16) & 0xFF}.{(encoded >> 8) & 0xFF}{suffix}"
 
 
-def declination_note(ulog):
+# PX4's magnetic declination table and its lookup, ported from
+# src/lib/world_magnetic_model/geo_magnetic_tables.hpp and geo_mag_declination.cpp:56-108
+# at PX4-Autopilot c4e4ef98 (table last regenerated at f2bca92221: WMM-2020, epoch 2024.41).
+# EKF2 applies exactly this to its first GNSS fix when EKF2_DECL_TYPE bit 0 is set, so a
+# replay configured with it is replayed at the declination the log's own estimator used.
+#
+# Copyright (c) 2020-2024 PX4 Development Team. All rights reserved.
+# Redistribution and use in source and binary forms, with or without modification, are
+# permitted under the BSD 3-Clause licence: redistributions must retain this notice, the
+# list of conditions and the disclaimer in PX4's source, and the PX4 name may not be used
+# to endorse derived products. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+# KIND.
+#
+# Rows are latitude -90 to 90, columns longitude -180 to 180, 10 deg apart, in units of
+# DECLINATION_SCALE degrees.
+DECLINATION_SCALE = 0.00545143529
+DECLINATION_TABLE = (
+    (27264, 25429, 23595, 21761, 19926, 18092, 16258, 14423, 12589, 10754, 8920, 7086, 5251, 3417, 1583, -252, -2086, -3921, -5755, -7589, -9424, -11258, -13092, -14927, -16761, -18596, -20430, -22264, -24099, -25933, -27768, -29602, -31436, 32767, 30933, 29098, 27264),
+    (23650, 21416, 19382, 17521, 15799, 14184, 12647, 11165, 9721, 8303, 6904, 5519, 4143, 2772, 1397, 9, -1403, -2848, -4333, -5863, -7437, -9056, -10718, -12423, -14175, -15984, -17864, -19835, -21922, -24152, -26545, -29105, -31803, 31464, 28718, 26092, 23650),
+    (15755, 14282, 13094, 12077, 11159, 10281, 9392, 8457, 7454, 6381, 5257, 4109, 2971, 1865, 794, -267, -1359, -2527, -3797, -5172, -6632, -8142, -9669, -11188, -12690, -14181, -15686, -17253, -18969, -20997, -23675, -27707, 32110, 25303, 20617, 17720, 15755),
+    (8903, 8634, 8328, 8030, 7755, 7481, 7150, 6689, 6037, 5171, 4116, 2948, 1775, 704, -211, -998, -1763, -2635, -3706, -4982, -6396, -7846, -9240, -10513, -11630, -12572, -13320, -13839, -14019, -13549, -11322, -3523, 5353, 8167, 8943, 9057, 8903),
+    (5806, 5839, 5774, 5672, 5587, 5541, 5499, 5359, 4991, 4286, 3216, 1875, 470, -754, -1647, -2218, -2623, -3091, -3835, -4934, -6270, -7627, -8830, -9771, -10388, -10623, -10400, -9587, -7986, -5492, -2431, 460, 2679, 4178, 5097, 5594, 5806),
+    (4186, 4282, 4284, 4229, 4159, 4118, 4119, 4103, 3914, 3342, 2253, 728, -912, -2273, -3151, -3597, -3767, -3819, -4016, -4665, -5740, -6891, -7817, -8365, -8453, -8028, -7069, -5603, -3811, -2034, -509, 772, 1872, 2790, 3486, 3942, 4186),
+    (3161, 3250, 3275, 3251, 3182, 3094, 3026, 2988, 2851, 2337, 1229, -384, -2070, -3364, -4111, -4446, -4503, -4252, -3790, -3609, -4059, -4874, -5597, -5938, -5777, -5133, -4109, -2845, -1594, -619, 83, 710, 1372, 2016, 2561, 2948, 3161),
+    (2485, 2532, 2542, 2534, 2481, 2375, 2255, 2172, 2018, 1486, 353, -1228, -2777, -3865, -4390, -4481, -4240, -3623, -2707, -1902, -1669, -2082, -2768, -3241, -3254, -2856, -2179, -1328, -531, -35, 229, 542, 1013, 1529, 1985, 2318, 2485),
+    (2072, 2064, 2032, 2018, 1980, 1883, 1758, 1657, 1461, 874, -261, -1719, -3046, -3887, -4129, -3855, -3229, -2397, -1510, -734, -274, -342, -854, -1379, -1586, -1478, -1143, -624, -116, 121, 159, 321, 720, 1197, 1625, 1939, 2072),
+    (1847, 1810, 1742, 1723, 1703, 1621, 1500, 1371, 1102, 444, -660, -1952, -3043, -3628, -3589, -3035, -2219, -1401, -724, -169, 254, 350, 38, -401, -658, -711, -608, -338, -43, 36, -42, 45, 413, 896, 1354, 1703, 1847),
+    (1699, 1705, 1653, 1662, 1681, 1620, 1480, 1275, 878, 122, -954, -2080, -2929, -3256, -3012, -2356, -1536, -796, -265, 129, 466, 610, 425, 85, -155, -268, -299, -222, -121, -175, -335, -312, 14, 509, 1030, 1470, 1699),
+    (1494, 1649, 1708, 1799, 1884, 1855, 1681, 1355, 781, -117, -1209, -2197, -2803, -2893, -2528, -1885, -1137, -461, 13, 332, 601, 746, 640, 383, 178, 51, -55, -135, -228, -437, -694, -758, -503, -19, 561, 1114, 1494),
+    (1160, 1544, 1816, 2050, 2215, 2221, 2017, 1567, 802, -275, -1438, -2341, -2756, -2673, -2242, -1629, -939, -294, 184, 499, 738, 885, 855, 696, 542, 408, 230, -8, -317, -718, -1109, -1275, -1099, -642, -30, 613, 1160),
+    (765, 1379, 1900, 2314, 2577, 2622, 2393, 1831, 876, -403, -1685, -2574, -2892, -2722, -2248, -1623, -936, -278, 252, 629, 908, 1109, 1199, 1184, 1104, 944, 647, 195, -387, -1030, -1576, -1826, -1696, -1253, -625, 77, 765),
+    (437, 1218, 1936, 2528, 2919, 3036, 2799, 2116, 928, -623, -2091, -3030, -3327, -3121, -2604, -1925, -1180, -449, 193, 719, 1153, 1519, 1805, 1977, 1991, 1784, 1297, 527, -430, -1381, -2085, -2373, -2234, -1771, -1112, -355, 437),
+    (198, 1087, 1936, 2674, 3216, 3452, 3243, 2411, 855, -1158, -2926, -3941, -4206, -3936, -3339, -2560, -1696, -817, 27, 812, 1534, 2191, 2754, 3160, 3315, 3098, 2397, 1190, -317, -1699, -2593, -2902, -2725, -2214, -1502, -680, 198),
+    (-111, 863, 1803, 2648, 3305, 3634, 3405, 2285, 58, -2678, -4700, -5589, -5627, -5143, -4352, -3383, -2317, -1205, -83, 1026, 2098, 3108, 4014, 4748, 5204, 5214, 4533, 2927, 575, -1644, -2988, -3441, -3276, -2730, -1962, -1068, -111),
+    (-1054, -90, 801, 1527, 1946, 1812, 731, -1632, -4654, -6842, -7732, -7698, -7114, -6204, -5096, -3864, -2554, -1197, 184, 1572, 2947, 4292, 5581, 6779, 7828, 8630, 8988, 8486, 6313, 2026, -1910, -3677, -4009, -3636, -2914, -2019, -1054),
+    (-30607, -28773, -26938, -25104, -23269, -21435, -19601, -17766, -15932, -14097, -12263, -10429, -8594, -6760, -4926, -3091, -1257, 578, 2412, 4246, 6081, 7915, 9749, 11584, 13418, 15253, 17087, 18921, 20756, 22590, 24424, 26259, 28093, 29928, 31762, -32441, -30607),
+)
+
+
+def table_declination(latitude, longitude):
+    """Declination in degrees from PX4's table, interpolated bilinearly as PX4 does."""
+    res, lat_min, lat_max, lon_min, lon_max = 10.0, -90.0, 90.0, -180.0, 180.0
+    latitude = min(max(latitude, lat_min), lat_max)
+    if longitude > lon_max:
+        longitude -= 360.0
+    if longitude < lon_min:
+        longitude += 360.0
+    lat0 = min(max(math.floor(latitude / res) * res, lat_min), lat_max - res)
+    lon0 = min(max(math.floor(longitude / res) * res, lon_min), lon_max - res)
+    i, j = int((lat0 - lat_min) / res), int((lon0 - lon_min) / res)
+    sw, se = DECLINATION_TABLE[i][j], DECLINATION_TABLE[i][j + 1]
+    nw, ne = DECLINATION_TABLE[i + 1][j], DECLINATION_TABLE[i + 1][j + 1]
+    lat_scale = min(max((latitude - lat0) / res, 0.0), 1.0)
+    lon_scale = min(max((longitude - lon0) / res, 0.0), 1.0)
+    south = lon_scale * (se - sw) + sw
+    north = lon_scale * (ne - nw) + nw
+    return (lat_scale * (north - south) + south) * DECLINATION_SCALE
+
+
+def declination_note(params, origin):
     """The header line `examples/replay.rs` reads its magnetic declination from.
 
-    EKF2's own `EKF2_MAG_DECL`, degrees east-positive -- the sign `Config`'s is -- as the
-    log began: with `EKF2_DECL_TYPE` bit 0 EKF2 looks it up from its first fix and saves
-    it at disarm, so this is the value an earlier flight from the same field saved. LPE
-    logs `ATT_MAG_DECL`. A log with no GNSS reads 0, which EKF2 never replaced, and is
-    written as it reads: nothing in such a log can say where north is.
+    The declination the log's own EKF2 applied, by its own rule
+    (`Ekf::getMagDeclination`, EKF/aid_sources/magnetometer/mag_control.cpp:617-636 at
+    c4e4ef98): with `EKF2_DECL_TYPE` bit 0 set and a fix, PX4's table at that fix --
+    `origin`, the first 3D fix, as (lat, lon) in degrees. Otherwise the parameter,
+    `EKF2_MAG_DECL`, or `ATT_MAG_DECL` on LPE, degrees east-positive as `Config`'s is.
 
-    Configured rather than fixed, because the site sets it. One constant for the corpus
-    put a standing 17 deg between `cd7e0001`'s heading and EKF2's.
+    Not the parameter first, because with bit 0 set the parameter is only what an earlier
+    flight saved at disarm: `7ce66f0d` reads 0 there, a first flight at its site, while its
+    EKF2 flew on the table. A log with no GNSS and no parameter reads 0, and nothing in
+    it can say where north is.
     """
-    params = ulog.initial_parameters
-    name = next((n for n in ("EKF2_MAG_DECL", "ATT_MAG_DECL") if n in params), None)
-    degrees = float(params[name]) if name is not None else 0.0
-    source = name or "no declination parameter, so zero"
+    decl_type = int(params.get("EKF2_DECL_TYPE", 0))
+    if decl_type & 1 and origin is not None:
+        degrees = table_declination(*origin)
+        source = "PX4's table at the first fix, as EKF2_DECL_TYPE bit 0 has EKF2 use"
+    else:
+        name = next((n for n in ("EKF2_MAG_DECL", "ATT_MAG_DECL") if n in params), None)
+        degrees = float(params[name]) if name is not None else 0.0
+        source = name or "no declination parameter, so zero"
     return f"Magnetic declination {math.radians(degrees):.6f} rad ({degrees:.2f} deg, {source})"
 
 
@@ -1211,15 +1278,25 @@ def self_test():
     reference_states(v115, EKF2_LAYOUTS[(24, 23)], None, rows)
     expect("v1.15 sigma_vel_n", rows[0][2]["sigma_vel_n"], math.sqrt(3.0))
     expect("v1.15 sigma_ba_z", rows[0][2]["sigma_ba_z"], math.sqrt(14.0))
-    class Params:
-        def __init__(self, **params):
-            self.initial_parameters = params
-    expect("declination", declination_note(Params(EKF2_MAG_DECL=13.746335)),
+    # PX4's own test_geo_lookup.cpp values at grid points, within its own 0.4 + 1.0 deg.
+    for lat, lon, want in [(-50, -180, 31.7), (-50, -100, 27.2)]:
+        got = round(table_declination(lat, lon), 1)
+        expect(f"table at ({lat}, {lon}) within PX4's tolerance", abs(got - want) <= 1.4, True)
+    # Halfway between two grid points is the mean of the two, exactly.
+    expect("bilinear midpoint", table_declination(-50, -175),
+           (table_declination(-50, -180) + table_declination(-50, -170)) / 2)
+    expect("longitude wraps", table_declination(0, 190), table_declination(0, -170))
+    geo = {"EKF2_DECL_TYPE": 3, "EKF2_MAG_DECL": 0.0}
+    expect("bit 0 and a fix: the table", declination_note(geo, (56.41, 43.76)).split(" (")[0],
+           f"Magnetic declination {math.radians(table_declination(56.41, 43.76)):.6f} rad")
+    expect("bit 0 and no fix: the parameter", declination_note(geo, None),
+           "Magnetic declination 0.000000 rad (0.00 deg, EKF2_MAG_DECL)")
+    expect("bit 0 clear: the parameter",
+           declination_note({"EKF2_DECL_TYPE": 2, "EKF2_MAG_DECL": 13.746335}, (56.41, 43.76)),
            "Magnetic declination 0.239919 rad (13.75 deg, EKF2_MAG_DECL)")
-    expect("LPE declination", declination_note(Params(ATT_MAG_DECL=-2.0)).split(" rad")[0],
+    expect("LPE", declination_note({"ATT_MAG_DECL": -2.0}, None).split(" rad")[0],
            "Magnetic declination -0.034907")
-    expect("no declination", declination_note(Params()).split(" rad")[0],
-           "Magnetic declination 0.000000")
+    expect("nothing", declination_note({}, None).split(" rad")[0], "Magnetic declination 0.000000")
     expect("release", release(0x010B03FF), "v1.11.3")
     expect("rc", release(0x011000C0), "v1.16.0-rc")
     expect("dev", release(0x010A0000), "v1.10.0-dev")
@@ -1274,12 +1351,12 @@ def main():
 
     output = args.output or args.ulog.with_suffix(".csv")
     try:
-        rows, used, dropout_note, imu_dt = convert(
+        rows, used, dropout_note, imu_dt, declination = convert(
             args.ulog, args.baro_variance, args.mag_variance
         )
         note = [
             f"Converted from {args.ulog.name} by tools/ulog2replay.py",
-            declination_note(open_ulog(args.ulog, [])),
+            declination,
             "Topics used: " + ", ".join(f"{k}={v}" for k, v in sorted(used.items())),
             f"baro variance {args.baro_variance} m^2 and mag heading variance "
             f"{args.mag_variance} rad^2 are assumed; PX4 logs neither.",
