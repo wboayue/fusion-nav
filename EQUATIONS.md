@@ -598,11 +598,10 @@ writing $`h(x)`$ as minus the height of $`\hat{p}`$ above $`h_0`$, by the invers
 $`p_D - (p_N^2 + p_E^2) / 2R`$ to second order — so both sides are heights; $`H`$ is unchanged to
 first order.
 
-`altitude_observation` does not write it, and its doc comment carries the measurement that
-decided so: neither the corpus nor the simulator travels far enough from an origin for the term
-to be worth a millimetre against a barometer's own noise, and the simulator generates its reading
-from $`-p_D`$ on a flat plane, so it could not score the correction even where it mattered. That
-comment owns the numbers and the condition for revisiting them.
+`altitude_observation` does not write it, and its doc comment carries the measurements behind
+that: the corpus reaches the term (`89a498ce` flies 4.07 km out, where it is 1.30 m), but the
+simulator generates its reading from $`-p_D`$ on a flat plane, so no scenario could score the
+correction. That comment owns the numbers, and #124 owns the change.
 
 ### Magnetometer, three-axis
 
