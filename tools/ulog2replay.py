@@ -960,7 +960,8 @@ def vibration_metric(encoded):
     not a quiet airframe and a loud one. No rescaling makes them one quantity --
     the old metric differences averages, which is where vibration is filtered out
     -- so the screen names the metric rather than converting it. The commit is on
-    master between v1.12 and v1.13.0-beta1: a v1.12 dev build could be either.
+    master 1945 commits after v1.13.0-alpha1 and before v1.13.0-beta1, so a v1.12 or
+    v1.13 build short of beta could be either.
     `estimator_status.vibe[2]` on older builds is the delta-velocity one. A version
     outside PX4's v1 series is a vendor's own numbering -- `a299e722` reports v6.5.22
     -- and says nothing about which PX4 it forked.
@@ -968,9 +969,10 @@ def vibration_metric(encoded):
     major, minor = (encoded >> 24) & 0xFF, (encoded >> 16) & 0xFF
     if not encoded or major != 1:
         return "unknown"
-    if (major, minor) >= (1, 13):
+    kind = encoded & 0xFF
+    if (major, minor) > (1, 13) or ((major, minor) == (1, 13) and kind >= 128):
         return "accel"
-    if (major, minor) == (1, 12) and encoded & 0xFF != 255:
+    if (major, minor) in ((1, 12), (1, 13)) and kind != 255:
         return "unknown"
     return "dv"
 
@@ -1190,6 +1192,7 @@ def self_test():
     for encoded, want in [
         (0x010B03FF, "dv"), (0x010C01FF, "dv"), (0x010C0100, "unknown"),
         (0x010D0080, "accel"), (0x010F0400, "accel"), (0, "unknown"),
+        (0x010D0040, "unknown"), (0x010D0000, "unknown"), (0x010D00FF, "accel"),
         (0x06051680, "unknown"),
     ]:
         expect(f"vibration metric {encoded:#x}", vibration_metric(encoded), want)
