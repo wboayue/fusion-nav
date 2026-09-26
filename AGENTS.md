@@ -41,7 +41,12 @@ and asserts failures by cause: `gnss_latency` and `logging_dropout` on position,
 `correlated` (#117's residual). Of the two it found that no single seed showed, #150
 (`moving_start`'s first 0.2 s) was fixed by (24′); #149 (`harsh_imu` attitude) now passes only
 by a wider covariance, its cause standing, and a line that passes either way is no evidence for
-closing it. Order: #8 (re-measure its height gap on (24′) first), with #144 and #149 beside it. #86's tailsitter is no
+closing it. Order: #8 (re-measure its height gap on (24′) first), with #144 and #149 beside it.
+#48 and #49 landed (#154): `Display` on every outcome, an optional `defmt` feature, and
+`examples/embedded.rs`, built for both thumb targets in CI. `Display` prints numbers through
+`src/display.rs`'s `Fixed`, because core's `f32` formatting reaches `core::panicking` (the
+existing `InitError` impl did, unguarded). `panic-check` now formats every `Display` impl. The
+example collects its window at 50 Hz because a 400 Hz one is 51 KB; #155 owns that. #86's tailsitter is no
 longer blocked: #131 (#133) reads tilt and heading on navigation axes, `diag(R P_θθ Rᵀ)` through
 `AttitudeVariance`, in `Validity`, the latch, the heading adoption and (8)'s prior, and the
 `tilt`/`yaw`/`false_valid` score keys moved with it — tilt² + yaw² unchanged, the body split had
