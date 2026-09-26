@@ -257,7 +257,7 @@ flowchart TD
     upd --> out["position + velocity + attitude"]
 ```
 
-Features deliberately deferred include:
+Out of scope, as [GOALS.md](GOALS.md#non-goals) decides and owns:
 
 * wind estimation
 * terrain estimation
@@ -270,9 +270,9 @@ Features deliberately deferred include:
 * multiple simultaneous navigation filters
 * automatic sensor-source switching
 
-These can be added as concrete use cases require them. The initial implementation intentionally
-focuses on the core navigation problem rather than reproducing every feature of mature autopilot
-estimators such as PX4 EKF2.
+Adding one is a change to that decision, not an implementation task. The filter focuses on the
+core navigation problem rather than reproducing every feature of mature autopilot estimators such
+as PX4 EKF2.
 
 ## Staging the implementation
 

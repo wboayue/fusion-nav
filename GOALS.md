@@ -77,7 +77,7 @@ None of this is a criticism of `eskf`, which does what it set out to do. It is a
 
 Ranked by how defensible they are, which is not the same as how valuable. Differentiator 4 is
 true today by construction; differentiator 1 matters most and is unmeasured on a target: stack frames are measured per
-function on a host build, and nothing has yet run or been timed on hardware (#41).
+function from a cross-build for `thumbv6m-none-eabi`, and nothing has yet run or been timed on hardware (#41).
 
 Number 5 is missing on purpose: it was *ecosystem coherence*, and was dropped rather than
 renumbered — see [Decisions](#ecosystem-coherence-dropped).
@@ -242,7 +242,8 @@ crate no data could settle, which is why it is configuration; see differentiator
 
 ## Open design questions
 
-Two gaps in the current design still need a decision before implementation.
+Two gaps the core filter left. Alignment is decided and mostly built. Measurement latency still
+needs a decision (#52).
 
 ### Measurement latency
 
@@ -688,8 +689,8 @@ sees — IMU, barometer, magnetometer, GNSS — together with EKF2's own state e
 innovations. There is no ground truth, so this is not an accuracy benchmark. Its value is that
 replaying a log and comparing against EKF2's published solution catches divergence on genuinely
 glitchy sensor data, and gives free coverage of GNSS dropouts, magnetic interference, and
-barometer transients that a clean RTK dataset will not. ArduPilot `.bin` logs serve the same
-purpose.
+barometer transients that a clean RTK dataset will not. ArduPilot `.bin` logs could serve the
+same purpose, but no converter reads them, so the corpus is PX4's alone.
 
 Public Flight Review logs are CC BY 4.0, so a pinned corpus can be redistributed with
 attribution — unusually, the licence is not the obstacle here. `https://review.px4.io/dbinfo`

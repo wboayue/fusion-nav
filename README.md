@@ -157,8 +157,8 @@ and GNSS velocity. From the window the filter takes:
   pitch. Without one, heading is unobserved: stillness says nothing about the rotation about
   gravity. `validity.heading` is false and `Status` stays `Aligning` until the first
   `fuse_mag_heading` is accepted, however still the window was — `Initialization::sigma_yaw` is a
-  prior on a yaw nobody measured, and the covariance alone cannot tell the two apart (the reset
-  that should replace such a yaw is not yet built). Leaving `Aligning` is one-way: it reports a
+  prior on a yaw nobody measured, and the covariance alone cannot tell the two apart, which is
+  why the first accepted heading is adopted rather than fused. Leaving `Aligning` is one-way: it reports a
   start that has not been resolved, while `validity.tilt` and `validity.heading` stay live and go
   false again as an unaided covariance grows past `Config::accuracy`. The two read different bars:
   `Aligning` ends at the fixed `ALIGNED_TILT` (3°, PX4's) and `ALIGNED_HEADING` (30°), and
@@ -492,7 +492,7 @@ The crate is also `#![forbid(unsafe_code)]`, `no_std`, and allocation-free.
 
 ## Limitations
 
-Known and deliberate, stated here rather than discovered in flight.
+Known, and stated here rather than discovered in flight. Some are deliberate; the rest link the issue that removes them.
 
 * **Measurement latency is not modelled.** GNSS solutions arrive typically 100–200 ms stale and
   are fused as though current; the error grows with speed. PX4 fuses at a delayed horizon and
@@ -507,12 +507,25 @@ Known and deliberate, stated here rather than discovered in flight.
 * **Heading needs a magnetometer.** It is the only heading source the filter has, so a vehicle
   without one never leaves `Aligning` and never reports `validity.heading`, however good the rest
   of the estimate is. `Aligning` hides `Degraded`, so such a vehicle's source timeouts stop
-  showing in `Status` too and have to be read from `diagnostics()`. Yaw from course over ground
-  and a GSF yaw estimator are the answers, both unbuilt. See
+  showing in `Status` too and have to be read from `diagnostics()`. Yaw from course over ground,
+  dual-antenna GNSS heading and a GSF yaw estimator are the answers, all unbuilt. See
   [alignment beyond the static window](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#alignment-beyond-the-static-window).
 * **In-motion alignment is coarse.** A moving start runs and reports `Aligning`, but full
   alignment of a bare vehicle in motion is not yet built; `initialize_from` covers a held
   estimate. See [alignment beyond the static window](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#alignment-beyond-the-static-window).
+* **Correlated errors are fused as white.** Equation (24) treats each reading's error as
+  independent of the last, and real sources rarely are: a receiver filters its own solution in time.
+  Consecutive fixes then shrink the covariance below what the source supports. On a two-hour
+  corpus log, horizontal σ sits under the receiver's own `eph` at 4003 of 4614 fixes. See
+  [#117](https://github.com/wboayue/fusion-nav/issues/117).
+* **An IMU gap freezes the state.** A step longer than `Config::max_predict_dt` is refused
+  (`Propagation::StepTooLong`), and across it position neither advances nor grows its
+  covariance. On a fast vehicle the gate then turns GNSS down until `Config::recovery` adopts a
+  fix, 7 s later by default. See [#144](https://github.com/wboayue/fusion-nav/issues/144).
+* **No lever arms.** GNSS position and velocity are taken as the IMU's, so an antenna offset `r`
+  reads rotation as velocity (`ω × r`), and the filter believes it. See [#25](https://github.com/wboayue/fusion-nav/issues/25).
+* **One set of timeouts for every source.** `Config::timeouts` applies one threshold to every
+  source, and any accepted source counts as aiding. See [#56](https://github.com/wboayue/fusion-nav/issues/56).
 * **Local tangent plane.** Position is Cartesian NED about a fixed origin. The geodetic
   conversion is exact at any range ([equation (43)](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#geodetic-origin)), but a plane
   leaves a curved Earth: `d` from the origin it sits `d²/2R` above the surface, 8 cm at 1 km and
@@ -520,8 +533,8 @@ Known and deliberate, stated here rather than discovered in flight.
   and [equation (30)](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#barometric-altitude)
   records the measurement behind that.
 
-Features deliberately deferred (wind, terrain, optical flow, airspeed, ...) are listed in
-[DESIGN.md](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#initial-scope).
+Features out of scope (wind, terrain, optical flow, airspeed, ...) are listed in
+[GOALS.md](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#non-goals).
 
 ## Further reading
 

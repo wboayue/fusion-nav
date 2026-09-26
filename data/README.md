@@ -518,12 +518,13 @@ for three measured reasons:
   converter constants, flooring would leave almost no receiver-reported variance in the corpus.
 - **It costs most or all of the only GNSS rejection the multirotors have.** `rejected_gnss_vel=287`
   on `a299e722` is the single non-zero GNSS count across the eight multirotor and SITL logs. (Of
-  the four airframe logs, the floors correct one: `093e806a`'s 860 position rejections read 92
-  under them. They leave `4b473e91`'s lockout and `7ce66f0d`'s divergence where they are.) Replayed with the floors applied,
+  the four airframe logs, measured at `Recovery::OFF`, the floors correct one: `093e806a`'s 860
+  position rejections read 92 under them, where recovery alone reads 291. They leave `4b473e91`'s
+  lockout, which recovery removes, and `7ce66f0d`'s divergence, which neither removes.) Replayed with the floors applied,
   the 278 it read before #137 read 0 under PX4's treatment — the 0.5 m/s floor *and* the separate `sq(1.5f)` vertical
   widening — 2 under that floor alone, and 44 under ArduPilot's per-axis 0.3/0.5, which is the one
-  policy that would leave the gate of (37)–(38) still exercised by real data. `transitions=` goes
-  4 to 2 under all three, so this is not the only key a floor would move.
+  policy that would leave the gate of (37)–(38) still exercised by real data. `transitions=` went
+  4 to 2 under all three in that measurement (#113), so this is not the only key a floor would move.
 - **It moves the accuracy gate.** `examples/simulate.rs` draws GNSS velocity noise at σ = 0.15 m/s
   and `data/bench.sh` scores every scenario through this same harness, so a floor would hand every
   simulated fix an `R` 11× too wide and move the ceilings in `data/scenarios.txt` — distrusting a

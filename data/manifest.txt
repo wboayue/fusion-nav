@@ -359,7 +359,7 @@
 # the sign and a signed offset is how a declination error, an uncontrolled
 # lever arm and measurement latency each show up. Two are worth naming:
 # a299e722 carries a standing -0.40 m east on its position and -0.0957 rad
-# (-5.48 deg) on its heading, which is the shape #23 is about; the east
+# (-5.48 deg) on its heading, which is the shape #125 is about; the east
 # offset was -0.64 m until the log's own declination reached the filter.
 #
 # acf1_<source>= is the lag-1 autocorrelation of the normalized innovation,
