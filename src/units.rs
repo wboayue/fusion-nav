@@ -726,8 +726,10 @@ impl VelocityNoise<Ned> {
     /// because ArduPilot is: it floors the axes at different parameters, 0.3 m/s
     /// horizontal against 0.5 vertical on copter, under one shared 50 m/s cap
     /// (`AP_NavEKF3_PosVelFusion.cpp:821-822`, `AP_NavEKF3.cpp:23-24`). PX4 floors at
-    /// `ekf2_gps_v_noise`, 0.5 m/s, and caps nothing
-    /// (`EKF/aid_sources/gnss/gps_control.cpp:320`).
+    /// `ekf2_gps_v_noise` and caps nothing (`EKF/aid_sources/gnss/gps_control.cpp:320`);
+    /// that is the `EKF2_GPS_V_NOISE` parameter, 0.3 m/s by default since 11585dfb67
+    /// (`src/modules/ekf2/params_gnss.yaml:68-72` at c4e4ef98), though the struct's own
+    /// initializer still reads 0.5 (`EKF/common.h:370`). The corpus flies 0.25–0.5.
     ///
     /// Bounds are for axes the receiver measured. A solution with no usable vertical
     /// velocity goes through
