@@ -214,8 +214,9 @@ alongside the estimate.
 The single ladder cannot express what a coarse start produces: position as good as the receiver
 the moment a fix is adopted, while attitude is still converging. It also masks: `Aligning`
 outranks `Degraded`, so for as long as a start goes unresolved the aiding the filter is or is not
-getting never reaches `Status` at all, which cost the corpus log that starts in motion all 888 of
-its aiding transitions while its attitude prior was charged that window's worst sample (#77).
+getting never reaches `Status` at all, which cost `2c42096b`, then the corpus's coarse start, all
+888 of its aiding transitions while its attitude prior was charged that window's worst sample
+(#77).
 
 **Decided:** keep `Status` as the one-glance summary and add `Validity` alongside it on the state,
 six flags derived from the covariance against `Config::accuracy`. Horizontal and vertical
@@ -312,8 +313,9 @@ The options, in the order they are worth doing:
    after it.
 
    **And tilt can be left to the ordinary gate, which is what the data says.** The corpus
-   answers half of it: across 49,692 headings on five logs the gate turns down none, so nothing
-   there is locked out at any tilt those vehicles reach. The simulator answers the half the
+   answers half of it: across 72,990 headings on eight logs the gate turns down three, each a
+   single sample 1.1 rad out on `eb799954` with the next heading accepted, so nothing there is
+   locked out at any tilt those vehicles reach. The simulator answers the half the
    corpus cannot, because only it starts badly on purpose — `moving_start` begins at 14.6° of
    pitch with a coarse attitude, has none of its headings refused (`rejected_mag=0`), and
    recovers to 1.665° of tilt against the 5.294 it reads with its magnetometer rows removed. No separate policy while
@@ -333,12 +335,13 @@ The options, in the order they are worth doing:
    subtracts nothing yet. The attitude (5)–(7) commit is what rotates `ā_n` into body axes;
    the subtraction is #59's.
 
-   Whether finishing it is worth anything the corpus cannot say. Its one moving start
-   (`2c42096b`) measures `ā_n` = 0.14 m s⁻², against the 0.39 m s⁻² of noise that differencing a
-   1 Hz receiver over 1 s produces — the vehicle is vibrating on the spot, not translating, so
-   (5′) would subtract noise. On the same window the specific force peaks 5.46 m s⁻² off gravity
-   while the *averaged* specific force it levels sits under a degree off plumb (`roll0=0.42
-   pitch0=-0.89` in `data/manifest.txt`, which is what pins it). The tilt prior lost far more by
+   Whether finishing it is worth anything the corpus cannot say. Its one moving start,
+   `cd7e0001`, is climbing at a steady 3.1 m/s when the window is taken: `ā_n` = 0.136 m s⁻²
+   against about 0.10 m s⁻² of noise from differencing its receiver's reported σ_v of 0.07 m/s
+   over 1 s, so (5′) would subtract little more than noise. `2c42096b`'s window, while it started
+   coarse, measured 0.14 m s⁻² against 0.39 of noise on a vehicle vibrating on the spot. On that
+   window the specific force peaked 5.46 m s⁻² off gravity while the *averaged* specific force it
+   levelled sat under a degree off plumb (roll 0.42°, pitch −0.89°). The tilt prior lost far more by
    charging that peak against that average than option 4 could have recovered here, and #77 has
    since collected it. Judging option 4 itself needs
    a log that actually accelerates, which the simulator's `moving_start` now is — a banked,
@@ -480,8 +483,9 @@ ground by `set_baro_reference` remains available, and now names its σ.
 **Seeded from the estimate (#115).** Estimated, the reference read from the estimate after a
 coarse start is seeded correlated with the height it was read against, `P_bb = P_DD + R_m` and
 `P_xb = −P[:, D]`, and `moving_start` reads `nees_pos` 1.0877 against the 112.59 and 14.58 above.
-`2c42096b` fuses every barometer row after its first fix — 35575 refused before — with no GNSS
-height rejected and `status=Healthy`; at `q_b = 0` the same run rejects 3825. It covers every start
+`2c42096b`, then a coarse start, fused every barometer row after its first fix — 35575 refused
+before — with no GNSS height rejected and `status=Healthy`; at `q_b = 0` the same run rejected
+3825. `cd7e0001` is the coarse start that carries the seed now. It covers every start
 that leaves no reference, and `Config::baro_reference_from_estimate` turns it off. See
 [barometric offset](EQUATIONS.md#barometric-offset).
 

@@ -954,7 +954,7 @@ def sigma_figure(epochs, reference, gaps, backdrop):
                     plot.plot(series[0], series[1] * scale, linewidth=0.8,
                               label=sigma, alpha=0.9)
             # EKF2's own, dashed and unlabelled so the legend stays ours. These
-            # are what exercise the n_states-keyed covariance map: the bias
+            # are what exercise the layout-keyed covariance map: the bias
             # states sit at one index in both eras, and only these move.
             drawn = False
             for sigma in sigmas:

@@ -243,20 +243,25 @@ manifest — and read what the ULog alone can say about it:
 ```console
 $ uv run tools/ulog2replay.py candidate.ulg --screen
 screen sitl=no hw=PX4_FMU_V5 sw=v1.11.3 duration=7127 gnss=vehicle_gps_position fix_max=4
-  eph_min=1.17 eph_max=2.18 sats_min=17 sats_max=26 clip=0 vib_p95=0.094 n_states=24
-  vehicle_imu=yes type=mc mode_changes=0
+  eph_min=1.17 eph_max=2.18 sats_min=17 sats_max=26 clip=0 vib_p95=0.094 vib_metric=dv
+  ekf2=quat24 vehicle_imu=yes type=mc mode_changes=0
 ```
 
 Every value is one number or one word, so most of a gap's criteria are `expect.sh` pairs, checked
-with `compare_pairs` after sourcing the file. `sw=` carries the firmware type (`v1.16.0-rc`), and
-`n_states=` is whatever count the estimator logs — 10 is LPE, and only 24 and 25 are EKF2 layouts
-`--reference` can read. What a pair cannot say is in prose:
+with `compare_pairs` after sourcing the file. `sw=` carries the firmware type (`v1.16.0-rc`).
+`ekf2=` names the covariance layout `--reference` will read — `err24`, `err23` or `quat24`, the
+table below — or says `unmapped` (LPE) or `none`. `vib_metric=` says which quantity `vib_p95=`
+is, since PX4 `f2ae8ae814` changed it under one field name: `dv`, a filtered Δv difference in m/s
+before v1.13, `accel`, an acceleration difference in m/s² from v1.13's betas on, or `unknown`
+for a v1.12 or v1.13 build short of beta, which could be either, or a vendor's own version. `2c42096b`'s 0.094 `dv` and a v1.15 log's 32.8 `accel` are not
+a quiet airframe and a loud one, and no rescaling makes them one quantity, so compare `vib_p95`
+only within one metric. What a pair cannot say is in prose:
 
 | gap | on the `screen` line | then, on the `summary` line |
 | --- | --- | --- |
 | every entry | `sitl=no`, and `eph_min` differing from `eph_max` | |
-| real baseline | `n_states>=24 vehicle_imu=yes duration>=600` | `align=static` |
-| short-and-still start | | `align=coarse alpha0=window` |
+| real baseline | `vehicle_imu=yes duration>=600`, and `ekf2=` a layout | `align=static` |
+| short-and-still start | | `align=short alpha0=window` |
 | RTK receiver | `fix_max>=6` | `nis_gnss_pos=`, recorded in the note |
 | high vibration | `clip>=1` | `rejected_mag=`, if it moves |
 | fixed-wing | `type=fw` | `extent>=1000` |
@@ -309,20 +314,22 @@ whose constants were renumbered under one field name — `3949f175` logs its qua
 None is a VTOL.
 
 EKF2's state vector has been laid out the same way in every version that logs one, but **its
-covariance has not**, and the two eras both report 24 entries meaning different things — so no
-field spelling distinguishes them and `tools/ulog2replay.py` keys the index map on `n_states`.
-That table is the only place the map lives, with the PX4 commits that moved it cited above it.
-What it means per log:
+covariance has not**, three times, and neither count alone says which: `n_states=24` is both the
+state-indexed covariance and the first error-state one, and a 24-entry covariance is both the
+state-indexed one and the error-state one with terrain. The pair `(n_states, entries)` separates
+all three, and `tools/ulog2replay.py` keys the index map on it. That table is the only place the
+map lives, with the PX4 commits that moved it cited above it. What it means per log:
 
-| `n_states` | covariance | bias states | corpus |
-|---|---|---|---|
-| 25 | error-state | rad/s and m/s² | `3949f175` |
-| 24 | indexed like the state vector, four quaternion entries first | delta-angle and delta-velocity per filter update | `a299e722`, `2c42096b`, `f16771dd` |
-| anything else | refused | refused | `7592c9b2`, an LPE log reporting 10 |
+| `ekf2=` | `n_states`, entries | covariance | bias states | corpus |
+|---|---|---|---|---|
+| `err24` | 25, 24 | error-state, terrain last | rad/s and m/s² | `3949f175`, `eb799954` |
+| `err23` | 24, 23 | error-state, no terrain (v1.15) | rad/s and m/s² | `89a498ce`, `cd7e0001` |
+| `quat24` | 24, 24 | indexed like the state vector, four quaternion entries first | delta-angle and delta-velocity per filter update | `a299e722`, `2c42096b`, `f16771dd` |
+| `unmapped` | anything else | refused | refused | `7592c9b2`, an LPE log reporting 10 |
 
 Three boundaries follow, and they are properties of the logs rather than of the converter:
 
-- **The 24-state era supplies no attitude σ**, on three of the five corpus logs. Four quaternion
+- **The quaternion era supplies no attitude σ**, on three of the eight corpus logs. Four quaternion
   variances become a rotation-vector σ only through the full 4×4 block, and the log carries the
   diagonal alone. The cells are blank rather than filled.
 - **Where there is one, it is in NED.** PX4 stores the error-state attitude covariance in the
@@ -336,7 +343,7 @@ Three boundaries follow, and they are properties of the logs rather than of the 
   single tilt σ is deliberately *not* emitted — PX4's `getTiltVariance` sums the two horizontal
   variances where (36′) and `Validity` read each against the bar, and naming those alike would
   compare two different quantities.
-- **Two of five logs report no origin** (`xy_global` false, the reference fields all zero), so
+- **Two of eight logs report no origin** (`xy_global` false, the reference fields all zero), so
   EKF2's `x,y,z` there are origin-relative with no origin and cannot be aligned to this filter's.
   The origin is a `#` header line, not a column, since it is one geodetic point per log.
 
@@ -373,10 +380,10 @@ Reading the columns back is what verifies them — a wrong index is silence, not
 delta-angle bias agree to 5.3e-4 rad/s (0.03 °/s), which is what confirms the units and the index
 map. The rounding itself rests on PX4 source rather than on that number: it moves `2c42096b` by
 0.5 %, and the log where it would matter carries 58 bias samples against a velocity source this
-filter rejects 283 of 609 solutions from, so its own bias wanders by ±0.01 rad/s and cannot
+filter rejects 287 of 609 solutions from, so its own bias wanders by ±0.01 rad/s and cannot
 adjudicate anything.
 
-Tilt agrees with EKF2 within 0.13° on all five logs at EKF2's first attitude sample after the
+Tilt agreed with EKF2 within 0.13° on the five logs it was checked on (#129) at EKF2's first attitude sample after the
 initialization window — read with the report's own `tilt_heading` and `rotation_difference`, so
 no second implementation of either — which is what confirms the quaternion convention and the
 timebase rebasing at once. A magnitude cannot see a tilt in the wrong direction, so the direction is read
@@ -387,9 +394,9 @@ and `f16771dd` reads 1.84° and 2.39° there with its headings 162° apart at 1�
 **Absolute yaw does not compare at an instant** and should not be read as
 divergence: EKF2 resets yaw in the first seconds — on `3949f175` it moves 41.60° to 16.66°
 between t = 2 s and t = 4 s, which is what `ekf2_att`'s `att_reset` column is for — and the
-residue after its reset is a declination difference, this harness overriding declination to a
-fixed −0.06 rad while EKF2 reads the world magnetic model at an origin two corpus logs do not
-have.
+residue after its reset was mostly a declination difference while this harness fixed −0.06 rad
+for every log. It now configures the one the log names (`declination=`), and the median heading
+difference to EKF2 on the five real logs with GNSS is 0.00–2.45°, where it was 4.39–13.34°.
 
 ### Per-log reports
 
@@ -446,11 +453,14 @@ The keys are `rate=` and `window=` (the IMU rate and the samples it takes to cov
 `min_duration`), `extent=`, `speed_max=` and `tilt_max=` (what the vehicle did: the farthest
 horizontal GNSS row from the first and the fastest horizontal GNSS velocity, as reported, and the
 filter's own largest tilt from the vertical — what a manifest note's "past a kilometre" is pinned
-by), `align=`, `an=` and `alpha0=` (what initialization achieved, whether a moving
+by), `align=`, `an=` and `alpha0=` (what initialization achieved — `static`, `short` for a still
+window that never reached `min_duration`, or `coarse` for a moving one — whether a moving
 window measured the vehicle's own acceleration from GNSS velocity — `ā_n` of equation (5′), which
 only a moving start reports — and where the barometric reference came from: `window`, `estimate`
 once a fix has established position, or `none`), `heading=` (`Validity::heading` **as initialization left it** — not as the
-log ended, which would only restate `transitions=`), `resets=` (adoptions, per source, so a GNSS fix adopted whole counts in both its halves),
+log ended, which would only restate `transitions=`), `declination=` (the magnetic declination
+the harness configured, in degrees, read from the log's `# Magnetic declination` header line —
+zero where it has none), `resets=` (adoptions, per source, so a GNSS fix adopted whole counts in both its halves),
 `aligned_at=` (seconds from the end of the window to the first epoch `Eskf::is_aligned` read true,
 or `never`), `attitude_lost=` (seconds to the first epoch at or after it where `Validity::attitude`
 read false against `Config::accuracy` — the mission's bar, where `aligned_at=` reads the fixed
@@ -496,14 +506,15 @@ platforms' parameters, `file:line` and the shas they were read at. The harness a
 for three measured reasons:
 
 - **A floor erases the figure rather than bounding it.** PX4's `ekf2_gps_v_noise`, 0.5 m/s, sits
-  above 4885 of the corpus's 5348 velocity solutions — every solution on two logs and 90 % on the
-  third, honest receivers included — so it is the operative value rather than a backstop. The
-  position floors are a measured no-op in the other direction: reported σ_h never falls below
-  0.900 m against a 0.5 m bound, and σ_v averages 1.78–3.59 m against 0.75. Since the barometer
-  and the magnetometer already carry converter constants, flooring would leave no
-  receiver-reported variance anywhere in the corpus.
-- **It costs most or all of the only rejection the corpus has.** `rejected_gnss_vel=283` on
-  `a299e722` is the single non-zero count across five logs. Replayed with the floors applied,
+  above 8365 of the corpus's 8830 velocity solutions — every solution or all but one on five logs
+  and 90 % on `2c42096b`, honest receivers included — so it is the operative value rather than a
+  backstop. The position floors would replace one receiver's figures outright and no other's:
+  reported σ_h is 0.685 m and up on the five without RTK, against a 0.5 m bound, and σ_v averages
+  1.53–6.26 m against 0.75, while `89a498ce`'s RTK receiver reports 0.014 m horizontally and
+  0.01 m vertically on every fix. Since the barometer and the magnetometer already carry
+  converter constants, flooring would leave almost no receiver-reported variance in the corpus.
+- **It costs most or all of the only GNSS rejection the corpus has.** `rejected_gnss_vel=287` on
+  `a299e722` is the single non-zero GNSS count across eight logs. Replayed with the floors applied,
   the 278 it read before #137 read 0 under PX4's treatment — the 0.5 m/s floor *and* the separate `sq(1.5f)` vertical
   widening — 2 under that floor alone, and 44 under ArduPilot's per-axis 0.3/0.5, which is the one
   policy that would leave the gate of (37)–(38) still exercised by real data. `transitions=` goes

@@ -34,18 +34,15 @@ pub(crate) fn altitude_jacobian() -> SMatrix<f32, 1, STATES> {
 /// the two disagree about height by exactly that amount. Writing `h(x) = p_D − (p_N² + p_E²)/2R`
 /// would remove it, with `H` unchanged to first order.
 ///
-/// It is not written, because nothing in the repository can check it. The corpus does not
-/// travel far enough to see it: the farthest excursion from an origin over the five logs is
-/// 158 m on `3949f175`, a simulated flight, worth 2 mm, then 113 m on `a299e722`, worth
-/// 1 mm. Nor can the simulator, twice over — `circuit()` reaches 144 m, worth 1.6 mm, and `Baro::sample`
-/// generates its reading from `−p_D` on a flat plane, so truth carries no curvature for the
-/// term to recover. Against a σ of 0.35 m there and an assumed 4 m² on the corpus, a
-/// correction three orders down is unmeasurable, and an unmeasurable correction is one whose
-/// sign nothing would catch.
-///
-/// What would change that: a source that travels past about a kilometre, **and** a simulator
-/// that generates `α` from a geodetic height rather than from `−p_D`. The second is not
-/// optional — without it a scenario scores the term as error.
+/// It is not written yet. The corpus now travels far enough to see it: `89a498ce` flies
+/// 4.07 km from its origin, where the rise is 1.30 m, on an RTK receiver whose height is
+/// reported to centimetres — before it the farthest real excursion was 113 m on `a299e722`,
+/// worth 1 mm. The simulator still cannot, twice over: `circuit()` reaches 144 m, worth
+/// 1.6 mm, and `Baro::sample` generates its reading from `−p_D` on a flat plane, so truth
+/// carries no curvature for the term to recover. A correction with a real log to show it
+/// and no scenario to score it is #124's to measure, with the simulator generating `α` from
+/// a geodetic height rather than from `−p_D` — without that a scenario scores the term as
+/// error.
 pub(crate) fn altitude_observation(
     state: &State,
     altitude: Altitude,

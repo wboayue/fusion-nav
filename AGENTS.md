@@ -44,11 +44,11 @@ velocity and 0.249 m of height where dead reckoning scored 1261 — 0.083 before
 walking offset hands the low frequencies to GNSS height, which a simulated barometer that never
 drifts reads as pure loss (`data/scenarios.txt`).
 The gate turns a fix down rather than taking everything offered — on the corpus, where
-`a299e722` refuses 283 of its 609 velocity solutions, a receiver its own differenced positions
+`a299e722` refuses 287 of its 609 velocity solutions, a receiver its own differenced positions
 contradict (#105 settled that the harness does *not* floor `R` as both production estimators do,
-and `r_policy=raw` pins that); the
-barometer and the magnetometer have never been turned down there, 42 298 altitudes and 49 229
-headings accepted, so `rejected_mag=0` is a measured zero rather than a structural one. Between
+and `r_policy=raw` pins that); the barometer has never been turned down there, 76 915 altitudes
+on eight logs, and the magnetometer three times in 72 990 headings, all on `eb799954`, single
+samples 1.1 rad out. Between
 fixes — and on every axis a fix reaches only through the covariance — the estimate is still dead
 reckoning, which is what `Validity` and `attitude_lost=` stay honest about.
 
@@ -89,9 +89,9 @@ it, `static` 2.04 → 1.02 once the offset walks. `baro_drift` was the same at f
 257 → 1.19 under (30′). **What stage 9 added.** (42′), a per-group diagonal variance floor, applied at
 `Eskf::commit_covariance` so the invariant belongs to the filter — *every covariance it commits
 has been floored* — and reaches the ones no product built: an adoption, a `reset_*_to`, the (8) a
-window commits. It is unreachable and that is measured: `floored=0` on all five corpus logs,
-1 398 114 epochs on the 2 h one, and every replay CSV byte-identical to the same log replayed
-without it. `math.rs`'s `FLOOR` owns the headroom figures and every other mention cites it.
+window commits. An honest source never reaches it, and that is measured: `floored=0` on seven of
+the eight corpus logs, 1.4 M epochs on the 2 h one, and 21 on `cd7e0001`, whose receiver claims
+0.43 mm/s after touchdown and is fused raw. `math.rs`'s `FLOOR` owns the headroom figures and every other mention cites it.
 And `predicted_validity` stopped meaning *aiding is arriving*: `P` is projected
 `Accuracy::horizon` forward with nothing fusing and each quantity tested at the far end, **or**
 counted because a constraining source is being accepted. Tilt is what it bought — a static start
@@ -291,9 +291,10 @@ uv run tools/replay_report.py in.csv out.csv [truth.csv] \
 ```
 
 `--reference` writes EKF2's own solution beside the replay input, never into it. Its state/covariance
-index map is keyed on `n_states`, because EKF2's covariance layout changed while the entry count did
-not — both eras report 24 entries meaning different things, so no field spelling distinguishes them.
-Three of the five corpus logs therefore supply no attitude σ at all, two supply no origin, and the
+index map is keyed on the pair `(n_states, covariance entries)`, because EKF2's covariance layout
+changed three times and neither count alone separates the eras: `n_states=24` is both the
+state-indexed layout and v1.15's error-state one, and no field spelling distinguishes them either.
+Three of the eight corpus logs therefore supply no attitude σ at all, two supply no origin, and the
 LPE log is refused outright. `data/README.md`, "What `--reference` writes, and what it cannot", owns
 those boundaries and the bias-scaling factor; the map itself lives in `tools/ulog2replay.py` and
 nowhere else, so a consumer reads column names and never the layout.
@@ -695,8 +696,8 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
   promotion is measured rather than timed — except heading, which no covariance can promote because
   stillness never observes yaw; that one waits for the first `fuse_mag_heading`. Promotion only: the flag
   **latches**, so `Status::Aligning` reports a start that has not been resolved and never
-  returns, while `Validity::tilt` stays live and does fall back. Read live the bar is crossed
-  703 times on `2c42096b`, whose tilt σ sits over `ALIGNED_TILT` for 79 % of the log, and
+  returns, while `Validity::tilt` stays live and does fall back. Read live the bar was crossed
+  703 times on `2c42096b` while it started coarse, its tilt σ over `ALIGNED_TILT` for 79 % of the log, and
   `7592c9b2` and `f16771dd` end `Aligning`, on body axes and navigation ones alike; PX4 and
   ArduPilot latch theirs for the same reason. The latch is the one thing about `Status` that is not derived on
   read, which is why every path that can move the attitude covariance calls `note_alignment`.
@@ -852,7 +853,8 @@ an initialization output that the filter goes on refining. A window
 that fixes none — in motion, or with no barometer sample — leaves the first altitude after
 position is established to read one from the estimate (#115), correlated with the height it was
 read against; until then `fuse_baro_altitude` returns `Fusion::NoReference` rather than referring
-altitudes to an invented origin. `2c42096b` is the corpus log that covers the seed; the LPE log
+altitudes to an invented origin. `cd7e0001` is the corpus log that covers the seed (`2c42096b` did
+while it started coarse); the LPE log
 (`7592c9b2…`) yields no barometer rows at all.
 
 Still open: the same window could *measure* the barometer and IMU noise and hand back a starting
