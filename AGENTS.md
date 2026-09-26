@@ -8,14 +8,18 @@ This file provides guidance to coding agents working with code in this repositor
 except (31)–(33), the three-axis magnetometer, which is out of scope, and (5′)'s subtraction,
 which is #59's. The `**Stub.**` marker survives on those two and nowhere else, and every status
 banner says built rather than intended. What is left is mostly measurement and publication —
-#41 (cost on hardware), #8 (the EKF2 comparison), #47 (the release) — plus the
-defect the consistency keys of #112 surfaced on `2c42096b`: no corpus source is white
-(`acf1_` 0.11–0.99, and negative on `89a498ce`'s RTK and `eb799954`'s magnetometer) while (24)
-fuses each as white (#117). That overconfidence is the lockout
-precondition, and #116 (#143) now recovers from lockout by default: per-source
+#41 (cost on hardware), #8 (the EKF2 comparison), #47 (the release). The defect the
+consistency keys of #112 surfaced, no corpus source white while (24) fused each as white, is
+#117's, and #152 answered it with equation (24′): every source is fused at
+`R_m (1+ρ)/(1−ρ)`, `ρ = exp(−Δt/τ)`, gated on `R_m`, with `Δt` from the source's last fused
+measurement and one `τ` per source in `Config::correlation` (corpus medians of `−T/ln acf1`
+read as white). A posterior floor, the issue's option 3, was measured and lost: honest, but it
+raised the gain. The `correlated` scenario's residual (`anees_pos` 1.45, sources slower than the
+defaults) is #51's per-sensor τ to remove; #117 is open for that call. Overconfidence is the
+lockout precondition, and #116 (#143) recovers from lockout by default: per-source
 `Config::recovery` at PX4's timeouts, `Recovery::OFF` byte-identical to the filter that only
 reported, `recovered=` pinned on every scenario and log so a recovery masking #117 is a diff.
-`4b473e91` 881 → 31 rejected positions and Healthy; `093e806a` (35) and `7ce66f0d` (294) recover
+`4b473e91` 881 → 39 rejected positions and Healthy; `093e806a` (29) and `7ce66f0d` (69) recover
 from causes recovery does not remove, and their entries say so. #144 would coast a refused IMU
 step rather than freeze, removing `4b473e91`'s recoveries at the gate. #118 gated GNSS height apart from horizontal
 position, which removed the lockout fusing that barometer caused. #119 (#122) estimates the
@@ -33,9 +37,11 @@ EKF2 climbs 11.97 m with its barometer and this filter falls 8.20 m with GNSS he
 frequencies — #8's to explain. The raw `pos_d` columns differ by a further 24.2 m of origin height,
 so a gap read between them is not a disagreement.
 #89 landed (#151): `data/anees.sh` gates per-epoch ensemble NEES on 50 seeds against χ² in CI,
-and asserts four failures by cause: `gnss_latency` (#52), `logging_dropout` (#144), and two it
-found that no single seed showed, `harsh_imu` attitude (#149) and `moving_start`'s first 0.2 s
-(#150). Order: #117 (its scenario is the gate's next line), then #8. #86's tailsitter is no
+and asserts failures by cause: `gnss_latency` and `logging_dropout` on position, and
+`correlated` (#117's residual). Of the two it found that no single seed showed, #150
+(`moving_start`'s first 0.2 s) was fixed by (24′); #149 (`harsh_imu` attitude) now passes only
+by a wider covariance, its cause standing, and a line that passes either way is no evidence for
+closing it. Order: #8 (re-measure its height gap on (24′) first), with #144 and #149 beside it. #86's tailsitter is no
 longer blocked: #131 (#133) reads tilt and heading on navigation axes, `diag(R P_θθ Rᵀ)` through
 `AttitudeVariance`, in `Validity`, the latch, the heading adoption and (8)'s prior, and the
 `tilt`/`yaw`/`false_valid` score keys moved with it — tilt² + yaw² unchanged, the body split had
@@ -638,7 +644,7 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
   is tested against a synthetic `H`. One Cholesky factorization of `S` serves the gate and the
   gain, and the gate runs first, so a rejection computes nothing it could commit. `Eskf::apply` is
   the one path that commits what it returns and records it. Its stack frame is the largest in the
-  crate — `update::<3>`, 7816 bytes on `thumbv6m` and 7936 on `thumbv7em`, `Eskf::apply` itself
+  crate — `update::<3>`, 8088 bytes on `thumbv6m` and 7960 on `thumbv7em`, `Eskf::apply` itself
   inlining away — which is why `reparameterize` applies `G P Gᵀ` block-wise and (30′)'s offset
   enters (27) in blocks rather than as a 16 × 16 (+4168 bytes measured); the figure
   and the #41 that would revisit it are in the doc comments.
@@ -808,7 +814,9 @@ Every source touches the same ten places, and three of them are public:
   apart (#118), so a sensor whose components fail independently wants a source per component.
 - `Timeouts` is **global**, not per-source: there is no per-source entry to add, and giving a
   source its own threshold is a design change. See #56. `Recovery` *is* per source, like `Gates`,
-  so it gains a field and a decision about what adopting the source resets.
+  so it gains a field and a decision about what adopting the source resets. So does
+  `Correlation`: a `τ` for (24′), from the source's `acf1_` on the corpus read as white, and the
+  source's `fuse_*` calls `.correlated(...)` on its observation.
 - `Validity` and `predicted_validity`: decide whether the source constrains a quantity, and say so.
 - A `summary` key in `examples/replay.rs`, pinned per log in `data/manifest.txt`, plus a corpus log
   that uniquely covers the source — or an honest note that none does.
@@ -880,7 +888,10 @@ fix's height error into every barometer reading, and adding that variance to `R`
 covariance with its correlations — (30′), where #119 measured a consider state against an estimated
 one and the corpus chose the second. (36′) is `R` inflation too,
 and it works because velocity fusion keeps correcting the tilt it prices. Before pricing an
-error into `R`, ask whether it persists across readings.
+error into `R`, ask whether it persists across readings. An error that persists *between*
+readings for a time rather than forever is the case `R` can carry after all, as (24′)'s
+equivalent white noise, because it is the interval that sets the factor; it is the constant
+share that still needs the covariance.
 
 A window taken **at rest** also fixes `α₀`, the barometric reference (`StaticSample::baro` →
 `Eskf::baro_reference`, equation (30)); one taken in motion keeps whatever reference the flight
