@@ -365,9 +365,9 @@ impl Default for Timeouts {
 /// equation (28′). `None` fuses that axis as white, which is (24) as written.
 ///
 /// Equation (24) treats each fix's error as independent of the last, and no receiver in
-/// the corpus is: the lag-1 autocorrelation of every real log's GNSS position innovations
-/// (`acf1_gnss_pos`, `acf1_gnss_hgt` in `data/manifest.txt`) is 0.62–0.99, except the RTK
-/// log's, which is negative. A filter that fuses such fixes as white averages down an error
+/// the corpus is: fused as white, the lag-1 autocorrelation of every real log's GNSS
+/// position innovations (`acf1_gnss_pos`, `acf1_gnss_hgt` on the replay `summary` line) is
+/// 0.62–0.99, except the RTK log's, which is negative. A filter that fuses such fixes as white averages down an error
 /// it cannot observe, and its covariance claims the averaging worked. (28′) fuses each fix
 /// at the variance that makes a run of them carry what they actually carry, which is less
 /// the shorter the interval is against `τ`.
@@ -401,8 +401,8 @@ impl GnssCorrelation {
 }
 
 impl Default for GnssCorrelation {
-    /// The corpus's: `τ = −T / ln ρ` from each real log's `acf1_gnss_pos` and `acf1_gnss_hgt`
-    /// at its own fix interval, the median over the eight whose autocorrelation is positive
+    /// The corpus's: `τ = −T / ln ρ` from each real log's `acf1_gnss_pos` and `acf1_gnss_hgt`,
+    /// read with every fix fused as white, at its own fix interval, the median over the eight whose autocorrelation is positive
     /// (the SITL log and the RTK log excluded). Horizontally 2.1–15.8 s, median 4.2; in
     /// height 3.7–69 s, median 14.
     fn default() -> Self {

@@ -511,6 +511,41 @@ zero because the new error is the measurement's and has nothing to do with what 
 Applies to a quantity never established, once, and to a source locked out past its
 `Config::recovery` timeout; see [gate lockout](#gate-lockout).
 
+### Correlated fixes
+
+(24) treats each fix's error as independent of the last, and a receiver's is not: it filters its
+own solution in time, and every real corpus log's position innovations are positively
+autocorrelated except the RTK receiver's (`acf1_` in `data/manifest.txt`). Take the error as
+first-order Gauss–Markov with time constant $`\tau`$, so that fixes $`\Delta t`$ apart share the
+fraction $`\rho = e^{-\Delta t/\tau}`$ of it. The mean of $`n`$ such fixes has variance
+$`\sigma^2 (1+\rho) / \big((1-\rho)\, n\big)`$ as $`n`$ grows, which is what $`n`$ independent fixes
+of variance $`\sigma^2 (1+\rho)/(1-\rho)`$ carry. So the gain is computed with that variance,
+per axis:
+
+**(28′)**
+
+```math
+\tilde{R} = R_m \, \frac{1 + \rho}{1 - \rho}, \qquad \rho = e^{-\Delta t / \tau}, \qquad
+\tilde{S} = H P H^\mathsf{T} + \tilde{R}
+```
+
+in place of $`R_m`$ and $`S`$ in (25) and (27), with $`\Delta t`$ the interval since the previous
+fix and $`\tau`$ from `Config::gnss_correlation`, horizontal and vertical. The factor is 1 as
+$`\Delta t / \tau \to \infty`$, where fixes are independent again, and $`2\tau/\Delta t`$ as
+$`\Delta t / \tau \to 0`$, so a receiver reporting faster than its error changes buys no more per
+second than one reporting at $`\tau`$.
+
+Two things keep $`R_m`$. The gate of (37) tests one fix against (24)'s $`S`$, because one fix's
+innovation variance is $`H P H^\mathsf{T} + R_m`$ however correlated the next fix is: tested against
+$`\tilde{S}`$, an innovation $`(1+\rho)/(1-\rho)`$ times larger passes, which on
+`logging_dropout` turned a lockout and its recovery into seconds of slow acceptance. And an
+adoption writes $`P_{pp} \leftarrow R_m`$, since one fix's error is its stationary variance.
+
+This is the equivalent white noise of the correlated sequence, not a model of it: exact for the
+mean of a long run, conservative for a short one, and free of the per-axis Gauss–Markov state that
+would model the error exactly and grow the covariance past fifteen states. What it was measured
+against, a floor on $`P`$ and PX4's floor on $`R`$, is in `GnssCorrelation`'s doc comment.
+
 ### GNSS velocity
 
 **(29)**
@@ -991,6 +1026,7 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | (22) | covariance propagation | `propagate.rs` | `propagate_covariance`, called with (9)–(15) by `propagate` |
 | (23)–(27) | generic update, Joseph form | `update.rs` | `update` |
 | (28) | GNSS position, as a horizontal and a height half | `observation/gnss.rs` | `horizontal_jacobian`, `horizontal_observation`, `height_jacobian`, `height_observation` |
+| (28′) | correlated fixes | `observation/gnss.rs`, `update.rs` | `decorrelated`, `inflation`; `Observation::r_gain`; `Eskf::mark_position_fix` for `Δt` |
 | (29) | GNSS velocity | `observation/gnss.rs` | `velocity_jacobian`, `velocity_observation` |
 | (30) | barometric altitude | `observation/baro.rs` | `altitude_jacobian`, `altitude_observation` |
 | (30′) | barometric offset | `state.rs`, `update.rs`, `propagate.rs` | `Offset`; `update`'s blocks; `propagate_offset`; `Eskf::establish_reference` |

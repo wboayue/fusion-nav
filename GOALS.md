@@ -184,6 +184,7 @@ reads and commits.
 | gate thresholds | chi-square quantile for a chosen percentile and dimension | a constructor, not a number |
 | `Timeouts` | observed per-source update intervals | offline recommendation only |
 | GNSS `R` | the receiver; bounding it is the caller's (`PositionNoise::clamped`), and the replay harness fuses it raw (`r_policy=`) | per measurement |
+| `gnss_correlation`, how long a GNSS position error persists | `τ = −T / ln ρ` from a replay log's `acf1_gnss_pos` and `acf1_gnss_hgt`, read with every fix fused as white | offline (#51); the corpus's medians until then |
 | `baro_offset_walk`, the barometric offset's drift | a barometer's drift against GNSS height over a replay log | offline (#51); PX4's 0.13 until then |
 | local gravity `γ` | the origin's latitude, by the WGS-84 gravity formula | the offline tool (#51); a constant in the filter, see the decision below |
 | magnetic declination | a magnetic model, given the GNSS origin and date | optional, for its flash cost |
@@ -488,6 +489,43 @@ refused without the seed, with no GNSS height rejected and `status=Healthy`; at 
 same run rejected 3825. `cd7e0001` is the coarse start that carries the seed. It covers every
 start that leaves no reference, and `Config::baro_reference_from_estimate` turns it off. See
 [barometric offset](EQUATIONS.md#barometric-offset).
+
+### Correlated GNSS error as equivalent white noise
+
+Equation (24) assumes each measurement's error is independent of the last, and no receiver in the
+corpus satisfies it: every real log's GNSS position innovations are positively autocorrelated,
+except the RTK receiver's, which alternate. A filter that fuses such fixes as white averages
+down an error it cannot observe, and on `2c42096b` it held σ_pos_n under the receiver's own
+`eph` at 4003 of 4614 fixes. Neither production estimator models it; both floor `R` and say so
+with a constant.
+
+**Decided (#117):** each fix is fused at the variance that makes a run of them carry what they
+actually carry, equation (28′), `R_m (1 + ρ)/(1 − ρ)` with `ρ = exp(−Δt/τ)`, and gated on its own
+`R_m`. `τ` is `Config::gnss_correlation`, per axis, a property of the receiver configured the way
+`ImuNoise` is, defaulting to the corpus's medians of 4.2 s horizontal and 14 s vertical. The
+covariance stays fifteen states: modelling the error as a Gauss–Markov state per axis would be
+exact and would add three.
+
+**What it bought**, on `gnss_correlated`, the simulator's receiver with that correlation: 50-seed
+`anees_pos` 17.72 to 0.92, and `pos_h` 0.874 m to 0.600, `pos_v` 1.799 to 0.551, more accurate as
+well as honest. On `2c42096b`, σ_pos_n under `eph` at 2133 fixes of 4614, median ratio 1.015
+against 0.726; on `093e806a`, 35 lockouts to 26.
+
+**What was measured against it.** A floor on `P` at each fix's variance, the invariant that the
+filter may not know a quantity better than the only source constraining it: honest (`nees_pos`
+1.02), and it raises the gain with the covariance, so the estimate follows each fix instead of
+averaging (`pos_h` 0.874 m to 1.233 on `gnss_correlated`, `mission` 0.244 to 0.746). Floored
+horizontally alone, `nees_pos` stayed at 22.1, the height carrying the fault. PX4's floor on `R`
+sits below most corpus receivers' `eph` and moved neither scenario. The inflated `R` in the gate
+as well as the gain passed innovations whose variance was up to 42 times what one fix supports: it took `093e806a` to one
+recovery and `7ce66f0d` from 294 to 23, which read as a cure and was a gate that stopped looking.
+
+**What it costs.** Accuracy wherever the receiver is white, which the simulator's is by
+construction: `mission` `pos_h` 0.244 m to 0.327, `static` 0.272 to 0.630. And height moves onto
+the barometer, which is still fused white while its own `acf1_` reads up to 0.95: `285ee2e7`'s
+height sits 4 m from GNSS through a back-transition until the receiver is refused and adopted.
+A receiver characterized as white is the reason to set `GnssCorrelation::WHITE`; the barometer,
+magnetometer and GNSS velocity carrying the same treatment is the reason not to have to.
 
 ### Local gravity as a constant, derived offline
 

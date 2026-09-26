@@ -711,7 +711,11 @@ impl Eskf {
     ///
     /// The filter applies no bound of its own, because `R` describes the measurement and
     /// belongs with it rather than in [`Config`]. A caller handing over a raw `eph` is
-    /// therefore trusting the receiver further than either production autopilot does.
+    /// therefore trusting the receiver further than either production autopilot does. What
+    /// the filter does add is the receiver's rather than the fix's: a fix's error persists
+    /// into the next one, and the update is computed at the variance that leaves, equation
+    /// (28′), with the gate still reading `noise` itself. See
+    /// [`Config::gnss_correlation`](crate::Config::gnss_correlation).
     ///
     /// The fix is two measurements, gated and reported apart: north and east at
     /// [`Gates::gnss_position`](crate::Gates), then down at

@@ -403,7 +403,7 @@ Reading the columns back is what verifies them — a wrong index is silence, not
 delta-angle bias agree to 5.3e-4 rad/s (0.03 °/s), which is what confirms the units and the index
 map. The rounding itself rests on PX4 source rather than on that number: it moves `2c42096b` by
 0.5 %, and the log where it would matter carries 58 bias samples against a velocity source this
-filter rejects 287 of 609 solutions from, so its own bias wanders by ±0.01 rad/s and cannot
+filter rejects 289 of 609 solutions from, so its own bias wanders by ±0.01 rad/s and cannot
 adjudicate anything.
 
 Tilt agreed with EKF2 within 0.13° on the five logs it was checked on (#129) at EKF2's first attitude sample after the
@@ -537,10 +537,11 @@ for three measured reasons:
   is 0.622 m and up on the rest, and σ_v averages 0.51–6.26 m against 0.75 where there is no
   RTK. Since the barometer and the magnetometer already carry
   converter constants, flooring would leave almost no receiver-reported variance in the corpus.
-- **It costs most or all of the only GNSS rejection the multirotors have.** `rejected_gnss_vel=287`
+- **It costs most or all of the only GNSS rejection the multirotors have.** `rejected_gnss_vel=289`
   on `a299e722` is the single non-zero GNSS count across the eight multirotor and SITL logs. (Of
-  the four airframe logs, measured at `Recovery::OFF`, the floors correct one: `093e806a`'s 860
-  position rejections read 92 under them, where recovery alone reads 291. They leave `4b473e91`'s
+  the four airframe logs, measured at `Recovery::OFF` with every fix fused as white, the floors
+  correct one: `093e806a`'s 860 position rejections read 92 under them, where recovery alone read
+  291, and 253 with (28′). They leave `4b473e91`'s
   lockout, which recovery removes, and `7ce66f0d`'s divergence, which neither removes.) Replayed with the floors applied,
   the 278 it read before #137 read 0 under PX4's treatment — the 0.5 m/s floor *and* the separate `sq(1.5f)` vertical
   widening — 2 under that floor alone, and 44 under ArduPilot's per-axis 0.3/0.5, which is the one

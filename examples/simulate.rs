@@ -1102,8 +1102,8 @@ fn scenarios() -> Vec<Scenario> {
         },
         // The GNSS counterpart of `baro_drift`: position error that persists between fixes, which
         // (24) fuses as independent and averages down. The time constants are the corpus's, not
-        // chosen: each log's `acf1_gnss_pos` and `acf1_gnss_hgt` in `data/manifest.txt`, read as
-        // τ = −T / ln ρ at that log's fix interval, median over the eight real logs with positive
+        // chosen: each log's `acf1_gnss_pos` and `acf1_gnss_hgt` with every fix fused as white,
+        // read as τ = −T / ln ρ at that log's fix interval, median over the eight real logs with positive
         // autocorrelation (the SITL log and the RTK log excluded). Innovations are whiter than
         // the error behind them, because the filter follows part of it, so these understate the
         // corpus.
