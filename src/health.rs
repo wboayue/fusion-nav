@@ -19,6 +19,7 @@ use crate::units::Seconds;
 /// attitude that has not converged is the larger problem — and
 /// [`DeadReckoning`](Self::DeadReckoning) hides everything, since nothing is arriving
 /// that could align the filter anyway.
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Status {
     /// Every source that has ever been fused is still being accepted, and attitude has
@@ -86,6 +87,7 @@ impl core::fmt::Display for Status {
 /// the ordinary acceptance it otherwise looks like. A refusal still moves no timer — it is not
 /// aiding, and pretending otherwise would let a stream of NaN hold off
 /// [`Status::DeadReckoning`].
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Fusion {
     /// The measurement passed the gate and was fused.
@@ -281,6 +283,7 @@ fn ratio(test_ratio: f32) -> Fixed {
 /// with `epv = 0` reads `horizontal: Accepted` beside `height: InvalidNoise`. What reads the
 /// same in both is what concerns the fix as a whole — an adoption, an origin placed, a filter
 /// not initialized, and any refusal on those paths, which write all three axes at once.
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GnssFusion {
     /// North and east, gated at [`Gates::gnss_position`](crate::Gates::gnss_position).
@@ -330,6 +333,7 @@ impl core::fmt::Display for GnssFusion {
 /// ones any sensor could produce. Kept on [`SourceHealth::last_refusal`] so that a count of
 /// refusals says which kind, which is the difference between a miswired sensor and a missing
 /// reference.
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
     /// The filter had not been initialized. See [`Fusion::NotInitialized`].
@@ -366,6 +370,7 @@ impl core::fmt::Display for Refusal {
 /// take — a `dt` longer than [`Config::max_predict_dt`](crate::Config::max_predict_dt),
 /// or a sample that is not a number — rather than attempting it.
 #[must_use = "a refused propagation leaves the state stale unless the outcome is inspected"]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Propagation {
     /// The state and covariance advanced over the full `dt`.
@@ -492,6 +497,7 @@ fn seconds(value: Seconds) -> Fixed {
 /// and no GNSS has a usable height and no horizontal position at all, which describes one
 /// of the twelve logs in the replay corpus. Another carries neither source, so it has no
 /// position of either kind.
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Validity {
     /// Tilt: rotation about north and about east, each within
@@ -590,6 +596,19 @@ pub struct Innovation {
     dimension: usize,
 }
 
+/// The components the observation has, not the three the storage holds.
+#[cfg(feature = "defmt")]
+impl defmt::Format for Innovation {
+    fn format(&self, f: defmt::Formatter<'_>) {
+        defmt::write!(
+            f,
+            "Innovation {{ values: {}, variances: {} }}",
+            self.values(),
+            self.variances()
+        )
+    }
+}
+
 impl Innovation {
     /// Copy `y` and the diagonal of `S` out of one update.
     pub(crate) fn new<const M: usize>(y: &SVector<f32, M>, s: &SMatrix<f32, M, M>) -> Self {
@@ -622,6 +641,7 @@ impl Innovation {
 ///
 /// `#[non_exhaustive]`: read the fields, do not construct one. The set grows as the filter
 /// learns to report more, and every addition would otherwise break every caller.
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[non_exhaustive]
 pub struct SourceHealth {
@@ -776,6 +796,7 @@ impl SourceHealth {
 /// steps looks healthy.
 ///
 /// `#[non_exhaustive]`; see [`SourceHealth`].
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[non_exhaustive]
 pub struct PropagationHealth {
@@ -845,6 +866,7 @@ impl PropagationHealth {
 /// caller's startup order.
 ///
 /// `#[non_exhaustive]`; see [`SourceHealth`].
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[non_exhaustive]
 pub struct Diagnostics {

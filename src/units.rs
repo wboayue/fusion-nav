@@ -46,6 +46,23 @@ use crate::frames::{Body, Enu, Frame, Ned};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Attitude(UnitQuaternion<f32>);
 
+/// The quaternion's four components, scalar first, rather than `nalgebra`'s own `Format`,
+/// which would need its `defmt` feature and a second optional dependency edge to name it.
+#[cfg(feature = "defmt")]
+impl defmt::Format for Attitude {
+    fn format(&self, f: defmt::Formatter<'_>) {
+        let q = self.0.quaternion();
+        defmt::write!(
+            f,
+            "Attitude({=f32}, {=f32}, {=f32}, {=f32})",
+            q.w,
+            q.i,
+            q.j,
+            q.k
+        )
+    }
+}
+
 impl Attitude {
     /// Level and pointing north.
     pub fn level() -> Self {
@@ -167,6 +184,7 @@ macro_rules! scalar {
     ) => {
         $(#[$meta])*
         #[derive(Clone, Copy, Debug, Default, PartialEq, PartialOrd)]
+        #[cfg_attr(feature = "defmt", derive(defmt::Format))]
         pub struct $name(f32);
 
         impl $name {
@@ -346,6 +364,23 @@ macro_rules! vector_impls {
                 write!(
                     f,
                     "{}<{}>({}, {}, {}) {}",
+                    stringify!($name),
+                    F::NAME,
+                    v.x,
+                    v.y,
+                    v.z,
+                    $unit
+                )
+            }
+        }
+
+        #[cfg(feature = "defmt")]
+        impl<F: Frame> defmt::Format for $name<F> {
+            fn format(&self, f: defmt::Formatter<'_>) {
+                let v = self.$field;
+                defmt::write!(
+                    f,
+                    "{=str}<{=str}>({=f32}, {=f32}, {=f32}) {=str}",
                     stringify!($name),
                     F::NAME,
                     v.x,

@@ -254,6 +254,7 @@ pub(crate) fn measure(window: &[StaticSample], dt: Seconds) -> Result<Measured, 
 /// filter says which it got rather than refusing to run. See
 /// [`Status::Aligning`](crate::Status::Aligning).
 #[must_use = "whether the filter aligned or only started coarsely changes what the estimate is worth"]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Alignment {
     /// The window was long enough and genuinely still: tilt from averaged gravity, gyro
@@ -294,6 +295,7 @@ impl core::fmt::Display for Alignment {
 /// Carries what was measured, so "not stationary" is diagnosable rather than a bare
 /// verdict: an integrator tuning
 /// [`Initialization`](crate::Initialization) needs to know by how much.
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Coarse {
     /// The vehicle held still, but the window spans less than
@@ -371,6 +373,7 @@ impl core::fmt::Display for Coarse {
 /// is why they are checked rather than trusted — a seed in particular crosses a boundary
 /// the filter does not control, arriving from another estimator or from storage that may
 /// be stale or corrupt.
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum InitError {
     /// The window held no samples, so there is nothing to align from.

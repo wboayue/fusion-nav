@@ -28,5 +28,11 @@ default-members = ["."]
 
 [dependencies]
 nalgebra = { version = "0.35", default-features = false, features = ["libm"] }
+defmt = { version = "1", optional = true }
+
+# `defmt::Format` on the outcomes, the state and the diagnostics, for a target that logs through
+# `defmt` rather than `core::fmt`. Optional, so the default build keeps its one dependency.
+[features]
+defmt = ["dep:defmt"]
 
 [dev-dependencies]
