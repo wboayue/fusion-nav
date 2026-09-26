@@ -43,12 +43,12 @@
 #                    accelerometer bias reads as tilt. Every seed shares it, so the ensemble
 #                    cannot average it away. At the nominal IMU's bias the same line reads
 #                    any_att=0 and peak_att 0.65 (2.22 as fixed); raising `gyro_bias_walk` to cover
-#                    its gyroscope walk moves nothing.
+#                    its gyroscope walk moves nothing. #149.
 #   moving_start     attitude only: in the 0.2 s after the heading adoption at initialization and
 #                    before the first GNSS velocity fusion, four magnetometer headings share one
 #                    levelling tilt error that (36') prices into each `R` as though independent.
 #                    peak_att 1.80 at 10.16 s; once velocity fuses it corrects that tilt and the
-#                    ensemble is back under the bound.
+#                    ensemble is back under the bound. #150.
 #
 # Seeds 1..runs rather than the pinned seed of `data/scenarios.txt`, which is one of them for
 # most scenarios and is not special here. The departures from `mission` fly the same seeds, so
