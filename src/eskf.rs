@@ -2511,14 +2511,18 @@ mod tests {
     fn a_run_of_correlated_fixes_leaves_more_uncertainty_than_a_run_of_white_ones() {
         // Twenty-five fixes at 5 Hz. As white, (24) averages them down; at (24′)'s default,
         // each is worth 1/42 of one horizontally and 1/140 in height, since the receiver's
-        // error has barely moved between them.
+        // error has barely moved between them. Worth less is not worth nothing: each half reads
+        // its own clock, and one read off the other would see the horizontal half restart it
+        // an instant before and take every height for the same error twice.
         let mut white = aided();
         white.config.correlation = Correlation::WHITE;
-        let mut correlated = aided();
+        let (mut correlated, mut unaided) = (aided(), aided());
         for step in 0..500 {
-            for filter in [&mut white, &mut correlated] {
+            for filter in [&mut white, &mut correlated, &mut unaided] {
                 assert_eq!(filter.predict(still().imu, DT), Propagation::Propagated);
-                if step % 20 == 0 {
+            }
+            if step % 20 == 0 {
+                for filter in [&mut white, &mut correlated] {
                     let _ = filter.fuse_gnss_position(
                         Position::ned(0.0, 0.0, 0.0),
                         PositionNoise::from_sigma(1.0, 1.0, 1.0),
@@ -2527,11 +2531,10 @@ mod tests {
             }
         }
         for axis in [ErrorState::PositionNorth, ErrorState::PositionDown] {
-            let (w, c) = (
-                white.covariance().variance(axis),
-                correlated.covariance().variance(axis),
-            );
+            let variance = |filter: &Eskf| filter.covariance().variance(axis);
+            let (w, c, u) = (variance(&white), variance(&correlated), variance(&unaided));
             assert!(c > 3.0 * w, "{axis:?}: {c} against {w} white");
+            assert!(c < 0.95 * u, "{axis:?}: {c} against {u} with no fix at all");
         }
     }
 
