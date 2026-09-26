@@ -37,8 +37,14 @@ log), `eb799954` carries the first `rejected_mag` (3), and `cd7e0001` is the coa
 first `floored=` (21, a raw 0.43 mm/s σ_v). `2c42096b` now starts `short` on a 0.80 s still prefix:
 the harness waits `PATIENCE` for a static window and falls back to the prefix, and `classify`
 measures motion before length. Declination is read per log (`declination=`), which took the median
-heading gap to EKF2 on real GNSS logs from 4–13° to 0–2.5°. #86's PR 3 and `2b2ad123`, a candidate
-real-data lockout on #116, are next in that area.
+heading gap to EKF2 on real GNSS logs from 4–13° to 0–2.5°. #142 closed #86 at twelve logs, the
+first fast vehicles, each pinned with its cause named: `285ee2e7` (tailsitter, 125° with every
+heading fused, the first `rejected_baro` at back-transitions), `4b473e91` (VTOL locked out after a
+1.18 s logging dropout, #116's acceptance line), `7ce66f0d` (hand launch levelled 12° wrong, (5′)'s
+first real check) and `093e806a` (fixed-wing, 1.14 km, a receiver PX4's R floors would correct).
+Declination now follows EKF2's own rule, PX4's table at the first fix. Still open in that area:
+`2b2ad123`'s RTK lockout (#116), `9eb08bdb`'s unexplained position rejections, and a heavy-lift
+log pairing vibration with a magnetometer glitch.
 
 **Every source the crate publishes is fused; no `fuse_*` is a stub.** Initialization is real —
 equations (5)–(8), so the filter starts at the attitude and biases the window yields — `predict`
