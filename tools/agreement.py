@@ -426,7 +426,12 @@ def first_change(t, counter, since):
 
 
 def format_value(value):
-    """How a key prints: `none` for a hole, four significant figures otherwise."""
+    """How a key prints: `none` for a hole, four significant figures otherwise.
+
+    Fixed-point with its trailing zeros, because `data/expect.sh` bands a value by
+    its last printed place and reads no exponent: `.4g` printed 2.000 as `2`,
+    banding it 1..3, and 9.59e-05 as a word, pinning it exactly.
+    """
     if value is None:
         return "none"
     if isinstance(value, str):
@@ -434,7 +439,9 @@ def format_value(value):
     if isinstance(value, int):
         return str(value)
     # `+ 0.0` drops the sign a -0.0 would print with.
-    return f"{value + 0.0:.4g}"
+    text = np.format_float_positional(value + 0.0, precision=4, unique=False,
+                                      fractional=False, trim="k")
+    return text.rstrip(".")
 
 
 # -------------------------------------------------------------- self-test
@@ -534,6 +541,9 @@ def self_test():
     d = np.where(t < 60, 0.0, np.where(t > 140, 10.0, (t - 60) / 8.0))
     d = d + np.where(np.arange(len(t)) % 2, -1.0, 1.0)
     near("change", change(t, d, 0.0, t[-1]), 10.0)
+    printed = [format_value(v) for v in (9.59e-05, 2.0, 304.9, 1402.3, -0.0, None, 3)]
+    if printed != ["0.00009590", "2.000", "304.9", "1402", "0.000", "none", "3"]:
+        failures.append(f"format_value: got {printed}")
     near("no change over a short log", change(t[:200], d[:200], 0.0, t[199]), None)
 
     # compare(): EKF2's origin 3 m north of ours, both filters at one place, so
