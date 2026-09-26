@@ -120,9 +120,33 @@ compare_one() {
 }
 spawn_compare() { compare_one "$@" & }
 
-# The agreement keys `--compare --pin` bands rather than pins exactly: every distance, change
-# and time. Counts (`ekf2_*_resets`) and words stay exact, as `pin_pairs` does for `summary`.
-AGREEMENT_STATISTICS='_(rms|max|nd2|med)$|^(climb|rej_s_)'
+# The keys a log's manifest entry pins, one per line: a raw run's agreement line repeats them,
+# and `--compare --pin` leaves them to the manifest rather than pinning them twice.
+manifest_keys() {
+    local name=$1 sum entry url expect pair
+    [ -f "$manifest" ] || return 0
+    while read -r sum entry url expect; do
+        [ "$entry" = "$name" ] || continue
+        for pair in $expect; do
+            pair=${pair%%<=*} pair=${pair%%>=*}
+            echo "${pair%%=*}"
+        done
+    done < "$manifest"
+}
+
+# `line` without the pairs whose key is one of `keys` (newline-separated).
+without_keys() {
+    local line=$1 keys=$2 word out=""
+    local restore_glob=0
+    case $- in *f*) ;; *) restore_glob=1; set -f ;; esac
+    for word in $line; do
+        if ! printf '%s\n' "$keys" | grep -qxF "${word%%=*}"; then
+            out="${out:+$out }$word"
+        fi
+    done
+    [ "$restore_glob" = 1 ] && set +f
+    echo "$out"
+}
 
 # The expectations data/ekf2.txt holds for one `agreement` line: `<log> <policy> pairs...`.
 ekf2_expectations() {
@@ -277,11 +301,15 @@ case "$cmd" in
     [ "$failed" = 0 ] || die "one or more logs did not replay"
     lines=$(cd "$root" && uv run --quiet tools/replay_report.py --corpus "$out" \
         -o "$out/agreement.html") || die "tools/replay_report.py --corpus failed"
-    while read -r _ log_pair policy_pair rest; do
-        log=${log_pair#log=} policy=${policy_pair#r_policy=}
-        line="$log_pair $policy_pair $rest"
+    while read -r _ line; do
+        # By key, not by position, so the line's order is the writer's to choose.
+        log=$(pair_value "$line" log) || die "an agreement line with no log=: $line"
+        policy=$(pair_value "$line" r_policy) || die "an agreement line with no r_policy=: $line"
+        rest=$(without_keys "$line" "log")
         if [ "$pin" = 1 ]; then
-            echo "$log $policy $(pin_pairs "$policy_pair $rest" "$AGREEMENT_STATISTICS")"
+            # The manifest pins the raw policy's summary keys already.
+            [ "$policy" = raw ] && rest=$(without_keys "$rest" "$(manifest_keys "$log.ulg")")
+            echo "$log $policy $(pin_pairs "agreement $rest" --decimal)"
             continue
         fi
         expect=$(ekf2_expectations "$log" "$policy")

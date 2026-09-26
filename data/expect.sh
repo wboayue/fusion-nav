@@ -128,7 +128,7 @@ compare_pairs() {
     return $rc
 }
 
-# pin_pairs <line> [<statistics>]
+# pin_pairs <line> [--decimal]
 #
 # The inverse of compare_pairs: expectations for a `summary` line, by the rule the header of
 # data/manifest.txt states, so a new entry's forty-odd pairs are derived rather than typed.
@@ -139,12 +139,12 @@ compare_pairs() {
 # claims is the absence of an offset. `epochs=` is left out: it counts rows, so it would
 # pin the converter's output rather than the filter's.
 #
-# `<statistics>` is an extra awk regular expression naming more keys to band, for a line whose
-# keys are not the `summary` line's: `data/fetch.sh --compare` passes the agreement-with-EKF2
-# statistics that way, so banding them never reaches a `summary` key that happens to share a
-# suffix.
+# `--decimal` bands every number printed with a decimal point, for a line whose writer prints
+# statistics that way and counts without one: `data/fetch.sh --compare` passes it for the
+# agreement-with-EKF2 lines (`tools/agreement.py`'s `format_value`), so their key names need
+# no list here, and a `summary` key that happens to share a suffix is never touched.
 pin_pairs() {
-    awk -v line="$1" -v extra="${2:-}" '
+    awk -v line="$1" -v decimal="$([ "${2:-}" = --decimal ] && echo 1)" '
         function floor(x) { return (x == int(x) || x > 0) ? int(x) : int(x) - 1 }
         function ceil(x)  { return -floor(-x) }
         # `text` is the value as printed, which says how many places to round to; `v` is the
@@ -178,7 +178,7 @@ pin_pairs() {
                 value = substr(words[i], eq + 1)
                 if (key == "epochs") continue
                 pair = words[i]
-                if ((key ~ statistic || (extra != "" && key ~ extra)) && value ~ number && value + 0 != 0)
+                if ((key ~ statistic || (decimal && index(value, "."))) && value ~ number && value + 0 != 0)
                     pair = key "=" band(key, value)
                 out = out (out == "" ? "" : " ") pair
             }
@@ -316,14 +316,16 @@ self_test() {
         'yaw0=-107.33 attitude_lost=3.84 extent_max=5.0 status=Healthy'
     p 'what the vehicle did'    'summary extent=112.6 tilt_max=41.1' 'extent=111.4..113.8 tilt_max=40.6..41.6'
     p 'epochs is not pinned'    'summary rate=250 epochs=16079 status=Healthy' 'rate=250 status=Healthy'
-    # A caller's extra statistics are banded, and only on its own call.
+    # `--decimal` bands what prints a decimal point and leaves a count exact, and only on
+    # its own call: without it `pos_n_rms` is a word to pin.
     local got
-    got=$(pin_pairs 'agreement pos_n_rms=0.2912 climb=-7.281 ekf2_att_resets=1' '_rms$|^climb$')
-    if [ "$got" = 'pos_n_rms=0.2882..0.2942 climb=-7.354..-7.208 ekf2_att_resets=1' ]; then
+    got=$(pin_pairs 'agreement pos_n_rms=0.2912 climb=-7.281 ekf2_att_resets=1 rej_s_mag=0.000' --decimal)
+    if [ "$got" = 'pos_n_rms=0.2882..0.2942 climb=-7.354..-7.208 ekf2_att_resets=1 rej_s_mag=0.000' ] &&
+        [ "$(pin_pairs 'agreement pos_n_rms=0.2912')" = 'pos_n_rms=0.2912' ]; then
         passed=$((passed + 1))
     else
         failed=$((failed + 1))
-        echo "  FAIL  pin extra statistics: got '$got'" >&2
+        echo "  FAIL  pin --decimal: got '$got'" >&2
     fi
 
     # What --pin prints has to pass --check against the line it came from.
