@@ -293,6 +293,8 @@ cargo run --example simulate -- flight data   # regenerate the committed data/fl
 data/bench.sh                     # score every scenario against data/scenarios.txt; a CI gate
 data/bench.sh mission static      # only these
 data/expect.sh --self-test        # the comparator both bench.sh and the manifest rules read
+data/anees.sh                     # every scenario on 50 seeds against data/anees.txt; a CI gate
+python3 tools/anees.py --self-test   # the ensemble aggregator's fixtures (stdlib, no uv)
 ```
 
 ## Replay corpus
@@ -433,14 +435,16 @@ loosening is honest where the equation that landed is the reason — `static`'s 
 were exactly zero while nothing propagated, and stage 3 raised them to what dead reckoning on a
 stationary vehicle actually drifts. What a ceiling cannot do is
 test the covariance's own promise: it passes a filter that grew more accurate and more
-overconfident at once, which is #89 (ANEES over N seeds), after #35 gives it a covariance that
-moves. The format is already indifferent to several seeds per scenario.
+overconfident at once. `data/anees.sh` is that test (each scenario on 50 seeds, NEES averaged
+per epoch against a chi-square bound, `data/anees.txt`), and its bounds are quantiles rather than
+measurements, so they do not ratchet. A scenario the filter fails asserts the failure with its
+cause named, so fixing the cause trips the line.
 
 The comparison itself is shared, not copied: `data/expect.sh` owns `key=value`, `key<=value`,
 `key>=value` and `key=lo..hi`, and both readers source it — `data/bench.sh` for
 `data/scenarios.txt`, `data/fetch.sh --check` for `data/manifest.txt`. So the pair syntax is one
 language, and the two-sided bound a statistic wants landed as one arm in one `case` rather than as
-a second comparator — which is what #89's ANEES band against a chi-square bound inherits. It carries fixtures with
+a second comparator, which `data/anees.sh` also reads `data/anees.txt` with. It carries fixtures with
 literal verdicts for the same reason `examples/replay.rs` does — the expectations in both files
 were produced by the harness they guard, so a comparator that waves something through turns a
 miscount into the baseline everything later is measured against.

@@ -561,8 +561,8 @@ correlated noise, recovery removes the symptom and keeps the cause. So `recovere
 beside the accuracy it may have bought, on every scenario in `data/scenarios.txt` and every log in
 `data/manifest.txt`. `logging_dropout` is the scenario whose recovery is the point, and a corpus
 log that recovers names in its entry the cause recovery does not remove. A scenario that needs
-recovery to score well is a finding against the covariance, and ANEES (#89) is where the
-covariance is judged.
+recovery to score well is a finding against the covariance, and ANEES is where the covariance
+is judged: `logging_dropout` fails it, on 50 seeds, through the lockout its recovery ends.
 
 `Fusion` is deliberately not `#[must_use]`, and the crate's own `basic.rs` was the evidence: it
 discarded three of five outcomes with `let _ =` two lines under a comment advertising the lint.
@@ -650,7 +650,9 @@ A fourth question sits underneath the second and is easy to mistake for it: **is
 honest?** A ceiling on an error passes a filter that grew more accurate and more overconfident at
 once, and a ratchet cannot tell those apart, because a number moving down is what both look like.
 Answering it takes a distributional test, ANEES over N seeds against a chi-square bound, beside
-the ceilings rather than instead of them.
+the ceilings rather than instead of them. `data/anees.sh` is that test, in CI, and its first run
+found two overconfidences no ceiling had: a harsh IMU whose accelerometer bias sits outside the
+filter's prior, and the 0.2 s after a moving start's heading adoption (`data/anees.txt`).
 
 ### Primary sources
 
