@@ -758,18 +758,21 @@ To first order only tilt about $`\hat f`$ leaks: the error tips the field's vert
 sideways by $`\delta\theta_t \times v e_3`$, whose part across $`\hat f`$ is
 $`-v\, \hat f \cdot \delta\theta_t`$, so $`\delta\psi = -\tan\delta\; \hat f \cdot \delta\theta_t`$ and
 the exact price of one reading is $`\tan^2\!\delta \cdot \hat f^\mathsf{T} P_{\text{tilt}} \hat f`$. The
-bound is taken over it on purpose, because one reading is not what (24) is wrong about.
-Velocity fusion corrects the tilt error over seconds while headings arrive every 50 ms in the
-simulator, so consecutive headings share most of it, and (24) takes each reading's error as
-independent: priced exactly per reading, a run of headings is believed too much in aggregate.
-Measured, the field-axis form took `gnss_outage` to 2.630 m of horizontal error against 2.227
-for the eigenvalue and loosened yaw on every magnetometer scenario but `static`, whose tilt
-block is isotropic and where every form agrees. Adding the tilt–heading covariance that `R`
-inflation drops, which makes $`S`$ exact per reading, measured the same as the field axis alone
-(2.620 m), so it is the correlation across readings and not the one within a reading that the
-margin stands in for. The eigenvalue is never below either diagonal, and a $`\sigma`$ too large
-only slows the heading's correction while one too small is a filter claiming an attitude it
-does not have.
+bound is taken over it on purpose. Velocity fusion corrects the tilt error over seconds while
+headings arrive every 50 ms in the simulator, so consecutive headings share most of it. Fused
+as white, (24) took each reading's share as independent and a run of headings was believed too
+much in aggregate: the field-axis form took `gnss_outage` to 2.630 m of horizontal error against
+2.227 for the eigenvalue, and adding the tilt–heading covariance that `R` inflation drops, which
+makes $`S`$ exact per reading, measured the same (2.620 m), so it was the correlation across
+readings that the margin stood in for. (24′) prices that correlation directly, as the
+magnetometer's $`\tau`$, and the gap closes: 1.255 m against 1.252, and on 50 seeds both forms sit
+inside the attitude bound on every scenario, their ANEES within a few percent. What is left
+favours the eigenvalue on yaw by about 0.006° on the white scenarios and the field axis on a
+coarse start (`moving_start` 1.364° against 1.461°, `7ce66f0d` 63 recoveries against 69). `static`,
+whose tilt block is isotropic, reads the same under every form. The eigenvalue is kept as the
+bound rather than for a margin: it is never below either diagonal, it is the same on any basis
+of the plane, and a $`\sigma`$ too large only slows the heading's correction while one too small
+is a filter claiming an attitude it does not have.
 
 The larger of the north and east diagonals is the axis-dependent form this replaces: on an
 anisotropic block it moves with the vehicle's yaw, which is what moved `f16771dd`'s mean heading
