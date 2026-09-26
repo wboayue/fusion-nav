@@ -640,8 +640,8 @@ pub struct Config {
     /// Beyond this the step is refused and the state left alone, because the
     /// discretization of equations (9)–(22) is a first-order approximation over a short
     /// interval and one IMU sample cannot describe a long one. The filter reports and
-    /// stops there, as it does for a locked-out gate: whether to reset, coast, or abort
-    /// is the application's call.
+    /// stops there, leaving position where it was. A gate that then turns GNSS down is
+    /// what [`Config::recovery`] adopts its way out of; coasting across the gap is #144.
     ///
     /// Gaps come from logging dropouts, a scheduler overrun, or a sensor that genuinely
     /// stopped, and the filter cannot tell which. The default passes normal operation on
