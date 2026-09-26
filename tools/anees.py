@@ -123,6 +123,12 @@ def read(path):
     return scenario, seed, times, eps
 
 
+def epoch_means(runs, block):
+    """eps_bar_k / 3 for one block at every epoch: the series every key below is read from."""
+    n = len(runs)
+    return [sum(run[3][block][k] for run in runs) / n / DOF for k in range(len(runs[0][2]))]
+
+
 def ensemble(runs):
     """The `anees` pairs for a list of read() results, refusing one that is not an ensemble."""
     scenarios = {run[0] for run in runs}
@@ -147,7 +153,7 @@ def ensemble(runs):
         f"bound_any={limit_any:.4f}",
     ]
     for block in BLOCKS:
-        mean = [sum(run[3][block][k] for run in runs) / n / DOF for k in range(len(times))]
+        mean = epoch_means(runs, block)
         peak = max(range(len(mean)), key=mean.__getitem__)
         pairs.append(f"anees_{block}={sum(mean) / len(mean):.4f}")
         pairs.append(f"over_{block}={sum(1 for m in mean if m > limit) / len(mean):.4f}")
