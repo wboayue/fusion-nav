@@ -25,7 +25,7 @@ reference — and never recompute a number the harness already defines.
 The test is whether a quantity could ever be produced by both paths. If it could, it belongs to
 the harness, because that is the one CI runs. Where a statistic is only meaningful across logs or
 against the reference — distance from EKF2, the corpus table — it lives in Python and is defined
-there once.
+there once: `tools/agreement.py`, which reads no file and computes nothing the harness prints.
 
 The same rule is why `nu*` and `s*` above are published by the filter rather than computed here
 from the measurement and the covariance. The update of equations (23)–(28) owns that quantity, and
@@ -33,7 +33,8 @@ two implementations of it would eventually disagree — discovered, as these thi
 somebody chases a filter bug that does not exist.
 
 `tools/replay_report.py` is the rule applied to a whole document: it plots the per-fusion rows and
-prints the `summary` and `score` keys beside them, and computes no statistic of its own. Its NIS
+prints the `summary` and `score` keys beside them, and computes no statistic of its own; the
+agreement table it prints beside a reference is `tools/agreement.py`'s. Its NIS
 histogram is `ε = r γ` recovered from what the filter published, the way the harness's own
 `nis_is_recovered_with_the_gate_the_filter_was_configured_with` recovers it — never `ν` and
 diag(`S`), which would need the off-diagonals the fusion CSV does not carry and so would be a
@@ -350,7 +351,7 @@ map lives, with the PX4 commits that moved it cited above it. What it means per 
 | `quat24` | 24, 24 | indexed like the state vector, four quaternion entries first | delta-angle and delta-velocity per filter update | `a299e722`, `2c42096b`, `f16771dd` |
 | `unmapped` | anything else | refused | refused | `7592c9b2`, an LPE log reporting 10 |
 
-Three boundaries follow, and they are properties of the logs rather than of the converter:
+Four boundaries follow, and they are properties of the logs rather than of the converter:
 
 - **The quaternion era supplies no attitude σ**, on three of the twelve corpus logs. Four quaternion
   variances become a rotation-vector σ only through the full 4×4 block, and the log carries the
@@ -369,6 +370,22 @@ Three boundaries follow, and they are properties of the logs rather than of the 
 - **Two of twelve logs report no origin** (`xy_global` false, the reference fields all zero), so
   EKF2's `x,y,z` there are origin-relative with no origin and cannot be aligned to this filter's.
   The origin is a `#` header line, not a column, since it is one geodetic point per log.
+- **The two origins are on different vertical datums.** The replay input's origin is the first
+  fix at its ellipsoidal height where the receiver logs one, and EKF2's `ref_alt` is MSL
+  (`msg/versioned/VehicleLocalPosition.msg:57` at `c4e4ef98`). The converter moves EKF2's origin
+  onto the ellipsoid by the first fix's own two heights and writes it as
+  `EKF2 origin in replay frame: N E D m`. Read without that shift, the geoid height is the whole
+  of the down offset: −25.41 m on `eb799954` in Oklahoma and +20.58 m on `89a498ce` in Korea, and
+  `eb799954`'s `pos_d_rms` read 27 m where it reads 0.60.
+
+Three more header lines say what the rows came from rather than what they hold. `Estimator:`
+names which PX4 estimator published them, from `SYS_MC_EST_GROUP` or `EKF2_EN`/`LPE_EN`: the row
+kinds are `ekf2_*` on every log, and on `7592c9b2` they are LPE's. `EKF2 aiding:` gives the height
+reference EKF2 was configured to converge to (`EKF2_HGT_REF`, `EKF2_HGT_MODE` before it) and the
+share of `control_mode_flags` samples on which each GNSS, barometer and magnetometer bit is set,
+because a build with `EKF2_HGT_REF` fuses barometer and GNSS height at once and only the parameter
+says which one it follows. `ekf2_local` also carries EKF2's `xy`, `z`, `vxy` and `vz` reset
+counters, beside `att_reset`, since a step across one is an event in EKF2 rather than divergence.
 
 The delta-angle era is scaled to rates so the column means the same thing on every log, and the
 scale factor is stated in the header with where it came from. It has to be the quantity PX4 itself
@@ -489,9 +506,9 @@ or `never`), `attitude_lost=` (seconds to the first epoch at or after it where `
 read false against `Config::accuracy` — the mission's bar, where `aligned_at=` reads the fixed
 alignment bars — which is where
 the covariance growth of (16)–(22) shows up on logs with no truth — `Status::Aligning` latches, so
-nothing else on the line moves when it happens), `r_policy=` (what the harness handed each
+nothing else on the line moves when it happens), `r_policy=` (what the harness handed each GNSS
 `fuse_*` as `R` — `raw` on every entry, and the paragraph below the caveats says why it is not a
-floor), `rejected=` and `discarded=` (the gate's verdict, and everything that never reached it — a
+floor; `px4` under `--r-policy px4`, which only `data/ekf2.txt` pins), `rejected=` and `discarded=` (the gate's verdict, and everything that never reached it — a
 variance of zero or less, a NaN, an altitude with no reference; both count verdicts, so a GNSS
 fix judged or refused whole counts once per half), `refused=` and `invalid=` (steps
 refused as too long or as not a step at all — propagation, not measurements), `floored=`
@@ -529,10 +546,12 @@ wants it — `PositionNoise::clamped` and `VelocityNoise::clamped`, whose doc co
 platforms' parameters, `file:line` and the shas they were read at. The harness applies neither,
 for three measured reasons:
 
-- **A floor erases the figure rather than bounding it.** PX4's `ekf2_gps_v_noise`, 0.5 m/s, sits
-  above 13163 of the corpus's 13676 velocity solutions — every solution or all but one on eight
-  logs, 97.5 % on `7ce66f0d` and 90 % on `2c42096b`, honest receivers included — so it is the
-  operative value rather than a backstop. The position floors bind on three receivers: reported
+- **A floor erases the figure rather than bounding it.** The `EKF2_GPS_V_NOISE` each log flew,
+  0.25–0.3 m/s (the 0.5 in `EKF/common.h:370` is an initializer the parameter overrides), sits
+  above 8643 of the corpus's 13676 velocity solutions: every one on `093e806a`, `4b473e91`,
+  `89a498ce` and `a299e722`, 98.9 % or more on `285ee2e7`, `cd7e0001` and `eb799954`, 55.9 % on
+  `7ce66f0d`, 12.4 % on `2c42096b` and none on the SITL log. Honest receivers included, it is the
+  operative value on most logs rather than a backstop. The position floors bind on three receivers: reported
   σ_h falls to 0.297 m on `093e806a` and 0.436 m on `4b473e91` against a 0.5 m bound, and
   `89a498ce`'s RTK receiver reports 0.014 m horizontally and 0.01 m vertically on every fix; σ_h
   is 0.622 m and up on the rest, and σ_v averages 0.51–6.26 m against 0.75 where there is no
@@ -548,6 +567,8 @@ for three measured reasons:
   widening — 2 under that floor alone, and 44 under ArduPilot's per-axis 0.3/0.5, which is the one
   policy that would leave the gate of (37)–(38) still exercised by real data. `transitions=` went
   4 to 2 under all three in that measurement (#113), so this is not the only key a floor would move.
+  Re-measured with (24′) and each log's own parameters (`--r-policy px4`), the 266 read 37 at
+  `a299e722`'s 0.25 m/s and 6 at 0.5, and `transitions=` still 4 to 2.
 - **It moves the accuracy gate.** `examples/simulate.rs` draws GNSS velocity noise at σ = 0.15 m/s
   and `data/bench.sh` scores every scenario through this same harness, so a floor would hand every
   simulated fix an `R` 11× too wide and move the ceilings in `data/scenarios.txt` — distrusting a
@@ -555,10 +576,11 @@ for three measured reasons:
 
 The policy belongs to the corpus rather than to one log: a source added later reports its own
 accuracy the same way and is fused the same way. What it costs is that a figure here is not
-directly comparable with EKF2's on the same log, which fuses a floored `R` — a comparison states
-that difference or matches the policy, and
-[#8](https://github.com/wboayue/fusion-nav/issues/8) owns which. `r_policy=` on the `summary` line
-carries the verdict, so a published figure travels with the policy that produced it.
+directly comparable with EKF2's on the same log, which fuses a floored `R`. So the comparison with
+EKF2 runs both: `--r-policy px4` replays each log at EKF2's own floors, with the parameters it
+flew, and [Agreement with EKF2](#agreement-with-ekf2) reads the distance under each. `r_policy=`
+on the `summary` line carries the verdict, so a published figure travels with the policy that
+produced it.
 
 `data/fetch.sh --check` needs `pyulog`, so it is a local tool rather than a CI job:
 `data/fetch.sh --venv` once, which installs the version the converter pins, and `fetch.sh`
@@ -582,3 +604,52 @@ files stay out of the repo, the checksums do not. Each entry should cover someth
 does.
 
 Flight Review logs are [CC BY 4.0](https://review.px4.io/).
+
+### Agreement with EKF2
+
+EKF2 is not truth, so this measures agreement, never accuracy: two estimators fed one log, and a
+divergence is a finding to explain before it is an error on either side (GOALS.md, "Three
+questions, three kinds of source").
+
+```console
+$ data/fetch.sh --compare          # replay every log raw and px4, assert data/ekf2.txt
+$ data/fetch.sh --compare --pin    # print the lines to commit instead
+```
+
+`--compare` converts each log with `--reference`, replays it under both `R` policies into
+`target/compare/<log>/`, and runs `tools/replay_report.py --corpus` over the directory, which
+writes `agreement.html` there, one table per family with a row per log and policy, and prints one
+`agreement` line per run for `data/expect.sh` to compare. About a minute for the corpus. The
+statistics are `tools/agreement.py`'s and nothing else computes them; the report reads the files
+and hands it arrays. A single report with `--reference` carries the same table for its one run.
+
+What each key is, and what it cannot say:
+
+- `pos_{n,e,d}_{rms,max}` and `vel_…`: EKF2's estimate less this filter's, each EKF2 sample paired
+  with the nearest epoch within two epoch intervals, never interpolated. Position after adding
+  EKF2's origin in this filter's frame from the reference header; `none` where EKF2 reports no
+  origin. `pos_d` is in one frame, but the two filters may follow different height references.
+- `_nd2`: the mean of `d² / (σ²_ours + σ²_EKF2)`, on EKF2's covariance timeline. Near 1 or below
+  where each covariance covers the other's estimate. A scale for comparing logs, not a χ² to test
+  against: both filters read the same sensors, so the two errors are not independent. A sample
+  where EKF2 reports σ = 0 is a state it is not estimating and is left out.
+- `climb`, `climb_ekf2`: each filter's own height change, last 60 s mean less first, up positive,
+  over the span both cover, beside `height_reference_ekf2`. As change because each filter
+  converges to its own reference. `none` on a log under 120 s, where the two windows overlap.
+- `tilt_{rms,max}`: tilt difference from the swing-twist split, degrees. `heading_med`: median
+  absolute heading difference after EKF2's first attitude reset once this filter runs, which is
+  its yaw alignment; later resets stay in. `att_nd2`: the rotation between the two over the sum
+  of the traces, the one attitude scalar both files carry in one frame; `none` on the quat24 era.
+- `ba_…`, `bg_…`: `_rms` and `_nd2` per body axis, EKF2's delta era already scaled to rates.
+- `rej_s_<source>`, `…_ekf2`, `…_both`: seconds each filter spent over its gate, and seconds both
+  did. As time rather than counts, because EKF2 publishes its test ratios at 1–5 Hz and this filter
+  judges every fusion. A verdict holds until the source's next sample and for at most five of its
+  median intervals, so a logging dropout does not stretch one rejection across the gap. `baro`
+  compares only against a barometer height reference, since EKF2's height ratio belongs to
+  whichever source is active; `gnss_hgt` has no EKF2 counterpart at all.
+- `ekf2_{xy,z,vxy,vz,att}_resets`: how often each EKF2 counter moved, beside this filter's
+  `resets=` and `recovered=`. `estimator`: which PX4 estimator the reference is.
+
+A `px4` line carries its harness keys (`nis_`, `rejected_`, `resets=`), since nothing else pins
+them; a `raw` line leaves them to `manifest.txt`. `data/ekf2.txt`'s header records what the first
+run said.
