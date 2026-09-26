@@ -689,8 +689,8 @@ sees — IMU, barometer, magnetometer, GNSS — together with EKF2's own state e
 innovations. There is no ground truth, so this is not an accuracy benchmark. Its value is that
 replaying a log and comparing against EKF2's published solution catches divergence on genuinely
 glitchy sensor data, and gives free coverage of GNSS dropouts, magnetic interference, and
-barometer transients that a clean RTK dataset will not. ArduPilot `.bin` logs serve the same
-purpose.
+barometer transients that a clean RTK dataset will not. ArduPilot `.bin` logs could serve the
+same purpose, but no converter reads them, so the corpus is PX4's alone.
 
 Public Flight Review logs are CC BY 4.0, so a pinned corpus can be redistributed with
 attribution — unusually, the licence is not the obstacle here. `https://review.px4.io/dbinfo`
