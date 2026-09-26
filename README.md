@@ -332,7 +332,7 @@ a `Reset` steps the state, and a refusal says the measurement never reached the 
 | -------- | ------- |
 | `Accepted { test_ratio }` | fused; ratio ≤ 1 |
 | `Rejected { test_ratio }` | gated out; ratio > 1, state unchanged |
-| `Reset` | adopted outright, the quantity having never been established (once per quantity); steps the state |
+| `Reset` | adopted outright: the quantity was never established, or its source was locked out past its [recovery](#recovery-from-gate-lockout) timeout; steps the state |
 | `NoReference` | barometer altitude with no `α₀` and no established position to read one against, or a geodetic fix that cannot place an origin |
 | `NotFinite` | a NaN or infinity in the measurement or its noise; discarded |
 | `InvalidNoise` | a zero or negative variance in the noise — no sensor has one, and `S` would be singular or worse; discarded |
@@ -430,19 +430,37 @@ aiding clause on its own — the current answer widened by what is being accepte
 * `baro_reference()` — `α₀` as currently estimated, if a start established one. It moves as the
   barometer and GNSS height disagree; see equation (30′).
 
-## Recovery is the application's job
+## Recovery from gate lockout
 
-[#116](https://github.com/wboayue/fusion-nav/issues/116) replaces this with recovery on by default, behind per-correction `Config`
-opt-outs; until it lands, this section describes the code.
+A gate rejects what disagrees with the estimate, so an estimate that has gone wrong — a logging
+dropout at speed, a covariance shrunk around an error it cannot see — rejects the measurements
+that would correct it. The filter recovers: a source rejected for longer than `Config::recovery`
+allows has its next measurement adopted rather than discarded, reported as `Fusion::Reset` and
+counted in `SourceHealth::recovered`. The timeouts are PX4's, and `Recovery`'s documentation
+says where each comes from and how each source recovers.
 
-The filter gates but does **not** recover on its own. Only the application knows whether to
-reset states, degrade the flight mode, or alert the operator. `reset_position_to(fix, noise)`
-and `reset_velocity_to(fix, noise)` exist so that `DeadReckoning` is actionable. Both return
-`false`, changing nothing, for a fix or a noise a `fuse_*` would have refused: a reset writes the
-noise onto the covariance diagonal with no gate in the way. PX4 resets after 7 s of horizontal
-dead reckoning or 5 s of failed height fusion (`reset_timeout_max` and `hgt_fusion_timeout_max`,
-`src/modules/ekf2/EKF/common.h:515-517` at PX4 `c4e4ef98e9`), which are reasonable starting points
-for an integrator's own policy. See [rejection handling](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#rejection-handling-report-do-not-self-recover).
+An application that owns the decision — a controller that cannot take a step, a failsafe that
+would rather land — turns off the sources it owns, or all of them, and resets the state itself:
+
+```rust
+use fusion_nav::prelude::*;
+
+let config = Config {
+    recovery: Recovery {
+        gnss_position: None, // the application resets position itself
+        ..Recovery::default()
+    },
+    ..Config::default()
+};
+# let _ = config;
+let everything_off = Config { recovery: Recovery::OFF, ..Config::default() };
+# let _ = everything_off;
+```
+
+`reset_position_to(fix, noise)` and `reset_velocity_to(fix, noise)` are that application's
+tools. Both return `false`, changing nothing, for a fix or a noise a `fuse_*` would have refused:
+a reset writes the noise onto the covariance diagonal with no gate in the way. See
+[rejection handling](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#rejection-handling-recover-by-default-opt-out-per-source).
 
 ## The library cannot panic
 
@@ -501,7 +519,6 @@ Known and deliberate, stated here rather than discovered in flight.
   7.8 m at 10 km, so `-p_D` far out is not height. The barometer model does not correct for it,
   and [equation (30)](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#barometric-altitude)
   records the measurement behind that.
-* **No self-recovery**, by design — see above, and [#116](https://github.com/wboayue/fusion-nav/issues/116), which replaces it.
 
 Features deliberately deferred (wind, terrain, optical flow, airspeed, ...) are listed in
 [DESIGN.md](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#initial-scope).

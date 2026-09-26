@@ -189,10 +189,14 @@ impl Covariance {
             .copy_from(&block);
     }
 
-    /// [`reset_state`](Self::reset_state) over a whole block, for the position and
-    /// velocity of [`Fusion::Reset`](crate::Fusion::Reset), which are adopted three
-    /// components at a time.
-    pub(crate) fn reset_block(&mut self, states: [ErrorState; 3], variances: [f32; 3]) {
+    /// [`reset_state`](Self::reset_state) over several states, for the position and
+    /// velocity of [`Fusion::Reset`](crate::Fusion::Reset): three components on a first
+    /// adoption, the horizontal pair or the height alone on a recovery.
+    pub(crate) fn reset_block<const N: usize>(
+        &mut self,
+        states: [ErrorState; N],
+        variances: [f32; N],
+    ) {
         for (state, variance) in states.iter().zip(variances) {
             self.reset_state(*state, variance);
         }

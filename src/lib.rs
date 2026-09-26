@@ -83,7 +83,7 @@ pub use state::{CovarianceMatrix, STATES};
 pub mod prelude {
     pub use crate::config::{
         ALIGNED_HEADING, ALIGNED_TILT, Accuracy, Config, GRAVITY, Gate, Gates, ImuNoise,
-        Initialization, Percentile, Timeouts,
+        Initialization, Percentile, Recovery, Timeouts,
     };
     pub use crate::eskf::Eskf;
     pub use crate::frames::{Body, Enu, Ned};

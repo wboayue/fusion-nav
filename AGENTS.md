@@ -591,7 +591,8 @@ current checkouts, and a bare path rots as the tree moves. Cite it in **one** pl
 that owns the claim — and have the others point there. PX4's reset timeouts were stated in three
 files with two different descriptions of the condition before anyone checked the source: they are
 `reset_timeout_max` (7 s of horizontal inertial dead reckoning) and `hgt_fusion_timeout_max` (5 s
-of failed height fusion) at `src/modules/ekf2/EKF/common.h:515-517`, and `README.md` owns them.
+of failed height fusion) at `src/modules/ekf2/EKF/common.h:515-517`, and `Recovery`'s `Default`
+impl in `src/config.rs` owns them, since it is the code that uses them.
 
 Comparing against them is a design tool, not just a fact check. `Validity` and
 `predicted_validity` exist because a comparison showed both estimators answer *which output can I
@@ -739,19 +740,25 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
   rather than 888 while its coarse attitude prior was charged the window's worst sample, and reports
   all 888 now that (8′) bounds that prior by the average (5)–(6) level and the start resolves 0.20 s
   in.
-- **The filter gates but never self-recovers.** On sustained rejection it reports
-  `DeadReckoning`; `reset_position_to` / `reset_velocity_to` exist for the application to
-  decide. Do not add automatic resets — that is a documented decision in GOALS.md. The single
-  exception, and its boundary: the first measurement of a quantity initialization never established
-  is **adopted** (`Fusion::Reset`), once per quantity, because there is no estimate to step away
+- **The filter recovers by adoption, per source, and only by adoption.** A source the gate has
+  rejected for longer than `Config::recovery` allows has its next measurement adopted
+  (`Fusion::Reset`, counted in `SourceHealth::recovered`), through the same path as a first
+  adoption; `Recovery::OFF` reproduces the filter that only reports, byte for byte on every
+  scenario and corpus log, and `reset_position_to` / `reset_velocity_to` stay for an application
+  that owns the decision. A new correction of any kind gets its own switch, default on, rather
+  than a shared "auto" flag — GOALS.md, "Rejection handling". Only a *rejection* triggers it:
+  silence and refusals have nothing to adopt. Heading waits while GNSS is arriving (PX4's guard),
+  the barometer re-reads `α₀` rather than stepping a state, and a GNSS height recovery drops a
+  reference read from the estimate. The other adoption is the first measurement of a quantity
+  initialization never established, once per quantity, because there is no estimate to step away
   from. After a coarse start that is the first GNSS position and velocity; for heading it is any
   start that observed no yaw, which includes a *static* window carrying no magnetometer, since
   stillness observes tilt and never yaw. Only a seed escapes, having vouched for every quantity.
   The heading adoption is the one that steps **attitude**, by up to half a circle, so it
   reparameterizes the surviving attitude rows by (41) with the exact `R(q̂⁺)ᵀR(q̂)` rather than the
   small-angle Jacobian an update takes, and it carries the `R` of (36′) rather than the caller's
-  σ_ψ² — a heading levelled by a coarse tilt is not worth the magnetometer's own variance. Never
-  for recovery, never for a quantity that was once known. The barometric reference is the same
+  σ_ψ² — a heading levelled by a coarse tilt is not worth the magnetometer's own variance. A
+  heading recovery takes the same path. The barometric reference is the same
   shape without the step: a start that leaves none reads it from the estimate at the first
   altitude once position is established, which moves no state.
 - **Nothing in `src/` panics.** No `unwrap`, `expect`, `panic!` or `unreachable!` outside
@@ -782,8 +789,9 @@ Every source touches the same ten places, and three of them are public:
   of freedom, and `Gates::at` needs a line for the new field.
 - A source is a verdict, not a sensor: a GNSS fix is two, `gnss_position` and `gnss_height`, gated
   apart (#118), so a sensor whose components fail independently wants a source per component.
-- `Timeouts` is **global**, not per-source (`src/config.rs:297-308`): there is no per-source entry to
-  add, and giving a source its own threshold is a design change. See #56.
+- `Timeouts` is **global**, not per-source: there is no per-source entry to add, and giving a
+  source its own threshold is a design change. See #56. `Recovery` *is* per source, like `Gates`,
+  so it gains a field and a decision about what adopting the source resets.
 - `Validity` and `predicted_validity`: decide whether the source constrains a quantity, and say so.
 - A `summary` key in `examples/replay.rs`, pinned per log in `data/manifest.txt`, plus a corpus log
   that uniquely covers the source — or an honest note that none does.
@@ -877,8 +885,8 @@ Still open: the same window could *measure* the barometer and IMU noise and hand
 `R`/`Q` instead of making the caller guess, as another output of `initialize`. That sits under
 GOALS.md differentiator 7, "Configuration derived, not demanded" — do not ask for a value the
 system could measure. Note its boundary before acting on it: derived at a defined moment and
-reported, never silently retuned in flight, which would cost the determinism claim and
-contradict report-do-not-self-recover. Anything the static window cannot honestly measure goes
+reported, never silently retuned in flight, which would cost the determinism claim — a recovery
+is an adoption on a schedule `Config::recovery` fixes in advance, not a retuning. Anything the static window cannot honestly measure goes
 to an offline tool that prints a `Config`, not into the filter.
 
 ### Documentation is the specification
