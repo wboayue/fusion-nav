@@ -70,7 +70,8 @@ pub(crate) enum Update {
 /// `ε = yᵀ S⁻¹ y` and `K = P Hᵀ S⁻¹` each need a solve against `S`, and neither needs `S⁻¹`
 /// itself. A GNSS position fix is the exception, gated on its own `R_m` and gained on the
 /// larger `R` of (28′), so its gain is solved against a second factor; for every other
-/// source `r_gain` is `r_m` and the second factor is the first. The factorization is also the check that `S` is positive-definite. With `R_m > 0`
+/// source `r_gain` is `r_m` and the second factor is the first. The second costs 40 bytes
+/// of `update::<3>`'s frame on `thumbv6m` and none on `thumbv7em`. The factorization is also the check that `S` is positive-definite. With `R_m > 0`
 /// and `P` positive semi-definite it always is, so a failure means `P` has lost that property
 /// in f32 — the filter's fault rather than the measurement's, reported as
 /// [`Update::Invalid`] rather than gated.
@@ -95,7 +96,7 @@ pub(crate) enum Update {
 /// exactly that. Formed here, it cost 4168 bytes more of stack on `thumbv6m` — a 1024-byte
 /// 16 × 16 for each 900-byte temporary, and a copy in and out of it.
 ///
-/// The frame is the largest in the crate: `update::<3>` is 7816 bytes on `thumbv6m-none-eabi`
+/// The frame is the largest in the crate: `update::<3>` is 7856 bytes on `thumbv6m-none-eabi`
 /// and 7936 on `thumbv7em-none-eabihf` at `opt-level = 3`, against 2832 for
 /// `propagate_covariance`, the largest single frame propagation reaches. Most of it is (27),
 /// whose `A_xx`, its two products and `K R Kᵀ` are each a 900-byte 15 × 15; the offset's blocks
