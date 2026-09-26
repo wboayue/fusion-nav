@@ -1122,6 +1122,21 @@ def screen_regime(vehicle, vtol):
     return {"type": rows[0][2]["mode"], "mode_changes": "0"}
 
 
+def screen_imu_rate(dataset):
+    """`sensor_combined`'s median rate in Hz, or `none`.
+
+    A log can carry it at 5 Hz -- `9ae507d6`, a 3.8 km fixed-wing flight whose logger
+    profile sampled it slowly -- and the replay then refuses every step as too long. Only
+    a full conversion and replay said so before. The median, as the harness takes its own
+    rate, because burst logging makes the minimum and the mean lie.
+    """
+    if dataset is None:
+        return {"imu_hz": "none"}
+    t = stamps(dataset)
+    dt = median([(b - a) * 1e-6 for a, b in zip(t, t[1:]) if b > a])
+    return {"imu_hz": "none" if not dt else f"{1.0 / dt:.0f}"}
+
+
 def screen(ulog):
     """One `key=value` line saying whether a candidate log fills a corpus gap.
 
@@ -1140,6 +1155,7 @@ def screen(ulog):
         "sw": release(info.get("ver_sw_release", 0)),
         "duration": f"{(ulog.last_timestamp - ulog.start_timestamp) * 1e-6:.0f}",
     }
+    keys.update(screen_imu_rate(pick(ulog, ["sensor_combined"])))
     keys.update(screen_gnss(pick(ulog, GNSS_TOPICS)))
     keys.update(screen_vibration(ulog))
     keys["vib_metric"] = vibration_metric(info.get("ver_sw_release", 0))
@@ -1307,6 +1323,10 @@ def self_test():
     expect("LPE", declination_note({"ATT_MAG_DECL": -2.0}, None).split(" rad")[0],
            "Magnetic declination -0.034907")
     expect("nothing", declination_note({}, None).split(" rad")[0], "Magnetic declination 0.000000")
+    # A 2.5 ms burst inside a true 20 ms period, a299e722's shape: the median holds.
+    burst = Fixture("sensor_combined", timestamp=[0, 20000, 40000, 42500, 60000, 80000, 100000])
+    expect("imu rate through bursts", screen_imu_rate(burst), {"imu_hz": "50"})
+    expect("no imu", screen_imu_rate(None), {"imu_hz": "none"})
     expect("release", release(0x010B03FF), "v1.11.3")
     expect("rc", release(0x011000C0), "v1.16.0-rc")
     expect("dev", release(0x010A0000), "v1.10.0-dev")
