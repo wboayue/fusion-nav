@@ -1307,11 +1307,19 @@ impl Replay {
         self.total(|health| health.refused)
     }
 
-    /// Measurements adopted outright because initialization left nothing to fuse them
-    /// against. At most one per source, so a GNSS fix adopted whole counts twice; see
+    /// Measurements adopted outright: because initialization left nothing to fuse them
+    /// against, or to recover from lockout. A GNSS fix adopted whole counts twice; see
     /// [`Replay::total`].
     fn resets(&self) -> u32 {
         self.total(|health| health.adopted)
+    }
+
+    /// The part of [`resets`](Self::resets) that recovered from gate lockout, a rejected
+    /// measurement adopted after `Config::recovery`'s timeout. Pinned apart because it is a
+    /// finding against the covariance where `resets` is a property of the start: a log that
+    /// recovers on good data has a `P` too small for its sources.
+    fn recoveries(&self) -> u32 {
+        self.total(|health| health.recovered)
     }
 
     /// What the vehicle's own acceleration was over the initialization window, as the
@@ -1536,11 +1544,17 @@ impl Replay {
                 self.discarded()
             );
         }
-        if self.resets() > 0 {
+        if self.resets() > self.recoveries() {
             println!(
                 "{} adopted outright: initialization established no such quantity to fuse \
                  them against",
-                self.resets()
+                self.resets() - self.recoveries()
+            );
+        }
+        if self.recoveries() > 0 {
+            println!(
+                "{} adopted to recover from gate lockout — per source below",
+                self.recoveries()
             );
         }
         if propagation.refused_invalid > 0 {
@@ -1606,7 +1620,7 @@ impl Replay {
         format!(
             "summary rate={:.0} window={} {} align={} an={} alpha0={} heading={} \
              roll0={roll0:.2} pitch0={pitch0:.2} yaw0={yaw0:.2} declination={:.2} resets={} \
-             aligned_at={} attitude_lost={} r_policy={R_POLICY} rejected={}{} discarded={} refused={} \
+             recovered={} aligned_at={} attitude_lost={} r_policy={R_POLICY} rejected={}{} discarded={} refused={} \
              invalid={} floored={} epochs={}{} \
              transitions={} status={:?}",
             self.interval.map_or(0.0, |interval| 1.0 / interval),
@@ -1660,6 +1674,7 @@ impl Replay {
                 .as_radians()
                 .to_degrees(),
             self.resets(),
+            self.recoveries(),
             // When the filter first called its own attitude usable. It is what settled
             // `Accuracy`'s attitude defaults off the corpus the way replay settled
             // `Timeouts::degraded_after`: with the bars equal to the priors they were
@@ -1738,6 +1753,12 @@ impl Replay {
             }
             // What separates a miswired sensor from one that was never connected: both read
             // `never accepted`, and only this says the filter was turned down and why.
+            if health.recovered > 0 {
+                println!(
+                    "  {:<13} {} adopted to recover from lockout",
+                    "", health.recovered
+                );
+            }
             if let Some(refusal) = health.last_refusal {
                 // "measurements", because `summary`'s `refused=` counts propagation steps.
                 println!(
@@ -3598,7 +3619,7 @@ mod tests {
     #[test]
     fn a_coarse_start_adopts_one_position_and_one_velocity() {
         // Nothing was ever established, so the first fix is adopted rather than fused —
-        // once per quantity, and never for recovery.
+        // once per quantity. None of it is a recovery.
         let mut log = Log::new().run(0.0, 501, DT, TURNING);
         log = log
             .gnss_pos(10.02, 1.0, 2.0, -3.0)
@@ -3614,6 +3635,28 @@ mod tests {
             key(&summary, "resets"),
             "3",
             "the second pair is fused, not adopted"
+        );
+        assert_eq!(key(&summary, "recovered"), "0");
+    }
+
+    #[test]
+    fn a_locked_out_receiver_is_recovered_once_and_counted_apart() {
+        // A still start, then a receiver 100 m from where the window put the vehicle, once a
+        // second: every fix is rejected until none has been accepted for
+        // `Recovery::gnss_position`, then one is adopted and the rest fuse. Its height agrees,
+        // so only the horizontal half recovers.
+        let mut log = still_start();
+        for second in 3..16 {
+            let t = f64::from(second);
+            log = log.gnss_pos(t, 100.0, 0.0, 0.0).run(t, 50, DT, STILL);
+        }
+        let summary = replay(&log).summary();
+        assert_eq!(key(&summary, "recovered"), "1");
+        assert_eq!(key(&summary, "resets"), "1", "a recovery is an adoption");
+        assert_ne!(
+            key(&summary, "rejected_gnss_pos"),
+            "0",
+            "it was locked out first"
         );
     }
 
