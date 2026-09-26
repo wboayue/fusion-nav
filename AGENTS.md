@@ -8,11 +8,15 @@ This file provides guidance to coding agents working with code in this repositor
 except (31)–(33), the three-axis magnetometer, which is out of scope, and (5′)'s subtraction,
 which is #59's. The `**Stub.**` marker survives on those two and nowhere else, and every status
 banner says built rather than intended. What is left is mostly measurement and publication —
-#41 (cost on hardware), #8 (the EKF2 comparison), #47 (the release), #89 (ANEES) — plus two
-defects the consistency keys of #112 surfaced on `2c42096b`: every corpus source is correlated
-(`acf1_` 0.11–0.99) while (24) fuses it as white (#117); and that overconfidence is the lockout
-precondition "report, do not self-recover" accepted, which #116 replaces with recovery on by
-default behind per-correction `Config` opt-outs. #118 gated GNSS height apart from horizontal
+#41 (cost on hardware), #8 (the EKF2 comparison), #47 (the release), #89 (ANEES) — plus the
+defect the consistency keys of #112 surfaced on `2c42096b`: every corpus source is correlated
+(`acf1_` 0.11–0.99) while (24) fuses it as white (#117). That overconfidence is the lockout
+precondition, and #116 (#143) now recovers from lockout by default: per-source
+`Config::recovery` at PX4's timeouts, `Recovery::OFF` byte-identical to the filter that only
+reported, `recovered=` pinned on every scenario and log so a recovery masking #117 is a diff.
+`4b473e91` 881 → 31 rejected positions and Healthy; `093e806a` (35) and `7ce66f0d` (294) recover
+from causes recovery does not remove, and their entries say so. #144 would coast a refused IMU
+step rather than freeze, removing `4b473e91`'s recoveries at the gate. #118 gated GNSS height apart from horizontal
 position, which removed the lockout fusing that barometer caused. #119 (#122) estimates the
 barometric offset beside the 15-state covariance, equation (30′), walking at
 `Config::baro_offset_walk` (PX4's 0.13); GOALS' "Barometric reference as an estimated offset"
@@ -23,7 +27,7 @@ leaves no reference, correlated with the height it was read against (`P_xb = −
 `rejected_gnss_hgt=0`, `Healthy`; 3825 rejected at `baro_offset_walk = 0`), `moving_start`
 `nees_pos` 1.0877. Beside EKF2 there, horizontal agrees within metres and height does not: EKF2
 follows the barometer's ~12 m climb, this filter GNSS height's low frequencies — #8's to explain.
-Order: #89 (the gate the remedies are judged by), #117, #116, then #8. #86's tailsitter is no
+Order: #89 (the gate the remedies are judged by), #117, then #8. #86's tailsitter is no
 longer blocked: #131 (#133) reads tilt and heading on navigation axes, `diag(R P_θθ Rᵀ)` through
 `AttitudeVariance`, in `Validity`, the latch, the heading adoption and (8)'s prior, and the
 `tilt`/`yaw`/`false_valid` score keys moved with it — tilt² + yaw² unchanged, the body split had
