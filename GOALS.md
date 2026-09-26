@@ -76,8 +76,8 @@ None of this is a criticism of `eskf`, which does what it set out to do. It is a
 ## Differentiators
 
 Ranked by how defensible they are, which is not the same as how valuable. Differentiator 4 is
-true today by construction; differentiator 1 matters most and is unmeasured on a target: stack frames are measured per
-function from a cross-build for `thumbv6m-none-eabi`, and nothing has yet run or been timed on hardware (#41).
+true by construction; differentiator 1 matters most and waits on measurement on target hardware
+(#41).
 
 Number 5 is missing on purpose: it was *ecosystem coherence*, and was dropped rather than
 renumbered. See [Decisions](#ecosystem-coherence-dropped).
@@ -177,13 +177,13 @@ reads and commits.
 
 | value | derived from | where |
 | ----- | ------------ | ----- |
-| `α₀`, barometric reference | mean of the window's barometer samples or, for a start that leaves none, the first altitude read against the estimate; then estimated as the offset of (30′) | `initialize` or the first `fuse_baro_altitude` seeds it and the filter refines it (**done**) |
-| accelerometer and gyroscope white noise | sample variance over the static window | `initialize` (candidate) |
-| barometer measurement noise | sample variance over the static window | `initialize` (candidate) |
+| `α₀`, barometric reference | mean of the window's barometer samples or, for a start that leaves none, the first altitude read against the estimate; then estimated as the offset of (30′) | `initialize` or the first `fuse_baro_altitude` seeds it and the filter refines it |
+| accelerometer and gyroscope white noise | sample variance over the static window | `initialize` |
+| barometer measurement noise | sample variance over the static window | `initialize` |
 | `max_predict_dt` | observed IMU interval | offline |
-| gate thresholds | chi-square quantile for a chosen percentile and dimension | a constructor, not a number (**done**) |
+| gate thresholds | chi-square quantile for a chosen percentile and dimension | a constructor, not a number |
 | `Timeouts` | observed per-source update intervals | offline recommendation only |
-| GNSS `R` | the receiver; bounding it is the caller's (`PositionNoise::clamped`), and the replay harness fuses it raw (`r_policy=`) | per measurement (**done**) |
+| GNSS `R` | the receiver; bounding it is the caller's (`PositionNoise::clamped`), and the replay harness fuses it raw (`r_policy=`) | per measurement |
 | `baro_offset_walk`, the barometric offset's drift | a barometer's drift against GNSS height over a replay log | offline (#51); PX4's 0.13 until then |
 | local gravity `γ` | the origin's latitude, by the WGS-84 gravity formula | the offline tool (#51); a constant in the filter, see the decision below |
 | magnetic declination | a magnetic model, given the GNSS origin and date | optional, for its flash cost |
@@ -198,11 +198,9 @@ And what stays with the user, because no amount of data yields it:
 * **Policy**: what a `DeadReckoning` status should do to the vehicle.
 * **The static window itself.** The filter can validate stillness; it cannot arrange it.
 
-Three rows of that table are done. `α₀` is seeded from the window or the estimate and estimated
-by (30′) from there; GNSS `R` comes from the receiver and the caller may bound it; and
-`Gates::at` derives the gate thresholds from a percentile at each source's degrees of freedom.
-Everything needing the offline tool is a commitment rather than a present fact, and this is the
-differentiator most likely to be judged on whether that tool gets written.
+The window's noise estimates and everything the offline tool (#51) would print are commitments
+rather than present facts; [README.md](README.md) says what is built. This is the differentiator
+most likely to be judged on whether that tool gets written.
 
 ### Per-quantity validity, not one ladder
 
@@ -215,9 +213,8 @@ alongside the estimate.
 The single ladder cannot express what a coarse start produces: position as good as the receiver
 the moment a fix is adopted, while attitude is still converging. It also masks: `Aligning`
 outranks `Degraded`, so for as long as a start goes unresolved the aiding the filter is or is not
-getting never reaches `Status` at all, which cost `2c42096b`, then the corpus's coarse start, all
-888 of its aiding transitions while its attitude prior was charged that window's worst sample
-(#77).
+getting never reaches `Status` at all. Measured at #77, that cost a coarse start on `2c42096b` all
+888 of its aiding transitions while its attitude prior was charged that window's worst sample.
 
 **Decided:** keep `Status` as the one-glance summary and add `Validity` alongside it on the state,
 six flags derived from the covariance against `Config::accuracy`. Horizontal and vertical
@@ -242,8 +239,8 @@ crate no data could settle, which is why it is configuration; see differentiator
 
 ## Open design questions
 
-Two gaps the core filter left. Alignment is decided and mostly built. Measurement latency still
-needs a decision (#52).
+Two gaps the core filter left: alignment, which the options below settle one at a time, and
+measurement latency (#52).
 
 ### Measurement latency
 
@@ -283,7 +280,7 @@ The options, in the order they are worth doing:
    companion AHRS, a survey, the previous flight's saved state. No new mathematics, no new
    states, no hot-path cost; what it does need is the boundary work of
    [differentiator 2](#2-compile-time-frames-and-units), since a seed arrives in whatever
-   convention its source uses. **Done** in `Eskf::initialize_from`; the barometric reference
+   convention its source uses. Built as `Eskf::initialize_from`; the barometric reference
    follows from the first altitude, read against the seeded height (#115). It covers the
    restart-at-altitude case and any vehicle already carrying an attitude source; it does nothing
    for a bare vehicle with no second source.
@@ -293,7 +290,7 @@ The options, in the order they are worth doing:
 2. **Coarse alignment and an `Aligning` status.** Initialize from whatever is available with a
    `P₀` inflated to match, let the filter run, and report that the attitude is not yet
    trustworthy. The missing concept was less any one algorithm than a way to say *running, but do
-   not fly on my attitude yet*. **Done.** `initialize` does not refuse a short or moving
+   not fly on my attitude yet*. Built: `initialize` does not refuse a short or moving
    window, `initialize_coarse` needs no window at all, and `Status::Aligning` is reported until
    `Eskf::is_aligned` says attitude uncertainty has come down to `ALIGNED_TILT` and
    `ALIGNED_HEADING`: PX4's 3° of tilt, and 30° of heading, for which neither estimator publishes
@@ -309,46 +306,47 @@ The options, in the order they are worth doing:
    is a small-angle quantity, and a yaw error of a radian is not small, so the linearization is
    wrong in a way no variance expresses. The answer is a yaw **reset** when a heading source
    arrives rather than gradual correction, which is precisely why ArduPilot invented the GSF
-   estimator in 6 rather than widening a prior. **Done.** `fuse_mag_heading` adopts the first
+   estimator in 6 rather than widening a prior. Built: `fuse_mag_heading` adopts the first
    heading after an unestablished start, `Fusion::Reset` once per quantity, and fuses every one
    after it.
 
    **And tilt can be left to the ordinary gate, which is what the data says.** The corpus
-   answers half of it: across 80,713 headings on twelve logs the gate turns down 152. Three are
-   single samples 1.1 rad out on `eb799954`, each followed by an accepted heading; 149 are on
-   `7ce66f0d`, a hand launch levelled 12° wrong whose heading was never established, where the
-   failure is the levelling and not the gate. The tailsitter `285ee2e7` fuses every heading
-   through 125° of tilt, so nothing is locked out at any tilt those vehicles reach. The simulator
-   answers the half the corpus cannot, because only it starts badly on purpose: `moving_start`
-   begins at 14.6° of pitch with a coarse attitude, has none of its headings refused
-   (`rejected_mag=0`), and recovers to 1.665° of tilt against the 5.294 it reads with its
-   magnetometer rows removed. No separate policy while aligning, and no widened gate.
+   answers half of it, and `data/manifest.txt` carries the counts: the gate turns down about one
+   heading in a thousand. On `eb799954` those are single samples 1.1 rad out, each followed by an
+   accepted heading; the rest are on `7ce66f0d`, a hand launch levelled 12° wrong whose heading
+   was never established, where the failure is the levelling and not the gate. The tailsitter
+   `285ee2e7` fuses every heading through 125° of tilt, so nothing is locked out at any tilt
+   those vehicles reach. The simulator answers the half the corpus cannot, because only it starts
+   badly on purpose: `moving_start` begins at 14.6° of pitch with a coarse attitude, and when
+   (36′) landed (#39) it had none of its headings refused and recovered to 1.665° of tilt,
+   against 5.294 with its magnetometer rows removed. No separate policy while aligning, and no
+   widened gate.
 
    What that needed was not a gate change but an honest `R`. Leaving tilt to the ordinary gate
    is safe *because* a heading levelled by an uncertain attitude is priced for that uncertainty,
-   equation (36′); without the term the same scenario reads 2.653° of tilt and claims an
+   equation (36′); without the term the same scenario read 2.653° of tilt and claimed an
    attitude it does not have on 840 quantity-epochs. The lesson generalizes past the
    magnetometer: a derived measurement whose derivation reads the state must carry the state's
    uncertainty, or the gate is judging it against a variance that describes something else.
 4. **In-motion leveling.** Differentiate GNSS velocity for navigation-frame acceleration,
    subtract it from measured specific force, and recover gravity's direction while moving.
    Removes the stillness requirement for tilt outright. No new states; noisy under aggressive
-   manoeuvring. **Half done.** The window carries GNSS velocity, `StaticSample::velocity`, and
-   a moving window measures `ā_n` and reports it on `Coarse::NotStationary`. Equation (5′)
-   subtracts nothing yet. The attitude (5)–(7) commit is what rotates `ā_n` into body axes;
-   the subtraction is #59's.
+   manoeuvring. The inputs are carried: the window takes GNSS velocity,
+   `StaticSample::velocity`, and a moving window measures `ā_n` and reports it on
+   `Coarse::NotStationary`. The attitude (5)–(7) commit is what rotates `ā_n` into body axes;
+   (5′)'s subtraction is #59's.
 
-   Whether finishing it is worth anything the corpus cannot say. Its one moving start,
-   `cd7e0001`, is climbing at a steady 3.1 m/s when the window is taken: `ā_n` = 0.136 m s⁻²
-   against about 0.10 m s⁻² of noise from differencing its receiver's reported σ_v of 0.07 m/s
-   over 1 s, so (5′) would subtract little more than noise. `2c42096b`'s window, while it started
+   Whether finishing it is worth anything the corpus cannot say (measured at #86). Its one moving
+   start, `cd7e0001`, is climbing at a steady 3.1 m/s when the window is taken: `ā_n` = 0.136 m s⁻²
+   against about 0.10 m s⁻² of noise from differencing its receiver's reported σ_v of 0.07 m/s over
+   1 s, so (5′) would subtract little more than noise. `2c42096b`'s window, while it started
    coarse, measured 0.14 m s⁻² against 0.39 of noise on a vehicle vibrating on the spot. On that
    window the specific force peaked 5.46 m s⁻² off gravity while the *averaged* specific force it
    levelled sat under a degree off plumb (roll 0.42°, pitch −0.89°). The tilt prior lost far more
    by charging that peak against that average than option 4 could have recovered here, and #77
    collected it. Judging option 4 itself needs a log that actually accelerates, which the
-   simulator's `moving_start` is: a banked, climbing turn from the first sample, with truth
-   beside it and a line in `data/scenarios.txt`. Reading option 4's verdict off it is #59's.
+   simulator's `moving_start` is: a banked, climbing turn from the first sample, with truth beside
+   it and a line in `data/scenarios.txt`. Reading option 4's verdict off it is #59's.
 5. **Yaw from course over ground.** While moving, velocity direction is heading, nearly free.
    Works for fixed-wing and ground vehicles, not for a multirotor that crabs and hovers.
 6. **An EKF-GSF yaw estimator.** A bank of small filters over yaw hypotheses weighted by GNSS
@@ -367,14 +365,14 @@ Two API decisions shape the rest, and are worth settling early:
   `StaticSample`, alongside the magnetometer and the barometer, rather than into a fourth entry
   point taking a moving window. A separate entry point would be the mode argument by another
   name, and the caller would have to know which launch it was having.
-* **`Aligning` is not `Degraded`.** Degraded means aided and drifting; aligning means the
-  attitude itself has not converged. Conflating them would mislead a controller in precisely the
-  phase where the distinction matters most. **Settled**, with `Aligning` the more severe of the
-  two. The cost is real and the corpus has measured it: `Aligning` masked all 888 of the
-  in-motion log's aiding transitions for as long as its attitude prior stayed above the alignment
-  bar. #77 brought that prior down to what the window supports, the start resolves 0.20 s in, and
-  the transitions are reported. Which is the shape of the trade: the masking lasts exactly as
-  long as a start takes to resolve, and that is a number the priors set.
+* **`Aligning` is not `Degraded`.** Degraded means aided and drifting; aligning means the attitude
+  itself has not converged. Conflating them would mislead a controller in precisely the phase where
+  the distinction matters most. **Settled**, with `Aligning` the more severe of the two. The cost
+  is real and the corpus has measured it: `Aligning` masked all 888 of `2c42096b`'s aiding
+  transitions, while it started coarse, for as long as its attitude prior stayed above the
+  alignment bar. #77 brought that prior down to what the window supports, the start resolved 0.20 s
+  in, and the transitions were reported. Which is the shape of the trade: the masking lasts exactly
+  as long as a start takes to resolve, and that is a number the priors set.
 
   Leaving `Aligning` is **one-way**, and that is a second decision the corpus forced once `P`
   began to grow. Read live, the bar puts a filter back into `Aligning` whenever tilt uncertainty
@@ -446,19 +444,19 @@ state for the update and nowhere else, so it has a variance, a correlation with 
 and a correction every time a barometer and a GNSS height disagree, while `State`, `Covariance`
 and `ErrorState` stay the 15-state estimate this crate is positioned on. Nothing reads `b` except
 `Eskf::baro_reference`, which reports the current `α₀`. It walks at `Config::baro_offset_walk`,
-PX4's `baro_bias_nsd` of 0.13 m s⁻¹/√Hz (`common.h:347`).
+PX4's 0.13 m s⁻¹/√Hz, whose doc comment cites the source.
 
-**What the constant cost.** `baro_drift` is the baseline flown with the reference walking
-0.02 m/s, 3.7 m over 185 s. Held constant, `pos_v` was 2.053 m against `mission`'s 0.083,
+**What the constant cost**, measured at #122. `baro_drift` is the baseline flown with the reference
+walking 0.02 m/s, 3.7 m over 185 s. Held constant, `pos_v` was 2.053 m against `mission`'s 0.083,
 `nees_pos` 257.52 and `in3s` 0.9389: metres out, reporting the uncertainty of a perfect sensor.
-Estimated, it reads 0.284 m, 1.19 and 0.9999. `static` goes 2.04 to 1.02 in `nees_pos` with no
-drift configured at all, and to only 1.92 with `b` estimated at `q_b = 0`, so what that line
-needed was the walk rather than the estimate.
+Estimated, it read 0.284 m, 1.19 and 0.9999. `static` went 2.04 to 1.02 in `nees_pos` with no
+drift configured at all, and to only 1.92 with `b` estimated at `q_b = 0`, so what that line needed
+was the walk rather than the estimate.
 
-**What was measured against it.** Three alternatives, each on a start the constant cannot make: a
-start in motion, with `α₀` read from the estimate after the first fix (#115), as PX4 does at `:79`.
-That reference inherits the estimate's height error, one number shared by every reading, and on
-`moving_start`:
+**What was measured against it** at #122. Three alternatives, each on a start the constant cannot
+make: a start in motion, with `α₀` read from the estimate after the first fix (#115), as PX4 does
+at `:79`. That reference inherits the estimate's height error, one number shared by every reading,
+and on `moving_start`:
 
 * **Constant, as #115 first wrote it:** `nees_pos` 112.59.
 * **Constant, with its variance added to `R`** (PX4's `:86`): 14.58. N readings with a common
@@ -477,10 +475,10 @@ receiver; at 0.02 it rejects 20, at 0.05 five, at 0.13 none, both sources accept
 throughout.
 
 **What it costs.** Height, wherever the barometer does not drift. The simulator's never does, and
-there `mission`'s `pos_v` goes 0.083 m to 0.249: the reference walks away from what the barometer
-knew and GNSS height carries the low frequencies, as it does in PX4. A barometer characterized as
-more stable than 0.13 m s⁻¹/√Hz is the reason to lower `baro_offset_walk`. An `α₀` stepped on the
-ground by `set_baro_reference` remains available, and names its σ.
+there `mission`'s `pos_v` went 0.083 m to 0.249 at #122: the reference walks away from what the
+barometer knew and GNSS height carries the low frequencies, as it does in PX4. A barometer
+characterized as more stable than 0.13 m s⁻¹/√Hz is the reason to lower `baro_offset_walk`. An `α₀`
+stepped on the ground by `set_baro_reference` remains available, and names its σ.
 
 **Seeded from the estimate (#115).** Estimated, the reference read from the estimate after a
 coarse start is seeded correlated with the height it was read against, `P_bb = P_DD + R_m` and
@@ -539,11 +537,11 @@ This replaced "report, do not self-recover", and the reasons are worth keeping b
 could be argued back:
 
 - **Lockout was measured, not argued.** It needs an overconfident `P`, and every corpus source is
-  correlated while (24) fuses it as white (#117): on `2c42096b` `σ_pos_n` sits below the
-  receiver's own `eph` at 3936 of 4604 fixes. `4b473e91` then showed the whole sequence on real
-  data: a 1.18 s logging dropout, a refused step, a state 25 m stale under a 7.6 m σ, and 881 of
-  the next 1154 fixes turned down until the log ended. With recovery it reads 31 and ends
-  `Healthy`.
+  correlated while (24) fuses it as white (#117): on `2c42096b` `σ_pos_n` sat below the receiver's
+  own `eph` at 3936 of 4604 fixes when #117 was opened. `4b473e91` then showed the whole sequence
+  on real data: a 1.18 s logging dropout, a refused step, a state 25 m stale under a 7.6 m σ, and
+  881 of the next 1154 fixes turned down until the log ended. With recovery it read 31 and ended
+  `Healthy` (#143).
 - **Report-and-stop handed every integrator the same loop.** The filter holds the timers, the
   rejected measurement, its `R` and the adoption path. An application wanting a working estimate,
   which is most of them, would write PX4's timeout-and-reset again and get it subtly wrong. A
@@ -561,8 +559,8 @@ application may accept a velocity step and not a position one.
 **Recovery must not mask the covariance.** Where lockout comes from a `P` shrunk around
 correlated noise, recovery removes the symptom and keeps the cause. So `recovered=` is pinned
 beside the accuracy it may have bought, on every scenario in `data/scenarios.txt` and every log in
-`data/manifest.txt`: zero on all but `logging_dropout`, whose one recovery is the point, and three
-airframe logs whose entries each name a cause recovery does not remove. A scenario that needs
+`data/manifest.txt`. `logging_dropout` is the scenario whose recovery is the point, and a corpus
+log that recovers names in its entry the cause recovery does not remove. A scenario that needs
 recovery to score well is a finding against the covariance, and ANEES (#89) is where the
 covariance is judged.
 
