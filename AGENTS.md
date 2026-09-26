@@ -15,7 +15,7 @@ consistency keys of #112 surfaced, no corpus source white while (24) fused each 
 measurement and one `τ` per source in `Config::correlation` (corpus medians of `−T/ln acf1`
 read as white). A posterior floor, the issue's option 3, was measured and lost: honest, but it
 raised the gain. The `correlated` scenario's residual (`anees_pos` 1.45, sources slower than the
-defaults) is #51's per-sensor τ to remove; #117 is open for that call. Overconfidence is the
+defaults) is #51's per-sensor τ to remove, and #117 is closed on that basis. Overconfidence is the
 lockout precondition, and #116 (#143) recovers from lockout by default: per-source
 `Config::recovery` at PX4's timeouts, `Recovery::OFF` byte-identical to the filter that only
 reported, `recovered=` pinned on every scenario and log so a recovery masking #117 is a diff.
