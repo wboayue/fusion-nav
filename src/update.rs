@@ -81,11 +81,13 @@ pub(crate) enum Update {
 /// `ε = yᵀ S⁻¹ y` and `K = P Hᵀ S⁻¹` each need a solve against `S`, and neither needs `S⁻¹`
 /// itself. A correlated measurement is the exception, gated on its own `R_m` and gained on the
 /// larger `R̃` of (24′), so its gain is solved against a second factor; where `r_gain` is
-/// `r_m` the second factor is the first. The second costs 40 bytes of
-/// `update::<3>`'s frame on `thumbv6m` and none on `thumbv7em`. The factorization is also the check
-/// that `S` is positive-definite. With `R_m > 0` and `P` positive semi-definite it always is, so a
-/// failure means `P` has lost that property in f32 — the filter's fault rather than the
-/// measurement's, reported as [`Update::Invalid`] rather than gated.
+/// `r_m` the second factor is the first. The second costs 272 bytes of `update::<3>`'s frame
+/// on `thumbv6m` and 24 on `thumbv7em`, 296 and 40 of `update::<1>`'s.
+///
+/// The factorization is also the check that `S` is positive-definite. With `R_m > 0` and `P`
+/// positive semi-definite it always is, so a failure means `P` has lost that property in f32 —
+/// the filter's fault rather than the measurement's, reported as [`Update::Invalid`] rather
+/// than gated.
 ///
 /// The gate runs **before** the gain. A rejected measurement costs one factorization and one
 /// solve, and nothing it could have changed has been computed.
@@ -107,8 +109,8 @@ pub(crate) enum Update {
 /// exactly that. Formed here, it cost 4168 bytes more of stack on `thumbv6m` — a 1024-byte
 /// 16 × 16 for each 900-byte temporary, and a copy in and out of it.
 ///
-/// The frame is the largest in the crate: `update::<3>` is 7856 bytes on `thumbv6m-none-eabi`
-/// and 7936 on `thumbv7em-none-eabihf` at `opt-level = 3`, against 2832 for
+/// The frame is the largest in the crate: `update::<3>` is 8088 bytes on `thumbv6m-none-eabi`
+/// and 7960 on `thumbv7em-none-eabihf` at `opt-level = 3`, against 2832 for
 /// `propagate_covariance`, the largest single frame propagation reaches. Most of it is (27),
 /// whose `A_xx`, its two products and `K R Kᵀ` are each a 900-byte 15 × 15; the offset's blocks
 /// are vectors, and cost 968 bytes over the fifteen-state update. That is comfortable on the
@@ -116,7 +118,7 @@ pub(crate) enum Update {
 /// high-water on hardware, is what would say a less obvious form is worth writing.
 ///
 /// `M` is what the rest scales with, and a scalar source is cheaper rather than free:
-/// `update::<1>` takes 6072 bytes on `thumbv6m` and 6176 on `thumbv7em`, so neither scalar
+/// `update::<1>` takes 6368 bytes on `thumbv6m` and 6216 on `thumbv7em`, so neither scalar
 /// source moves the crate's high-water mark — `update::<3>` still sets it. The two scalar
 /// sources share that one monomorphization: the barometer of (30) paid for it, and the
 /// magnetic heading of (34)–(36) added 1204 bytes of `.text` linking the whole public API for
