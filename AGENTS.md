@@ -9,8 +9,9 @@ except (31)–(33), the three-axis magnetometer, which is out of scope, and (5�
 which is #59's. The `**Stub.**` marker survives on those two and nowhere else, and every status
 banner says built rather than intended. What is left is mostly measurement and publication —
 #41 (cost on hardware), #8 (the EKF2 comparison), #47 (the release), #89 (ANEES) — plus the
-defect the consistency keys of #112 surfaced on `2c42096b`: every corpus source is correlated
-(`acf1_` 0.11–0.99) while (24) fuses it as white (#117). That overconfidence is the lockout
+defect the consistency keys of #112 surfaced on `2c42096b`: no corpus source is white
+(`acf1_` 0.11–0.99, and negative on `89a498ce`'s RTK and `eb799954`'s magnetometer) while (24)
+fuses each as white (#117). That overconfidence is the lockout
 precondition, and #116 (#143) now recovers from lockout by default: per-source
 `Config::recovery` at PX4's timeouts, `Recovery::OFF` byte-identical to the filter that only
 reported, `recovered=` pinned on every scenario and log so a recovery masking #117 is a diff.
@@ -23,10 +24,14 @@ barometric offset beside the 15-state covariance, equation (30′), walking at
 records why estimated rather than a consider state — 1.035 on `moving_start`, but 29310 barometer
 rejections on `2c42096b`. #115 (#127) seeds that offset from the estimate on any start that
 leaves no reference, correlated with the height it was read against (`P_xb = −P[:, D]`), behind
-`Config::baro_reference_from_estimate`: `2c42096b` fuses its barometer (35575 rows refused → 4,
-`rejected_gnss_hgt=0`, `Healthy`; 3825 rejected at `baro_offset_walk = 0`), `moving_start`
-`nees_pos` 1.0877. Beside EKF2 there, horizontal agrees within metres and height does not: EKF2
-follows the barometer's ~12 m climb, this filter GNSS height's low frequencies — #8's to explain.
+`Config::baro_reference_from_estimate`: `2c42096b` fused its barometer that way while it started
+coarse (35575 rows refused → 4; 3825 rejected at `baro_offset_walk = 0`), and since it starts
+`short` it reads `alpha0=window`, so `cd7e0001` and `7ce66f0d` are the logs that cover the seed;
+`moving_start` `nees_pos` 1.0877. Beside EKF2 on `2c42096b`, horizontal agrees to 0.28 m median
+once the two origins (3.68 m S, 2.18 m E apart) are aligned, and height does not: start to end,
+EKF2 climbs 11.97 m with its barometer and this filter falls 8.20 m with GNSS height's low
+frequencies — #8's to explain. The raw `pos_d` columns differ by a further 24.2 m of origin height,
+so a gap read between them is not a disagreement.
 Order: #89 (the gate the remedies are judged by), #117, then #8. #86's tailsitter is no
 longer blocked: #131 (#133) reads tilt and heading on navigation axes, `diag(R P_θθ Rᵀ)` through
 `AttitudeVariance`, in `Validity`, the latch, the heading adoption and (8)'s prior, and the
@@ -46,9 +51,9 @@ first fast vehicles, each pinned with its cause named: `285ee2e7` (tailsitter, 1
 heading fused, the first `rejected_baro` at back-transitions), `4b473e91` (VTOL locked out after a
 1.18 s logging dropout, #116's acceptance line), `7ce66f0d` (hand launch levelled 12° wrong, (5′)'s
 first real check) and `093e806a` (fixed-wing, 1.14 km, a receiver PX4's R floors would correct).
-Declination now follows EKF2's own rule, PX4's table at the first fix. Still open in that area:
-`2b2ad123`'s RTK lockout (#116), `9eb08bdb`'s unexplained position rejections, and a heavy-lift
-log pairing vibration with a magnetometer glitch.
+Declination now follows EKF2's own rule, PX4's table at the first fix. What #86 left open is #145:
+`2b2ad123`'s RTK lockout (not replayed since recovery landed), `9eb08bdb`'s unexplained position
+rejections, and a heavy-lift log pairing vibration with a magnetometer glitch.
 
 **Every source the crate publishes is fused; no `fuse_*` is a stub.** Initialization is real —
 equations (5)–(8), so the filter starts at the attitude and biases the window yields — `predict`
@@ -612,8 +617,9 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`).
 - `src/eskf.rs` — `Eskf`, the whole public filter: `initialize`, `initialize_from`, `predict`,
   `fuse_*`, `state`, `reset_*_to`. `initialize_from` is stage 1
   of GOALS.md's "Alignment beyond the static window": the static window stays the preferred path,
-  and coarse in-motion alignment plus a `Status::Aligning` phase is designed there but unbuilt —
-  read that section before touching initialization.
+  a moving or short window starts coarse under `Status::Aligning`, and in-motion levelling (5′)
+  and yaw from course (#59, #53) are the options still unbuilt — read that section before
+  touching initialization.
 - `src/init.rs` — initialization's types (`StaticSample`, `Alignment`, `Coarse`, `InitError`)
   and pure functions (`level_from_accel`, `heading_from_mag`, `nominal_state`, `classify`,
   `attitude_sigmas`, `initial_covariance`, `baro_reference`, `inertial_acceleration`).
