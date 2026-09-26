@@ -11,8 +11,9 @@
 //! that the optimizer constant-folds the calls away and the scan passes by proving
 //! nothing; with it, the compiler must emit each call against operands it cannot see.
 //!
-//! `run.sh` checks that this file names every `pub fn` in `src/`, so a new entry point
-//! cannot join the API without joining the gate.
+//! `run.sh` checks that this file names every `pub fn` in `src/`, and formats every type
+//! with a `Display` impl through `show`, so a new entry point cannot join the API without
+//! joining the gate.
 
 #![no_std]
 #![no_main]
@@ -260,4 +261,29 @@ fn surface(state: State, diagnostics: Diagnostics, covariance: &Covariance) {
     let _ = black_box(outcome.test_ratio());
     let _ = black_box(Propagation::Propagated.is_propagated());
     let _ = black_box(Alignment::Static.is_static());
+
+    show::<InitError>(InitError::InvalidStep {
+        dt: Seconds::from_secs(black_box(-0.5)),
+    });
+}
+
+/// Format `value` into a sink the optimizer cannot see through.
+///
+/// The value goes through [`black_box`] first, so every arm of its `Display` is reachable
+/// rather than the one the constant names. Named with a turbofish because `run.sh` checks
+/// for `show::<T>(` against every `Display` impl in `src/`: core's float formatting reaches
+/// `core::panicking`, so an impl printing an `f32` with `{}` fails here and nowhere else.
+fn show<T: core::fmt::Display>(value: T) {
+    use core::fmt::Write;
+    let _ = write!(Sink, "{}", black_box(value));
+}
+
+/// A `core::fmt::Write` that keeps every byte it is handed alive.
+struct Sink;
+
+impl core::fmt::Write for Sink {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        black_box(s);
+        Ok(())
+    }
 }

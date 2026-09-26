@@ -62,6 +62,22 @@ if ((${#missing[@]})); then
   exit 1
 fi
 
+# The same for `Display`, which a caller reaches through `write!` rather than by name, and
+# which is where a panic is easiest to add: core's float formatting reaches
+# `core::panicking`, so one `{}` of an `f32` fails the gate. `Fixed` is exempt because it is
+# private and every other impl that prints a number goes through it.
+missing=()
+for name in $(grep -hoE 'impl (core::)?fmt::Display for [A-Za-z0-9_]+' ../src/*.rs ../src/*/*.rs |
+  awk '{ print $NF }' | sort -u); do
+  [[ $name == Fixed ]] && continue
+  grep -qE "show::<$name>\(" src/main.rs || missing+=("$name")
+done
+if ((${#missing[@]})); then
+  echo "error: src/main.rs formats none of these Display impls through show::<T>(:" >&2
+  printf '       %s\n' "${missing[@]}" >&2
+  exit 1
+fi
+
 status=0
 for target in "${TARGETS[@]}"; do
   for level in "${LEVELS[@]}"; do

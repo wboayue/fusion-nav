@@ -8,6 +8,7 @@
 use nalgebra::{ComplexField, RealField, Rotation3, UnitQuaternion, Vector3};
 
 use crate::config::{GRAVITY, Initialization};
+use crate::display::{Decimals, Fixed};
 use crate::frames::{Body, Ned};
 use crate::math::wrap_pi;
 use crate::propagate::ImuSample;
@@ -373,7 +374,8 @@ impl core::fmt::Display for InitError {
         match self {
             Self::NoSamples => write!(f, "initialization window held no samples"),
             Self::InvalidStep { dt } => {
-                write!(f, "initialization dt of {} s is not usable", dt.as_secs())
+                let dt = Fixed::new(dt.as_secs(), Decimals::Three);
+                write!(f, "initialization dt of {dt} s is not usable")
             }
             Self::NotFinite => write!(f, "initialization input was not finite"),
             Self::InvalidVariance => {
