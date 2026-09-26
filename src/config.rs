@@ -396,7 +396,8 @@ pub struct Recovery {
     pub gnss_velocity: Option<Seconds>,
     /// Barometric altitude: the reference `α₀` is read again from the estimate, as the first
     /// one is when a start leaves none, and the state does not move. Needs an established
-    /// position to read it against.
+    /// position to read it against, and [`Config::baro_reference_from_estimate`] on: with it
+    /// off the reference is the caller's, and a barometer that disagrees stays rejected.
     pub baro_altitude: Option<Seconds>,
     /// Magnetic heading: adopted as the first heading is, with the `R` of (36′) — but only
     /// while no GNSS position or velocity has been accepted within
@@ -682,6 +683,9 @@ pub struct Config {
     /// `baro_height_control.cpp:79` at `c4e4ef98`. See
     /// [`Eskf::fuse_baro_altitude`](crate::Eskf::fuse_baro_altitude) for how the reference is
     /// seeded.
+    ///
+    /// Off also keeps [`Recovery`] from reading a new one, for a barometer or a GNSS height
+    /// locked out: the caller's reference outlives both.
     ///
     /// Off is for an application that names its own reference with
     /// [`Eskf::set_baro_reference`](crate::Eskf::set_baro_reference) — a surveyed pad, say —

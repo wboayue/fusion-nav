@@ -981,8 +981,9 @@ impl Eskf {
             &observation,
             self.config.gates.baro_altitude,
         );
-        // Read against the estimate, so only once there is an estimate to read it against.
-        let after = if self.unestablished.position {
+        // Read against the estimate, so only once there is an estimate to read it against, and
+        // never over a reference the caller owns.
+        let after = if self.unestablished.position || !self.config.baro_reference_from_estimate {
             None
         } else {
             self.config.recovery.baro_altitude
@@ -4207,6 +4208,35 @@ mod tests {
             "{outcome:?}"
         );
         assert_eq!(filter.diagnostics().gnss_position.adopted, 0);
+    }
+
+    #[test]
+    fn a_named_reference_is_kept_through_a_barometer_lockout() {
+        // `baro_reference_from_estimate` off says the caller owns `α₀` — a surveyed pad — so
+        // a barometer that disagrees for longer than the timeout stays rejected.
+        let mut filter = Eskf::new(Config {
+            baro_reference_from_estimate: false,
+            ..Config::default()
+        });
+        let _ = filter
+            .initialize(&[still(); 8], Seconds::from_secs(0.25))
+            .expect("a 2 s window of stillness");
+        assert!(
+            filter.set_baro_reference(Altitude::from_meters(100.0), AltitudeNoise::from_sigma(0.1))
+        );
+        let mut step = 0;
+        hold(&mut filter, 8.0, 10, |filter| {
+            step += 1;
+            if step % 10 == 0 {
+                let _ = filter.fuse_gnss_position(Position::zero(), one_metre());
+            }
+            let outcome = filter
+                .fuse_baro_altitude(Altitude::from_meters(150.0), AltitudeNoise::from_sigma(0.5));
+            assert!(matches!(outcome, Fusion::Rejected { .. }), "{outcome:?}");
+        });
+        let reference = filter.baro_reference().expect("named").as_meters();
+        assert!((reference - 100.0).abs() < 0.5, "α₀ = {reference}");
+        assert_eq!(filter.diagnostics().baro_altitude.recovered, 0);
     }
 
     #[test]
