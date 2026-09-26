@@ -313,9 +313,11 @@ The options, in the order they are worth doing:
    after it.
 
    **And tilt can be left to the ordinary gate, which is what the data says.** The corpus
-   answers half of it: across 72,990 headings on eight logs the gate turns down three, each a
-   single sample 1.1 rad out on `eb799954` with the next heading accepted, so nothing there is
-   locked out at any tilt those vehicles reach. The simulator answers the half the
+   answers half of it: across 80,713 headings on twelve logs the gate turns down 152 — three
+   single samples 1.1 rad out on `eb799954`, each followed by an accepted heading, and 149 on
+   `7ce66f0d`, a hand launch levelled 12° wrong whose heading was never established, where the
+   failure is the levelling and not the gate. The tailsitter `285ee2e7` fuses every heading
+   through 125° of tilt, so nothing is locked out at any tilt those vehicles reach. The simulator answers the half the
    corpus cannot, because only it starts badly on purpose — `moving_start` begins at 14.6° of
    pitch with a coarse attitude, has none of its headings refused (`rejected_mag=0`), and
    recovers to 1.665° of tilt against the 5.294 it reads with its magnetometer rows removed. No separate policy while
