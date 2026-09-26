@@ -50,6 +50,20 @@ jobs:
       - run: data/expect.sh --self-test
       - run: data/bench.sh
 
+  anees:
+    name: anees
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The covariance against its chi-square bound, each scenario flown on fifty seeds (#89).
+      # A job of its own rather than a step after bench.sh: it builds release and runs 500
+      # replays, and neither gate should wait on the other. The aggregator's fixtures run first
+      # for the reason bench.sh's comparator's do.
+      - run: python3 tools/anees.py --self-test
+      - run: data/anees.sh
+
   embedded:
     name: no_std build
     runs-on: ubuntu-latest

@@ -16,6 +16,8 @@
 //! ```
 //!
 //! The third argument is optional and turns on scoring against truth; see *Scoring* below.
+//! It also writes `<out>.nees.csv`, `ε` per block per epoch, which `data/anees.sh` averages
+//! across seeds (#89).
 //!
 //! # Input
 //!
@@ -38,7 +40,7 @@
 //!
 //! # Output
 //!
-//! Two files. `<out>.csv` holds one row per IMU epoch after initialization: the state, the
+//! Two files, and a third when scoring. `<out>.csv` holds one row per IMU epoch after initialization: the state, the
 //! covariance diagonal as standard deviations, and the most recent test ratio per source.
 //! The sigma columns are what make the result plottable as estimate ± 3σ against truth; the
 //! test ratios are directly comparable with the innovation ratios PX4 publishes.
@@ -142,9 +144,10 @@
 //! `ImuNoise::default()` is PX4's, an allowance for vibration, scale-factor error and coning
 //! that an analytic simulator does not produce, and it sits 17× above even `HARSH_IMU` on
 //! accelerometer noise. So a consistency key here fails in the *overconfident* direction only
-//! where a source reports an accuracy better than it delivers. `gnss_latency` is the one that
-//! does: its fixes arrive late, which the filter does not model, so each is wrong by the
-//! distance flown in the delay while `R` claims otherwise.
+//! where something reaches the filter that its model does not describe. `gnss_latency` is the
+//! one a single seed shows: its fixes arrive late, which the filter does not model, so each is
+//! wrong by the distance flown in the delay while `R` claims otherwise. Three more need the
+//! ensemble of `data/anees.sh` to see, and `data/anees.txt` names them.
 //!
 //! Five of the scenarios are one-variable departures from `mission` on `mission`'s seed, so
 //! what attributes a fault is `score(departure) − score(mission)` rather than either alone.
@@ -347,6 +350,11 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
     epoch_out.flush()?;
     fusion_out.flush()?;
+    if let Some(scoring) = &replay.scoring {
+        let mut nees_out = BufWriter::new(File::create(output.with_extension("nees.csv"))?);
+        scoring.write_nees(&mut nees_out)?;
+        nees_out.flush()?;
+    }
 
     replay.report(&input, &output, &fusions);
     Ok(())
@@ -2217,7 +2225,7 @@ impl Score {
         covariance: &Covariance,
         truth: &TruthRow,
         accuracy: &Accuracy,
-    ) {
+    ) -> Epsilon {
         use ErrorState::*;
         let error = error_state(state, truth);
         let attitude_ned = attitude_error_ned(state, truth);
@@ -2251,11 +2259,13 @@ impl Score {
 
         // Position, velocity and attitude, in the order `nees_pos`, `nees_vel`, `nees_att`
         // are printed. The bias blocks have no NEES key; `in3s` above is what reaches them.
+        let mut epsilon = [None; 3];
         for (block, first) in [PositionNorth, VelocityNorth, AttitudeX]
             .into_iter()
             .enumerate()
         {
-            if let Some(nees) = nees(&error, p, first) {
+            epsilon[block] = nees(&error, p, first);
+            if let Some(nees) = epsilon[block] {
                 self.nees[block] += nees;
                 self.nees_epochs[block] += 1;
             }
@@ -2266,6 +2276,7 @@ impl Score {
                 *count += 1;
             }
         }
+        epsilon
     }
 
     /// Root mean square of one accumulated sum of squares.
@@ -2349,20 +2360,32 @@ impl Score {
     }
 }
 
+/// `ε` per block for one epoch, in the order `nees_pos`, `nees_vel`, `nees_att`: `None` where
+/// the block was singular, or where the truth file had no row.
+type Epsilon = [Option<f64>; 3];
+
 /// A truth file and the score being accumulated against it.
 #[derive(Clone)]
 struct Scoring {
     path: PathBuf,
+    /// The `(name, seed)` both headers named, carried into the `.nees.csv` header so
+    /// `tools/anees.py` can refuse an ensemble that mixes scenarios or repeats a seed.
+    scenario: Option<(String, u64)>,
     truth: Truth,
     score: Score,
+    /// `ε` per epoch, kept rather than written as it arrives: [`Replay`] is cloned and
+    /// rewound while it waits for a static window, and a buffer inside it rewinds with it.
+    epochs: Vec<(f64, Epsilon)>,
 }
 
 impl Scoring {
     fn new(path: PathBuf, truth: Truth) -> Self {
         Self {
             path,
+            scenario: None,
             truth,
             score: Score::default(),
+            epochs: Vec::new(),
         }
     }
 
@@ -2383,15 +2406,53 @@ impl Scoring {
             )
             .into());
         }
-        Ok(Self::new(path, truth))
+        Ok(Self {
+            scenario: scenario_of(log),
+            ..Self::new(path, truth)
+        })
     }
 
     /// Score one epoch, or record that this file had no truth for it.
     fn epoch(&mut self, t: f64, state: &State, covariance: &Covariance, accuracy: &Accuracy) {
-        match self.truth.at(t) {
+        let epsilon = match self.truth.at(t) {
             Some(truth) => self.score.epoch(state, covariance, &truth, accuracy),
-            None => self.score.unmatched += 1,
+            None => {
+                self.score.unmatched += 1;
+                [None; 3]
+            }
+        };
+        self.epochs.push((t, epsilon));
+    }
+
+    /// `<out>.nees.csv`: `ε` per block per epoch, the input `tools/anees.py` averages across
+    /// seeds.
+    ///
+    /// `ε` itself rather than per degree of freedom, because a consistent block's is χ²(3) and
+    /// the ensemble bound is a χ² quantile on their sum. The harness computes it and the
+    /// aggregator only averages (`AGENTS.md`, one statistic, one implementation), so the
+    /// time-averaged `nees_*` on the `score` line and the ensemble bound read one `ε`.
+    fn write_nees(&self, out: &mut dyn Write) -> io::Result<()> {
+        match &self.scenario {
+            Some((name, seed)) => writeln!(out, "# fusion-nav nees for `{name}`, seed {seed}")?,
+            None => writeln!(out, "# fusion-nav nees, no scenario named")?,
         }
+        writeln!(
+            out,
+            "# eps = dx' P^-1 dx per 3-state block, chi-square(3) if consistent; empty where \
+             singular or unscored"
+        )?;
+        writeln!(out, "t_s,nees_pos,nees_vel,nees_att")?;
+        let field = |value: Option<f64>| value.map_or_else(String::new, |v| format!("{v:.6}"));
+        for (t, [pos, vel, att]) in &self.epochs {
+            writeln!(
+                out,
+                "{t:.4},{},{},{}",
+                field(*pos),
+                field(*vel),
+                field(*att)
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -4248,6 +4309,30 @@ mod tests {
         }
         assert_eq!(scoring.score.scored, 3);
         assert_eq!(scoring.score.unmatched, 2);
+    }
+
+    #[test]
+    fn the_nees_file_has_a_row_per_epoch_and_leaves_an_unscored_one_empty() {
+        // Truth for two epochs of three. The third is written, empty, rather than dropped:
+        // `tools/anees.py` aligns seeds row by row and refuses an empty field, so a missing
+        // truth row stops the ensemble instead of shifting every later epoch by one.
+        let mut scoring = TruthLog::new().still(0.0, 2, DT).scoring();
+        scoring.scenario = Some(("fixture".to_string(), 7));
+        let state = state_at(0.0, 0.0, 0.0);
+        let covariance = Covariance::from_sigmas([0.5; STATES]);
+        for epoch in 0..3 {
+            scoring.epoch(epoch as f64 * DT, &state, &covariance, &Accuracy::default());
+        }
+        let mut out = Vec::new();
+        scoring.write_nees(&mut out).expect("written");
+        let text = String::from_utf8(out).expect("utf-8");
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "# fusion-nav nees for `fixture`, seed 7");
+        assert_eq!(lines[2], "t_s,nees_pos,nees_vel,nees_att");
+        // A zero error has zero NEES in every block.
+        assert_eq!(lines[3], "0.0000,0.000000,0.000000,0.000000");
+        assert_eq!(lines[5], "0.0400,,,");
+        assert_eq!(lines.len(), 6);
     }
 
     #[test]

@@ -138,12 +138,33 @@ against ceilings that belong to another flight.
 **What a ceiling cannot say.** It pins what the filter did last run, so it fails a filter that got
 worse and passes one that got *more accurate and more overconfident at once* — which is the
 failure that matters, because `P` is not a diagnostic. It sets `S = H P Hᵀ + R` and so which
-measurements the gate rejects, it sets the gain, and `Validity` is derived from it. Testing that
-claim needs ANEES over N seeds against a chi-square bound, and a covariance that moves:
-[#89](https://github.com/wboayue/fusion-nav/issues/89), after
-[#35](https://github.com/wboayue/fusion-nav/issues/35). `nees_pos`, `nees_vel` and `nees_att` are
-already on the `score` line and already ratcheted here; what is missing is the bound, not the
-statistic.
+measurements the gate rejects, it sets the gain, and `Validity` is derived from it. The next
+section is the test of that claim.
+
+### The covariance's own promise
+
+```bash
+data/anees.sh                  # every scenario on 50 seeds, against data/anees.txt; a CI gate
+data/anees.sh moving_start     # only these
+python3 tools/anees.py --self-test
+```
+
+`nees_*` on the `score` line is one flight's NEES averaged over time, and no chi-square bound
+applies to it: consecutive epochs share their error, and a 7 s lockout is diluted into 185 s.
+`data/anees.sh` flies each scenario on seeds 1–50 (`simulate --seed`), each replay writes `ε` per
+block per epoch to `<out>.nees.csv`, and `tools/anees.py` averages the fifty at every epoch. If
+`P` is honest, fifty times that mean is χ²(150), so its bound is a quantile rather than a
+measurement. Two keys per block are gated, one per shape of fault. `any_` counts epochs past the
+bound made family-wise over the log by Bonferroni, which holds however correlated the epochs are
+and is what catches a transient. `over_` is the fraction past the per-epoch 95 % bound, which
+catches a mild overconfidence that never spikes. `data/anees.txt` says why each is set where it is, what
+`ImuNoise` scaled down by ten does to them, and which four scenarios fail today and why.
+
+One-sided, because the simulator's IMU sits below `ImuNoise::default()` on purpose and every
+honest scenario is underconfident. The aggregator is standard-library Python run by `python3`,
+not `uv run`: it reads the harness's output and nothing else, so it has no dependency to pin and
+none of the converter's reasons to stay off the CI path. It computes no NEES; the harness does,
+once, in `nees`.
 
 ### The log CI replays
 

@@ -8,8 +8,8 @@
 #
 # `key<=v` is a ceiling, `key>=v` a floor, `key=lo..hi` a two-sided bound; `data/expect.sh` owns
 # the syntax and the comparison, and `data/manifest.txt` writes its expectations in the same
-# language. Nothing here is two-sided yet: a ceiling is what an error wants, and the band a
-# statistic wants is #89's ANEES against a chi-square bound rather than any key on this line.
+# language. Nothing here is two-sided yet: a ceiling is what an error wants, and the bound a
+# statistic wants is ANEES against chi-square, in `data/anees.txt` rather than on this line.
 #
 # Each bound is the measured value plus 1 %, rounded outward -- except `scored`, which is a count
 # of matched truth rows rather than a float comparison and is pinned exactly, because slack there
@@ -49,8 +49,7 @@
 # What is not here is a test of the covariance itself. A ceiling pins what the filter did last
 # run, so it passes a filter that grew more accurate and more overconfident at once -- the
 # failure that reaches the gate, the gain and `Validity`. That needs ANEES over N seeds against
-# a chi-square bound: #89. The format is already indifferent to it -- lines are read as
-# `name seed pairs`, and nothing assumes one line per scenario.
+# a chi-square bound, which `data/anees.sh` asserts from `data/anees.txt`.
 #
 # `gnss_latency` is what that gap looks like when it is allowed to grow. Fusing velocity left
 # its `pos_h` roughly where it was, 2.31 m to 2.20, and took `nees_pos` from 6.45 to 57.18 and
@@ -179,16 +178,16 @@ flight           8  pos_h<=2.524 pos_v<=0.345 vel<=0.694 pos_h_max<=6.244  tilt<
 # `moving_start` -- and that is the direction that wants watching rather than the one that
 # wants fixing. It is the move stage 5 made on `nees_pos` (0.0118 to 0.85): a key sitting three
 # orders below 1 is a covariance with nothing in it, and an attitude that is finally observed
-# approaches 1 from below. It is still below. #89 is what reads it as a bound rather than a
-# ceiling.
+# approaches 1 from below. It is still below. `data/anees.txt` reads it as a bound rather than
+# a ceiling.
 #
 # `gnss_latency` is the one line that loosened on a claim rather than a number: `false_valid`
 # 340 to 418 and `false_valid_att` 57 to 122. The attitude covariance came down where the
 # attitude error did not, because a late fix is wrong by the distance flown in the delay and
 # nothing in `R` says so (GOALS.md, "Measurement latency"; #52) -- so the filter calls an
 # attitude valid that truth puts outside `Accuracy`. It is the same mechanism the line already
-# carried on position, now reaching attitude because attitude is now observed. #89 owns it; #52
-# owns the cause.
+# carried on position, now reaching attitude because attitude is now observed.
+# `data/anees.txt` asserts it; #52 owns the cause.
 #
 # What (36') is worth is measured on `moving_start`, and it is the difference between a stage
 # that ships and one that does not. Pricing the levelling error into `R` took that line from

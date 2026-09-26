@@ -192,9 +192,11 @@ the difference is the kind that costs a day.
 * **NEES**, normalized estimation error squared — the Mahalanobis distance of the *error* against
   `P`, which needs truth. Divided by its degrees of freedom it should average **1**: above 1 the
   filter is overconfident, below 1 conservative. The `nees_pos`, `nees_vel` and `nees_att` keys.
-* **ANEES** — NEES averaged over many independent runs, compared against a chi-square confidence
-  interval. A single run's NEES is too noisy to test anything; the average over N seeds is what
-  turns "≈1" into a bound that can fail. Not built yet (#89).
+* **ANEES** — NEES averaged over many independent runs at each epoch, compared against a
+  chi-square bound. One run's epochs share their error, so no bound can be put on its average;
+  N independent runs at one epoch can. `data/anees.sh` flies each scenario on 50 seeds and
+  `data/anees.txt` holds the bounds. See [the covariance's own
+  promise](data/README.md#the-covariances-own-promise).
 * **`in3s`** — the fraction of axis-epochs where the error sat inside 3σ, over all 15 states. The
   marginal companion to `nees_*`, and the only key that reaches the bias states.
 * **`false_valid`** — how often the filter said an output was usable while the truth error was

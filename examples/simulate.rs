@@ -45,7 +45,11 @@
 //! cargo run --example simulate                    # every scenario -> target/sim/
 //! cargo run --example simulate -- mission         # one of them
 //! cargo run --example simulate -- flight data     # regenerate the checked-in CI log, in place
+//! cargo run --example simulate -- mission out --seed 17   # the same flight on another draw
 //! ```
+//!
+//! `--seed` replaces every selected scenario's seed, and is how `data/anees.sh` flies the
+//! ensemble ANEES is averaged over (#89). The table's seed is the one `data/scenarios.txt` pins.
 //!
 //! # Reproducibility, and its boundary
 //!
@@ -424,8 +428,9 @@ struct ImuErrors {
 /// simulating PX4's modelling allowance rather than an IMU. The consequence for scoring is worth
 /// stating plainly: against this table the filter's white noise is two orders of magnitude
 /// conservative and its bias walks one, so every scenario should come out *under*-confident,
-/// and a consistency statistic that does not is a finding rather than a pass. [`HARSH_IMU`]
-/// widens the spread without changing that sign.
+/// and a consistency statistic that does not is a finding rather than a pass. [`HARSH_IMU`] is
+/// the exception on attitude: its accelerometer bias is 1.86 times `Initialization`'s prior on
+/// one axis, which reads as tilt, and `data/anees.txt` asserts the overconfidence that buys.
 const IMU: ImuErrors = ImuErrors {
     gyro_white: 2.6e-4,
     accel_white: 2.0e-3,
@@ -1147,26 +1152,56 @@ fn main() {
 }
 
 fn run() -> Result<(), Box<dyn Error>> {
-    let mut args = env::args().skip(1);
-    let wanted = args.next().unwrap_or_else(|| "all".to_string());
-    let out_dir = args.next().map_or_else(default_out_dir, PathBuf::from);
+    let (positional, seed) = split_seed(env::args().skip(1))?;
+    let mut positional = positional.into_iter();
+    let wanted = positional.next().unwrap_or_else(|| "all".to_string());
+    let out_dir = positional
+        .next()
+        .map_or_else(default_out_dir, PathBuf::from);
 
-    let scenarios = scenarios();
-    let selected: Vec<&Scenario> = scenarios
-        .iter()
-        .filter(|scenario| wanted == "all" || wanted == scenario.name)
-        .collect();
+    let mut selected = scenarios();
+    selected.retain(|scenario| wanted == "all" || wanted == scenario.name);
     if selected.is_empty() {
-        let names: Vec<&str> = scenarios.iter().map(|scenario| scenario.name).collect();
+        let names: Vec<&str> = scenarios().iter().map(|scenario| scenario.name).collect();
         return Err(format!("unknown scenario `{wanted}`; have {}", names.join(", ")).into());
+    }
+    // Every selected scenario takes the one override, so the departures from `mission` stay
+    // paired with it at each seed of an ensemble exactly as they are at `PAIRED`.
+    if let Some(seed) = seed {
+        for scenario in &mut selected {
+            scenario.seed = seed;
+        }
     }
 
     fs::create_dir_all(&out_dir)?;
     println!("fusion-nav simulator — seeded flights with analytic truth\n");
-    for scenario in selected {
+    for scenario in &selected {
         generate(scenario, &out_dir)?.print(scenario);
     }
     Ok(())
+}
+
+/// The positional arguments, and the seed `--seed <n>` names in place of the table's.
+///
+/// An override rather than a column of seeds per scenario: `data/anees.sh` flies each scenario
+/// on fifty of them (#89), and the table's own seed stays the one `data/scenarios.txt` pins.
+fn split_seed(args: impl Iterator<Item = String>) -> Result<(Vec<String>, Option<u64>), String> {
+    let mut positional = Vec::new();
+    let mut seed = None;
+    let mut args = args;
+    while let Some(arg) = args.next() {
+        if arg == "--seed" {
+            let value = args.next().ok_or("--seed needs a value")?;
+            seed = Some(
+                value
+                    .parse()
+                    .map_err(|_| format!("--seed `{value}` is not an unsigned integer"))?,
+            );
+        } else {
+            positional.push(arg);
+        }
+    }
+    Ok((positional, seed))
 }
 
 /// Write one scenario's log and truth files.
