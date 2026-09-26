@@ -367,13 +367,13 @@ impl Default for Timeouts {
 /// Equation (24) treats each fix's error as independent of the last, and no receiver in
 /// the corpus is: fused as white, the lag-1 autocorrelation of every real log's GNSS
 /// position innovations (`acf1_gnss_pos`, `acf1_gnss_hgt` on the replay `summary` line) is
-/// 0.62–0.99, except the RTK log's, which is negative. A filter that fuses such fixes as white averages down an error
-/// it cannot observe, and its covariance claims the averaging worked. (28′) fuses each fix
-/// at the variance that makes a run of them carry what they actually carry, which is less
-/// the shorter the interval is against `τ`.
+/// 0.62–0.99, except the RTK log's, which is negative. A filter that fuses such fixes as white
+/// averages down an error it cannot observe, and its covariance claims the averaging worked. (28′)
+/// fuses each fix at the variance that makes a run of them carry what they actually carry, which is
+/// less the shorter the interval is against `τ`.
 ///
-/// Inflating `R` rather than flooring `P`, and in the gain rather than the gate, is measured;
-/// the [decision](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#correlated-gnss-error-as-equivalent-white-noise)
+/// Inflating `R` rather than flooring `P`, and in the gain rather than the gate, is measured; the
+/// [decision](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#correlated-gnss-error-as-equivalent-white-noise)
 /// records what each alternative read.
 ///
 /// Configured rather than derived, as [`ImuNoise`] is: it is a property of the receiver, and
@@ -398,10 +398,10 @@ impl GnssCorrelation {
 }
 
 impl Default for GnssCorrelation {
-    /// The corpus's: `τ = −T / ln ρ` from each real log's `acf1_gnss_pos` and `acf1_gnss_hgt`,
-    /// read with every fix fused as white, at its own fix interval, the median over the eight whose autocorrelation is positive
-    /// (the SITL log and the RTK log excluded). Horizontally 2.1–15.8 s, median 4.2; in
-    /// height 3.7–70 s, median 14.
+    /// The corpus's: `τ = −T / ln ρ` from each real log's `acf1_gnss_pos` and `acf1_gnss_hgt`, read
+    /// with every fix fused as white, at its own fix interval, the median over the eight whose
+    /// autocorrelation is positive (the SITL log and the RTK log excluded). Horizontally 2.1–15.8
+    /// s, median 4.2; in height 3.7–70 s, median 14.
     fn default() -> Self {
         Self {
             horizontal: Some(Seconds::from_secs(4.2)),
@@ -410,9 +410,9 @@ impl Default for GnssCorrelation {
     }
 }
 
-/// How long each source may be rejected before the filter adopts it again: automatic
-/// recovery from [gate lockout](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#gate-lockout),
-/// one switch per source. `None` turns that source's recovery off.
+/// How long each source may be rejected before the filter adopts it again: automatic recovery from
+/// [gate lockout](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#gate-lockout), one
+/// switch per source. `None` turns that source's recovery off.
 ///
 /// A source recovers when the gate rejects one of its measurements and none has been accepted
 /// for at least this long — since initialization, for a source never accepted. That
@@ -427,8 +427,8 @@ impl Default for GnssCorrelation {
 /// same timeout-and-reset loop to write. An application that owns its failsafe policy — a
 /// controller that cannot take a step, an operator alert instead of a reset — turns off the
 /// source it owns, or all of them with [`Recovery::OFF`], and drives
-/// [`Eskf::reset_position_to`](crate::Eskf::reset_position_to) itself. The decision is
-/// [rejection handling](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#rejection-handling-recover-by-default-opt-out-per-source).
+/// [`Eskf::reset_position_to`](crate::Eskf::reset_position_to) itself. The decision is [rejection
+/// handling](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#rejection-handling-recover-by-default-opt-out-per-source).
 ///
 /// Per source, not per quantity, because a source is what the gate rejects: the fields mirror
 /// [`Gates`] and [`Diagnostics`](crate::Diagnostics).
@@ -719,7 +719,7 @@ pub struct Config {
     /// the barometer has drifted away from.
     ///
     /// What it costs is height where the barometer does not drift. The simulator's never
-    /// does, and there `mission` scores 0.249 m of vertical RMSE here against 0.078 at zero:
+    /// does, and there `mission` scores 0.325 m of vertical RMSE here against 0.085 at zero:
     /// the offset walks away from what the barometer knew, and GNSS height takes over the low
     /// frequencies. A barometer characterized on the bench as more stable than this is the
     /// reason to lower it.

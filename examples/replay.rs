@@ -149,15 +149,16 @@
 //! wrong by the distance flown in the delay while `R` claims otherwise. Three more need the
 //! ensemble of `data/anees.sh` to see, and `data/anees.txt` names them.
 //!
-//! Five of the scenarios are one-variable departures from `mission` on `mission`'s seed, so
+//! Six of the scenarios are one-variable departures from `mission` on `mission`'s seed, so
 //! what attributes a fault is `score(departure) − score(mission)` rather than either alone.
-//! `gnss_outage` and `gnss_latency` separate through the GNSS they change, and `harsh_imu`
+//! `gnss_outage`, `gnss_latency` and `gnss_correlated` separate through the GNSS they change,
+//! and `harsh_imu`
 //! through propagation — no longer on the position keys at all, which read `mission`'s figures
 //! now that two quantities are aided, but on `tilt` and on `ba`, the keys that read the IMU's
-//! own errors. `baro_drift` separates on height — `pos_v` 0.284 m against `mission`'s 0.249,
-//! and `nees_pos` 1.19 against 1.07, which is what a drifting reference costs once (30′)
-//! estimates it. `mag_disturbance` separates on `yaw` alone — 0.726 deg against `mission`'s
-//! 0.649 — which is what a 30 deg field error costs a filter that refuses all 200 samples of
+//! own errors. `baro_drift` separates on height — `pos_v` 0.691 m against `mission`'s 0.325,
+//! and `nees_pos` 0.60 against 0.28, which is what a drifting reference costs once (30′)
+//! estimates it. `mag_disturbance` separates on `yaw` alone — 0.710 deg against `mission`'s
+//! 0.654 — which is what a 30 deg field error costs a filter that refuses all 200 samples of
 //! it.
 //!
 //! A refused propagation step is still scored. The epoch row is written either way — the

@@ -356,8 +356,8 @@
 # gates stay quiet except a299e722's velocity at 0.6520 and 2c42096b's GNSS
 # height at 0.0683, a receiver the barometer now holds the height against;
 # the largest of the rest is eb799954's heading at 0.0222, the two-stream
-# magnetometer. The three
-# airframe logs whose position gate turns fixes down read 0.6195-0.9995 there. Another key whose
+# magnetometer. The four
+# airframe logs, whose position gate turns fixes down, read 0.0349-0.6282 there. Another key whose
 # interesting value is the one it does not have.
 #
 # nu_<source>_<axis>= is the mean innovation, per axis because a norm hides
@@ -713,8 +713,8 @@ b7c7c97eefc3bb421ceae6e50cac8bd5a4851b3f6f98dc2c5a7b91bb326930c9  eb799954-4743-
 #     With Config::recovery off and every fix fused as white, 1931 of 1932 positions, 1742 velocities, 149
 #     headings and 47 altitudes are turned down, the first position within 3 s
 #     of the commit, and PX4's R floors change nothing (3698 rejections). On,
-#     the filter adopts its way back 297 times (155 positions, 144 velocities,
-#     one height, one heading) and still rejects 1011 positions and 1073 velocities between
+#     the filter adopts its way back 297 times (154 positions, 143 velocities)
+#     and still rejects 1011 positions and 1073 velocities between
 #     them: a reset moves position and velocity, and the attitude that sends
 #     them away again is untouched. cd7e0001's coarse window is a vehicle climbing
 #     steadily; this one is the accelerating window equation (5') exists for,

@@ -70,11 +70,11 @@ pub(crate) enum Update {
 /// `ε = yᵀ S⁻¹ y` and `K = P Hᵀ S⁻¹` each need a solve against `S`, and neither needs `S⁻¹`
 /// itself. A GNSS position fix is the exception, gated on its own `R_m` and gained on the
 /// larger `R` of (28′), so its gain is solved against a second factor; for every other
-/// source `r_gain` is `r_m` and the second factor is the first. The second costs 40 bytes
-/// of `update::<3>`'s frame on `thumbv6m` and none on `thumbv7em`. The factorization is also the check that `S` is positive-definite. With `R_m > 0`
-/// and `P` positive semi-definite it always is, so a failure means `P` has lost that property
-/// in f32 — the filter's fault rather than the measurement's, reported as
-/// [`Update::Invalid`] rather than gated.
+/// source `r_gain` is `r_m` and the second factor is the first. The second costs 40 bytes of
+/// `update::<3>`'s frame on `thumbv6m` and none on `thumbv7em`. The factorization is also the check
+/// that `S` is positive-definite. With `R_m > 0` and `P` positive semi-definite it always is, so a
+/// failure means `P` has lost that property in f32 — the filter's fault rather than the
+/// measurement's, reported as [`Update::Invalid`] rather than gated.
 ///
 /// The gate runs **before** the gain. A rejected measurement costs one factorization and one
 /// solve, and nothing it could have changed has been computed.

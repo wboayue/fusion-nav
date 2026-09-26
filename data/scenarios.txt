@@ -154,14 +154,14 @@
 # the other half -- this one corrects the consequence and leaves the 0.6 rad in place.
 static           1  pos_h<=0.637 pos_v<=0.602 vel<=0.192 pos_h_max<=0.955  tilt<=0.631 yaw<=0.514 ba<=0.07966 bg<=0.000831 in3s>=0.9900 nees_pos<=1.2954   nees_vel<=0.4552 nees_att<=0.1431 false_valid<=0   false_valid_att<=0   scored>=11600  recovered=0
 mission          2  pos_h<=0.331 pos_v<=0.329 vel<=0.189 pos_h_max<=0.795  tilt<=0.525 yaw<=0.661 ba<=0.05554 bg<=0.000666 in3s>=0.9900 nees_pos<=0.2837   nees_vel<=0.4433 nees_att<=0.2053 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
-harsh_imu        2  pos_h<=0.333 pos_v<=0.326 vel<=0.191 pos_h_max<=0.801  tilt<=1.195 yaw<=1.195 ba<=0.16269 bg<=0.002264 in3s>=0.9897 nees_pos<=0.2828   nees_vel<=0.4504 nees_att<=0.7551 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
-gnss_outage      2  pos_h<=2.154 pos_v<=0.151 vel<=0.301 pos_h_max<=18.974 tilt<=0.543 yaw<=0.669 ba<=0.05607 bg<=0.000670 in3s>=0.9900 nees_pos<=0.4143   nees_vel<=0.4051 nees_att<=0.2034 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
+harsh_imu        2  pos_h<=0.333 pos_v<=0.326 vel<=0.191 pos_h_max<=0.801  tilt<=1.195 yaw<=1.195 ba<=0.16269 bg<=0.002264 in3s>=0.9897 nees_pos<=0.2830   nees_vel<=0.4504 nees_att<=0.7551 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
+gnss_outage      2  pos_h<=2.154 pos_v<=0.151 vel<=0.301 pos_h_max<=18.974 tilt<=0.543 yaw<=0.669 ba<=0.05607 bg<=0.000670 in3s>=0.9900 nees_pos<=0.4141   nees_vel<=0.4051 nees_att<=0.2034 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
 moving_start     4  pos_h<=0.477 pos_v<=0.613 vel<=0.194 pos_h_max<=0.776  tilt<=1.508 yaw<=1.132 ba<=0.06069 bg<=0.002217 in3s>=0.9900 nees_pos<=0.3867   nees_vel<=0.4516 nees_att<=0.2077 false_valid<=0   false_valid_att<=0   scored>=15999  recovered=0
 baro_drift       2  pos_h<=0.331 pos_v<=0.698 vel<=0.189 pos_h_max<=0.795  tilt<=0.525 yaw<=0.660 ba<=0.05554 bg<=0.000666 in3s>=0.9900 nees_pos<=0.6033   nees_vel<=0.4434 nees_att<=0.2049 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
 gnss_latency     2  pos_h<=2.226 pos_v<=0.316 vel<=0.475 pos_h_max<=3.734  tilt<=0.885 yaw<=1.291 ba<=0.05535 bg<=0.001830 in3s>=0.8965 nees_pos<=8.5227  nees_vel<=2.7566 nees_att<=0.7174 false_valid<=338 false_valid_att<=42  scored>=36600  recovered=0
-gnss_correlated  2  pos_h<=0.606 pos_v<=0.557 vel<=0.189 pos_h_max<=1.259  tilt<=0.525 yaw<=0.660 ba<=0.05550 bg<=0.000665 in3s>=0.9900 nees_pos<=0.9462  nees_vel<=0.4432 nees_att<=0.2050 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
+gnss_correlated  2  pos_h<=0.811 pos_v<=0.753 vel<=0.189 pos_h_max<=1.567  tilt<=0.525 yaw<=0.660 ba<=0.05551 bg<=0.000665 in3s>=0.9882 nees_pos<=1.6541  nees_vel<=0.4432 nees_att<=0.2049 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
 mag_disturbance  2  pos_h<=0.331 pos_v<=0.329 vel<=0.189 pos_h_max<=0.795  tilt<=0.524 yaw<=0.718 ba<=0.05535 bg<=0.000676 in3s>=0.9900 nees_pos<=0.2837   nees_vel<=0.4433 nees_att<=0.2053 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
-logging_dropout  2  pos_h<=3.395 pos_v<=0.542 vel<=0.666 pos_h_max<=26.651 tilt<=0.724 yaw<=1.028 ba<=0.05443 bg<=0.001137 in3s>=0.9821 nees_pos<=4.8934  nees_vel<=0.9191 nees_att<=0.4742 false_valid<=2039 false_valid_att<=360 scored>=36360  recovered=1
+logging_dropout  2  pos_h<=3.395 pos_v<=0.542 vel<=0.666 pos_h_max<=26.651 tilt<=0.724 yaw<=1.028 ba<=0.05443 bg<=0.001137 in3s>=0.9821 nees_pos<=4.8933  nees_vel<=0.9191 nees_att<=0.4742 false_valid<=2039 false_valid_att<=360 scored>=36360  recovered=1
 flight           8  pos_h<=2.439 pos_v<=0.362 vel<=0.694 pos_h_max<=6.083  tilt<=1.019 yaw<=7.740 ba<=0.07424 bg<=0.003607 in3s>=0.9900 nees_pos<=0.1820   nees_vel<=0.2318 nees_att<=0.1914 false_valid<=0   false_valid_att<=0   scored>=600  recovered=0
 
 # (34)-(36) are what `yaw` reads now, and what it buys depends entirely on what the start knew.
@@ -295,22 +295,24 @@ flight           8  pos_h<=2.439 pos_v<=0.362 vel<=0.694 pos_h_max<=6.083  tilt<
 # describes: one whose `ImuNoise` a caller has to raise, and the defaults no longer cover it.
 #
 # `gnss_correlated` is `mission` with its GNSS position error drawn first-order Gauss-Markov
-# (4.2 s horizontal, 14 s vertical, the corpus medians; `examples/simulate.rs` says how they were
-# read) at the same stationary sigma the fixes report. Nothing but that error differs, and every
-# key that reads position moved: `pos_h` 0.244 m to 0.874, `pos_v` 0.249 to 1.799, `nees_pos`
-# 1.0649 to 30.4549 and `in3s` 1.0000 to 0.8924. Velocity and attitude are `mission`'s to the
-# third figure. The error is no larger than the white one; (24) averages it down as though it
-# were, and the covariance claims the averaging worked. #117.
+# (8.7 s horizontal, 38 s vertical, the median of the corpus's upper half; `examples/simulate.rs`
+# says how they were read) at the same stationary sigma the fixes report. Nothing but that error
+# differs. Fused as white, every key that reads position moves: `pos_h` 0.244 m to 1.086,
+# `pos_v` 0.249 to 2.242, `nees_pos` 1.0649 to 47.1302 and `in3s` 1.0000 to 0.8885, velocity and
+# attitude `mission`'s to the third figure. The error is no larger than the white one; (24)
+# averages it down as though it were, and the covariance claims the averaging worked. #117.
 #
 # (28') fuses each GNSS position fix at the variance its correlation with the last leaves, and
-# every line moved. `gnss_correlated` is what it is for: `nees_pos` 30.4549 to 0.9368, `pos_h`
-# 0.874 m to 0.600 and `pos_v` 1.799 to 0.551, more accurate as well as honest, because a filter
-# told that successive fixes share an error stops following it. The white scenarios pay for the
-# same assumption, since the simulator's receiver is white by construction and the default is
-# the corpus's: `mission` `pos_h` 0.244 to 0.327 and `pos_v` 0.249 to 0.325, `nees_pos` 1.0649
-# to 0.2808; `static` 0.272 to 0.630 and 0.215 to 0.596, where 60 s at rest averages the most
-# fixes; `baro_drift` `pos_v` 0.284 to 0.691, GNSS height deweighted against a barometer that
-# does drift; `moving_start` 0.263 to 0.472 and 0.288 to 0.606. `gnss_latency` `nees_pos` 56.96
-# to 8.44, a stale fix being one more error that persists, and `logging_dropout` 11.36 to 4.84
-# with its recovery intact. `static`'s `nees_pos` rose, 1.0249 to 1.2825 on this seed; its
-# 50-seed ANEES is 0.58 (`data/anees.txt`).
+# every line moved. `gnss_correlated` is what it is for: `nees_pos` 47.1302 to 1.6377, `pos_h`
+# 1.086 m to 0.802 and `pos_v` 2.242 to 0.745, more accurate as well as more honest, because a
+# filter told that successive fixes share an error stops following it. Still overconfident,
+# because its receiver is slower than the default assumes: drawn at the default's own 4.2 s and
+# 14 s, the same scenario read `nees_pos` 0.9368 (`data/anees.txt` has the ensemble). The white
+# scenarios pay for the same assumption, since the simulator's receiver is white by construction
+# and the default is the corpus's: `mission` `pos_h` 0.244 to 0.327 and `pos_v` 0.249 to 0.325,
+# `nees_pos` 1.0649 to 0.2808; `static` 0.272 to 0.630 and 0.215 to 0.596, where 60 s at rest
+# averages the most fixes; `baro_drift` `pos_v` 0.284 to 0.691, GNSS height deweighted against a
+# barometer that does drift; `moving_start` 0.263 to 0.472 and 0.288 to 0.606. `gnss_latency`
+# `nees_pos` 56.96 to 8.44, a stale fix being one more error that persists, and
+# `logging_dropout` 11.36 to 4.84 with its recovery intact. `static`'s `nees_pos` rose, 1.0249
+# to 1.2825 on this seed; its 50-seed ANEES is 0.58 (`data/anees.txt`).

@@ -985,12 +985,12 @@ fn short_hop() -> Trajectory {
 /// The scenario table.
 ///
 /// Six of them — `harsh_imu`, `gnss_outage`, `baro_drift`, `gnss_latency`, `gnss_correlated`,
-/// `mag_disturbance` — are one-variable departures from `mission`, and the pairing is by construction rather than by
-/// assertion: same trajectory, same duration, and **the same seed**. Streams are split per
-/// sensor, so a departure that leaves a sensor alone reproduces the baseline's draws for it bit
-/// for bit, and `diff mission.csv <departure>.csv` shows the fault and nothing else. Differing
-/// seeds would have left every sensor differing everywhere, which is the attribution this whole
-/// arrangement exists to buy.
+/// `mag_disturbance` — are one-variable departures from `mission`, and the pairing is by
+/// construction rather than by assertion: same trajectory, same duration, and **the same seed**.
+/// Streams are split per sensor, so a departure that leaves a sensor alone reproduces the
+/// baseline's draws for it bit for bit, and `diff mission.csv <departure>.csv` shows the fault and
+/// nothing else. Differing seeds would have left every sensor differing everywhere, which is the
+/// attribution this whole arrangement exists to buy.
 ///
 /// The three that are not departures — `static`, `moving_start`, `flight` — carry their own
 /// seeds, so a statistic aggregated across the set still has independent draws to work with.
@@ -1101,19 +1101,21 @@ fn scenarios() -> Vec<Scenario> {
             ..base
         },
         // The GNSS counterpart of `baro_drift`: position error that persists between fixes, which
-        // (24) fuses as independent and averages down. The time constants are the corpus's, not
-        // chosen: each log's `acf1_gnss_pos` and `acf1_gnss_hgt` with every fix fused as white,
-        // read as τ = −T / ln ρ at that log's fix interval, median over the eight real logs with positive
-        // autocorrelation (the SITL log and the RTK log excluded). Innovations are whiter than
-        // the error behind them, because the filter follows part of it, so these understate the
-        // corpus.
+        // (24) fuses as independent and averages down. The time constants are the corpus's:
+        // each real log's `acf1_gnss_pos` and `acf1_gnss_hgt` with every fix fused as white,
+        // read as τ = −T / ln ρ at that log's fix interval, over the eight whose autocorrelation
+        // is positive. `Config::gnss_correlation` takes their median; this takes the median of
+        // their upper half, a receiver slower than the filter assumes. Not the default on
+        // purpose: an error drawn at the filter's own `τ` scores it against its assumption, and
+        // innovations are whiter than the error behind them, so the corpus understates `τ` and
+        // slower is the direction a real receiver errs in.
         Scenario {
             name: "gnss_correlated",
-            covers: "the baseline with GNSS position error correlated over 4.2 s horizontally and \
-                     14 s vertically, the corpus medians: what fusing it as white costs",
+            covers: "the baseline with GNSS position error correlated over 8.7 s horizontally and \
+                     38 s vertically, slower than the filter assumes: what that costs",
             gnss: GnssErrors {
-                tau_horizontal: 4.2,
-                tau_vertical: 14.0,
+                tau_horizontal: 8.7,
+                tau_vertical: 38.0,
                 ..GNSS
             },
             ..base

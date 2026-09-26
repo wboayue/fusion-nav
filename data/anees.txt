@@ -30,13 +30,21 @@
 # of the default is still at or above that IMU's noise (the gyroscope bias walk to within 10 %),
 # and `over_pos` rises only from 0.02-0.03 to 0.04-0.09 there.
 #
-# A scenario the filter fails today asserts the failure (`any_>=1`) on the blocks that fail, and
+# A scenario the filter fails today asserts the failure (`any_>=1`, or `over_>=0.10` for one
+# that never spikes) on the blocks that fail, and
 # gates its other blocks as usual. Each names its cause; the assertion trips when the cause is
 # removed, so the line is rewritten in the diff that fixes it rather than left passing silently.
 #
 #   gnss_latency     fixes 150 ms stale that `R` does not describe; #52 owns latency.
 #                    anees_pos=8.66, and every block fails. (28') took it from 56.39: a
 #                    stale fix is one more error that persists from fix to fix.
+#   gnss_correlated  position only: GNSS error correlated over 8.7 s horizontally and 38 s
+#                    vertically, slower than `Config::gnss_correlation`'s 4.2 s and 14 s, which
+#                    are the corpus's median and understate it. (28') fuses it at too small a
+#                    variance: anees_pos=1.30, over_pos=0.78, never past bound_any. Fused as
+#                    white it read anees_pos=26.03 and over_pos=0.9981; drawn at the default's
+#                    own time constants, 0.92 and 0. A receiver's `tau` measured offline (#51)
+#                    is what removes it. #117.
 #   logging_dropout  1.2 s refused at speed, then ~7 s of rejected fixes before the recovery;
 #                    #144 would coast the gap. anees_pos=4.95, peak_pos=303.3 at 61.6 s; (28')
 #                    took it from 10.94 and 1847.5, the fixes before the gap no longer having
@@ -52,11 +60,6 @@
 #                    levelling tilt error that (36') prices into each `R` as though independent.
 #                    peak_att 1.80 at 10.16 s; once velocity fuses it corrects that tilt and the
 #                    ensemble is back under the bound. #150.
-# `gnss_correlated` is the line a fix removed. Its GNSS error is correlated over 4.2 s
-# horizontally and 14 s vertically, and fused by (24) as independent it read anees_pos=17.72,
-# over_pos=0.9978 and peak_pos=23.06, never honest after the first seconds. Under (28') it reads
-# anees_pos=0.92 and passes every block (#117).
-#
 # `runs=` repeats the column as an expectation, so an ensemble that lost a run breaches rather than
 # being scored against the looser bound of fewer seeds.
 #
@@ -71,7 +74,7 @@ gnss_outage      50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10
 moving_start     50  runs=50  any_pos=0   any_vel=0   any_att>=1  over_pos<=0.10 over_vel<=0.10 over_att<=0.10
 baro_drift       50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
 gnss_latency     50  runs=50  any_pos>=1  any_vel>=1  any_att>=1
-gnss_correlated  50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
+gnss_correlated  50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos>=0.10 over_vel<=0.10 over_att<=0.10
 mag_disturbance  50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
 logging_dropout  50  runs=50  any_pos>=1  any_vel>=1  any_att>=1
 flight           50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10

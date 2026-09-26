@@ -506,19 +506,23 @@ actually carry, equation (28′), `R_m (1 + ρ)/(1 − ρ)` with `ρ = exp(−Δ
 covariance stays fifteen states: modelling the error as a Gauss–Markov state per axis would be
 exact and would add three.
 
-**What it bought**, on `gnss_correlated`, the simulator's receiver with that correlation: 50-seed
+**What it bought**, on the simulator's receiver drawn at those time constants: 50-seed
 `anees_pos` 17.72 to 0.92, and `pos_h` 0.874 m to 0.600, `pos_v` 1.799 to 0.551, more accurate as
-well as honest. On `2c42096b`, σ_pos_n under `eph` at 2133 fixes of 4614, median ratio 1.015
+well as honest. `gnss_correlated` is committed slower than the default, 8.7 s and 38 s, because
+the corpus understates `τ` and a scenario drawn at the filter's own value can only agree with it:
+there `anees_pos` goes 26.03 to 1.30, still overconfident, which is what a receiver's own `τ`
+measured offline (#51) would remove. On `2c42096b`, σ_pos_n under `eph` at 2133 fixes of 4614, median ratio 1.015
 against 0.726; on `093e806a`, `recovered=` 35 to 26.
 
 **What was measured against it.** A floor on `P` at each fix's variance, the invariant that the
 filter may not know a quantity better than the only source constraining it: honest (`nees_pos`
 1.02), and it raises the gain with the covariance, so the estimate follows each fix instead of
-averaging (`pos_h` 0.874 m to 1.233 on `gnss_correlated`, `mission` 0.244 to 0.746). Floored
+averaging (`pos_h` 0.874 m to 1.233 at the default's time constants, `mission` 0.244 to 0.746). Floored
 horizontally alone, `nees_pos` stayed at 22.1, the height carrying the fault. PX4's floor on `R`
 sits below most corpus receivers' `eph` and moved neither scenario. The inflated `R` in the gate
-as well as the gain passed innovations whose variance was up to 42 times what one fix supports: it took `093e806a` to one
-recovery and `7ce66f0d` from 294 to 23, which read as a cure and was a gate that stopped looking.
+as well as the gain passed innovations whose variance was up to 42 times what one fix
+supports: it took `093e806a` to one recovery and `7ce66f0d` from 294 to 23, which read as a cure
+and was a gate that stopped looking.
 
 **What it costs.** Accuracy wherever the receiver is white, which the simulator's is by
 construction: `mission` `pos_h` 0.244 m to 0.327, `static` 0.272 to 0.630. And height moves onto
