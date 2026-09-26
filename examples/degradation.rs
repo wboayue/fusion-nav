@@ -4,8 +4,8 @@
 //! Every source is fused and gated, equations (23)–(41), so between fixes the estimate is dead
 //! reckoning because nothing is arriving rather than because nothing corrects. What this shows
 //! is the gate turning down a glitch, the health bookkeeping — the timers, the aggregate
-//! [`Status`] — and the fact that recovery is the application's decision rather than the
-//! filter's.
+//! [`Status`] — and an application that owns recovery: it turns the filter's own off with
+//! [`Recovery::OFF`] and resets the state itself.
 //!
 //! Run with `cargo run --example degradation`. For the loop itself, see `basic.rs`.
 
@@ -25,6 +25,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             degraded_after: Seconds::from_secs(1.0),
             ..Timeouts::default()
         },
+        // This application resets the state itself, below, so the filter's recovery is off.
+        recovery: Recovery::OFF,
         ..Config::default()
     };
 
@@ -66,7 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     run(&mut filter, 6 * IMU_HZ, Sources::none());
     report("nothing for 6 s", &filter);
 
-    // Recovery is the application's call, not the filter's.
+    // Recovery is this application's call, having turned the filter's off.
     if filter.state().status == Status::DeadReckoning {
         // A reset refuses a fix or a noise the covariance could not hold, so it answers.
         assert!(filter.reset_position_to(

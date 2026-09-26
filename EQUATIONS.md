@@ -508,8 +508,8 @@ moving through somewhere it cannot name — the first fix is adopted rather than
 
 which is $`\lim_{P_{pp} \to \infty}`$ of the update above, taken exactly. The correlations go to
 zero because the new error is the measurement's and has nothing to do with what preceded it.
-Applies once, to a quantity never established; it is not a recovery mechanism. See
-[gate lockout](#gate-lockout).
+Applies to a quantity never established, once, and to a source locked out past its
+`Config::recovery` timeout; see [gate lockout](#gate-lockout).
 
 ### GNSS velocity
 
@@ -816,15 +816,17 @@ A filter that gates without a route out of this state is more dangerous than one
 gate at all.
 
 `fusion-nav` therefore tracks, per observation source, the time since a measurement was last
-accepted and the number of consecutive rejections, and reports an aggregate status alongside the
-state estimate. It does **not** reset itself: recovery policy belongs to the application, which
-is the only layer that knows whether to reset the affected states, degrade the flight mode, or
-alert the operator. PX4, for comparison, resets its states to the measurement after 7 s
-of horizontal inertial dead reckoning or 5 s of failed height fusion (`reset_timeout_max` and
-`hgt_fusion_timeout_max`, `src/modules/ekf2/EKF/common.h:515-517` at PX4 `c4e4ef98e9`).
+accepted and the number of consecutive rejections, reports an aggregate status alongside the
+state estimate, and takes the route out: a source rejected for longer than `Config::recovery`
+allows has its next measurement adopted, as [GNSS position](#gnss-position) adopts a first fix,
+rather than discarded. The adoption
+sets the covariance block to the measurement's `R`, which undoes the overconfidence that locked
+the gate rather than only moving the state. Each source has its own switch, and `Recovery`'s doc
+comment owns the timeouts and the PX4 behaviour they follow; the decision is
+[rejection handling](GOALS.md#rejection-handling-recover-by-default-opt-out-per-source).
 
-The design obligation is that the degraded condition cannot be missed, not that the filter hides
-it by recovering silently.
+The design obligation is that a recovery cannot be missed either: it is `Fusion::Reset` on the
+returned outcome and `SourceHealth::recovered` in the diagnostics.
 
 ## Error injection and reset
 

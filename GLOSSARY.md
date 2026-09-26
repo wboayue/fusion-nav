@@ -168,12 +168,12 @@ the difference is the kind that costs a day.
   against a 5σ bar. See **innovation test ratio** below.
 * **Gate lockout** — the failure mode gating creates. If the *filter* is wrong rather than the
   measurement, every correct measurement looks inconsistent, all of them are rejected, and the
-  filter dead-reckons while reporting confidence. This crate reports it and refuses to
-  self-recover; the reasoning is [gate lockout](EQUATIONS.md#gate-lockout) and
-  [rejection handling](GOALS.md#rejection-handling-report-do-not-self-recover).
+  filter dead-reckons while reporting confidence. This crate reports it and, past a per-source
+  timeout, recovers by **adoption**; see [gate lockout](EQUATIONS.md#gate-lockout) and
+  [rejection handling](GOALS.md#rejection-handling-recover-by-default-opt-out-per-source).
 * **Adoption** — taking a measurement as the state outright instead of fusing it, the
-  zero-information limit of the update. Used once per quantity after a coarse start, for
-  quantities that were never established. It is not a recovery mechanism.
+  zero-information limit of the update. Used once for a quantity the start never established,
+  and again for a source locked out past its `Config::recovery` timeout — which is **recovery**.
 * **Latency** — the age of a measurement when it is fused. GNSS solutions are 100–200 ms stale;
   this filter does not model that, which is in the README's limitations.
 
@@ -248,13 +248,14 @@ document, the entry points there instead of repeating it.
   sensor latency. This filter has neither: every measurement is fused as though current. That is
   a stated limitation, not an omission — see the README's limitations and
   [measurement latency](GOALS.md#measurement-latency).
-* **Reset** — the trap. There, a reset is *recovery*: states are set to a measurement after an
+* **Reset** — the near-miss. There, a reset is *recovery*: states are set to a measurement after an
   aiding timeout, and a counter is published so consumers can step their own state
   (`xy_reset_counter` and friends, `msg/versioned/VehicleLocalPosition.msg`). Here, `Fusion::Reset`
-  is **adoption**: the first measurement of a quantity initialization never established — position
-  and velocity after a coarse start, heading wherever the window observed none — once per
-  quantity, never for recovery. This filter does not reset itself at all
-  ([rejection handling](GOALS.md#rejection-handling-report-do-not-self-recover)).
+  is **adoption**, and recovery is only one of its two uses: the other is the first measurement of
+  a quantity initialization never established — position and velocity after a coarse start,
+  heading wherever the window observed none — which PX4 does as it starts fusing a source rather
+  than as a reset. `SourceHealth::recovered` counts the first kind apart
+  ([rejection handling](GOALS.md#rejection-handling-recover-by-default-opt-out-per-source)).
 * **Innovation test ratio** — the same name and nearly the same number. Both test per component
   against the diagonal of `S` and differ in how they group the components: PX4 each axis at 5σ,
   ArduPilot the horizontal pair as one sum against the summed variances and the vertical alone.

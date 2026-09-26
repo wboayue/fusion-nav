@@ -328,8 +328,8 @@ impl Default for Gates {
 
 /// How long a source may go unaccepted before the status degrades.
 ///
-/// The filter reports and stops there; it does not reset itself. See
-/// [gate lockout](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#gate-lockout).
+/// What the status *says*; what the filter *does* about a source it keeps rejecting is
+/// [`Recovery`]'s.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Timeouts {
     /// Beyond this, a source counts as timed out and the status becomes
@@ -357,6 +357,87 @@ impl Default for Timeouts {
         Self {
             degraded_after: Seconds::from_secs(2.5),
             dead_reckoning_after: Seconds::from_secs(5.0),
+        }
+    }
+}
+
+/// How long each source may be rejected before the filter adopts it again: automatic
+/// recovery from [gate lockout](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#gate-lockout),
+/// one switch per source. `None` turns that source's recovery off.
+///
+/// A source recovers when the gate rejects one of its measurements and none has been accepted
+/// for at least this long — since initialization, for a source never accepted. That
+/// measurement is then adopted rather than discarded: [`Fusion::Reset`](crate::Fusion::Reset),
+/// counted in [`SourceHealth::recovered`](crate::SourceHealth::recovered). The state becomes
+/// the measurement and its covariance block the measurement's, which is what undoes the
+/// overconfidence that locked the gate rather than only moving the estimate. Only a rejection
+/// triggers it: a source that is silent or refused has nothing to adopt, and a stream of NaN
+/// must not step the state.
+///
+/// On by default, because a filter that reports lockout and stops hands every integrator the
+/// same timeout-and-reset loop to write. An application that owns its failsafe policy — a
+/// controller that cannot take a step, an operator alert instead of a reset — turns off the
+/// source it owns, or all of them with [`Recovery::OFF`], and drives
+/// [`Eskf::reset_position_to`](crate::Eskf::reset_position_to) itself. The decision is
+/// [rejection handling](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#rejection-handling-recover-by-default-opt-out-per-source).
+///
+/// Per source, not per quantity, because a source is what the gate rejects: the fields mirror
+/// [`Gates`] and [`Diagnostics`](crate::Diagnostics).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Recovery {
+    /// GNSS horizontal position: north and east are adopted, height is left alone.
+    pub gnss_position: Option<Seconds>,
+    /// GNSS height: the down axis is adopted, and the barometric reference is dropped so that
+    /// the next altitude reads it again against the adopted height — unless
+    /// [`Config::baro_reference_from_estimate`] is off, which leaves the reference the
+    /// caller's and keeps it.
+    pub gnss_height: Option<Seconds>,
+    /// GNSS velocity: all three axes are adopted.
+    pub gnss_velocity: Option<Seconds>,
+    /// Barometric altitude: the reference `α₀` is read again from the estimate, as the first
+    /// one is when a start leaves none, and the state does not move. Needs an established
+    /// position to read it against, and [`Config::baro_reference_from_estimate`] on: with it
+    /// off the reference is the caller's, and a barometer that disagrees stays rejected.
+    pub baro_altitude: Option<Seconds>,
+    /// Magnetic heading: adopted as the first heading is, with the `R` of (36′) — but only
+    /// while no GNSS position or velocity has been accepted within
+    /// [`Timeouts::degraded_after`], since with those arriving a magnetometer that disagrees
+    /// for this long is more likely disturbed than right.
+    pub mag_heading: Option<Seconds>,
+}
+
+impl Recovery {
+    /// No automatic recovery at all: the filter reports lockout and the application decides.
+    pub const OFF: Self = Self {
+        gnss_position: None,
+        gnss_height: None,
+        gnss_velocity: None,
+        baro_altitude: None,
+        mag_heading: None,
+    };
+}
+
+impl Default for Recovery {
+    /// PX4's timeouts, at `c4e4ef98e9`: `reset_timeout_max`, 7 s, for horizontal position,
+    /// velocity and heading, and `hgt_fusion_timeout_max`, 5 s, for height
+    /// (`src/modules/ekf2/EKF/common.h:515-517`). Each is applied the way PX4 applies it —
+    /// position at `aid_sources/gnss/gps_control.cpp:204-213`, velocity at `:146-156`, heading
+    /// at `aid_sources/magnetometer/mag_control.cpp:276-289`, whose guard against fresh
+    /// horizontal aiding [`mag_heading`](Self::mag_heading) keeps — with one departure.
+    ///
+    /// PX4 resets height only when every height source is failing (`ekf_helper.cpp:48-57`),
+    /// and otherwise stops fusing the one that disagrees, because its barometer is the height
+    /// reference. Here GNSS height is the absolute and the barometer's offset is estimated,
+    /// equation (30′), so a GNSS height rejected for 5 s is adopted even while the barometer
+    /// is accepted, and a barometer rejected for 5 s has its reference read again: the
+    /// absolute wins either way.
+    fn default() -> Self {
+        Self {
+            gnss_position: Some(Seconds::from_secs(7.0)),
+            gnss_height: Some(Seconds::from_secs(5.0)),
+            gnss_velocity: Some(Seconds::from_secs(7.0)),
+            baro_altitude: Some(Seconds::from_secs(5.0)),
+            mag_heading: Some(Seconds::from_secs(7.0)),
         }
     }
 }
@@ -548,6 +629,8 @@ pub struct Config {
     pub gates: Gates,
     /// Fusion timeouts feeding [`Status`](crate::Status).
     pub timeouts: Timeouts,
+    /// Automatic recovery from gate lockout, per source.
+    pub recovery: Recovery,
     /// Static initialization.
     pub init: Initialization,
     /// How good an estimate must be to count as valid.
@@ -601,6 +684,9 @@ pub struct Config {
     /// [`Eskf::fuse_baro_altitude`](crate::Eskf::fuse_baro_altitude) for how the reference is
     /// seeded.
     ///
+    /// Off also keeps [`Recovery`] from reading a new one, for a barometer or a GNSS height
+    /// locked out: the caller's reference outlives both.
+    ///
     /// Off is for an application that names its own reference with
     /// [`Eskf::set_baro_reference`](crate::Eskf::set_baro_reference) — a surveyed pad, say —
     /// and would rather altitudes were refused with
@@ -617,6 +703,7 @@ impl Default for Config {
             imu: ImuNoise::default(),
             gates: Gates::default(),
             timeouts: Timeouts::default(),
+            recovery: Recovery::default(),
             init: Initialization::default(),
             accuracy: Accuracy::default(),
             max_predict_dt: Seconds::from_secs(0.1),

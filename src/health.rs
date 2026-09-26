@@ -1,7 +1,7 @@
 //! Propagation and gate outcomes, per-source health, and the aggregate status.
 //!
 //! See [gate lockout](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#gate-lockout)
-//! for why the filter reports rather than recovers.
+//! for why a source's health is tracked, and what the filter does when one is locked out.
 
 use nalgebra::{SMatrix, SVector};
 
@@ -81,9 +81,14 @@ pub enum Fusion {
         test_ratio: f32,
     },
     /// The measurement was adopted outright rather than fused, because the filter had no
-    /// estimate of that quantity to fuse it against.
+    /// estimate of that quantity to fuse it against, or none the gate would let it correct.
     ///
-    /// This happens once per quantity, and for three of them. Position and velocity are
+    /// The second is recovery from gate lockout: a source whose measurements have been
+    /// rejected for longer than [`Recovery`](crate::Recovery) allows has the next one adopted,
+    /// counted in [`SourceHealth::recovered`]. For the barometer the adoption is of its
+    /// reference `α₀` rather than of any state, so nothing the estimate reports steps.
+    ///
+    /// The first happens once per quantity, and for three of them. Position and velocity are
     /// adopted on the first GNSS fix after a coarse start: a vehicle that initialized
     /// while moving knows neither where it is nor how fast it is going, and no gate can
     /// judge a measurement against nothing. A static start and a seed both have an
@@ -557,12 +562,20 @@ pub struct SourceHealth {
     pub last_refusal: Option<Refusal>,
     /// Measurements adopted outright rather than fused, over the filter's life.
     ///
-    /// At most one, and only for a quantity initialization left unobserved; see
-    /// [`Fusion::Reset`]. Also counted in
+    /// For a quantity initialization left unobserved, once, and for every
+    /// [`recovered`](Self::recovered) lockout; see [`Fusion::Reset`]. Also counted in
     /// [`accepted`](Self::accepted), because the measurement was taken and the timer restarted
     /// — this is what tells the two apart, since an adoption steps the state and an ordinary
     /// acceptance does not.
     pub adopted: u32,
+    /// Adoptions that recovered from gate lockout, over the filter's life: a measurement the
+    /// gate rejected after [`Recovery`](crate::Recovery)'s timeout, adopted instead. Also
+    /// counted in [`adopted`](Self::adopted).
+    ///
+    /// Counted apart because it means something the first adoption does not: the covariance
+    /// had shrunk around an error it could not see. A source that recovers regularly on good
+    /// data is a finding against the covariance, not a working filter.
+    pub recovered: u32,
 }
 
 impl SourceHealth {
@@ -600,6 +613,23 @@ impl SourceHealth {
     pub(crate) fn record_adopted(&mut self) {
         self.record_accepted(0.0, None);
         self.adopted = self.adopted.saturating_add(1);
+    }
+
+    /// Record a rejected measurement adopted to recover from lockout.
+    pub(crate) fn record_recovered(&mut self) {
+        self.record_adopted();
+        self.recovered = self.recovered.saturating_add(1);
+    }
+
+    /// Whether a measurement the gate has just rejected should be adopted instead: nothing
+    /// accepted for at least `after`, counted from initialization for a source never accepted.
+    /// `None` is recovery turned off.
+    ///
+    /// Counted from the last acceptance rather than the first rejection, as PX4 counts from
+    /// `time_last_fuse`: a fix arriving after an outage longer than `after` and rejected is a
+    /// lockout at once, since nothing constrained the quantity through the outage either.
+    pub(crate) fn locked_out(&self, after: Option<Seconds>, since_initialized: Seconds) -> bool {
+        after.is_some_and(|after| self.time_since_accepted.unwrap_or(since_initialized) >= after)
     }
 
     /// Record a measurement the gate refused. The fusion clock keeps running, which is
@@ -730,6 +760,8 @@ pub struct Diagnostics {
     /// should be zero needs only to be non-zero to be worth reading, and the `sigma_*`
     /// columns of `examples/replay.rs` name the state as soon as anybody looks.
     pub floored: u32,
+    /// Time since initialization, the clock a source never accepted is locked out on.
+    pub(crate) since_initialized: Seconds,
 }
 
 impl Diagnostics {
@@ -746,10 +778,39 @@ impl Diagnostics {
 
     /// Advance every source's fusion clock.
     pub(crate) fn advance(&mut self, dt: Seconds) {
+        self.since_initialized =
+            Seconds::from_secs(self.since_initialized.as_secs() + dt.as_secs());
         self.gnss_position.advance(dt);
         self.gnss_height.advance(dt);
         self.gnss_velocity.advance(dt);
         self.baro_altitude.advance(dt);
         self.mag_heading.advance(dt);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const fn secs(s: f32) -> Seconds {
+        Seconds::from_secs(s)
+    }
+
+    #[test]
+    fn lockout_counts_from_the_last_acceptance_or_from_initialization() {
+        let mut source = SourceHealth::default();
+        // Never accepted: the filter's own clock is what has run.
+        assert!(!source.locked_out(Some(secs(7.0)), secs(6.9)));
+        assert!(source.locked_out(Some(secs(7.0)), secs(7.0)));
+
+        source.record_accepted(0.5, None);
+        source.advance(secs(6.9));
+        assert!(
+            !source.locked_out(Some(secs(7.0)), secs(100.0)),
+            "since the acceptance"
+        );
+        source.advance(secs(0.1));
+        assert!(source.locked_out(Some(secs(7.0)), secs(100.0)));
+        assert!(!source.locked_out(None, secs(100.0)), "off is off");
     }
 }

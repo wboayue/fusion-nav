@@ -204,9 +204,10 @@ See [innovation gating](EQUATIONS.md#innovation-gating).
 
 Gating is self-sealing: if the filter itself is wrong, correct measurements look inconsistent,
 all are rejected, and the filter dead-reckons while looking confident. So health is tracked per
-source and carried on the estimate, and recovery is left to the application. The user-facing
+source and carried on the estimate, and a source locked out past its timeout is recovered by
+adoption, one switch per source in `Config::recovery`. The user-facing
 side is in [README.md](README.md#health-reporting); the reasoning in
-[rejection handling](GOALS.md#rejection-handling-report-do-not-self-recover),
+[rejection handling](GOALS.md#rejection-handling-recover-by-default-opt-out-per-source),
 [per-quantity validity](GOALS.md#per-quantity-validity-not-one-ladder), and
 [gate lockout](EQUATIONS.md#gate-lockout).
 

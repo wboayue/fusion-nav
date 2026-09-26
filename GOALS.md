@@ -169,10 +169,11 @@ could have been derived.
 a defined moment, reported to the caller, and overridable — never silently retuned in flight.
 Runtime self-tuning would contradict differentiator 1, because a filter that changes its own
 covariance growth has no worst-case timing or behaviour to publish, and it would contradict
-[rejection handling](#rejection-handling-report-do-not-self-recover), where the filter reports and
-the application decides. Two channels, then: what the static window can honestly measure, handed
-back by `initialize`; and everything else derived offline from a replay log by a tool that prints
-a `Config` the user reads and commits.
+[rejection handling](#rejection-handling-recover-by-default-opt-out-per-source), where what the
+filter corrects on its own is fixed in advance and switched per source by the caller. Two
+channels, then: what the static window can honestly measure, handed back by `initialize`; and
+everything else derived offline from a replay log by a tool that prints a `Config` the user
+reads and commits.
 
 | value | derived from | where |
 | ----- | ------------ | ----- |
@@ -396,11 +397,11 @@ uncertain prior, taken exactly rather than approached with an invented variance,
 the alternative failure: a 0.1 m s⁻¹ velocity prior on a vehicle doing 18 m s⁻¹ gates out the fix
 that would have corrected it.
 
-This is a bounded exception to [rejection handling](#rejection-handling-report-do-not-self-recover),
-and the boundary is what keeps it honest: the filter adopts a quantity it has **never
-established**, where there is no estimate to step away from and no controller yet flying on one.
-It never does so to recover. A quantity that was once known and has since been rejected stays the
-application's problem, through `reset_position_to` and `reset_velocity_to`.
+The same adoption is what [rejection handling](#rejection-handling-recover-by-default-opt-out-per-source)
+recovers through. The two differ in their trigger and are counted apart: a quantity **never
+established** is adopted from its first measurement, since there is no estimate to step away from;
+one that was known and has since been rejected for longer than `Config::recovery` allows is
+adopted from the next one, and `SourceHealth::recovered` says so.
 
 What remains for a bare vehicle with no second attitude source is options 4 and 5: a launch that
 is moving and has nothing to seed from still starts coarse in **attitude** and stays that way
@@ -516,43 +517,67 @@ The cost is that a vehicle flying far from 45° latitude carries a small constan
 until someone runs the offline tool, and that the error shows up in the accelerometer bias estimate
 rather than anywhere labelled gravity.
 
-### Rejection handling: report, do not self-recover
-
-#116 replaces this decision with recovery on by default, behind per-correction `Config` opt-outs;
-until it lands, what follows is what the code does.
+### Rejection handling: recover by default, opt out per source
 
 Innovation gating protects against bad measurements but is self-sealing. When the filter itself
 is wrong, correct measurements are rejected, and the filter locks itself out of the data that
 would correct it while continuing to report a confident solution.
 
-**Decided:** track per-source health inside the filter — time since last accepted measurement,
-consecutive rejections, and the dimensionless test ratio — and report an aggregate `Healthy` /
-`Degraded` / `DeadReckoning` status **on the state estimate itself**, not behind a separate
-accessor that an integration can neglect to call. Expose `reset_position_to` and
-`reset_velocity_to` so the condition is actionable.
+**Decided:** the filter recovers. A source whose measurements the gate has rejected for longer
+than `Config::recovery` allows has the next one adopted rather than discarded — the same
+`Fusion::Reset` a start takes for a quantity it never observed, counted in
+`SourceHealth::recovered` — and each source has its own switch, `None` turning it off. The
+defaults are PX4's, and `Recovery`'s doc comment owns them, the source they are read from, and
+the one place this filter departs from it.
 
-The filter does not reset itself. PX4 does, after 7 s of horizontal dead reckoning or 5 s of
-failed height fusion (`src/modules/ekf2/EKF/common.h:515-517`), and that is the right choice for a
-complete autopilot that owns the vehicle's failsafe policy.
-`fusion-nav` is a library: it does not know whether the correct response is a state reset, a mode
-degrade, or an operator alert, and silently snapping position is a step input to a controller
-that did not ask for one.
+It also reports. Per-source health — time since the last accepted measurement, consecutive
+rejections, the dimensionless test ratio — rolls up into `Healthy` / `Degraded` /
+`DeadReckoning` **on the state estimate itself**, not behind a separate accessor an integration
+can neglect to call, and `reset_position_to` and `reset_velocity_to` stay for an application
+that owns the decision.
 
-The obligation this accepts is that the degraded condition must be impossible to **miss**, which
-a status field on the returned state achieves, as distinct from impossible to **ignore**, which
-would cost ergonomics that integrators route around anyway.
+This replaced "report, do not self-recover", and the reasons are worth keeping because each
+could be argued back:
 
-`Fusion` is deliberately not `#[must_use]` for the same reason, and the crate's own `basic.rs`
-was the evidence: it discarded three of five outcomes with `let _ =` two lines under a comment
-advertising the lint. Acceptance and rejection are already on the second channel — `Diagnostics`
-keeps the test ratio, the counts and the timer per source — so the lint bought nothing there.
-What it did cover is the refusals that move no timer and the one-shot `Fusion::Reset`, so those
-gained counters of their own in #67 — `SourceHealth::refused`, `last_refusal` and `adopted`, plus
-`PropagationHealth` for the steps `predict` turns away — and the decision stands on them. The
-corpus made the case immediately: the coarse log's barometer reads `never accepted`, exactly like
-a vehicle carrying no barometer, and reported 35575 refusals with `NoReference` beside it until
-#115 gave a start in motion a reference read from the estimate.
-`Propagation` and the `reset_*` outcomes keep the lint, having no second channel at all.
+- **Lockout was measured, not argued.** It needs an overconfident `P`, and every corpus source is
+  correlated while (24) fuses it as white (#117): on `2c42096b` `σ_pos_n` sits below the
+  receiver's own `eph` at 3936 of 4604 fixes. `4b473e91` then showed the whole sequence on real
+  data — a 1.18 s logging dropout, a refused step, a state 25 m stale under a 7.6 m σ, and 881 of
+  the next 1154 fixes turned down until the log ended. With recovery it reads 31 and ends
+  `Healthy`.
+- **Report-and-stop handed every integrator the same loop.** The filter holds the timers, the
+  rejected measurement, its `R` and the adoption path; an application wanting a working estimate —
+  most of them — would write PX4's timeout-and-reset again and get it subtly wrong. A default that
+  serves the minority owning a failsafe policy at the majority's cost is the wrong default, and
+  that minority is served exactly as well by `Recovery::OFF`.
+- **The library argument survives, narrowed.** The filter does not know the vehicle's failsafe
+  policy, so it must not *prevent* the application from owning one. A per-source switch meets
+  that; a blanket refusal to correct was more than it required.
+
+What the old decision was protecting is still protected: a step a controller did not ask for is
+announced — on the returned `Fusion`, in `SourceHealth::adopted` and `recovered` — rather than
+hidden. The switch is per source rather than one "auto" flag because the policies differ: an
+application may accept a velocity step and not a position one.
+
+**Recovery must not mask the covariance.** Where lockout comes from a `P` shrunk around
+correlated noise, recovery removes the symptom and keeps the cause. So `recovered=` is pinned
+beside the accuracy it may have bought, on every scenario in `data/scenarios.txt` and every log in
+`data/manifest.txt`: zero on all but `logging_dropout`, whose one recovery is the point, and three
+airframe logs whose entries each name a cause recovery does not remove. A scenario that needs
+recovery to score well is a finding against the covariance, and ANEES (#89) is where the
+covariance is judged.
+
+`Fusion` is deliberately not `#[must_use]`, and the crate's own `basic.rs` was the evidence: it
+discarded three of five outcomes with `let _ =` two lines under a comment advertising the lint.
+Acceptance and rejection are already on the second channel — `Diagnostics` keeps the test ratio,
+the counts and the timer per source — so the lint bought nothing there. What it did cover is the
+refusals that move no timer and `Fusion::Reset`, so those gained counters of their own in #67 —
+`SourceHealth::refused`, `last_refusal` and `adopted`, plus `PropagationHealth` for the steps
+`predict` turns away — and `recovered` joined them in #116. The corpus made the case immediately:
+the coarse log's barometer reads `never accepted`, exactly like a vehicle carrying no barometer,
+and reported 35575 refusals with `NoReference` beside it until #115 gave a start in motion a
+reference read from the estimate. `Propagation` and the `reset_*` outcomes keep the lint, having
+no second channel at all.
 
 See [gate lockout](EQUATIONS.md#gate-lockout) and
 [measurement rejection](DESIGN.md#measurement-rejection).

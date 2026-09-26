@@ -13,7 +13,7 @@ use crate::units::{
     Altitude, AltitudeNoise, Attitude, HeadingNoise, MagField, Position, PositionNoise, Radians,
     Seconds, Velocity, VelocityNoise,
 };
-use crate::update::{self, Update, update};
+use crate::update::{self, Observation, Update, update};
 use nalgebra::Vector3;
 
 /// A 15-state error-state Kalman filter.
@@ -659,6 +659,30 @@ impl Eskf {
         }
     }
 
+    /// [`apply`](Self::apply), unless the gate rejected a source locked out for `after`, in
+    /// which case `adopt` takes the measurement instead: recovery from gate lockout, see
+    /// [`Recovery`](crate::Recovery).
+    ///
+    /// One place, for the reason `apply` is one place: every source recovers through here, so
+    /// none can adopt without counting it or forget [`note_alignment`](Self::note_alignment).
+    fn apply_or_recover(
+        &mut self,
+        outcome: Update,
+        source: fn(&mut Diagnostics) -> &mut SourceHealth,
+        after: Option<Seconds>,
+        adopt: impl FnOnce(&mut Self),
+    ) -> Fusion {
+        let since_initialized = self.diagnostics.since_initialized;
+        let locked_out = source(&mut self.diagnostics).locked_out(after, since_initialized);
+        if !(matches!(outcome, Update::Rejected { .. }) && locked_out) {
+            return self.apply(outcome, source);
+        }
+        adopt(self);
+        source(&mut self.diagnostics).record_recovered();
+        self.note_alignment();
+        Fusion::Reset
+    }
+
     /// Fuse a position fix already expressed in NED meters about the filter's origin.
     /// Equation (28).
     ///
@@ -709,8 +733,8 @@ impl Eskf {
             if !noise.is_positive() {
                 return self.refuse_gnss(Fusion::InvalidNoise);
             }
-            let adopted = self.reset_position_to(position, noise);
-            debug_assert!(adopted, "the fix cleared the same checks just above");
+            self.adopt_position(position, noise, POSITION);
+            self.unestablished.position = false;
             self.diagnostics.gnss_position.record_adopted();
             self.diagnostics.gnss_height.record_adopted();
             return GnssFusion::both(Fusion::Reset);
@@ -728,7 +752,12 @@ impl Eskf {
                     &observation,
                     self.config.gates.gnss_position,
                 );
-                self.apply(outcome, |diagnostics| &mut diagnostics.gnss_position)
+                self.apply_or_recover(
+                    outcome,
+                    |diagnostics| &mut diagnostics.gnss_position,
+                    self.config.recovery.gnss_position,
+                    |filter| filter.adopt_position(position, noise, HORIZONTAL),
+                )
             }
         };
         let height = match screen(&[z[2]], &[r[2]]) {
@@ -742,7 +771,12 @@ impl Eskf {
                     &observation,
                     self.config.gates.gnss_height,
                 );
-                self.apply(outcome, |diagnostics| &mut diagnostics.gnss_height)
+                self.apply_or_recover(
+                    outcome,
+                    |diagnostics| &mut diagnostics.gnss_height,
+                    self.config.recovery.gnss_height,
+                    |filter| filter.adopt_height(position, noise),
+                )
             }
         };
         GnssFusion { horizontal, height }
@@ -857,8 +891,8 @@ impl Eskf {
             return refuse(&mut self.diagnostics.gnss_velocity, Fusion::InvalidNoise);
         }
         if self.unestablished.velocity {
-            let adopted = self.reset_velocity_to(velocity, noise);
-            debug_assert!(adopted, "the solution cleared the same checks just above");
+            self.adopt_velocity(velocity, noise);
+            self.unestablished.velocity = false;
             self.diagnostics.gnss_velocity.record_adopted();
             return Fusion::Reset;
         }
@@ -870,7 +904,12 @@ impl Eskf {
             &observation,
             self.config.gates.gnss_velocity,
         );
-        self.apply(outcome, |diagnostics| &mut diagnostics.gnss_velocity)
+        self.apply_or_recover(
+            outcome,
+            |diagnostics| &mut diagnostics.gnss_velocity,
+            self.config.recovery.gnss_velocity,
+            |filter| filter.adopt_velocity(velocity, noise),
+        )
     }
 
     /// Fuse a barometric altitude. Equation (30).
@@ -930,11 +969,7 @@ impl Eskf {
             if self.unestablished.position || !self.config.baro_reference_from_estimate {
                 return refuse(&mut self.diagnostics.baro_altitude, Fusion::NoReference);
             }
-            // (30) solved for α₀ with z = p̂_D: the altitude lands on the estimate.
-            let reference =
-                Altitude::from_meters(altitude.as_meters() + self.state.position.vector()[2]);
-            let offset = Offset::from_estimate(&self.covariance, noise.variance());
-            self.establish_reference(Some((reference, offset)));
+            self.reference_from_estimate(altitude, noise);
             self.diagnostics.baro_altitude.record_accepted(0.0, None);
             return Fusion::Accepted { test_ratio: 0.0 };
         };
@@ -946,7 +981,19 @@ impl Eskf {
             &observation,
             self.config.gates.baro_altitude,
         );
-        self.apply(outcome, |diagnostics| &mut diagnostics.baro_altitude)
+        // Read against the estimate, so only once there is an estimate to read it against, and
+        // never over a reference the caller owns.
+        let after = if self.unestablished.position || !self.config.baro_reference_from_estimate {
+            None
+        } else {
+            self.config.recovery.baro_altitude
+        };
+        self.apply_or_recover(
+            outcome,
+            |diagnostics| &mut diagnostics.baro_altitude,
+            after,
+            |filter| filter.reference_from_estimate(altitude, noise),
+        )
     }
 
     /// Fuse magnetic heading from a calibrated three-axis magnetometer.
@@ -972,10 +1019,11 @@ impl Eskf {
     /// [`sigma_yaw`](crate::Initialization::sigma_yaw), 0.35 rad, on a yaw that is a
     /// guess, and a correct heading more than about 64° from that guess would be
     /// rejected — locking the filter out of the one source that can ever establish yaw.
-    /// Once per quantity, never for recovery.
     ///
     /// Ordinary updates thereafter, gated at [`Gates::mag_heading`](crate::Gates) with
-    /// one degree of freedom. The field is reduced to a scalar heading before the gate
+    /// one degree of freedom, until a run of rejections outlasts
+    /// [`Recovery::mag_heading`](crate::Recovery::mag_heading) while no GNSS is arriving,
+    /// when the next heading is adopted the same way. The field is reduced to a scalar heading before the gate
     /// sees it, so a disturbance is tested as the yaw error it is.
     ///
     /// The field must be calibrated: this crate corrects no hard- or soft-iron error and
@@ -1002,17 +1050,7 @@ impl Eskf {
             noise,
         );
         if self.unestablished.heading {
-            // The adoption reads the same `y` and the same `R` an ordinary update would.
-            // (36′) is what makes that worth saying: the levelling error is priced on the
-            // path where the tilt it comes from is worst.
-            // Navigation down in body axes, `R(q̂)ᵀe₃`: (36)'s row, read back rather than
-            // derived again, so the direction the adoption resets is the one the source
-            // observes.
-            let down = observation
-                .h
-                .fixed_view::<1, 3>(0, ErrorState::AttitudeX.index())
-                .transpose();
-            self.reset_heading_by(observation.y[0], observation.r_m[0], down);
+            self.adopt_heading(&observation);
             self.diagnostics.mag_heading.record_adopted();
             self.note_alignment();
             return Fusion::Reset;
@@ -1024,7 +1062,35 @@ impl Eskf {
             &observation,
             self.config.gates.mag_heading,
         );
-        self.apply(outcome, |diagnostics| &mut diagnostics.mag_heading)
+        // With GNSS arriving, a magnetometer that disagrees this long is more likely disturbed
+        // than right, and horizontal aiding is already correcting heading through (20).
+        let gnss = &self.diagnostics;
+        let after = if self.accepted_recently(gnss.gnss_position)
+            || self.accepted_recently(gnss.gnss_velocity)
+        {
+            None
+        } else {
+            self.config.recovery.mag_heading
+        };
+        self.apply_or_recover(
+            outcome,
+            |diagnostics| &mut diagnostics.mag_heading,
+            after,
+            |filter| filter.adopt_heading(&observation),
+        )
+    }
+
+    /// Adopt a heading: [`reset_heading_by`](Self::reset_heading_by) with the `y` and `R`
+    /// an ordinary update would read. (36′) is what makes that worth saying: the levelling
+    /// error is priced on the path where the tilt it comes from is worst.
+    fn adopt_heading(&mut self, observation: &Observation<1>) {
+        // Navigation down in body axes, `R(q̂)ᵀe₃`: (36)'s row, read back rather than
+        // derived again, so the direction the adoption resets is the one the source observes.
+        let down = observation
+            .h
+            .fixed_view::<1, 3>(0, ErrorState::AttitudeX.index())
+            .transpose();
+        self.reset_heading_by(observation.y[0], observation.r_m[0], down);
     }
 
     /// Turn the estimate by a yaw error and give the result the measurement's variance:
@@ -1265,8 +1331,7 @@ impl Eskf {
         );
         let ahead = self.validity_of(&horizon);
 
-        let fresh =
-            |source: SourceHealth| source.accepted_within(self.config.timeouts.degraded_after);
+        let fresh = |source| self.accepted_recently(source);
         let d = &self.diagnostics;
         let (position, velocity) = (fresh(d.gnss_position), fresh(d.gnss_velocity));
         let height = fresh(d.gnss_height) || fresh(d.baro_altitude);
@@ -1282,6 +1347,13 @@ impl Eskf {
             horizontal_velocity: ahead.horizontal_velocity || velocity,
             vertical_velocity: ahead.vertical_velocity || velocity,
         }
+    }
+
+    /// Whether `source` was accepted within
+    /// [`Timeouts::degraded_after`](crate::Timeouts::degraded_after): aiding that is arriving,
+    /// as [`predicted_validity`](Self::predicted_validity) and the heading recovery both ask.
+    fn accepted_recently(&self, source: SourceHealth) -> bool {
+        source.accepted_within(self.config.timeouts.degraded_after)
     }
 
     /// The barometric reference `α₀` as currently estimated, equations (30) and (30′):
@@ -1305,11 +1377,9 @@ impl Eskf {
     /// correlations with the rest of the state are dropped — the new error came from the
     /// measurement and has nothing to do with the errors that preceded it.
     ///
-    /// The filter does not do this on its own to **recover**: on sustained rejection it
-    /// reports [`Status::DeadReckoning`] and leaves the policy to the application, which
-    /// is the only layer that knows whether a step input to the controller is acceptable.
-    /// The one exception is a quantity that was never established at all; see
-    /// [`Fusion::Reset`].
+    /// For an application that owns recovery: the filter does the same on its own, per
+    /// source, unless [`Config::recovery`](crate::Config::recovery) turns it off; see
+    /// [`Recovery`](crate::Recovery).
     ///
     /// Returns `false`, changing nothing, for a fix or a noise that is not a number, or a
     /// variance that is not positive — the bar every `fuse_*` applies, and it matters more
@@ -1324,15 +1394,7 @@ impl Eskf {
         if !position.is_finite() || !noise.is_finite() || !noise.is_positive() {
             return false;
         }
-        self.state.position = position;
-        self.reset_block(
-            [
-                ErrorState::PositionNorth,
-                ErrorState::PositionEast,
-                ErrorState::PositionDown,
-            ],
-            noise.variance().into(),
-        );
+        self.adopt_position(position, noise, POSITION);
         self.unestablished.position = false;
         true
     }
@@ -1349,6 +1411,62 @@ impl Eskf {
         if !velocity.is_finite() || !noise.is_finite() || !noise.is_positive() {
             return false;
         }
+        self.adopt_velocity(velocity, noise);
+        self.unestablished.velocity = false;
+        true
+    }
+
+    /// Take the `axes` of a checked fix as the position, with the fix's variances on them:
+    /// every axis on a first adoption or a caller's reset, north and east or down alone on a
+    /// recovery, since a fix is two sources gated apart.
+    // Out of line, as `adopt_velocity`: inlined, its copy of `P` lands in the `fuse_*` frame
+    // that `update` then stacks on, +976 bytes on `fuse_gnss_position` on `thumbv6m`. Called
+    // after `update` returns, it adds nothing to the deepest path.
+    #[inline(never)]
+    fn adopt_position<const N: usize>(
+        &mut self,
+        position: Position<Ned>,
+        noise: PositionNoise<Ned>,
+        axes: [ErrorState; N],
+    ) {
+        let (z, r) = (position.vector(), noise.variance());
+        let mut adopted = self.state.position.vector();
+        let mut variances = [0.0; N];
+        for (axis, variance) in axes.iter().zip(&mut variances) {
+            // `get` rather than indexing: an out-of-range index is a panic, and every axis
+            // passed here is a position state, so this never misses.
+            let i = axis
+                .index()
+                .saturating_sub(ErrorState::PositionNorth.index());
+            if let (Some(adopted), Some(z), Some(r)) = (adopted.get_mut(i), z.get(i), r.get(i)) {
+                *adopted = *z;
+                *variance = *r;
+            }
+        }
+        self.state.position = Position::ned(adopted[0], adopted[1], adopted[2]);
+        self.reset_block(axes, variances);
+    }
+
+    /// Recover GNSS height: adopt the down axis, and let the barometer read its reference
+    /// again against it.
+    ///
+    /// A lockout of GNSS height is a barometer holding the height somewhere the receiver
+    /// disagrees with, so the reference that put it there is dropped with the height it
+    /// described, and the next altitude reads one from the estimate as a start that left
+    /// none does — where [`Config::baro_reference_from_estimate`](crate::Config::baro_reference_from_estimate)
+    /// allows it. Where it does not, the caller owns the reference and it is kept, only
+    /// decorrelated from the height `reset_block` replaced.
+    fn adopt_height(&mut self, position: Position<Ned>, noise: PositionNoise<Ned>) {
+        self.adopt_position(position, noise, [ErrorState::PositionDown]);
+        if self.config.baro_reference_from_estimate {
+            self.establish_reference(None);
+        }
+    }
+
+    /// Take a checked velocity solution as the velocity, all three axes.
+    // Out of line for the reason `adopt_position` is: +952 bytes on `fuse_gnss_velocity`.
+    #[inline(never)]
+    fn adopt_velocity(&mut self, velocity: Velocity<Ned>, noise: VelocityNoise<Ned>) {
         self.state.velocity = velocity;
         self.reset_block(
             [
@@ -1358,14 +1476,23 @@ impl Eskf {
             ],
             noise.variance().into(),
         );
-        self.unestablished.velocity = false;
-        true
+    }
+
+    /// Read `α₀` from the estimate at one altitude, `α̂₀ = α + p̂_D` — (30) solved for α₀ with
+    /// `z = p̂_D`, so that the altitude lands on the estimate — correlated with the height it
+    /// was read against, `P_bb = P_DD + R_m` and `P_xb = −P[:, D]` of (30′). See
+    /// [`fuse_baro_altitude`](Self::fuse_baro_altitude) for why.
+    fn reference_from_estimate(&mut self, altitude: Altitude, noise: AltitudeNoise) {
+        let reference =
+            Altitude::from_meters(altitude.as_meters() + self.state.position.vector()[2]);
+        let offset = Offset::from_estimate(&self.covariance, noise.variance());
+        self.establish_reference(Some((reference, offset)));
     }
 
     /// Give three states the variances of a measurement adopted for them, dropping their
     /// correlations with everything else — the barometric offset of (30′) included, since the
     /// new error is the measurement's and has nothing to do with the reference's.
-    fn reset_block(&mut self, states: [ErrorState; 3], variances: [f32; 3]) {
+    fn reset_block<const N: usize>(&mut self, states: [ErrorState; N], variances: [f32; N]) {
         let mut covariance = self.covariance;
         covariance.reset_block(states, variances);
         let mut offset = self.offset;
@@ -1479,6 +1606,16 @@ impl Unestablished {
     }
 }
 
+/// The position axes, as a first adoption and a caller's reset take them.
+const POSITION: [ErrorState; 3] = [
+    ErrorState::PositionNorth,
+    ErrorState::PositionEast,
+    ErrorState::PositionDown,
+];
+
+/// The horizontal half of a GNSS fix, as its recovery adopts it.
+const HORIZONTAL: [ErrorState; 2] = [ErrorState::PositionNorth, ErrorState::PositionEast];
+
 /// Whether one error state's variance is within `sigma`, one standard deviation on that axis.
 ///
 /// A free function rather than a method, because the covariance it reads is an argument: the
@@ -1517,7 +1654,7 @@ fn refuse(source: &mut SourceHealth, outcome: Fusion) -> Fusion {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Accuracy, GRAVITY};
+    use crate::config::{Accuracy, GRAVITY, Recovery};
     use crate::geodetic::LocalOrigin;
     use crate::health::Refusal;
     use crate::init::tests::{gravity_at, still, turning};
@@ -2996,8 +3133,8 @@ mod tests {
 
     #[test]
     fn the_first_magnetic_heading_is_adopted_and_every_one_after_it_is_fused() {
-        // The exception is bounded at one, per quantity, which is the whole of what
-        // separates it from the self-recovery GOALS.md rules out.
+        // A quantity never established is adopted once; after that only a lockout adopts
+        // again, and a heading that agrees is no lockout.
         let mut filter = initialized();
         let field = measured(attitude_of(0.0, 0.0, 1.1), 0.0);
         let noise = HeadingNoise::from_sigma(0.05);
@@ -3989,5 +4126,336 @@ mod tests {
             (after.tilt_east - before.tilt_east).abs() < 1e-9,
             "{after:?}"
         );
+    }
+
+    // ---- recovery from gate lockout ----
+
+    /// Predict at rest for `seconds`, offering `offer` every `every` steps.
+    fn hold(filter: &mut Eskf, seconds: f32, every: usize, mut offer: impl FnMut(&mut Eskf)) {
+        let steps = (seconds / DT.as_secs()).round() as usize;
+        for step in 1..=steps {
+            assert_eq!(filter.predict(still().imu, DT), Propagation::Propagated);
+            if step % every == 0 {
+                offer(filter);
+            }
+        }
+    }
+
+    /// A kilometre north of a vehicle that has not moved.
+    fn far() -> Position<Ned> {
+        Position::ned(1000.0, 0.0, 0.0)
+    }
+
+    fn one_metre() -> PositionNoise<Ned> {
+        PositionNoise::from_sigma(1.0, 1.0, 1.0)
+    }
+
+    #[test]
+    fn a_fix_rejected_past_the_timeout_is_adopted_and_its_height_is_left_to_its_own_gate() {
+        let mut filter = initialized();
+        // Rejected for everything short of `Recovery::gnss_position`, counted from
+        // initialization since nothing was ever accepted.
+        hold(&mut filter, 6.9, 100, |filter| {
+            let outcome = filter.fuse_gnss_position(far(), one_metre());
+            assert!(
+                matches!(outcome.horizontal, Fusion::Rejected { .. }),
+                "{outcome:?}"
+            );
+        });
+        hold(&mut filter, 0.1, 10, |_| {});
+
+        // Half a metre down: inside the height gate, and where an adoption of all three axes
+        // would put the estimate exactly.
+        let fix = Position::ned(1000.0, 0.0, 0.5);
+        let outcome = filter.fuse_gnss_position(fix, one_metre());
+        assert_eq!(outcome.horizontal, Fusion::Reset);
+        assert!(
+            matches!(outcome.height, Fusion::Accepted { .. }),
+            "the height agreed, so it is fused rather than adopted: {outcome:?}"
+        );
+        let position = filter.state().position.vector();
+        assert_eq!((position[0], position[1]), (1000.0, 0.0));
+        assert!(
+            position[2] < 0.4,
+            "fused part of the way, not adopted: {}",
+            position[2]
+        );
+        assert!(
+            (filter.covariance().variance(ErrorState::PositionNorth) - 1.0).abs() < 1e-6,
+            "the fix's variance, which is what undoes the lockout"
+        );
+        let d = filter.diagnostics();
+        assert_eq!((d.gnss_position.recovered, d.gnss_position.adopted), (1, 1));
+        assert_eq!(d.gnss_height.recovered, 0);
+
+        // Recovered, so the next fix is judged again rather than adopted.
+        let outcome = filter.fuse_gnss_position(far(), one_metre());
+        assert!(
+            matches!(outcome.horizontal, Fusion::Accepted { .. }),
+            "{outcome:?}"
+        );
+    }
+
+    #[test]
+    fn a_fix_that_agrees_after_a_long_silence_is_fused_not_adopted() {
+        // Past the timeout is not enough: only a measurement the gate rejects is a lockout.
+        let mut filter = initialized();
+        hold(&mut filter, 10.0, 1000, |_| {});
+        let outcome = filter.fuse_gnss_position(Position::zero(), one_metre());
+        assert!(
+            matches!(outcome.horizontal, Fusion::Accepted { .. })
+                && matches!(outcome.height, Fusion::Accepted { .. }),
+            "{outcome:?}"
+        );
+        assert_eq!(filter.diagnostics().gnss_position.adopted, 0);
+    }
+
+    #[test]
+    fn a_named_reference_is_kept_through_a_barometer_lockout() {
+        // `baro_reference_from_estimate` off says the caller owns `α₀` — a surveyed pad — so
+        // a barometer that disagrees for longer than the timeout stays rejected.
+        let mut filter = Eskf::new(Config {
+            baro_reference_from_estimate: false,
+            ..Config::default()
+        });
+        let _ = filter
+            .initialize(&[still(); 8], Seconds::from_secs(0.25))
+            .expect("a 2 s window of stillness");
+        assert!(
+            filter.set_baro_reference(Altitude::from_meters(100.0), AltitudeNoise::from_sigma(0.1))
+        );
+        let mut step = 0;
+        hold(&mut filter, 8.0, 10, |filter| {
+            step += 1;
+            if step % 10 == 0 {
+                let _ = filter.fuse_gnss_position(Position::zero(), one_metre());
+            }
+            let outcome = filter
+                .fuse_baro_altitude(Altitude::from_meters(150.0), AltitudeNoise::from_sigma(0.5));
+            assert!(matches!(outcome, Fusion::Rejected { .. }), "{outcome:?}");
+        });
+        let reference = filter.baro_reference().expect("named").as_meters();
+        assert!((reference - 100.0).abs() < 0.5, "α₀ = {reference}");
+        assert_eq!(filter.diagnostics().baro_altitude.recovered, 0);
+    }
+
+    #[test]
+    fn a_barometer_is_not_re_referenced_before_position_is_established() {
+        // A restart in motion keeps the flight's reference with no position to read a new
+        // one against, so a barometer rejected past the timeout stays rejected.
+        let mut filter = aided();
+        let mut window = [still(); 8];
+        window[3].imu.gyro = AngularRate::body(0.0, 0.4, 0.0);
+        let _ = filter
+            .initialize(&window, Seconds::from_secs(0.25))
+            .expect("moving, not unusable");
+        hold(&mut filter, 8.0, 10, |filter| {
+            let outcome = filter.fuse_baro_altitude(
+                Altitude::from_meters(5000.0),
+                AltitudeNoise::from_sigma(0.5),
+            );
+            assert!(matches!(outcome, Fusion::Rejected { .. }), "{outcome:?}");
+        });
+        assert_eq!(filter.baro_reference(), Some(Altitude::from_meters(100.0)));
+    }
+
+    #[test]
+    fn with_recovery_off_a_locked_out_source_is_rejected_for_good() {
+        let mut filter = Eskf::new(Config {
+            recovery: Recovery::OFF,
+            ..Config::default()
+        });
+        let _ = filter
+            .initialize(&[still(); 8], Seconds::from_secs(0.25))
+            .expect("a 2 s window of stillness");
+        // Twice the timeout, and short of where dead reckoning alone grows `P` enough to
+        // take a kilometre back in, which is about 30 s at rest.
+        hold(&mut filter, 15.0, 100, |filter| {
+            let outcome = filter.fuse_gnss_position(far(), one_metre());
+            assert!(
+                matches!(outcome.horizontal, Fusion::Rejected { .. }),
+                "{outcome:?}"
+            );
+        });
+        assert_eq!(filter.diagnostics().gnss_position.adopted, 0);
+        assert!(filter.state().position.vector()[0].abs() < 1.0);
+    }
+
+    #[test]
+    fn only_a_rejection_recovers_and_a_refusal_never_does() {
+        let mut filter = initialized();
+        let nan = PositionNoise::from_sigma(f32::NAN, f32::NAN, f32::NAN);
+        hold(&mut filter, 10.0, 100, |filter| {
+            assert_eq!(
+                filter.fuse_gnss_position(far(), nan),
+                GnssFusion::both(Fusion::NotFinite)
+            );
+        });
+        assert!(filter.state().position.vector()[0].abs() < 1.0);
+
+        // Nothing was accepted through all of that either, so the first fix the gate can
+        // judge and rejects is a lockout already: PX4 counts from `time_last_fuse` too.
+        let outcome = filter.fuse_gnss_position(far(), one_metre());
+        assert_eq!(outcome.horizontal, Fusion::Reset);
+    }
+
+    #[test]
+    fn a_locked_out_velocity_is_adopted() {
+        let mut filter = initialized();
+        let velocity = Velocity::ned(20.0, 0.0, 0.0);
+        let noise = VelocityNoise::from_speed_accuracy(0.3);
+        hold(&mut filter, 6.9, 100, |filter| {
+            let outcome = filter.fuse_gnss_velocity(velocity, noise);
+            assert!(matches!(outcome, Fusion::Rejected { .. }), "{outcome:?}");
+        });
+        hold(&mut filter, 0.1, 10, |_| {});
+        assert_eq!(filter.fuse_gnss_velocity(velocity, noise), Fusion::Reset);
+        assert_eq!(filter.state().velocity, velocity);
+        assert_eq!(filter.diagnostics().gnss_velocity.recovered, 1);
+    }
+
+    #[test]
+    fn an_adopted_velocity_is_established_and_the_next_solution_is_fused() {
+        let mut filter = coarse();
+        let velocity = Velocity::ned(18.0, 1.0, -0.5);
+        let noise = VelocityNoise::from_speed_accuracy(0.3);
+        assert!(filter.fuse_gnss_velocity(velocity, noise).is_reset());
+        assert!(
+            matches!(
+                filter.fuse_gnss_velocity(velocity, noise),
+                Fusion::Accepted { .. }
+            ),
+            "once is once"
+        );
+        assert_eq!(filter.diagnostics().gnss_velocity.adopted, 1);
+    }
+
+    #[test]
+    fn a_locked_out_height_is_adopted_and_the_barometer_reads_its_reference_again() {
+        // The barometer holds the height at the window's while the receiver says 20 m up:
+        // GNSS height is rejected until `Recovery::gnss_height`, then adopted.
+        let mut filter = aided();
+        let fix = Position::ned(0.0, 0.0, -20.0);
+        let baro = AltitudeNoise::from_sigma(0.5);
+        let mut adopted_at = None;
+        let mut step = 0;
+        hold(&mut filter, 6.0, 10, |filter| {
+            step += 1;
+            if adopted_at.is_some() {
+                return;
+            }
+            if step % 10 == 0 {
+                let outcome = filter.fuse_gnss_position(fix, one_metre());
+                if outcome.height == Fusion::Reset {
+                    adopted_at.get_or_insert(step);
+                    assert_eq!(filter.state().position.vector()[2], -20.0);
+                    assert_eq!(filter.baro_reference(), None, "dropped with the height");
+                    // The next altitude reads it again, against the adopted height.
+                    assert_eq!(
+                        filter.fuse_baro_altitude(Altitude::from_meters(100.0), baro),
+                        Fusion::Accepted { test_ratio: 0.0 }
+                    );
+                    let reference = filter.baro_reference().expect("read again").as_meters();
+                    assert!((reference - 80.0).abs() < 1e-3, "α₀ = {reference}");
+                    return;
+                }
+                assert!(
+                    matches!(outcome.height, Fusion::Rejected { .. }),
+                    "{outcome:?}"
+                );
+            }
+            let _ = filter.fuse_baro_altitude(Altitude::from_meters(100.0), baro);
+        });
+        let at = adopted_at.expect("recovered within 6 s") as f32 * 0.1;
+        assert!((5.0..=5.1).contains(&at), "at {at} s");
+        assert_eq!(filter.diagnostics().gnss_height.recovered, 1);
+        assert_eq!(filter.diagnostics().gnss_position.recovered, 0);
+    }
+
+    #[test]
+    fn a_locked_out_barometer_reads_its_reference_again_and_moves_nothing() {
+        let mut filter = aided();
+        let baro = AltitudeNoise::from_sigma(0.5);
+        let mut step = 0;
+        let mut recovered = false;
+        hold(&mut filter, 6.0, 10, |filter| {
+            step += 1;
+            if step % 10 == 0 {
+                let _ = filter.fuse_gnss_position(Position::zero(), one_metre());
+            }
+            if recovered {
+                return;
+            }
+            let before = filter.state();
+            match filter.fuse_baro_altitude(Altitude::from_meters(150.0), baro) {
+                Fusion::Rejected { .. } => {}
+                Fusion::Reset => {
+                    recovered = true;
+                    assert_eq!(filter.state(), before, "a reference, not a state");
+                    let reference = filter.baro_reference().expect("read again").as_meters();
+                    let down = before.position.vector()[2];
+                    assert!(
+                        (reference - (150.0 + down)).abs() < 1e-3,
+                        "α₀ = {reference}"
+                    );
+                }
+                outcome => panic!("{outcome:?}"),
+            }
+        });
+        assert!(recovered);
+        assert_eq!(filter.diagnostics().baro_altitude.recovered, 1);
+    }
+
+    /// An established yaw of zero, and a magnetometer turned a quarter circle from it.
+    fn disturbed_heading() -> (Eskf, MagField<Body>) {
+        let mut filter = initialized();
+        assert!(
+            filter
+                .fuse_mag_heading(
+                    measured(attitude_of(0.0, 0.0, 0.0), 0.0),
+                    HeadingNoise::from_sigma(0.05),
+                )
+                .is_reset()
+        );
+        let turned = measured(attitude_of(0.0, 0.0, core::f32::consts::FRAC_PI_2), 0.0);
+        (filter, turned)
+    }
+
+    #[test]
+    fn a_magnetometer_disagreeing_while_gnss_arrives_is_not_adopted() {
+        // The guard PX4's `mag_control.cpp` keeps: with horizontal aiding arriving, a heading
+        // that disagrees for this long is a disturbance, and adopting it would turn the
+        // estimate by it.
+        let (mut filter, turned) = disturbed_heading();
+        let mut step = 0;
+        hold(&mut filter, 20.0, 10, |filter| {
+            step += 1;
+            if step % 10 == 0 {
+                let _ = filter.fuse_gnss_position(Position::zero(), one_metre());
+            }
+            let outcome = filter.fuse_mag_heading(turned, HeadingNoise::from_sigma(0.05));
+            assert!(matches!(outcome, Fusion::Rejected { .. }), "{outcome:?}");
+        });
+        assert_eq!(filter.diagnostics().mag_heading.recovered, 0);
+    }
+
+    #[test]
+    fn a_magnetometer_disagreeing_with_nothing_else_to_say_is_adopted() {
+        let (mut filter, turned) = disturbed_heading();
+        let mut recovered = false;
+        hold(&mut filter, 8.0, 10, |filter| {
+            if !recovered {
+                recovered = filter
+                    .fuse_mag_heading(turned, HeadingNoise::from_sigma(0.05))
+                    .is_reset();
+            }
+        });
+        assert!(recovered);
+        let (_, _, yaw) = filter.state().attitude.euler_angles();
+        assert!(
+            (yaw - core::f32::consts::FRAC_PI_2).abs() < 1e-3,
+            "yaw = {yaw}"
+        );
+        assert_eq!(filter.diagnostics().mag_heading.recovered, 1);
     }
 }
