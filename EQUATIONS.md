@@ -509,7 +509,7 @@ axis:
 ```
 
 in place of $`R_m`$ and $`S`$ in (25) and (27), with $`\Delta t`$ the interval since the source's
-previous measurement to reach the gate and $`\tau`$ the source's, from `Config::correlation`. The
+previous measurement fused and $`\tau`$ the source's, from `Config::correlation`. The
 factor is 1 as $`\Delta t / \tau \to \infty`$, where measurements are independent again, and
 $`2\tau/\Delta t`$ as $`\Delta t / \tau \to 0`$, so a source sampled faster than its error changes
 buys no more per second than one sampled at $`\tau`$. At $`\Delta t = 0`$ the same error arrives

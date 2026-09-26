@@ -711,8 +711,8 @@ impl Eskf {
     /// (24′), with the gate still reading `noise` itself. See
     /// [`Config::correlation`](crate::Config::correlation).
     ///
-    /// The interval (24′) reads is the time since the previous fix through this method to
-    /// reach the gate, so it assumes one receiver. Fixes from a second one, or from motion capture,
+    /// The interval (24′) reads is the time since the previous fix fused through this method,
+    /// so it assumes one receiver. Fixes from a second one, or from motion capture,
     /// interleaved with the first read as the same error arriving sooner and are deweighted
     /// though their errors are independent.
     ///
@@ -2620,11 +2620,11 @@ mod tests {
     }
 
     #[test]
-    fn a_rejected_fix_restarts_the_interval_and_a_refused_half_does_not() {
-        // A rejected fix carried an error the next shares, so the next is 10 ms after it rather
-        // than 110 ms after the last accepted one. A fix whose height alone was refused carried
-        // no height error, so the next height is timed from the last one the gate saw, while
-        // its horizontal half, which did reach the gate, restarts that clock.
+    fn a_rejected_fix_or_a_refused_half_leaves_the_interval_alone() {
+        // (24′) discounts a fix for the error it shares with those already fused, and neither a
+        // rejected fix nor a refused half fused anything: the next is timed from the last fix
+        // accepted, 110 ms before it, not from the one turned away 10 ms before. The half that
+        // was accepted does restart its own clock, which the two halves keep apart.
         let fix = |filter: &mut Eskf, position: Position<Ned>, noise: PositionNoise<Ned>| {
             let _ = filter.fuse_gnss_position(position, noise);
         };
@@ -2655,7 +2655,7 @@ mod tests {
         }
         let (north, down) = (ErrorState::PositionNorth, ErrorState::PositionDown);
         let variance = |filter: &Eskf, axis| filter.covariance().variance(axis);
-        assert!(variance(&rejected, north) > variance(&clean, north));
+        assert_eq!(variance(&rejected, north), variance(&clean, north));
         assert_eq!(variance(&half, down), variance(&clean, down));
     }
 
@@ -4048,7 +4048,7 @@ mod tests {
     fn an_external_reset_refuses_what_would_poison_the_state() {
         let mut filter = initialized();
         assert!(!filter.reset_position_to(
-            Position::ned(f32::NAN, f32::NAN, f32::NAN),
+            Position::ned(f32::NAN, 0.0, 0.0),
             PositionNoise::horizontal_vertical(1.5, 1.5)
         ));
         assert!(!filter.reset_position_to(

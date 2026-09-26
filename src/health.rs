@@ -576,11 +576,12 @@ pub struct SourceHealth {
     /// had shrunk around an error it could not see. A source that recovers regularly on good
     /// data is a finding against the covariance, not a working filter.
     pub recovered: u32,
-    /// Time since a measurement from this source last reached the gate or was adopted,
-    /// whatever became of it: the `Δt` of equation (24′). A refusal does not count, since
-    /// it carried no error to correlate with. Kept per source and restarted at each
-    /// measurement, rather than read as a difference of `since_initialized`, because an
-    /// `f32` clock counting hours loses the digits a 0.2 s interval needs.
+    /// Time since a measurement from this source was last accepted or adopted: the `Δt` of
+    /// equation (24′). (24′) discounts a measurement for the error it shares with those
+    /// already fused, so only a fused one restarts it; a rejected or refused measurement
+    /// changed nothing the next could repeat. Kept per source and restarted at each fused
+    /// measurement, rather than read as a difference of `since_initialized`, because an `f32`
+    /// clock counting hours loses the digits a 0.2 s interval needs.
     pub(crate) since_measured: Option<Seconds>,
 }
 
@@ -646,7 +647,6 @@ impl SourceHealth {
     pub(crate) fn record_rejected(&mut self, test_ratio: f32, innovation: Innovation) {
         self.test_ratio = Some(test_ratio);
         self.innovation = Some(innovation);
-        self.since_measured = Some(Seconds::ZERO);
         self.consecutive_rejections = self.consecutive_rejections.saturating_add(1);
         self.rejected = self.rejected.saturating_add(1);
     }
