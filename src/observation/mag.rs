@@ -114,11 +114,14 @@ pub(crate) fn heading_observation(
     let down = h
         .fixed_view::<1, 3>(0, ErrorState::AttitudeX.index())
         .transpose();
+    let r_m =
+        SVector::<f32, 1>::new(noise.variance() + levelling_variance(covariance, field, down));
     Observation {
         y: SVector::<f32, 1>::new(heading_innovation(state, field, declination)),
         h,
         h_b: SVector::<f32, 1>::zeros(),
-        r_m: SVector::<f32, 1>::new(noise.variance() + levelling_variance(covariance, field, down)),
+        r_m,
+        r_gain: r_m,
     }
 }
 

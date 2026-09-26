@@ -361,6 +361,58 @@ impl Default for Timeouts {
     }
 }
 
+/// How long a GNSS position fix's error persists, per axis: the time constant `τ` of
+/// equation (28′). `None` fuses that axis as white, which is (24) as written.
+///
+/// Equation (24) treats each fix's error as independent of the last, and no receiver in
+/// the corpus is: the lag-1 autocorrelation of every real log's GNSS position innovations
+/// (`acf1_gnss_pos`, `acf1_gnss_hgt` in `data/manifest.txt`) is 0.62–0.99, except the RTK
+/// log's, which is negative. A filter that fuses such fixes as white averages down an error
+/// it cannot observe, and its covariance claims the averaging worked. (28′) fuses each fix
+/// at the variance that makes a run of them carry what they actually carry, which is less
+/// the shorter the interval is against `τ`.
+///
+/// Inflating `R` rather than flooring `P` is measured. A per-axis posterior floor at the
+/// fix's own variance, `P_pp ≥ R`, was honest on `gnss_correlated` (`nees_pos` 1.02) but
+/// raised the gain with the covariance: that scenario's `pos_h` went 0.874 m → 1.233 and
+/// `mission`'s 0.244 → 0.746, the estimate following each fix instead of averaging. Floored
+/// horizontally alone it left `nees_pos` at 22.1, the height carrying the fault. PX4's floor
+/// on `R`, 0.5 m, sits below most receivers' own `eph` and moved neither.
+///
+/// Configured rather than derived, as [`ImuNoise`] is: it is a property of the receiver, and
+/// the filter cannot measure it in flight without retuning itself. The replay harness
+/// measures it offline, since `τ = −T / ln ρ` at a log's fix interval `T` and its `acf1_`
+/// value `ρ`. That reading is a lower bound: an innovation is whiter than the error behind
+/// it, because the filter follows part of that error.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GnssCorrelation {
+    /// North and east.
+    pub horizontal: Option<Seconds>,
+    /// Down.
+    pub vertical: Option<Seconds>,
+}
+
+impl GnssCorrelation {
+    /// Every fix independent of the last: equation (24) with nothing added.
+    pub const WHITE: Self = Self {
+        horizontal: None,
+        vertical: None,
+    };
+}
+
+impl Default for GnssCorrelation {
+    /// The corpus's: `τ = −T / ln ρ` from each real log's `acf1_gnss_pos` and `acf1_gnss_hgt`
+    /// at its own fix interval, the median over the eight whose autocorrelation is positive
+    /// (the SITL log and the RTK log excluded). Horizontally 2.1–15.8 s, median 4.2; in
+    /// height 3.7–69 s, median 14.
+    fn default() -> Self {
+        Self {
+            horizontal: Some(Seconds::from_secs(4.2)),
+            vertical: Some(Seconds::from_secs(14.0)),
+        }
+    }
+}
+
 /// How long each source may be rejected before the filter adopts it again: automatic
 /// recovery from [gate lockout](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#gate-lockout),
 /// one switch per source. `None` turns that source's recovery off.
@@ -631,6 +683,8 @@ pub struct Config {
     pub timeouts: Timeouts,
     /// Automatic recovery from gate lockout, per source.
     pub recovery: Recovery,
+    /// How long a GNSS position fix's error persists, equation (28′).
+    pub gnss_correlation: GnssCorrelation,
     /// Static initialization.
     pub init: Initialization,
     /// How good an estimate must be to count as valid.
@@ -704,6 +758,7 @@ impl Default for Config {
             gates: Gates::default(),
             timeouts: Timeouts::default(),
             recovery: Recovery::default(),
+            gnss_correlation: GnssCorrelation::default(),
             init: Initialization::default(),
             accuracy: Accuracy::default(),
             max_predict_dt: Seconds::from_secs(0.1),

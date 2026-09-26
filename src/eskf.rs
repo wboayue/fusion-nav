@@ -110,6 +110,9 @@ pub struct Eskf {
     /// [`is_aligned`](Self::is_aligned) for why it is not read live.
     aligned: bool,
     initialized: bool,
+    /// When the last GNSS position fix arrived, on the clock of
+    /// [`Diagnostics::since_initialized`]: the far end of equation (28′)'s `Δt`.
+    last_position_fix: Option<Seconds>,
 }
 
 /// Quantities the start never established, which wait for the first measurement that
@@ -142,6 +145,7 @@ impl Eskf {
             unestablished: Unestablished::default(),
             aligned: false,
             initialized: false,
+            last_position_fix: None,
         }
     }
 
@@ -375,6 +379,8 @@ impl Eskf {
         // Diagnostics first: `commit_covariance` counts into them, and a seed sitting on the
         // floor is a fact about this filter's life rather than the last one's.
         self.diagnostics = Diagnostics::default();
+        // `last_position_fix` is on the diagnostics' clock, which restarts here.
+        self.last_position_fix = None;
         self.commit_covariance(covariance, self.surviving_offset());
         // Nothing a seed carries is unestablished: the caller vouched for every quantity,
         // heading included, so no first measurement overwrites one.
@@ -726,6 +732,7 @@ impl Eskf {
         if !self.initialized {
             return self.refuse_gnss(Fusion::NotInitialized);
         }
+        let interval = self.mark_position_fix();
         if self.unestablished.position {
             if !position.is_finite() || !noise.is_finite() {
                 return self.refuse_gnss(Fusion::NotFinite);
@@ -741,10 +748,12 @@ impl Eskf {
         }
 
         let (z, r) = (position.vector(), noise.variance());
+        // Only the update is fused at (28′)'s variance; a recovery adopts `noise` itself.
+        let fused = gnss::decorrelated(noise, interval, self.config.gnss_correlation);
         let horizontal = match screen(&[z[0], z[1]], &[r[0], r[1]]) {
             Some(refusal) => refuse(&mut self.diagnostics.gnss_position, refusal),
             None => {
-                let observation = gnss::horizontal_observation(&self.state, position, noise);
+                let observation = gnss::horizontal_observation(&self.state, position, noise, fused);
                 let outcome = update(
                     &self.state,
                     &self.covariance,
@@ -763,7 +772,7 @@ impl Eskf {
         let height = match screen(&[z[2]], &[r[2]]) {
             Some(refusal) => refuse(&mut self.diagnostics.gnss_height, refusal),
             None => {
-                let observation = gnss::height_observation(&self.state, position, noise);
+                let observation = gnss::height_observation(&self.state, position, noise, fused);
                 let outcome = update(
                     &self.state,
                     &self.covariance,
@@ -780,6 +789,20 @@ impl Eskf {
             }
         };
         GnssFusion { horizontal, height }
+    }
+
+    /// The interval since the previous GNSS position fix, the `Δt` of equation (28′), with
+    /// this one recorded as the next one's start.
+    ///
+    /// Every fix that reaches the filter counts, refused and rejected ones included: the
+    /// receiver's error went on evolving whether or not the filter used the reading.
+    fn mark_position_fix(&mut self) -> Option<Seconds> {
+        let now = self.diagnostics.since_initialized;
+        let interval = self
+            .last_position_fix
+            .map(|last| Seconds::from_secs(now.as_secs() - last.as_secs()));
+        self.last_position_fix = Some(now);
+        interval
     }
 
     /// Refuse both halves of a GNSS fix for one reason.
@@ -850,6 +873,7 @@ impl Eskf {
             return self.refuse_gnss(Fusion::NoReference);
         };
         self.origin = Some(origin);
+        self.mark_position_fix();
         let placed = self.reset_position_to(self.state.position, noise);
         debug_assert!(
             placed,
@@ -1530,6 +1554,8 @@ impl Eskf {
         self.state = state;
         // Before the commit, which counts into them; see `initialize_from`.
         self.diagnostics = Diagnostics::default();
+        // `last_position_fix` is on the diagnostics' clock, which restarts here.
+        self.last_position_fix = None;
         self.commit_covariance(covariance, self.surviving_offset());
         self.unestablished = Unestablished::after(settled, measured.field.is_some());
         if settled {
@@ -1654,7 +1680,7 @@ fn refuse(source: &mut SourceHealth, outcome: Fusion) -> Fusion {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Accuracy, GRAVITY, Recovery};
+    use crate::config::{Accuracy, GRAVITY, GnssCorrelation, Recovery};
     use crate::geodetic::LocalOrigin;
     use crate::health::Refusal;
     use crate::init::tests::{gravity_at, still, turning};
@@ -2449,7 +2475,10 @@ mod tests {
         // The barometer reads 3 m above where the receiver puts the vehicle, every time. A
         // constant `α₀` would split the difference in the height for ever; an estimated one
         // takes the disagreement into the reference, and the height follows the receiver.
+        // The receiver is white, as a constant fix is, and says so: at (28′)'s default a
+        // 10 Hz fix is worth 1/280 of one, and 30 s moves the reference 0.8 m of the 3.
         let mut filter = aided();
+        filter.config.gnss_correlation = GnssCorrelation::WHITE;
         for step in 0..3000 {
             assert_eq!(filter.predict(still().imu, DT), Propagation::Propagated);
             if step % 10 == 0 {
@@ -2469,6 +2498,64 @@ mod tests {
             .as_meters();
         assert!(reference > 102.0, "α₀ = {reference}");
         assert!(filter.state().position.vector()[2].abs() < 0.5);
+    }
+
+    #[test]
+    fn a_run_of_correlated_fixes_leaves_more_uncertainty_than_a_run_of_white_ones() {
+        // Twenty-five fixes at 5 Hz. As white, (24) averages them down; at (28′)'s default,
+        // each is worth 1/42 of one horizontally and 1/140 in height, since the receiver's
+        // error has barely moved between them.
+        let mut white = aided();
+        white.config.gnss_correlation = GnssCorrelation::WHITE;
+        let mut correlated = aided();
+        for step in 0..500 {
+            for filter in [&mut white, &mut correlated] {
+                assert_eq!(filter.predict(still().imu, DT), Propagation::Propagated);
+                if step % 20 == 0 {
+                    let _ = filter.fuse_gnss_position(
+                        Position::ned(0.0, 0.0, 0.0),
+                        PositionNoise::from_sigma(1.0, 1.0, 1.0),
+                    );
+                }
+            }
+        }
+        for axis in [ErrorState::PositionNorth, ErrorState::PositionDown] {
+            let (w, c) = (
+                white.covariance().variance(axis),
+                correlated.covariance().variance(axis),
+            );
+            assert!(c > 3.0 * w, "{axis:?}: {c} against {w} white");
+        }
+    }
+
+    #[test]
+    fn the_interval_of_28_prime_restarts_with_the_filter() {
+        // The filter's clock restarts at initialization, so the fix before it is not the
+        // previous one. Were it kept, the first fix after 0.2 s of the new clock would be
+        // fused at 1/42 of its weight.
+        let fix = |filter: &mut Eskf| {
+            let _ = filter.fuse_gnss_position(
+                Position::ned(0.0, 0.0, 0.0),
+                PositionNoise::from_sigma(1.0, 1.0, 1.0),
+            );
+        };
+        let mut restarted = aided();
+        fix(&mut restarted);
+        let _ = restarted
+            .initialize(&window_at(100.0), Seconds::from_secs(0.25))
+            .expect("a 2 s window of stillness");
+        let mut fresh = aided();
+        for filter in [&mut restarted, &mut fresh] {
+            for _ in 0..20 {
+                assert_eq!(filter.predict(still().imu, DT), Propagation::Propagated);
+            }
+            fix(filter);
+        }
+        let north = ErrorState::PositionNorth;
+        assert_eq!(
+            restarted.covariance().variance(north),
+            fresh.covariance().variance(north)
+        );
     }
 
     #[test]

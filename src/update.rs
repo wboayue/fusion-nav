@@ -30,6 +30,11 @@ pub(crate) struct Observation<const M: usize> {
     /// The diagonal of `R_m`. Every noise type this crate takes is a diagonal, so the
     /// off-diagonal entries are never carried.
     pub(crate) r_m: SVector<f32, M>,
+    /// The diagonal of the `R` the gain and (27) are computed with: `r_m` for every source
+    /// but a GNSS position fix, whose error persists from the last and which is fused at
+    /// (28′)'s variance instead. The gate reads `r_m`, because one fix's innovation variance
+    /// is `H P Hᵀ + R_m` however correlated the next fix is.
+    pub(crate) r_gain: SVector<f32, M>,
 }
 
 /// What one update produced, before anything is committed.
@@ -61,9 +66,11 @@ pub(crate) enum Update {
 /// Gate a measurement and, if it passes, fold it into the state. Equations (23)–(27) and
 /// (37)–(41).
 ///
-/// `S` is factored once, by Cholesky, and that factor serves both the gate and the gain:
+/// `S` is factored by Cholesky, and the factor serves both the gate and the gain:
 /// `ε = yᵀ S⁻¹ y` and `K = P Hᵀ S⁻¹` each need a solve against `S`, and neither needs `S⁻¹`
-/// itself. The factorization is also the check that `S` is positive-definite. With `R_m > 0`
+/// itself. A GNSS position fix is the exception, gated on its own `R_m` and gained on the
+/// larger `R` of (28′), so its gain is solved against a second factor; for every other
+/// source `r_gain` is `r_m` and the second factor is the first. The factorization is also the check that `S` is positive-definite. With `R_m > 0`
 /// and `P` positive semi-definite it always is, so a failure means `P` has lost that property
 /// in f32 — the filter's fault rather than the measurement's, reported as
 /// [`Update::Invalid`] rather than gated.
@@ -118,23 +125,41 @@ pub(crate) fn update<const M: usize>(
         cross: c,
         variance: v,
     } = *offset;
-    let Observation { y, h, h_b, r_m } = observation;
-    let r_m = SMatrix::<f32, M, M>::from_diagonal(r_m);
+    let Observation {
+        y,
+        h,
+        h_b,
+        r_m,
+        r_gain,
+    } = observation;
+    let (r_gate, r_m) = (
+        SMatrix::<f32, M, M>::from_diagonal(r_m),
+        SMatrix::<f32, M, M>::from_diagonal(r_gain),
+    );
 
     // `H P` of the augmented state, by blocks: `[H P_xx + H_b P_bx, H P_xb + H_b P_bb]`.
     let hp_x = h * p + h_b * c.transpose();
     let hp_b = h * c + h_b * v;
 
-    let s = hp_x * h.transpose() + hp_b * h_b.transpose() + r_m; // (24)
-    let Some(s_factor) = Cholesky::new(s) else {
+    let hph = hp_x * h.transpose() + hp_b * h_b.transpose();
+    let s = hph + r_gate; // (24)
+    let Some(gate_factor) = Cholesky::new(s) else {
         return Update::Invalid;
     };
     let innovation = Innovation::new(y, &s);
 
-    let ratio = test_ratio(nis(y, &s_factor), gate);
+    let ratio = test_ratio(nis(y, &gate_factor), gate);
     if ratio > 1.0 {
         return Update::Rejected { ratio, innovation };
     }
+    let s_factor = if r_gain == &observation.r_m {
+        gate_factor
+    } else {
+        let Some(factor) = Cholesky::new(hph + r_m) else {
+            return Update::Invalid;
+        };
+        factor
+    };
 
     let k_x = s_factor.solve(&hp_x).transpose(); // (25)
     let k_b = s_factor.solve(&hp_b).transpose();
@@ -326,6 +351,7 @@ mod tests {
             h: observes_position(),
             h_b: SVector::zeros(),
             r_m: SVector::from([r_m; 3]),
+            r_gain: SVector::from([r_m; 3]),
         }
     }
 
@@ -378,6 +404,39 @@ mod tests {
         assert!(is_symmetric(covariance.as_matrix()));
         // Gain 4/5 of the innovation.
         assert!((state.position.vector() - Vector3::new(0.4, -0.4, 0.16)).norm() < TOLERANCE);
+    }
+
+    #[test]
+    fn the_gate_reads_the_fixs_own_variance_and_the_gain_the_larger_one() {
+        // A fix fused at (28′)'s variance, nine times its own: the gate asks whether this one
+        // fix is consistent, which its own `R_m` answers, while the gain is what a run of
+        // such fixes is worth.
+        let prior = diagonal(1.0);
+        let own = position([1.5, 0.0, 0.0], 1.0);
+        let correlated = Observation {
+            r_gain: SVector::from([9.0; 3]),
+            ..position([1.5, 0.0, 0.0], 1.0)
+        };
+        let (_, _, white_ratio) = accepted(update(
+            &State::default(),
+            &prior,
+            &Offset::default(),
+            &own,
+            gate(7.8),
+        ));
+        let (state, covariance, ratio) = accepted(update(
+            &State::default(),
+            &prior,
+            &Offset::default(),
+            &correlated,
+            gate(7.8),
+        ));
+
+        assert_eq!(ratio, white_ratio);
+        // Scalar Kalman at R = 9: a tenth of the innovation, and 1 · 9 / (1 + 9) of the
+        // variance.
+        assert!((state.position.vector()[0] - 0.15).abs() < TOLERANCE);
+        assert!((covariance.variance(ErrorState::PositionNorth) - 0.9).abs() < TOLERANCE);
     }
 
     #[test]
@@ -441,6 +500,7 @@ mod tests {
             },
             h_b: SVector::zeros(),
             r_m: SVector::from([1.0e-6]),
+            r_gain: SVector::from([1.0e-6]),
         };
 
         let (_, joseph, _) = accepted(update(
@@ -480,6 +540,7 @@ mod tests {
             h: observes_down(),
             h_b: SVector::zeros(),
             r_m: SVector::from([0.5]),
+            r_gain: SVector::from([0.5]),
         };
         let prior = diagonal(0.5);
         let (_, _, ratio) = accepted(update(
@@ -581,6 +642,7 @@ mod tests {
                 h: observes_down(),
                 h_b: SVector::zeros(),
                 r_m: SVector::from([1.0]),
+                r_gain: SVector::from([1.0]),
             },
             gate::<1>(3.84),
         );
@@ -739,6 +801,7 @@ mod tests {
             h,
             h_b: SVector::from([1.0]),
             r_m: SVector::from([0.5]),
+            r_gain: SVector::from([0.5]),
         };
         assert_matches_augmented(&baro, gate::<1>(100.0));
 

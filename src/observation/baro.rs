@@ -55,6 +55,7 @@ pub(crate) fn altitude_observation(
         h: altitude_jacobian(),
         h_b: SVector::<f32, 1>::new(1.0),
         r_m: SVector::<f32, 1>::new(noise.variance()),
+        r_gain: SVector::<f32, 1>::new(noise.variance()),
     }
 }
 
