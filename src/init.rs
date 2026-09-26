@@ -279,6 +279,16 @@ impl Alignment {
     }
 }
 
+impl core::fmt::Display for Alignment {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Static => f.write_str("static"),
+            Self::Coarse(coarse) => write!(f, "coarse, {coarse}"),
+            Self::Seeded => f.write_str("seeded"),
+        }
+    }
+}
+
 /// Why alignment was coarse rather than static.
 ///
 /// Carries what was measured, so "not stationary" is diagnosable rather than a bare
@@ -324,6 +334,34 @@ pub enum Coarse {
         /// force is from gravity, and a real `ā_n` is part of what puts it there.
         inertial_accel: Option<Acceleration<Ned>>,
     },
+}
+
+/// What was measured, in the units [`Initialization`](crate::Initialization) is tuned in.
+/// `inertial_accel` is left out while (5′) only reports it.
+impl core::fmt::Display for Coarse {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let three = |value| Fixed::new(value, Decimals::Three);
+        match *self {
+            Self::WindowTooShort { required, provided } => write!(
+                f,
+                "window of {} s, {} s required",
+                three(provided.as_secs()),
+                three(required.as_secs())
+            ),
+            Self::NotStationary {
+                peak_gyro,
+                peak_accel_deviation,
+                span,
+                ..
+            } => write!(
+                f,
+                "moving: peak rate {} rad/s, specific force {} m/s² off gravity, over {} s",
+                three(peak_gyro.as_rad_per_s()),
+                three(peak_accel_deviation.as_m_per_s2()),
+                three(span.as_secs())
+            ),
+        }
+    }
 }
 
 /// Why initialization could not run at all.
@@ -873,7 +911,30 @@ pub(crate) fn baro_reference(window: &[StaticSample]) -> Option<(Altitude, f32)>
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::format;
+
     use super::*;
+
+    #[test]
+    fn a_coarse_start_reads_as_what_was_measured() {
+        let short = Alignment::Coarse(Coarse::WindowTooShort {
+            required: Seconds::from_secs(2.0),
+            provided: Seconds::from_secs(0.8),
+        });
+        assert_eq!(
+            format!("{short}"),
+            "coarse, window of 0.800 s, 2.000 s required"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                InitError::InvalidStep {
+                    dt: Seconds::from_secs(-0.0025)
+                }
+            ),
+            "initialization dt of -0.003 s is not usable"
+        );
+    }
 
     /// A sample from a vehicle genuinely sitting still: no rotation, gravity the only
     /// specific force. `StaticSample::default()` is not this — its zero acceleration is

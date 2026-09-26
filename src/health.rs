@@ -5,6 +5,7 @@
 
 use nalgebra::{SMatrix, SVector};
 
+use crate::display::{Decimals, Fixed};
 use crate::units::Seconds;
 
 /// How far the estimate can be trusted: whether attitude has converged, and how well
@@ -54,6 +55,18 @@ pub enum Status {
     /// Nothing is aiding the filter. Position and velocity error grows without bound.
     #[default]
     DeadReckoning,
+}
+
+/// One word or two, as an operator log carries it.
+impl core::fmt::Display for Status {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::Healthy => "healthy",
+            Self::Degraded => "degraded",
+            Self::Aligning => "aligning",
+            Self::DeadReckoning => "dead reckoning",
+        })
+    }
 }
 
 /// The outcome of one measurement update.
@@ -221,6 +234,30 @@ impl Fusion {
     }
 }
 
+/// The verdict without the source, which the outcome does not know: `"gnss position {}"`
+/// reads `gnss position rejected, ratio 2.70`. A refusal carries its [`Refusal`]'s words,
+/// and [`Reset`](Self::Reset) reads `adopted`, which is what it did.
+impl core::fmt::Display for Fusion {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match *self {
+            Self::Accepted { test_ratio } => write!(f, "accepted, ratio {}", ratio(test_ratio)),
+            Self::Reset => f.write_str("adopted"),
+            Self::Rejected { test_ratio } => write!(f, "rejected, ratio {}", ratio(test_ratio)),
+            Self::NotInitialized => write!(f, "refused, {}", Refusal::NotInitialized),
+            Self::NoReference => write!(f, "refused, {}", Refusal::NoReference),
+            Self::NotFinite => write!(f, "refused, {}", Refusal::NotFinite),
+            Self::InvalidNoise => write!(f, "refused, {}", Refusal::InvalidNoise),
+            Self::StateInvalid => write!(f, "refused, {}", Refusal::StateInvalid),
+        }
+    }
+}
+
+/// A test ratio to two decimals: the gate's bar is 1, so a third digit says nothing an
+/// operator acts on.
+fn ratio(test_ratio: f32) -> Fixed {
+    Fixed::new(test_ratio, Decimals::Two)
+}
+
 /// What one GNSS position fix did: its horizontal and vertical halves, each gated and
 /// reported on its own.
 ///
@@ -274,6 +311,18 @@ impl GnssFusion {
     }
 }
 
+/// One verdict when the halves agree, as they do for every outcome that concerns the fix
+/// whole, and both named when they do not.
+impl core::fmt::Display for GnssFusion {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if self.horizontal == self.height {
+            write!(f, "{}", self.horizontal)
+        } else {
+            write!(f, "horizontal {}; height {}", self.horizontal, self.height)
+        }
+    }
+}
+
 /// Why a measurement was turned away before the gate ran.
 ///
 /// The four cases [`Fusion`] reports that are not a verdict on the measurement's *value*: the
@@ -297,6 +346,18 @@ pub enum Refusal {
     /// The filter's own covariance or correction could not support an update. See
     /// [`Fusion::StateInvalid`].
     StateInvalid,
+}
+
+impl core::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::NotInitialized => "filter not initialized",
+            Self::NoReference => "no reference to measure against",
+            Self::NotFinite => "measurement or noise not finite",
+            Self::InvalidNoise => "noise variance not positive",
+            Self::StateInvalid => "filter state cannot support an update",
+        })
+    }
 }
 
 /// The outcome of one propagation step.
@@ -388,6 +449,31 @@ impl Propagation {
     }
 }
 
+impl core::fmt::Display for Propagation {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match *self {
+            Self::Propagated => f.write_str("propagated"),
+            Self::StepTooLong { dt, limit } => write!(
+                f,
+                "step of {} s over the {} s limit, not propagated",
+                seconds(dt),
+                seconds(limit)
+            ),
+            Self::InvalidStep { dt } => {
+                write!(f, "step of {} s not usable, not propagated", seconds(dt))
+            }
+            Self::NotFinite => f.write_str("imu sample not finite, not propagated"),
+            Self::StateNotFinite => f.write_str("propagated state not finite, not committed"),
+            Self::NotInitialized => f.write_str("filter not initialized, not propagated"),
+        }
+    }
+}
+
+/// A duration to the millisecond, the resolution an IMU interval is read at.
+fn seconds(value: Seconds) -> Fixed {
+    Fixed::new(value.as_secs(), Decimals::Three)
+}
+
 /// Which parts of the estimate are good enough to use.
 ///
 /// The single [`Status`] answers *how bad is the worst thing*; this answers *which
@@ -463,6 +549,26 @@ impl Validity {
             && self.vertical_position
             && self.horizontal_velocity
             && self.vertical_velocity
+    }
+}
+
+/// Six flags in the order the struct declares them, a letter where the quantity is usable and
+/// `-` where it is not: `att:T- pos:HV vel:HV` is tilt without heading, position and velocity
+/// on both axes. The shape PX4's `*_valid` flags and ArduPilot's `nav_filter_status` bits
+/// are read in, and short enough for every line of a 1 Hz log.
+impl core::fmt::Display for Validity {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let flag = |valid: bool, letter: &'static str| if valid { letter } else { "-" };
+        write!(
+            f,
+            "att:{}{} pos:{}{} vel:{}{}",
+            flag(self.tilt, "T"),
+            flag(self.heading, "H"),
+            flag(self.horizontal_position, "H"),
+            flag(self.vertical_position, "V"),
+            flag(self.horizontal_velocity, "H"),
+            flag(self.vertical_velocity, "V"),
+        )
     }
 }
 
@@ -800,10 +906,67 @@ impl Diagnostics {
 
 #[cfg(test)]
 mod tests {
+    use std::format;
+
     use super::*;
 
     const fn secs(s: f32) -> Seconds {
         Seconds::from_secs(s)
+    }
+
+    #[test]
+    fn an_outcome_reads_as_an_operator_log_line() {
+        assert_eq!(format!("{}", Status::DeadReckoning), "dead reckoning");
+        assert_eq!(
+            format!("{}", Fusion::Rejected { test_ratio: 2.7 }),
+            "rejected, ratio 2.70"
+        );
+        assert_eq!(
+            format!("{}", Fusion::Accepted { test_ratio: 0.314 }),
+            "accepted, ratio 0.31"
+        );
+        assert_eq!(format!("{}", Fusion::Reset), "adopted");
+        assert_eq!(
+            format!("{}", Fusion::NoReference),
+            "refused, no reference to measure against"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                Propagation::StepTooLong {
+                    dt: secs(0.15),
+                    limit: secs(0.1)
+                }
+            ),
+            "step of 0.150 s over the 0.100 s limit, not propagated"
+        );
+    }
+
+    #[test]
+    fn a_fix_names_its_halves_only_when_they_disagree() {
+        assert_eq!(format!("{}", GnssFusion::both(Fusion::Reset)), "adopted");
+        let split = GnssFusion {
+            horizontal: Fusion::Accepted { test_ratio: 0.5 },
+            height: Fusion::InvalidNoise,
+        };
+        assert_eq!(
+            format!("{split}"),
+            "horizontal accepted, ratio 0.50; height refused, noise variance not positive"
+        );
+    }
+
+    #[test]
+    fn validity_is_a_letter_per_usable_quantity() {
+        assert_eq!(format!("{}", Validity::NONE), "att:-- pos:-- vel:--");
+        let tilt_and_navigation = Validity {
+            tilt: true,
+            heading: false,
+            horizontal_position: true,
+            vertical_position: true,
+            horizontal_velocity: true,
+            vertical_velocity: true,
+        };
+        assert_eq!(format!("{tilt_and_navigation}"), "att:T- pos:HV vel:HV");
     }
 
     #[test]

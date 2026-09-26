@@ -265,6 +265,30 @@ fn surface(state: State, diagnostics: Diagnostics, covariance: &Covariance) {
     show::<InitError>(InitError::InvalidStep {
         dt: Seconds::from_secs(black_box(-0.5)),
     });
+    show::<Status>(state.status);
+    show::<Validity>(state.validity);
+    show::<Fusion>(outcome);
+    show::<GnssFusion>(GnssFusion {
+        horizontal: outcome,
+        height: Fusion::Rejected {
+            test_ratio: black_box(2.7),
+        },
+    });
+    show::<Refusal>(Refusal::NotFinite);
+    show::<Propagation>(Propagation::StepTooLong {
+        dt: Seconds::from_secs(black_box(0.15)),
+        limit: Seconds::from_secs(black_box(0.1)),
+    });
+    show::<Coarse>(Coarse::WindowTooShort {
+        required: Seconds::from_secs(black_box(2.0)),
+        provided: Seconds::from_secs(black_box(0.8)),
+    });
+    show::<Alignment>(Alignment::Coarse(Coarse::NotStationary {
+        peak_gyro: RadiansPerSecond::from_rad_per_s(black_box(0.3)),
+        peak_accel_deviation: MetersPerSecond2::from_m_per_s2(black_box(0.8)),
+        span: Seconds::from_secs(black_box(2.0)),
+        inertial_accel: None,
+    }));
 }
 
 /// Format `value` into a sink the optimizer cannot see through.
