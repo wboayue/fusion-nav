@@ -636,7 +636,8 @@ What each key is, and what it cannot say:
 - `climb`, `climb_ekf2`: each filter's own height change, last 60 s mean less first, up positive,
   over the span both cover, beside `height_reference_ekf2`. As change because each filter
   converges to its own reference. `none` on a log under 120 s, where the two windows overlap.
-- `tilt_{rms,max}`: tilt difference from the swing-twist split, degrees. `heading_med`: median
+- `tilt_diff_{rms,max}`: tilt difference from the swing-twist split, degrees, named apart from the
+  `summary` line's `tilt_max`, which is the vehicle's own peak tilt. `heading_diff_med`: median
   absolute heading difference after EKF2's first attitude reset once this filter runs, which is
   its yaw alignment; later resets stay in. `att_nd2`: the rotation between the two over the sum
   of the traces, the one attitude scalar both files carry in one frame; `none` on the quat24 era.
@@ -644,12 +645,16 @@ What each key is, and what it cannot say:
 - `rej_s_<source>`, `…_ekf2`, `…_both`: seconds each filter spent over its gate, and seconds both
   did. As time rather than counts, because EKF2 publishes its test ratios at 1–5 Hz and this filter
   judges every fusion. A verdict holds until the source's next sample and for at most five of its
-  median intervals, so a logging dropout does not stretch one rejection across the gap. `baro`
+  median intervals (`agreement.HOLD`, the multiple the report shades a GNSS outage at), so a
+  logging dropout does not stretch one rejection across the gap. `baro`
   compares only against a barometer height reference, since EKF2's height ratio belongs to
   whichever source is active; `gnss_hgt` has no EKF2 counterpart at all.
 - `ekf2_{xy,z,vxy,vz,att}_resets`: how often each EKF2 counter moved, beside this filter's
   `resets=` and `recovered=`. `estimator`: which PX4 estimator the reference is.
 
-A `px4` line carries its harness keys (`nis_`, `rejected_`, `resets=`), since nothing else pins
-them; a `raw` line leaves them to `manifest.txt`. `data/ekf2.txt`'s header records what the first
-run said.
+Every line carries every key, the harness's (`nis_`, `rejected_`, `resets=`) read off the
+`summary` beside the agreement ones. `--pin` decides what `data/ekf2.txt` holds: a `raw` line
+without the keys its log's manifest entry already pins, a `px4` line whole, since nothing else pins
+it. It bands whatever is printed with a decimal point (`pin_pairs --decimal`), which is every
+statistic and no count, so a new statistic needs no edit in `fetch.sh`. `data/ekf2.txt`'s header
+records what the first run said.

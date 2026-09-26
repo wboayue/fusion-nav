@@ -835,6 +835,11 @@ Every source touches the same ten places, and three of them are public:
 - The README fusion table, the `Eskf` and `prelude` doctests, and `EQUATIONS.md`'s mapping
   table.
 - `tools/ulog2replay.py`, which has to find the source in a ULog and name its variance columns.
+- The comparison with EKF2, if EKF2 judges the source: its test ratio in `EKF2_RATIOS`
+  (`tools/ulog2replay.py`) and `REFERENCE_KINDS["ratio"]` (`tools/replay_report.py`), the pairing
+  in `RATIO_OF` (`tools/agreement.py`), and a new `rej_s_` key in every line of `data/ekf2.txt`.
+  If the source reports its own `R` and EKF2 floors it, `RPolicy` in `examples/replay.rs` owns the
+  floor. Harness keys reach the table by prefix (`rejected_`, `nis_`), so those need nothing.
 - `examples/simulate.rs`, which has to model it — an error table, a `sample`, a row — and the
   column legend its generated headers carry. Nothing connects these two to the replay format at
   compile time, which is why they are on this list rather than left to be discovered.
@@ -844,6 +849,14 @@ The *truth* format is the one coupling of this kind that is guarded: `write_trut
 scorer checks the header against its own and refuses the file, so a column renamed or reordered
 stops the run instead of scoring one quantity against another. A new *state* — not a new source —
 is what moves those columns.
+
+The converter's `#` header lines are the other coupling, and they are guarded less. Each is an
+f-string in `tools/ulog2replay.py` and a parser elsewhere: `# Magnetic declination` and
+`# GNSS noise parameters` read by `examples/replay.rs`, `Estimator:`, `EKF2 origin in replay frame:`
+and `EKF2 aiding:` by `tools/replay_report.py`. Both sides carry fixtures on the same literal
+strings, so rewording one side fails a self-test; nothing stops the two sets of literals drifting
+apart together. A parser that finds nothing reads its absence (declination zero, no origin)
+rather than failing, which is why the report's fixtures exist.
 
 ### Reports are `#[non_exhaustive]`, outcomes are not
 
