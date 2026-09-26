@@ -1,6 +1,6 @@
 //! The primitives the equations share: `[u]ₓ` and `Exp(φ)` from the operators table, the
-//! `wrap(·)` of (35), and both halves of (42) — the symmetry enforcement and the diagonal
-//! variance floor.
+//! `wrap(·)` of (35), both halves of (42) — the symmetry enforcement and the diagonal
+//! variance floor — and the inflation of (28′).
 //!
 //! Nothing here holds state or reads configuration, which is why it is a module of its own:
 //! each function is checkable against its definition without a filter around it.
@@ -10,6 +10,36 @@ use core::f32::consts::{PI, TAU};
 use nalgebra::{ComplexField, Matrix3, Quaternion, SMatrix, UnitQuaternion, Vector3};
 
 use crate::state::{CovarianceMatrix, ErrorState, Offset, STATES};
+use crate::units::Seconds;
+
+/// The most (28′) multiplies a variance by: a measurement fused at a millionth of its
+/// information adds none worth counting, and any variance a receiver reports stays finite
+/// times this, so (27)'s `K R Kᵀ` does too.
+const MAX_INFLATION: f32 = 1.0e6;
+
+/// `(1 + ρ) / (1 − ρ)`, `ρ = exp(−Δt / τ)`: what (28′) multiplies a correlated measurement's
+/// variance by, `Δt` after the previous one.
+///
+/// Written as `(2 − x) / x` with `x = 1 − ρ = −expm1(−Δt / τ)`: at `Δt ≪ τ`, `ρ` rounds to 1 in
+/// `f32` and `1 − ρ` to zero, where `expm1` keeps the digits. The factor is 1 for a long
+/// interval, where measurements are independent again, and `2τ / Δt` for a short one, so a
+/// source reporting faster than its error changes buys no more per second than one reporting
+/// at `τ`. At `Δt = 0`, or a `τ` too long for `f32`, the same error arrives twice: `ρ` is 1,
+/// the factor unbounded, and it saturates at [`MAX_INFLATION`].
+///
+/// 1 with no interval to measure (the first measurement) and for a `τ` that is `None`, not a
+/// number or not positive: white, which is (24) as written.
+pub(crate) fn correlation_inflation(interval: Option<Seconds>, tau: Option<Seconds>) -> f32 {
+    let (Some(dt), Some(tau)) = (interval, tau) else {
+        return 1.0;
+    };
+    let (dt, tau) = (dt.as_secs(), tau.as_secs());
+    if !(dt >= 0.0 && tau > 0.0) {
+        return 1.0;
+    }
+    let x = -ComplexField::exp_m1(-dt / tau);
+    ((2.0 - x) / x).min(MAX_INFLATION)
+}
 
 /// The skew-symmetric matrix `[u]ₓ` of the operators table, so that `[u]ₓ v = u × v`.
 ///

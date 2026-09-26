@@ -106,7 +106,7 @@ $ data/expect.sh --self-test                           # the comparator's own fi
 It generates every scenario first rather than reusing `target/sim/`, so no ceiling can be met by
 a flight produced before the change under test; it fails on a scenario the simulator generated and
 this file does not gate, and on a line carrying no ceilings at all, since either reads as a green
-run over a gate that is not there. It runs the debug build: the nine scenarios
+run over a gate that is not there. It runs the debug build: the eleven scenarios
 are about ten seconds all told, against a minute to build the crate again under a second profile,
 and `score` is identical either way. `fetch.sh --check` uses `--release` for a reason that does
 not apply here — a two-hour log at 1.4M epochs.

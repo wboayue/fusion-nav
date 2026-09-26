@@ -1,9 +1,10 @@
 //! GNSS observation models. Equations (28) and (29).
 
-use nalgebra::{ComplexField, Matrix3, SMatrix, SVector};
+use nalgebra::{Matrix3, SMatrix, SVector};
 
 use crate::config::GnssCorrelation;
 use crate::frames::Ned;
+use crate::math::correlation_inflation;
 use crate::state::{ErrorState, STATES, State};
 use crate::units::{Position, PositionNoise, Seconds, Velocity, VelocityNoise};
 use crate::update::Observation;
@@ -75,11 +76,8 @@ pub(crate) fn height_observation(
 /// The noise a fix is fused with when its error persists from the last: each axis's variance
 /// times `(1 + ρ) / (1 − ρ)`, `ρ = exp(−Δt / τ)`. Equation (28′).
 ///
-/// `Δt` is the interval since the previous fix. With none to measure — the first fix, or two
-/// in one epoch — the factor is 1, as it is for an axis whose `τ` is `None`, or not a finite
-/// positive number. The factor is 1 in the limit of a long interval too, where the fixes are
-/// independent again, and `2τ / Δt` in that of a short one, so a receiver reporting faster
-/// than its error changes buys no more per second than one reporting at `τ`.
+/// `Δt` is the interval since the previous usable fix, `None` for the first; the factor is
+/// [`correlation_inflation`]'s, which says what it does at the ends of its range.
 ///
 /// Only the update reads this. An adoption writes a single fix's error onto the covariance,
 /// and one fix's error is its stationary variance however correlated the next one is.
@@ -89,23 +87,9 @@ pub(crate) fn decorrelated(
     correlation: GnssCorrelation,
 ) -> PositionNoise<Ned> {
     let r = noise.variance();
-    let horizontal = inflation(interval, correlation.horizontal);
-    let vertical = inflation(interval, correlation.vertical);
+    let horizontal = correlation_inflation(interval, correlation.horizontal);
+    let vertical = correlation_inflation(interval, correlation.vertical);
     PositionNoise::from_variance(r[0] * horizontal, r[1] * horizontal, r[2] * vertical)
-}
-
-/// `(1 + ρ) / (1 − ρ)` of (28′), written as `(2 − x) / x` with `x = 1 − ρ = −expm1(−Δt / τ)`:
-/// at `Δt ≪ τ`, `ρ` rounds to 1 in `f32` and `1 − ρ` to zero, where `expm1` keeps the digits.
-fn inflation(interval: Option<Seconds>, tau: Option<Seconds>) -> f32 {
-    let (Some(dt), Some(tau)) = (interval, tau) else {
-        return 1.0;
-    };
-    let (dt, tau) = (dt.as_secs(), tau.as_secs());
-    if !(dt > 0.0 && tau > 0.0 && tau.is_finite()) {
-        return 1.0;
-    }
-    let x = -ComplexField::exp_m1(-dt / tau);
-    (2.0 - x) / x
 }
 
 /// `H = [0 I₃ 0 0 0]`, the Jacobian of a GNSS velocity solution. Equation (29).
@@ -182,13 +166,13 @@ mod tests {
             correlated(1.0, 1.0),
         );
         assert_eq!(long.variance()[0], 1.0);
-        // Where `1 − exp` would round ρ to 1 and divide by zero.
+        // Where `1 − exp` keeps two digits of `1 − ρ`, and `expm1` all of them.
         let short = decorrelated(
             fix(1.0),
-            Some(Seconds::from_secs(1e-6)),
+            Some(Seconds::from_secs(1e-4)),
             correlated(14.0, 14.0),
         );
-        let expected = 2.0 * 14.0 / 1e-6;
+        let expected = 2.0 * 14.0 / 1e-4;
         assert!(
             (short.variance()[0] / expected - 1.0).abs() < 1e-3,
             "{}",
@@ -197,15 +181,29 @@ mod tests {
     }
 
     #[test]
+    fn the_same_error_twice_is_worth_nothing_and_stays_finite() {
+        // Two fixes with no step between them, and a `τ` no interval is short against: `ρ` is
+        // 1 in both, and the factor saturates rather than reaching (27) as infinity, where
+        // `K R Kᵀ` would read `0 · ∞`.
+        for (interval, tau) in [
+            (Seconds::ZERO, 4.2),
+            (Seconds::from_secs(0.2), f32::INFINITY),
+            (Seconds::from_secs(0.2), f32::MAX),
+        ] {
+            let r = decorrelated(fix(1.0), Some(interval), correlated(tau, tau)).variance();
+            assert_eq!(r[0], 1.0e6, "Δt {interval:?}, τ {tau}");
+        }
+    }
+
+    #[test]
     fn with_nothing_to_measure_or_nothing_configured_the_fix_is_white() {
         let white = fix(1.0).variance();
         let dt = Some(Seconds::from_secs(0.2));
         for (interval, correlation) in [
             (None, correlated(4.2, 14.0)),
-            (Some(Seconds::ZERO), correlated(4.2, 14.0)),
             (dt, GnssCorrelation::WHITE),
             (dt, correlated(0.0, -1.0)),
-            (dt, correlated(f32::INFINITY, f32::NAN)),
+            (dt, correlated(f32::NAN, f32::NAN)),
         ] {
             assert_eq!(
                 decorrelated(fix(1.0), interval, correlation).variance(),

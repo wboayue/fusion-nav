@@ -372,12 +372,9 @@ impl Default for Timeouts {
 /// at the variance that makes a run of them carry what they actually carry, which is less
 /// the shorter the interval is against `τ`.
 ///
-/// Inflating `R` rather than flooring `P` is measured. A per-axis posterior floor at the
-/// fix's own variance, `P_pp ≥ R`, was honest on `gnss_correlated` (`nees_pos` 1.02) but
-/// raised the gain with the covariance: that scenario's `pos_h` went 0.874 m → 1.233 and
-/// `mission`'s 0.244 → 0.746, the estimate following each fix instead of averaging. Floored
-/// horizontally alone it left `nees_pos` at 22.1, the height carrying the fault. PX4's floor
-/// on `R`, 0.5 m, sits below most receivers' own `eph` and moved neither.
+/// Inflating `R` rather than flooring `P`, and in the gain rather than the gate, is measured;
+/// the [decision](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#correlated-gnss-error-as-equivalent-white-noise)
+/// records what each alternative read.
 ///
 /// Configured rather than derived, as [`ImuNoise`] is: it is a property of the receiver, and
 /// the filter cannot measure it in flight without retuning itself. The replay harness
@@ -404,7 +401,7 @@ impl Default for GnssCorrelation {
     /// The corpus's: `τ = −T / ln ρ` from each real log's `acf1_gnss_pos` and `acf1_gnss_hgt`,
     /// read with every fix fused as white, at its own fix interval, the median over the eight whose autocorrelation is positive
     /// (the SITL log and the RTK log excluded). Horizontally 2.1–15.8 s, median 4.2; in
-    /// height 3.7–69 s, median 14.
+    /// height 3.7–70 s, median 14.
     fn default() -> Self {
         Self {
             horizontal: Some(Seconds::from_secs(4.2)),

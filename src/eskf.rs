@@ -110,9 +110,6 @@ pub struct Eskf {
     /// [`is_aligned`](Self::is_aligned) for why it is not read live.
     aligned: bool,
     initialized: bool,
-    /// When the last GNSS position fix arrived, on the clock of
-    /// [`Diagnostics::since_initialized`]: the far end of equation (28′)'s `Δt`.
-    last_position_fix: Option<Seconds>,
 }
 
 /// Quantities the start never established, which wait for the first measurement that
@@ -145,7 +142,6 @@ impl Eskf {
             unestablished: Unestablished::default(),
             aligned: false,
             initialized: false,
-            last_position_fix: None,
         }
     }
 
@@ -379,8 +375,6 @@ impl Eskf {
         // Diagnostics first: `commit_covariance` counts into them, and a seed sitting on the
         // floor is a fact about this filter's life rather than the last one's.
         self.diagnostics = Diagnostics::default();
-        // `last_position_fix` is on the diagnostics' clock, which restarts here.
-        self.last_position_fix = None;
         self.commit_covariance(covariance, self.surviving_offset());
         // Nothing a seed carries is unestablished: the caller vouched for every quantity,
         // heading included, so no first measurement overwrites one.
@@ -717,6 +711,11 @@ impl Eskf {
     /// (28′), with the gate still reading `noise` itself. See
     /// [`Config::gnss_correlation`](crate::Config::gnss_correlation).
     ///
+    /// The interval (28′) reads is the time since the previous usable fix through this
+    /// method, so it assumes one receiver. Fixes from a second one, or from motion capture,
+    /// interleaved with the first read as the same error arriving sooner and are deweighted
+    /// though their errors are independent.
+    ///
     /// The fix is two measurements, gated and reported apart: north and east at
     /// [`Gates::gnss_position`](crate::Gates), then down at
     /// [`Gates::gnss_height`](crate::Gates), against the state the first left. A half
@@ -736,7 +735,7 @@ impl Eskf {
         if !self.initialized {
             return self.refuse_gnss(Fusion::NotInitialized);
         }
-        let interval = self.mark_position_fix();
+        let interval = self.diagnostics.gnss_position.since_measured;
         if self.unestablished.position {
             if !position.is_finite() || !noise.is_finite() {
                 return self.refuse_gnss(Fusion::NotFinite);
@@ -748,6 +747,7 @@ impl Eskf {
             self.unestablished.position = false;
             self.diagnostics.gnss_position.record_adopted();
             self.diagnostics.gnss_height.record_adopted();
+            self.diagnostics.gnss_position.record_measured();
             return GnssFusion::both(Fusion::Reset);
         }
 
@@ -792,21 +792,11 @@ impl Eskf {
                 )
             }
         };
+        // A fix both of whose halves were refused carried no error to correlate with.
+        if horizontal.refusal().is_none() || height.refusal().is_none() {
+            self.diagnostics.gnss_position.record_measured();
+        }
         GnssFusion { horizontal, height }
-    }
-
-    /// The interval since the previous GNSS position fix, the `Δt` of equation (28′), with
-    /// this one recorded as the next one's start.
-    ///
-    /// Every fix that reaches the filter counts, refused and rejected ones included: the
-    /// receiver's error went on evolving whether or not the filter used the reading.
-    fn mark_position_fix(&mut self) -> Option<Seconds> {
-        let now = self.diagnostics.since_initialized;
-        let interval = self
-            .last_position_fix
-            .map(|last| Seconds::from_secs(now.as_secs() - last.as_secs()));
-        self.last_position_fix = Some(now);
-        interval
     }
 
     /// Refuse both halves of a GNSS fix for one reason.
@@ -877,7 +867,7 @@ impl Eskf {
             return self.refuse_gnss(Fusion::NoReference);
         };
         self.origin = Some(origin);
-        self.mark_position_fix();
+        self.diagnostics.gnss_position.record_measured();
         let placed = self.reset_position_to(self.state.position, noise);
         debug_assert!(
             placed,
@@ -1558,8 +1548,6 @@ impl Eskf {
         self.state = state;
         // Before the commit, which counts into them; see `initialize_from`.
         self.diagnostics = Diagnostics::default();
-        // `last_position_fix` is on the diagnostics' clock, which restarts here.
-        self.last_position_fix = None;
         self.commit_covariance(covariance, self.surviving_offset());
         self.unestablished = Unestablished::after(settled, measured.field.is_some());
         if settled {
@@ -2530,6 +2518,41 @@ mod tests {
             );
             assert!(c > 3.0 * w, "{axis:?}: {c} against {w} white");
         }
+    }
+
+    #[test]
+    fn a_refused_fix_does_not_restart_the_interval_of_28_prime() {
+        // A receiver interleaving unusable fixes with good ones carries no error in the bad
+        // ones, so the good ones are as far apart as they were.
+        let good = |filter: &mut Eskf| {
+            let _ = filter.fuse_gnss_position(
+                Position::ned(0.0, 0.0, 0.0),
+                PositionNoise::from_sigma(1.0, 1.0, 1.0),
+            );
+        };
+        let (mut interleaved, mut clean) = (aided(), aided());
+        for filter in [&mut interleaved, &mut clean] {
+            good(filter);
+            for _ in 0..10 {
+                assert_eq!(filter.predict(still().imu, DT), Propagation::Propagated);
+            }
+        }
+        let refused = interleaved.fuse_gnss_position(
+            Position::ned(f32::NAN, f32::NAN, f32::NAN),
+            PositionNoise::from_sigma(1.0, 1.0, 1.0),
+        );
+        assert_eq!(refused, GnssFusion::both(Fusion::NotFinite));
+        for filter in [&mut interleaved, &mut clean] {
+            for _ in 0..10 {
+                assert_eq!(filter.predict(still().imu, DT), Propagation::Propagated);
+            }
+            good(filter);
+        }
+        let north = ErrorState::PositionNorth;
+        assert_eq!(
+            interleaved.covariance().variance(north),
+            clean.covariance().variance(north)
+        );
     }
 
     #[test]
@@ -3919,7 +3942,7 @@ mod tests {
     fn an_external_reset_refuses_what_would_poison_the_state() {
         let mut filter = initialized();
         assert!(!filter.reset_position_to(
-            Position::ned(f32::NAN, 0.0, 0.0),
+            Position::ned(f32::NAN, f32::NAN, f32::NAN),
             PositionNoise::horizontal_vertical(1.5, 1.5)
         ));
         assert!(!filter.reset_position_to(

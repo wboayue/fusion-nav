@@ -133,7 +133,8 @@ pub(crate) fn update<const M: usize>(
         r_m,
         r_gain,
     } = observation;
-    let (r_gate, r_m) = (
+    let correlated = r_gain != r_m;
+    let (r_m, r_gain) = (
         SMatrix::<f32, M, M>::from_diagonal(r_m),
         SMatrix::<f32, M, M>::from_diagonal(r_gain),
     );
@@ -143,7 +144,7 @@ pub(crate) fn update<const M: usize>(
     let hp_b = h * c + h_b * v;
 
     let hph = hp_x * h.transpose() + hp_b * h_b.transpose();
-    let s = hph + r_gate; // (24)
+    let s = hph + r_m; // (24)
     let Some(gate_factor) = Cholesky::new(s) else {
         return Update::Invalid;
     };
@@ -153,13 +154,14 @@ pub(crate) fn update<const M: usize>(
     if ratio > 1.0 {
         return Update::Rejected { ratio, innovation };
     }
-    let s_factor = if r_gain == &observation.r_m {
-        gate_factor
-    } else {
-        let Some(factor) = Cholesky::new(hph + r_m) else {
+    // (28′)'s `S̃`, for a source whose `R` the gain reads apart from the gate.
+    let s_factor = if correlated {
+        let Some(factor) = Cholesky::new(hph + r_gain) else {
             return Update::Invalid;
         };
         factor
+    } else {
+        gate_factor
     };
 
     let k_x = s_factor.solve(&hp_x).transpose(); // (25)
@@ -179,8 +181,8 @@ pub(crate) fn update<const M: usize>(
     let ap_xb = a_xx * c + a_xb * v;
     let ap_bx = a_bx * p + a_bb * c.transpose();
     let ap_bb = a_bx.dot(&c.transpose()) + a_bb * v;
-    let kr_x = k_x * r_m;
-    let kr_b = k_b * r_m;
+    let kr_x = k_x * r_gain;
+    let kr_b = k_b * r_gain;
     let cross = ap_xx * a_bx.transpose() + ap_xb * a_bb + kr_x * k_b.transpose();
     let variance = ap_bx.dot(&a_bx) + ap_bb * a_bb + kr_b.dot(&k_b);
     // The cross-covariance is taken from the rows above rather than averaged with its

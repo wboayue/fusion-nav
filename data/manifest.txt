@@ -141,7 +141,8 @@
 # until recovery, 7ce66f0d's 1011 positions and 1073 velocities an attitude
 # levelled wrong during a hand launch, 285ee2e7's 7 altitudes a tailsitter's
 # back-transitions and the 3 positions and 4 heights its barometer pulled the
-# estimate away from (the (28') paragraph below). Without Config::recovery (#116) the first three read 860,
+# estimate away from (the (28') paragraph below). Without Config::recovery (#116), and with
+# every fix fused as white, the first three read 860,
 # 881, and 1931 and 1742. Without the split, a
 # stage that adds a gated source arrives here as a larger number with nothing
 # saying which source grew -- the reading ba= and bg= were split to avoid.
@@ -198,7 +199,7 @@
 # its barometer held 4 m away (the (28') paragraph below). A recovery
 # on a log whose sources are honest is a finding against the covariance
 # rather than a working filter, which is what a zero here guards. With
-# Config::recovery off, every entry reads as it did before #116, byte for
+# Config::recovery off and GnssCorrelation::WHITE, every entry reads as it did before #116, byte for
 # byte in both replay CSVs.
 #
 # discarded= is what says how much of a barometer alpha0= left unused.
@@ -426,7 +427,7 @@
 # a fix now weighs less, the faster source beside it takes its place, and the
 # barometer is still fused white while acf1_baro reads up to 0.95: on 285ee2e7
 # the height sits 4 m from GNSS for tens of seconds (1.6 m fused as white)
-# until four GNSS heights are refused at 50-54 s and the fifth adopted, and
+# until four GNSS heights are rejected at 50-54 s and the fifth adopted, and
 # 7ce66f0d's rejected_baro goes 46 to 55. 4b473e91 gains three recoveries, 9
 # to 12, each a second lockout 8-10 s after a dropout's, the gap's error
 # corrected more slowly once a fix weighs less; 7ce66f0d 294 to 297, and it
@@ -695,7 +696,7 @@ b7c7c97eefc3bb421ceae6e50cac8bd5a4851b3f6f98dc2c5a7b91bb326930c9  eb799954-4743-
 #     resets to GNSS after 7 s of failed fusion, and so does Config::recovery
 #     (#116): 12 recoveries, 8 positions and 4 velocities, each within 13 s of
 #     a dropout, rejected_gnss_pos 881 -> 39 and Degraded -> Healthy. With
-#     recovery off it reads as above and ends Degraded.
+#     recovery off and every fix fused as white it reads as above and ends Degraded.
 #   - Transitions: seconds of straight-line acceleration on the pusher, the
 #     yaw observability through GNSS velocity no multirotor log gives.
 # Its siblings 91302d12 and 9fe5d059, the same airframe, lock out the same way.
@@ -709,7 +710,7 @@ b7c7c97eefc3bb421ceae6e50cac8bd5a4851b3f6f98dc2c5a7b91bb326930c9  eb799954-4743-
 # resets=4 and alpha0=estimate. What nothing else here covers:
 #   - A start that levels wrong. At the commit its tilt reads 26.7 deg against
 #     EKF2's 38.8, and 85 against 53 by 15 s; the estimate never recovers.
-#     With Config::recovery off, 1931 of 1932 positions, 1742 velocities, 149
+#     With Config::recovery off and every fix fused as white, 1931 of 1932 positions, 1742 velocities, 149
 #     headings and 47 altitudes are turned down, the first position within 3 s
 #     of the commit, and PX4's R floors change nothing (3698 rejections). On,
 #     the filter adopts its way back 297 times (155 positions, 144 velocities,

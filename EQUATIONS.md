@@ -530,7 +530,7 @@ per axis:
 ```
 
 in place of $`R_m`$ and $`S`$ in (25) and (27), with $`\Delta t`$ the interval since the previous
-fix and $`\tau`$ from `Config::gnss_correlation`, horizontal and vertical. The factor is 1 as
+usable fix and $`\tau`$ from `Config::gnss_correlation`, horizontal and vertical. The factor is 1 as
 $`\Delta t / \tau \to \infty`$, where fixes are independent again, and $`2\tau/\Delta t`$ as
 $`\Delta t / \tau \to 0`$, so a receiver reporting faster than its error changes buys no more per
 second than one reporting at $`\tau`$.
@@ -544,7 +544,8 @@ adoption writes $`P_{pp} \leftarrow R_m`$, since one fix's error is its stationa
 This is the equivalent white noise of the correlated sequence, not a model of it: exact for the
 mean of a long run, conservative for a short one, and free of the per-axis Gauss–Markov state that
 would model the error exactly and grow the covariance past fifteen states. What it was measured
-against, a floor on $`P`$ and PX4's floor on $`R`$, is in `GnssCorrelation`'s doc comment.
+against, a floor on $`P`$ and PX4's floor on $`R`$, is in
+[the decision](GOALS.md#correlated-gnss-error-as-equivalent-white-noise).
 
 ### GNSS velocity
 
@@ -1026,7 +1027,7 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | (22) | covariance propagation | `propagate.rs` | `propagate_covariance`, called with (9)–(15) by `propagate` |
 | (23)–(27) | generic update, Joseph form | `update.rs` | `update` |
 | (28) | GNSS position, as a horizontal and a height half | `observation/gnss.rs` | `horizontal_jacobian`, `horizontal_observation`, `height_jacobian`, `height_observation` |
-| (28′) | correlated fixes | `observation/gnss.rs`, `update.rs` | `decorrelated`, `inflation`; `Observation::r_gain`; `Eskf::mark_position_fix` for `Δt` |
+| (28′) | correlated fixes | `observation/gnss.rs`, `math.rs`, `update.rs`, `health.rs` | `decorrelated`; `correlation_inflation`; `Observation::r_gain`; `SourceHealth::since_measured` for `Δt` |
 | (29) | GNSS velocity | `observation/gnss.rs` | `velocity_jacobian`, `velocity_observation` |
 | (30) | barometric altitude | `observation/baro.rs` | `altitude_jacobian`, `altitude_observation` |
 | (30′) | barometric offset | `state.rs`, `update.rs`, `propagate.rs` | `Offset`; `update`'s blocks; `propagate_offset`; `Eskf::establish_reference` |

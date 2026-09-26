@@ -576,6 +576,11 @@ pub struct SourceHealth {
     /// had shrunk around an error it could not see. A source that recovers regularly on good
     /// data is a finding against the covariance, not a working filter.
     pub recovered: u32,
+    /// Time since a usable measurement from this source last arrived, whatever the gate
+    /// made of it: the `Δt` of equation (28′). Kept per source and reset at each
+    /// measurement, rather than read as a difference of `since_initialized`, because an
+    /// `f32` clock counting hours loses the digits a 0.2 s interval needs.
+    pub(crate) since_measured: Option<Seconds>,
 }
 
 impl SourceHealth {
@@ -593,9 +598,16 @@ impl SourceHealth {
 
     /// Advance the fusion clock. Called from `predict`, since the filter has no clock.
     pub(crate) fn advance(&mut self, dt: Seconds) {
-        if let Some(elapsed) = self.time_since_accepted {
-            self.time_since_accepted = Some(Seconds::from_secs(elapsed.as_secs() + dt.as_secs()));
+        for clock in [&mut self.time_since_accepted, &mut self.since_measured] {
+            if let Some(elapsed) = *clock {
+                *clock = Some(Seconds::from_secs(elapsed.as_secs() + dt.as_secs()));
+            }
         }
+    }
+
+    /// Record that a usable measurement arrived, restarting the interval (28′) reads.
+    pub(crate) fn record_measured(&mut self) {
+        self.since_measured = Some(Seconds::ZERO);
     }
 
     /// Record a measurement that passed the gate: its test ratio and the innovation behind

@@ -509,7 +509,7 @@ exact and would add three.
 **What it bought**, on `gnss_correlated`, the simulator's receiver with that correlation: 50-seed
 `anees_pos` 17.72 to 0.92, and `pos_h` 0.874 m to 0.600, `pos_v` 1.799 to 0.551, more accurate as
 well as honest. On `2c42096b`, σ_pos_n under `eph` at 2133 fixes of 4614, median ratio 1.015
-against 0.726; on `093e806a`, 35 lockouts to 26.
+against 0.726; on `093e806a`, `recovered=` 35 to 26.
 
 **What was measured against it.** A floor on `P` at each fix's variance, the invariant that the
 filter may not know a quantity better than the only source constraining it: honest (`nees_pos`
@@ -523,7 +523,7 @@ recovery and `7ce66f0d` from 294 to 23, which read as a cure and was a gate that
 **What it costs.** Accuracy wherever the receiver is white, which the simulator's is by
 construction: `mission` `pos_h` 0.244 m to 0.327, `static` 0.272 to 0.630. And height moves onto
 the barometer, which is still fused white while its own `acf1_` reads up to 0.95: `285ee2e7`'s
-height sits 4 m from GNSS through a back-transition until the receiver is refused and adopted.
+height sits 4 m from GNSS through a back-transition until the receiver is rejected and adopted.
 A receiver characterized as white is the reason to set `GnssCorrelation::WHITE`; the barometer,
 magnetometer and GNSS velocity carrying the same treatment is the reason not to have to.
 
