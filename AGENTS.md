@@ -32,6 +32,13 @@ axis-free: its tilt variance is the largest eigenvalue of the horizontal tilt bl
 of two diagonals. The exact field-axis term `f̂ᵀPf̂` was measured and lost (`gnss_outage` `pos_h`
 2.630 m against 2.227), because consecutive headings share a tilt error that (24) treats as
 independent; only `f16771dd` re-pinned (`nu_mag_yaw` −0.025485 → −0.024121).
+#86's PR 2 (#141) made the corpus eight logs: `89a498ce` is the real baseline (RTK, 4.07 km, #124's
+log), `eb799954` carries the first `rejected_mag` (3), and `cd7e0001` is the coarse start and the
+first `floored=` (21, a raw 0.43 mm/s σ_v). `2c42096b` now starts `short` on a 0.80 s still prefix:
+the harness waits `PATIENCE` for a static window and falls back to the prefix, and `classify`
+measures motion before length. Declination is read per log (`declination=`), which took the median
+heading gap to EKF2 on real GNSS logs from 4–13° to 0–2.5°. #86's PR 3 and `2b2ad123`, a candidate
+real-data lockout on #116, are next in that area.
 
 **Every source the crate publishes is fused; no `fuse_*` is a stub.** Initialization is real —
 equations (5)–(8), so the filter starts at the attitude and biases the window yields — `predict`
