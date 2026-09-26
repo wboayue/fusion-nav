@@ -1309,7 +1309,9 @@ def build_report(args):
         epoch_columns.extend(sigmas)
     epoch_columns.extend(RATIOS)
     # The agreement section's columns ride on this pass, undecimated, rather than
-    # costing a pass of their own: 5.4 s of the 2 h log's 33.
+    # a pass of their own. Measured on the 2 h log it saves memory rather than
+    # time (peak 1.12 GB to 0.95, 32.8 s to 32.5): the cost is parsing the cells,
+    # which either way happens once.
     _, epochs, ours_table = scan(args.replay, epoch_columns, args.points,
                                  keep=AGREEMENT_EPOCH_COLUMNS)
     ours_q = None
