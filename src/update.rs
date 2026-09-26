@@ -30,11 +30,22 @@ pub(crate) struct Observation<const M: usize> {
     /// The diagonal of `R_m`. Every noise type this crate takes is a diagonal, so the
     /// off-diagonal entries are never carried.
     pub(crate) r_m: SVector<f32, M>,
-    /// The diagonal of the `R` the gain and (27) are computed with: `r_m` for every source
-    /// but a GNSS position fix, whose error persists from the last and which is fused at
-    /// (28′)'s variance instead. The gate reads `r_m`, because one fix's innovation variance
-    /// is `H P Hᵀ + R_m` however correlated the next fix is.
+    /// The diagonal of the `R` the gain and (27) are computed with: `r_m` as the observation
+    /// module forms it, and (24′)'s `R̃` once [`correlated`](Self::correlated) has priced in a
+    /// measurement's error persisting from the last. The gate reads `r_m`, because one
+    /// measurement's innovation variance is `H P Hᵀ + R_m` however correlated the next is.
     pub(crate) r_gain: SVector<f32, M>,
+}
+
+impl<const M: usize> Observation<M> {
+    /// The same observation with its gain computed at `R̃ = R_m · inflation`, equation (24′);
+    /// `inflation` is [`correlation_inflation`](crate::math::correlation_inflation)'s.
+    pub(crate) fn correlated(self, inflation: f32) -> Self {
+        Self {
+            r_gain: self.r_m * inflation,
+            ..self
+        }
+    }
 }
 
 /// What one update produced, before anything is committed.
@@ -68,9 +79,9 @@ pub(crate) enum Update {
 ///
 /// `S` is factored by Cholesky, and the factor serves both the gate and the gain:
 /// `ε = yᵀ S⁻¹ y` and `K = P Hᵀ S⁻¹` each need a solve against `S`, and neither needs `S⁻¹`
-/// itself. A GNSS position fix is the exception, gated on its own `R_m` and gained on the
-/// larger `R` of (28′), so its gain is solved against a second factor; for every other
-/// source `r_gain` is `r_m` and the second factor is the first. The second costs 40 bytes of
+/// itself. A correlated measurement is the exception, gated on its own `R_m` and gained on the
+/// larger `R̃` of (24′), so its gain is solved against a second factor; where `r_gain` is
+/// `r_m` the second factor is the first. The second costs 40 bytes of
 /// `update::<3>`'s frame on `thumbv6m` and none on `thumbv7em`. The factorization is also the check
 /// that `S` is positive-definite. With `R_m > 0` and `P` positive semi-definite it always is, so a
 /// failure means `P` has lost that property in f32 — the filter's fault rather than the
@@ -154,7 +165,7 @@ pub(crate) fn update<const M: usize>(
     if ratio > 1.0 {
         return Update::Rejected { ratio, innovation };
     }
-    // (28′)'s `S̃`, for a source whose `R` the gain reads apart from the gate.
+    // (24′)'s `S̃`, for a source whose `R` the gain reads apart from the gate.
     let s_factor = if correlated {
         let Some(factor) = Cholesky::new(hph + r_gain) else {
             return Update::Invalid;
@@ -411,7 +422,7 @@ mod tests {
 
     #[test]
     fn the_gate_reads_the_fixs_own_variance_and_the_gain_the_larger_one() {
-        // A fix fused at (28′)'s variance, nine times its own: the gate asks whether this one
+        // A fix fused at (24′)'s variance, nine times its own: the gate asks whether this one
         // fix is consistent, which its own `R_m` answers, while the gain is what a run of
         // such fixes is worth.
         let prior = diagonal(1.0);

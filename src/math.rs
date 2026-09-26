@@ -1,6 +1,6 @@
 //! The primitives the equations share: `[u]ₓ` and `Exp(φ)` from the operators table, the
 //! `wrap(·)` of (35), both halves of (42) — the symmetry enforcement and the diagonal
-//! variance floor — and the inflation of (28′).
+//! variance floor — and the inflation of (24′).
 //!
 //! Nothing here holds state or reads configuration, which is why it is a module of its own:
 //! each function is checkable against its definition without a filter around it.
@@ -12,12 +12,12 @@ use nalgebra::{ComplexField, Matrix3, Quaternion, SMatrix, UnitQuaternion, Vecto
 use crate::state::{CovarianceMatrix, ErrorState, Offset, STATES};
 use crate::units::Seconds;
 
-/// The most (28′) multiplies a variance by: a measurement fused at a millionth of its
+/// The most (24′) multiplies a variance by: a measurement fused at a millionth of its
 /// information adds none worth counting, and any variance a receiver reports stays finite
 /// times this, so (27)'s `K R Kᵀ` does too.
 const MAX_INFLATION: f32 = 1.0e6;
 
-/// `(1 + ρ) / (1 − ρ)`, `ρ = exp(−Δt / τ)`: what (28′) multiplies a correlated measurement's
+/// `(1 + ρ) / (1 − ρ)`, `ρ = exp(−Δt / τ)`: what (24′) multiplies a correlated measurement's
 /// variance by, `Δt` after the previous one.
 ///
 /// Written as `(2 − x) / x` with `x = 1 − ρ = −expm1(−Δt / τ)`: at `Δt ≪ τ`, `ρ` rounds to 1 in
@@ -253,6 +253,49 @@ pub(crate) fn floor_diagonal(p: &mut CovarianceMatrix) -> u32 {
 mod tests {
     use super::*;
     use nalgebra::SVector;
+
+    fn inflation(dt: f32, tau: f32) -> f32 {
+        correlation_inflation(Some(Seconds::from_secs(dt)), Some(Seconds::from_secs(tau)))
+    }
+
+    #[test]
+    fn the_inflation_of_24_prime_is_its_definition() {
+        // At Δt = τ, ρ = 1/e and the factor is (e + 1)/(e − 1) = 2.1639.
+        let rho = (-1.0f32).exp();
+        assert!((inflation(0.5, 0.5) - (1.0 + rho) / (1.0 - rho)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn the_inflation_limits_are_white_and_two_tau_over_the_interval() {
+        assert_eq!(inflation(1e3, 1.0), 1.0);
+        // Where `1 − exp` keeps two digits of `1 − ρ`, and `expm1` all of them.
+        let short = inflation(1e-4, 14.0);
+        assert!((short / (2.0 * 14.0 / 1e-4) - 1.0).abs() < 1e-3, "{short}");
+    }
+
+    #[test]
+    fn the_same_error_twice_is_worth_nothing_and_stays_finite() {
+        // Two measurements with no step between them, and a `τ` no interval is short against:
+        // `ρ` is 1 in both, and the factor saturates rather than reaching (27) as infinity,
+        // where `K R Kᵀ` would read `0 · ∞`.
+        for (dt, tau) in [(0.0, 4.2), (0.2, f32::INFINITY), (0.2, f32::MAX)] {
+            assert_eq!(inflation(dt, tau), MAX_INFLATION, "Δt {dt}, τ {tau}");
+        }
+    }
+
+    #[test]
+    fn with_nothing_to_measure_or_nothing_configured_the_measurement_is_white() {
+        let dt = Some(Seconds::from_secs(0.2));
+        for (interval, tau) in [
+            (None, Some(Seconds::from_secs(4.2))),
+            (dt, None),
+            (dt, Some(Seconds::ZERO)),
+            (dt, Some(Seconds::from_secs(-1.0))),
+            (dt, Some(Seconds::from_secs(f32::NAN))),
+        ] {
+            assert_eq!(correlation_inflation(interval, tau), 1.0);
+        }
+    }
 
     use crate::state::ErrorState;
 

@@ -151,14 +151,14 @@
 //!
 //! Six of the scenarios are one-variable departures from `mission` on `mission`'s seed, so
 //! what attributes a fault is `score(departure) − score(mission)` rather than either alone.
-//! `gnss_outage`, `gnss_latency` and `gnss_correlated` separate through the GNSS they change,
+//! `gnss_outage`, `gnss_latency` and `correlated` separate through the GNSS they change,
 //! and `harsh_imu`
 //! through propagation — no longer on the position keys at all, which read `mission`'s figures
 //! now that two quantities are aided, but on `tilt` and on `ba`, the keys that read the IMU's
-//! own errors. `baro_drift` separates on height — `pos_v` 0.691 m against `mission`'s 0.325,
-//! and `nees_pos` 0.60 against 0.28, which is what a drifting reference costs once (30′)
-//! estimates it. `mag_disturbance` separates on `yaw` alone — 0.710 deg against `mission`'s
-//! 0.654 — which is what a 30 deg field error costs a filter that refuses all 200 samples of
+//! own errors. `baro_drift` separates on height — `pos_v` 0.918 m against `mission`'s 0.171,
+//! and `nees_pos` 0.44 against 0.09, which is what a drifting reference costs once (30′)
+//! estimates it. `mag_disturbance` separates on `yaw` alone — 0.350 deg against `mission`'s
+//! 0.344 — which is what a 30 deg field error costs a filter that refuses all 200 samples of
 //! it.
 //!
 //! A refused propagation step is still scored. The epoch row is written either way — the
@@ -3368,7 +3368,7 @@ mod tests {
         // σ_v = 0.01 m/s the gate turns it down; at 0.5 — PX4's `ekf2_gps_v_noise`, which
         // sits above 13163 of the corpus's 13676 velocity solutions — the same innovation is
         // accepted. So a floor applied in `Replay::row` would flip the first assertion,
-        // which is the mutation this guards and the one `a299e722` runs 289 times.
+        // which is the mutation this guards and the one `a299e722` runs 277 times.
         let moving = |var: &str| {
             still_start().raw(&format!(
                 "2.000000,gnss_vel,1.0,0.0,0.0,,,,{var},{var},{var}"

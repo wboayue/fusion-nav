@@ -489,6 +489,45 @@ P \leftarrow (I - KH)\,P\,(I - KH)^\mathsf{T} + K R_m K^\mathsf{T}
 Joseph form costs more than $`P \leftarrow (I - KH)P`$ but is the appropriate default for `f32`
 arithmetic on an embedded target.
 
+### Correlated measurements
+
+(24) treats each measurement's error as independent of the last, and a sensor's rarely is: a
+receiver filters its own solution in time, and a barometer or magnetometer is sampled faster than
+the error it carries changes. Nearly every source on every real corpus log has positively
+autocorrelated innovations (`acf1_` in `data/manifest.txt`). Take the error as first-order
+Gauss–Markov with time constant $`\tau`$, so that measurements $`\Delta t`$ apart share the
+fraction $`\rho = e^{-\Delta t/\tau}`$ of it. The mean of $`n`$ such measurements has variance
+$`\sigma^2 (1+\rho) / \big((1-\rho)\, n\big)`$ as $`n`$ grows, which is what $`n`$ independent ones
+of variance $`\sigma^2 (1+\rho)/(1-\rho)`$ carry. So the gain is computed with that variance, per
+axis:
+
+**(24′)**
+
+```math
+\tilde{R} = R_m \, \frac{1 + \rho}{1 - \rho}, \qquad \rho = e^{-\Delta t / \tau}, \qquad
+\tilde{S} = H P H^\mathsf{T} + \tilde{R}
+```
+
+in place of $`R_m`$ and $`S`$ in (25) and (27), with $`\Delta t`$ the interval since the source's
+previous measurement to reach the gate and $`\tau`$ the source's, from `Config::correlation`. The
+factor is 1 as $`\Delta t / \tau \to \infty`$, where measurements are independent again, and
+$`2\tau/\Delta t`$ as $`\Delta t / \tau \to 0`$, so a source sampled faster than its error changes
+buys no more per second than one sampled at $`\tau`$. At $`\Delta t = 0`$ the same error arrives
+twice and the factor saturates rather than diverging.
+
+Two things keep $`R_m`$. The gate of (37) tests one measurement against (24)'s $`S`$, because one
+measurement's innovation variance is $`H P H^\mathsf{T} + R_m`$ however correlated the next is:
+tested against $`\tilde{S}`$, an innovation $`(1+\rho)/(1-\rho)`$ times larger passes, which on
+`logging_dropout` turned a lockout and its recovery into seconds of slow acceptance. And an
+adoption writes $`R_m`$ onto the covariance, since one measurement's error is its stationary
+variance.
+
+This is the equivalent white noise of the correlated sequence, not a model of it: exact for the
+mean of a long run, conservative for a short one, and free of the Gauss–Markov state per source
+and axis that would model the error exactly and grow the covariance past fifteen states. What it
+was measured against, a floor on $`P`$ and PX4's floor on $`R`$, is in
+[the decision](GOALS.md#correlated-measurement-error-as-equivalent-white-noise).
+
 ## Observation models
 
 ### GNSS position
@@ -510,42 +549,6 @@ which is $`\lim_{P_{pp} \to \infty}`$ of the update above, taken exactly. The co
 zero because the new error is the measurement's and has nothing to do with what preceded it.
 Applies to a quantity never established, once, and to a source locked out past its
 `Config::recovery` timeout; see [gate lockout](#gate-lockout).
-
-### Correlated fixes
-
-(24) treats each fix's error as independent of the last, and a receiver's is not: it filters its
-own solution in time, and every real corpus log's position innovations are positively
-autocorrelated except the RTK receiver's (`acf1_` in `data/manifest.txt`). Take the error as
-first-order Gauss–Markov with time constant $`\tau`$, so that fixes $`\Delta t`$ apart share the
-fraction $`\rho = e^{-\Delta t/\tau}`$ of it. The mean of $`n`$ such fixes has variance
-$`\sigma^2 (1+\rho) / \big((1-\rho)\, n\big)`$ as $`n`$ grows, which is what $`n`$ independent fixes
-of variance $`\sigma^2 (1+\rho)/(1-\rho)`$ carry. So the gain is computed with that variance,
-per axis:
-
-**(28′)**
-
-```math
-\tilde{R} = R_m \, \frac{1 + \rho}{1 - \rho}, \qquad \rho = e^{-\Delta t / \tau}, \qquad
-\tilde{S} = H P H^\mathsf{T} + \tilde{R}
-```
-
-in place of $`R_m`$ and $`S`$ in (25) and (27), with $`\Delta t`$ the interval since the previous
-usable fix and $`\tau`$ from `Config::gnss_correlation`, horizontal and vertical. The factor is 1 as
-$`\Delta t / \tau \to \infty`$, where fixes are independent again, and $`2\tau/\Delta t`$ as
-$`\Delta t / \tau \to 0`$, so a receiver reporting faster than its error changes buys no more per
-second than one reporting at $`\tau`$.
-
-Two things keep $`R_m`$. The gate of (37) tests one fix against (24)'s $`S`$, because one fix's
-innovation variance is $`H P H^\mathsf{T} + R_m`$ however correlated the next fix is: tested against
-$`\tilde{S}`$, an innovation $`(1+\rho)/(1-\rho)`$ times larger passes, which on
-`logging_dropout` turned a lockout and its recovery into seconds of slow acceptance. And an
-adoption writes $`P_{pp} \leftarrow R_m`$, since one fix's error is its stationary variance.
-
-This is the equivalent white noise of the correlated sequence, not a model of it: exact for the
-mean of a long run, conservative for a short one, and free of the per-axis Gauss–Markov state that
-would model the error exactly and grow the covariance past fifteen states. What it was measured
-against, a floor on $`P`$ and PX4's floor on $`R`$, is in
-[the decision](GOALS.md#correlated-gnss-error-as-equivalent-white-noise).
 
 ### GNSS velocity
 
@@ -1026,8 +1029,8 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | (21) | discrete process noise | `propagate.rs` | `process_noise` |
 | (22) | covariance propagation | `propagate.rs` | `propagate_covariance`, called with (9)–(15) by `propagate` |
 | (23)–(27) | generic update, Joseph form | `update.rs` | `update` |
+| (24′) | correlated measurements | `math.rs`, `update.rs`, `health.rs`, `eskf.rs` | `correlation_inflation`; `Observation::correlated` and `r_gain`; `SourceHealth::since_measured` for `Δt`; each `fuse_*` |
 | (28) | GNSS position, as a horizontal and a height half | `observation/gnss.rs` | `horizontal_jacobian`, `horizontal_observation`, `height_jacobian`, `height_observation` |
-| (28′) | correlated fixes | `observation/gnss.rs`, `math.rs`, `update.rs`, `health.rs` | `decorrelated`; `correlation_inflation`; `Observation::r_gain`; `SourceHealth::since_measured` for `Δt` |
 | (29) | GNSS velocity | `observation/gnss.rs` | `velocity_jacobian`, `velocity_observation` |
 | (30) | barometric altitude | `observation/baro.rs` | `altitude_jacobian`, `altitude_observation` |
 | (30′) | barometric offset | `state.rs`, `update.rs`, `propagate.rs` | `Offset`; `update`'s blocks; `propagate_offset`; `Eskf::establish_reference` |

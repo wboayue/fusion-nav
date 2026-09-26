@@ -361,51 +361,76 @@ impl Default for Timeouts {
     }
 }
 
-/// How long a GNSS position fix's error persists, per axis: the time constant `τ` of
-/// equation (28′). `None` fuses that axis as white, which is (24) as written.
+/// How long each source's measurement error persists: the time constant `τ` of equation
+/// (24′), per source. `None` fuses that source as white, which is (24) as written.
 ///
-/// Equation (24) treats each fix's error as independent of the last, and no receiver in
-/// the corpus is: fused as white, the lag-1 autocorrelation of every real log's GNSS
-/// position innovations (`acf1_gnss_pos`, `acf1_gnss_hgt` on the replay `summary` line) is
-/// 0.62–0.99, except the RTK log's, which is negative. A filter that fuses such fixes as white
-/// averages down an error it cannot observe, and its covariance claims the averaging worked. (28′)
-/// fuses each fix at the variance that makes a run of them carry what they actually carry, which is
-/// less the shorter the interval is against `τ`.
+/// Equation (24) treats each measurement's error as independent of the last, and almost no
+/// source in the corpus is. Fused as white, the lag-1 autocorrelation of every real log's
+/// innovations (the `acf1_` keys of the replay `summary` line) is positive on GNSS position on
+/// every log but the RTK receiver's, and on the barometer and magnetometer on nearly every
+/// one. A filter that fuses such measurements as white averages down an error it cannot
+/// observe, and its covariance claims the averaging worked. (24′) fuses each at the variance
+/// that makes a run of them carry what they actually carry, which is less the shorter the
+/// interval is against `τ`.
 ///
 /// Inflating `R` rather than flooring `P`, and in the gain rather than the gate, is measured; the
-/// [decision](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#correlated-gnss-error-as-equivalent-white-noise)
+/// [decision](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#correlated-measurement-error-as-equivalent-white-noise)
 /// records what each alternative read.
 ///
-/// Configured rather than derived, as [`ImuNoise`] is: it is a property of the receiver, and
-/// the filter cannot measure it in flight without retuning itself. The replay harness
-/// measures it offline, since `τ = −T / ln ρ` at a log's fix interval `T` and its `acf1_`
-/// value `ρ`. That reading is a lower bound: an innovation is whiter than the error behind
-/// it, because the filter follows part of that error.
+/// Per source, like [`Recovery`] and [`Gates`], because a source is what the gate judges and
+/// what (24′) times. Configured rather than derived, as [`ImuNoise`] is: it is a property of
+/// the sensor, and the filter cannot measure it in flight without retuning itself. The replay
+/// harness measures it offline, `τ = −T / ln ρ` at a log's sample interval `T` and its `acf1_`
+/// value `ρ`. That reading is a lower bound: an innovation is whiter than the error behind it,
+/// because the filter follows part of that error.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct GnssCorrelation {
-    /// North and east.
-    pub horizontal: Option<Seconds>,
-    /// Down.
-    pub vertical: Option<Seconds>,
+pub struct Correlation {
+    /// GNSS horizontal position.
+    pub gnss_position: Option<Seconds>,
+    /// GNSS height.
+    pub gnss_height: Option<Seconds>,
+    /// GNSS velocity, all three axes.
+    pub gnss_velocity: Option<Seconds>,
+    /// Barometric altitude. The reference's drift is (30′)'s, not this: this is the noise
+    /// about it.
+    pub baro_altitude: Option<Seconds>,
+    /// Magnetic heading, with the levelling variance of (36′) it carries.
+    pub mag_heading: Option<Seconds>,
 }
 
-impl GnssCorrelation {
-    /// Every fix independent of the last: equation (24) with nothing added.
+impl Correlation {
+    /// Every measurement independent of the last: equation (24) with nothing added.
     pub const WHITE: Self = Self {
-        horizontal: None,
-        vertical: None,
+        gnss_position: None,
+        gnss_height: None,
+        gnss_velocity: None,
+        baro_altitude: None,
+        mag_heading: None,
     };
 }
 
-impl Default for GnssCorrelation {
-    /// The corpus's: `τ = −T / ln ρ` from each real log's `acf1_gnss_pos` and `acf1_gnss_hgt`, read
-    /// with every fix fused as white, at its own fix interval, the median over the eight whose
-    /// autocorrelation is positive (the SITL log and the RTK log excluded). Horizontally 2.1–15.8
-    /// s, median 4.2; in height 3.7–70 s, median 14.
+impl Default for Correlation {
+    /// The corpus's: `τ = −T / ln ρ` from each real log's `acf1_` for the source, read with
+    /// every measurement fused as white, at that log's own sample interval, and the median over
+    /// the logs whose autocorrelation is positive (the SITL log and the RTK log excluded):
+    ///
+    /// | source | logs | range, s | median, s |
+    /// | ------ | ---- | -------- | --------- |
+    /// | GNSS horizontal position | 8 | 2.1–15.8 | 4.2 |
+    /// | GNSS height | 8 | 3.7–70 | 14 |
+    /// | GNSS velocity | 5 | 0.31–2.2 | 0.50 |
+    /// | barometer | 9 | 0.006–4.2 | 0.22 |
+    /// | magnetometer | 9 | 0.006–14.6 | 1.7 |
+    ///
+    /// Three receivers' velocity innovations and one magnetometer's alternate in sign, which no
+    /// `τ` describes, and are left out rather than read as white.
     fn default() -> Self {
         Self {
-            horizontal: Some(Seconds::from_secs(4.2)),
-            vertical: Some(Seconds::from_secs(14.0)),
+            gnss_position: Some(Seconds::from_secs(4.2)),
+            gnss_height: Some(Seconds::from_secs(14.0)),
+            gnss_velocity: Some(Seconds::from_secs(0.5)),
+            baro_altitude: Some(Seconds::from_secs(0.22)),
+            mag_heading: Some(Seconds::from_secs(1.7)),
         }
     }
 }
@@ -680,8 +705,8 @@ pub struct Config {
     pub timeouts: Timeouts,
     /// Automatic recovery from gate lockout, per source.
     pub recovery: Recovery,
-    /// How long a GNSS position fix's error persists, equation (28′).
-    pub gnss_correlation: GnssCorrelation,
+    /// How long each source's measurement error persists, equation (24′).
+    pub correlation: Correlation,
     /// Static initialization.
     pub init: Initialization,
     /// How good an estimate must be to count as valid.
@@ -719,7 +744,7 @@ pub struct Config {
     /// the barometer has drifted away from.
     ///
     /// What it costs is height where the barometer does not drift. The simulator's never
-    /// does, and there `mission` scores 0.325 m of vertical RMSE here against 0.085 at zero:
+    /// does, and there `mission` scores 0.171 m of vertical RMSE here against 0.085 at zero:
     /// the offset walks away from what the barometer knew, and GNSS height takes over the low
     /// frequencies. A barometer characterized on the bench as more stable than this is the
     /// reason to lower it.
@@ -755,7 +780,7 @@ impl Default for Config {
             gates: Gates::default(),
             timeouts: Timeouts::default(),
             recovery: Recovery::default(),
-            gnss_correlation: GnssCorrelation::default(),
+            correlation: Correlation::default(),
             init: Initialization::default(),
             accuracy: Accuracy::default(),
             max_predict_dt: Seconds::from_secs(0.1),

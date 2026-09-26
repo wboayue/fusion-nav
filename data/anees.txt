@@ -30,36 +30,32 @@
 # of the default is still at or above that IMU's noise (the gyroscope bias walk to within 10 %),
 # and `over_pos` rises only from 0.02-0.03 to 0.04-0.09 there.
 #
-# A scenario the filter fails today asserts the failure (`any_>=1`, or `over_>=0.10` for one
-# that never spikes) on the blocks that fail, and
+# A scenario the filter fails today asserts the failure (`any_>=1`) on the blocks that fail, and
 # gates its other blocks as usual. Each names its cause; the assertion trips when the cause is
 # removed, so the line is rewritten in the diff that fixes it rather than left passing silently.
 #
-#   gnss_latency     fixes 150 ms stale that `R` does not describe; #52 owns latency.
-#                    anees_pos=8.66, and every block fails. (28') took it from 56.39: a
-#                    stale fix is one more error that persists from fix to fix.
-#   gnss_correlated  position only: GNSS error correlated over 8.7 s horizontally and 38 s
-#                    vertically, slower than `Config::gnss_correlation`'s 4.2 s and 14 s, which
-#                    are the corpus's median and understate it. (28') fuses it at too small a
-#                    variance: anees_pos=1.30, over_pos=0.78, never past bound_any. Fused as
-#                    white it read anees_pos=26.03 and over_pos=0.9981; drawn at the default's
-#                    own time constants, 0.92 and 0. A receiver's `tau` measured offline (#51)
-#                    is what removes it. #117.
+#   gnss_latency     position and velocity: fixes 150 ms stale that `R` does not describe; #52
+#                    owns latency. anees_pos=4.06, anees_vel=1.09. (24') took it from 56.39 and
+#                    its attitude under the bound: a stale fix is one more error that persists
+#                    from fix to fix.
+#   correlated       position only: every aiding error correlated, slower than
+#                    `Config::correlation`'s defaults, which are the corpus's medians and
+#                    understate it (`examples/simulate.rs`). (24') fuses it at too small a
+#                    variance: anees_pos=1.45, over_pos=0.95, any_pos=5166. Fused as white it read
+#                    anees_pos=29.16 and anees_att=3.48, over on every epoch of both. A sensor's
+#                    `tau` measured offline (#51) is what removes it. #117.
 #   logging_dropout  1.2 s refused at speed, then ~7 s of rejected fixes before the recovery;
-#                    #144 would coast the gap. anees_pos=4.95, peak_pos=303.3 at 61.6 s; (28')
+#                    #144 would coast the gap. anees_pos=2.71, peak_pos=142.4 at 61.6 s; (24')
 #                    took it from 10.94 and 1847.5, the fixes before the gap no longer having
 #                    averaged the covariance down.
-#   harsh_imu        attitude only: its accelerometer bias is fixed at [0.129, -0.186, 0.081]
-#                    m/s^2, 1.86 of `Initialization`'s 0.1 prior on y, and a horizontal
-#                    accelerometer bias reads as tilt. Every seed shares it, so the ensemble
-#                    cannot average it away. At the nominal IMU's bias the same line reads
-#                    any_att=0 and peak_att 0.65 (2.20 as fixed); raising `gyro_bias_walk` to cover
-#                    its gyroscope walk moves nothing. #149.
-#   moving_start     attitude only: in the 0.2 s after the heading adoption at initialization and
-#                    before the first GNSS velocity fusion, four magnetometer headings share one
-#                    levelling tilt error that (36') prices into each `R` as though independent.
-#                    peak_att 1.80 at 10.16 s; once velocity fuses it corrects that tilt and the
-#                    ensemble is back under the bound. #150.
+#
+# Three lines (24') rewrote from failing to passing, each on attitude. `moving_start` (#150) was
+# four magnetometer headings sharing one levelling tilt error in the 0.2 s after the heading
+# adoption, priced by (36') as though independent: peak_att 1.80, now 0.88, which is this failure
+# exactly. `harsh_imu` (#149), whose accelerometer bias is fixed at 1.86 of the prior on y and
+# shared by every seed: peak_att 2.20, now 0.60. `gnss_latency`, whose attitude went under the
+# bound with its position's move.
+#
 # `runs=` repeats the column as an expectation, so an ensemble that lost a run breaches rather than
 # being scored against the looser bound of fewer seeds.
 #
@@ -69,12 +65,12 @@
 
 static           50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
 mission          50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
-harsh_imu        50  runs=50  any_pos=0   any_vel=0   any_att>=1  over_pos<=0.10 over_vel<=0.10
+harsh_imu        50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
 gnss_outage      50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
-moving_start     50  runs=50  any_pos=0   any_vel=0   any_att>=1  over_pos<=0.10 over_vel<=0.10 over_att<=0.10
+moving_start     50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
 baro_drift       50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
-gnss_latency     50  runs=50  any_pos>=1  any_vel>=1  any_att>=1
-gnss_correlated  50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos>=0.10 over_vel<=0.10 over_att<=0.10
+gnss_latency     50  runs=50  any_pos>=1  any_vel>=1  any_att=0   over_att<=0.10
+correlated       50  runs=50  any_pos>=1  any_vel=0   any_att=0   over_vel<=0.10 over_att<=0.10
 mag_disturbance  50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
 logging_dropout  50  runs=50  any_pos>=1  any_vel>=1  any_att>=1
 flight           50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10

@@ -513,12 +513,12 @@ Known, and stated here rather than discovered in flight. Some are deliberate; th
 * **In-motion alignment is coarse.** A moving start runs and reports `Aligning`, but full
   alignment of a bare vehicle in motion is not yet built; `initialize_from` covers a held
   estimate. See [alignment beyond the static window](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#alignment-beyond-the-static-window).
-* **Only GNSS position is fused as correlated.** Equation (24) treats each reading's error as
-  independent of the last, and real sources rarely are. A GNSS position fix is fused at the
-  variance its correlation with the last leaves ([equation (28′)](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#correlated-fixes),
-  `Config::gnss_correlation`); GNSS velocity, the barometer and the magnetometer are still fused
-  as white, so a run of their readings still shrinks the covariance below what they support. See
-  [correlated GNSS error](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#correlated-gnss-error-as-equivalent-white-noise).
+* **Correlation times are configured, not measured.** Each source is fused at the variance its
+  correlation with the last reading leaves ([equation (24′)](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#correlated-measurements)),
+  with `τ` from `Config::correlation`, whose defaults are the corpus's medians. A sensor whose
+  error persists longer than its `τ` still shrinks the covariance below what it supports, and one
+  reporting a σ too small is gated on that σ and weighted less besides. See
+  [correlated measurement error](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#correlated-measurement-error-as-equivalent-white-noise).
 * **An IMU gap freezes the state.** A step longer than `Config::max_predict_dt` is refused
   (`Propagation::StepTooLong`), and across it position neither advances nor grows its
   covariance. On a fast vehicle the gate then turns GNSS down until `Config::recovery` adopts a

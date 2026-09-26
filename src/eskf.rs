@@ -5,7 +5,7 @@ use crate::frames::{Body, Ned};
 use crate::geodetic::{Geodetic, LocalOrigin};
 use crate::health::{Diagnostics, Fusion, GnssFusion, Propagation, SourceHealth, Status, Validity};
 use crate::init::{self, Alignment, Coarse, InitError, Measured, StaticSample, baro_reference};
-use crate::math::{below_floor, exp_quat, floor_diagonal, floor_offset};
+use crate::math::{below_floor, correlation_inflation, exp_quat, floor_diagonal, floor_offset};
 use crate::observation::{baro, gnss, mag};
 use crate::propagate::{ImuSample, project, propagate};
 use crate::state::{AttitudeVariance, Covariance, ErrorState, Offset, State};
@@ -708,11 +708,11 @@ impl Eskf {
     /// therefore trusting the receiver further than either production autopilot does. What
     /// the filter does add is the receiver's rather than the fix's: a fix's error persists
     /// into the next one, and the update is computed at the variance that leaves, equation
-    /// (28′), with the gate still reading `noise` itself. See
-    /// [`Config::gnss_correlation`](crate::Config::gnss_correlation).
+    /// (24′), with the gate still reading `noise` itself. See
+    /// [`Config::correlation`](crate::Config::correlation).
     ///
-    /// The interval (28′) reads is the time since the previous usable fix through this
-    /// method, so it assumes one receiver. Fixes from a second one, or from motion capture,
+    /// The interval (24′) reads is the time since the previous fix through this method to
+    /// reach the gate, so it assumes one receiver. Fixes from a second one, or from motion capture,
     /// interleaved with the first read as the same error arriving sooner and are deweighted
     /// though their errors are independent.
     ///
@@ -735,7 +735,6 @@ impl Eskf {
         if !self.initialized {
             return self.refuse_gnss(Fusion::NotInitialized);
         }
-        let interval = self.diagnostics.gnss_position.since_measured;
         if self.unestablished.position {
             if !position.is_finite() || !noise.is_finite() {
                 return self.refuse_gnss(Fusion::NotFinite);
@@ -747,17 +746,18 @@ impl Eskf {
             self.unestablished.position = false;
             self.diagnostics.gnss_position.record_adopted();
             self.diagnostics.gnss_height.record_adopted();
-            self.diagnostics.gnss_position.record_measured();
             return GnssFusion::both(Fusion::Reset);
         }
 
         let (z, r) = (position.vector(), noise.variance());
-        // Only the update is fused at (28′)'s variance; a recovery adopts `noise` itself.
-        let fused = gnss::decorrelated(noise, interval, self.config.gnss_correlation);
         let horizontal = match screen(&[z[0], z[1]], &[r[0], r[1]]) {
             Some(refusal) => refuse(&mut self.diagnostics.gnss_position, refusal),
             None => {
-                let observation = gnss::horizontal_observation(&self.state, position, noise, fused);
+                let observation = gnss::horizontal_observation(&self.state, position, noise)
+                    .correlated(correlation_inflation(
+                        self.diagnostics.gnss_position.since_measured,
+                        self.config.correlation.gnss_position,
+                    ));
                 let outcome = update(
                     &self.state,
                     &self.covariance,
@@ -776,7 +776,11 @@ impl Eskf {
         let height = match screen(&[z[2]], &[r[2]]) {
             Some(refusal) => refuse(&mut self.diagnostics.gnss_height, refusal),
             None => {
-                let observation = gnss::height_observation(&self.state, position, noise, fused);
+                let observation = gnss::height_observation(&self.state, position, noise)
+                    .correlated(correlation_inflation(
+                        self.diagnostics.gnss_height.since_measured,
+                        self.config.correlation.gnss_height,
+                    ));
                 let outcome = update(
                     &self.state,
                     &self.covariance,
@@ -792,10 +796,6 @@ impl Eskf {
                 )
             }
         };
-        // A fix both of whose halves were refused carried no error to correlate with.
-        if horizontal.refusal().is_none() || height.refusal().is_none() {
-            self.diagnostics.gnss_position.record_measured();
-        }
         GnssFusion { horizontal, height }
     }
 
@@ -867,7 +867,6 @@ impl Eskf {
             return self.refuse_gnss(Fusion::NoReference);
         };
         self.origin = Some(origin);
-        self.diagnostics.gnss_position.record_measured();
         let placed = self.reset_position_to(self.state.position, noise);
         debug_assert!(
             placed,
@@ -914,7 +913,12 @@ impl Eskf {
             self.diagnostics.gnss_velocity.record_adopted();
             return Fusion::Reset;
         }
-        let observation = gnss::velocity_observation(&self.state, velocity, noise);
+        let observation = gnss::velocity_observation(&self.state, velocity, noise).correlated(
+            correlation_inflation(
+                self.diagnostics.gnss_velocity.since_measured,
+                self.config.correlation.gnss_velocity,
+            ),
+        );
         let outcome = update(
             &self.state,
             &self.covariance,
@@ -991,7 +995,11 @@ impl Eskf {
             self.diagnostics.baro_altitude.record_accepted(0.0, None);
             return Fusion::Accepted { test_ratio: 0.0 };
         };
-        let observation = baro::altitude_observation(&self.state, altitude, reference, noise);
+        let observation = baro::altitude_observation(&self.state, altitude, reference, noise)
+            .correlated(correlation_inflation(
+                self.diagnostics.baro_altitude.since_measured,
+                self.config.correlation.baro_altitude,
+            ));
         let outcome = update(
             &self.state,
             &self.covariance,
@@ -1066,7 +1074,11 @@ impl Eskf {
             field,
             self.config.magnetic_declination,
             noise,
-        );
+        )
+        .correlated(correlation_inflation(
+            self.diagnostics.mag_heading.since_measured,
+            self.config.correlation.mag_heading,
+        ));
         if self.unestablished.heading {
             self.adopt_heading(&observation);
             self.diagnostics.mag_heading.record_adopted();
@@ -1672,7 +1684,7 @@ fn refuse(source: &mut SourceHealth, outcome: Fusion) -> Fusion {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Accuracy, GRAVITY, GnssCorrelation, Recovery};
+    use crate::config::{Accuracy, Correlation, GRAVITY, Recovery};
     use crate::geodetic::LocalOrigin;
     use crate::health::Refusal;
     use crate::init::tests::{gravity_at, still, turning};
@@ -2187,6 +2199,9 @@ mod tests {
     #[test]
     fn after_a_coarse_start_the_first_altitude_past_the_first_fix_sets_the_reference() {
         let mut filter = coarse();
+        // Every reading here arrives with no step between it and the last, which (24′) takes
+        // for the same error twice; this is (30′)'s arithmetic, on white sources.
+        filter.config.correlation = Correlation::WHITE;
         assert_eq!(
             filter.fuse_gnss_position(
                 Position::ned(10.0, -4.0, -30.0),
@@ -2467,10 +2482,10 @@ mod tests {
         // The barometer reads 3 m above where the receiver puts the vehicle, every time. A
         // constant `α₀` would split the difference in the height for ever; an estimated one
         // takes the disagreement into the reference, and the height follows the receiver.
-        // The receiver is white, as a constant fix is, and says so: at (28′)'s default a
+        // The receiver is white, as a constant fix is, and says so: at (24′)'s default a
         // 10 Hz fix is worth 1/280 of one, and 30 s moves the reference 0.8 m of the 3.
         let mut filter = aided();
-        filter.config.gnss_correlation = GnssCorrelation::WHITE;
+        filter.config.correlation = Correlation::WHITE;
         for step in 0..3000 {
             assert_eq!(filter.predict(still().imu, DT), Propagation::Propagated);
             if step % 10 == 0 {
@@ -2494,11 +2509,11 @@ mod tests {
 
     #[test]
     fn a_run_of_correlated_fixes_leaves_more_uncertainty_than_a_run_of_white_ones() {
-        // Twenty-five fixes at 5 Hz. As white, (24) averages them down; at (28′)'s default,
+        // Twenty-five fixes at 5 Hz. As white, (24) averages them down; at (24′)'s default,
         // each is worth 1/42 of one horizontally and 1/140 in height, since the receiver's
         // error has barely moved between them.
         let mut white = aided();
-        white.config.gnss_correlation = GnssCorrelation::WHITE;
+        white.config.correlation = Correlation::WHITE;
         let mut correlated = aided();
         for step in 0..500 {
             for filter in [&mut white, &mut correlated] {
@@ -2521,7 +2536,41 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_fix_does_not_restart_the_interval_of_28_prime() {
+    fn every_source_is_fused_at_its_own_correlation() {
+        // Velocity at 5 Hz and heading at 20 Hz for 5 s: as white, (24) averages each down;
+        // at their defaults each solution is worth about a fifth, each heading about a
+        // thirty-fifth. Each source reads its own `τ` and its own clock.
+        let mut white = initialized();
+        white.config.correlation = Correlation::WHITE;
+        let mut correlated = initialized();
+        for step in 0..500 {
+            for filter in [&mut white, &mut correlated] {
+                assert_eq!(filter.predict(still().imu, DT), Propagation::Propagated);
+                if step % 20 == 0 {
+                    let _ = filter.fuse_gnss_velocity(
+                        Velocity::ned(0.0, 0.0, 0.0),
+                        VelocityNoise::from_speed_accuracy(0.3),
+                    );
+                }
+                if step % 5 == 0 {
+                    let _ = filter.fuse_mag_heading(
+                        measured(attitude_of(0.0, 0.0, 0.0), 0.0),
+                        HeadingNoise::from_sigma(0.05),
+                    );
+                }
+            }
+        }
+        for axis in [ErrorState::VelocityNorth, ErrorState::AttitudeZ] {
+            let (w, c) = (
+                white.covariance().variance(axis),
+                correlated.covariance().variance(axis),
+            );
+            assert!(c > 2.0 * w, "{axis:?}: {c} against {w} white");
+        }
+    }
+
+    #[test]
+    fn a_refused_fix_does_not_restart_the_interval_of_24_prime() {
         // A receiver interleaving unusable fixes with good ones carries no error in the bad
         // ones, so the good ones are as far apart as they were.
         let good = |filter: &mut Eskf| {
@@ -2556,7 +2605,7 @@ mod tests {
     }
 
     #[test]
-    fn the_interval_of_28_prime_restarts_with_the_filter() {
+    fn the_interval_of_24_prime_restarts_with_the_filter() {
         // The filter's clock restarts at initialization, so the fix before it is not the
         // previous one. Were it kept, the first fix after 0.2 s of the new clock would be
         // fused at 1/42 of its weight.
@@ -3453,8 +3502,10 @@ mod tests {
         // The two σ differ on purpose. Equal ones make `P` and `R` equal, `K` exactly a
         // half, and the test blind to (36′) being dropped from either side — which is
         // what it is here to notice. Unpriced in `R` this moves 0.0456, unpriced in both
-        // 0.0431.
+        // 0.0431. Both headings arrive with no step between them, which (24′) takes for the
+        // same error twice, so the sources are white here.
         let mut filter = initialized();
+        filter.config.correlation = Correlation::WHITE;
         assert!(
             filter
                 .fuse_mag_heading(

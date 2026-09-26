@@ -576,8 +576,9 @@ pub struct SourceHealth {
     /// had shrunk around an error it could not see. A source that recovers regularly on good
     /// data is a finding against the covariance, not a working filter.
     pub recovered: u32,
-    /// Time since a usable measurement from this source last arrived, whatever the gate
-    /// made of it: the `Δt` of equation (28′). Kept per source and reset at each
+    /// Time since a measurement from this source last reached the gate or was adopted,
+    /// whatever became of it: the `Δt` of equation (24′). A refusal does not count, since
+    /// it carried no error to correlate with. Kept per source and restarted at each
     /// measurement, rather than read as a difference of `since_initialized`, because an
     /// `f32` clock counting hours loses the digits a 0.2 s interval needs.
     pub(crate) since_measured: Option<Seconds>,
@@ -605,17 +606,13 @@ impl SourceHealth {
         }
     }
 
-    /// Record that a usable measurement arrived, restarting the interval (28′) reads.
-    pub(crate) fn record_measured(&mut self) {
-        self.since_measured = Some(Seconds::ZERO);
-    }
-
     /// Record a measurement that passed the gate: its test ratio and the innovation behind
     /// it, a restarted fusion clock, and the end of any run of rejections.
     pub(crate) fn record_accepted(&mut self, test_ratio: f32, innovation: Option<Innovation>) {
         self.test_ratio = Some(test_ratio);
         self.innovation = innovation;
         self.time_since_accepted = Some(Seconds::ZERO);
+        self.since_measured = Some(Seconds::ZERO);
         self.consecutive_rejections = 0;
         self.accepted = self.accepted.saturating_add(1);
     }
@@ -649,6 +646,7 @@ impl SourceHealth {
     pub(crate) fn record_rejected(&mut self, test_ratio: f32, innovation: Innovation) {
         self.test_ratio = Some(test_ratio);
         self.innovation = Some(innovation);
+        self.since_measured = Some(Seconds::ZERO);
         self.consecutive_rejections = self.consecutive_rejections.saturating_add(1);
         self.rejected = self.rejected.saturating_add(1);
     }
