@@ -184,6 +184,7 @@ reads and commits.
 | gate thresholds | chi-square quantile for a chosen percentile and dimension | a constructor, not a number |
 | `Timeouts` | observed per-source update intervals | offline recommendation only |
 | GNSS `R` | the receiver; bounding it is the caller's (`PositionNoise::clamped`), and the replay harness fuses it raw (`r_policy=`) | per measurement |
+| `correlation`, how long each source's error persists | `τ = −T / ln ρ` from a replay log's `acf1_` per source, read with every measurement fused as white | offline (#51); the corpus's medians until then |
 | `baro_offset_walk`, the barometric offset's drift | a barometer's drift against GNSS height over a replay log | offline (#51); PX4's 0.13 until then |
 | local gravity `γ` | the origin's latitude, by the WGS-84 gravity formula | the offline tool (#51); a constant in the filter, see the decision below |
 | magnetic declination | a magnetic model, given the GNSS origin and date | optional, for its flash cost |
@@ -311,10 +312,10 @@ The options, in the order they are worth doing:
    after it.
 
    **And tilt can be left to the ordinary gate, which is what the data says.** The corpus
-   answers half of it, and `data/manifest.txt` carries the counts: the gate turns down about one
-   heading in a thousand. On `eb799954` those are single samples 1.1 rad out, each followed by an
-   accepted heading; the rest are on `7ce66f0d`, a hand launch levelled 12° wrong whose heading
-   was never established, where the failure is the levelling and not the gate. The tailsitter
+   answers half of it, and `data/manifest.txt` carries the counts: the gate turns down two
+   headings on `eb799954`, two consecutive samples 1.1 rad out, and 1419 on `7ce66f0d`, a hand
+   launch levelled 12° wrong whose heading was never established, where the failure is the
+   levelling and not the gate. The tailsitter
    `285ee2e7` fuses every heading through 125° of tilt, so nothing is locked out at any tilt
    those vehicles reach. The simulator answers the half the corpus cannot, because only it starts
    badly on purpose: `moving_start` begins at 14.6° of pitch with a coarse attitude, and when
@@ -482,12 +483,65 @@ stepped on the ground by `set_baro_reference` remains available, and names its �
 
 **Seeded from the estimate (#115).** Estimated, the reference read from the estimate after a
 coarse start is seeded correlated with the height it was read against, `P_bb = P_DD + R_m` and
-`P_xb = −P[:, D]`, and `moving_start` reads `nees_pos` 1.0877 against the 112.59 and 14.58 above.
+`P_xb = −P[:, D]`, and `moving_start` read `nees_pos` 1.0877 at #122 against the 112.59 and 14.58 above.
 `2c42096b`, then a coarse start, fused every barometer row after its first fix, where 35575 were
 refused without the seed, with no GNSS height rejected and `status=Healthy`; at `q_b = 0` the
 same run rejected 3825. `cd7e0001` is the coarse start that carries the seed. It covers every
 start that leaves no reference, and `Config::baro_reference_from_estimate` turns it off. See
 [barometric offset](EQUATIONS.md#barometric-offset).
+
+### Correlated measurement error as equivalent white noise
+
+Equation (24) assumes each measurement's error is independent of the last, and almost no source in
+the corpus satisfies it. Fused as white, every real log's GNSS position innovations are positively
+autocorrelated except the RTK receiver's, which alternate, and so are the barometer's and the
+magnetometer's on nearly every log. A filter that fuses such measurements as white averages down an
+error it cannot observe: on `2c42096b` it held σ_pos_n under the receiver's own `eph` at 4003 of
+4614 fixes. Neither production estimator models it; both floor `R` and say so with a constant.
+
+**Decided (#117):** each measurement is fused at the variance that makes a run of them carry what
+they actually carry, equation (24′), `R_m (1 + ρ)/(1 − ρ)` with `ρ = exp(−Δt/τ)`, and gated on its
+own `R_m`, with the interval `Δt` measured from the source's last fused measurement, since a
+rejected one fused nothing the next could repeat. `τ` is `Config::correlation`, per source like `Recovery`, a property of the sensor
+configured the way `ImuNoise` is, and defaults to the corpus's medians: GNSS position 4.2 s
+horizontally and 14 s in height, velocity 0.50 s, barometer 0.20 s, magnetometer 1.2 s. The
+covariance stays fifteen states: a Gauss–Markov state per source and axis would be exact and would
+add eight.
+
+**What it bought.** `correlated` is the simulator's flight with every aiding error correlated, at
+the median of the corpus's upper half rather than the default, because the corpus understates `τ`
+and a scenario drawn at the filter's own value can only agree with it. Fused as white it reads
+50-seed `anees_pos` 29.16 and `anees_att` 3.48, overconfident on every epoch; under (24′), 1.45
+and 0.23, with `pos_v` 2.350 m to 1.142, yaw 3.57° to 2.36° and 320 falsely valid epochs to none.
+The position residual is the slower sources, which a sensor's own `τ` measured offline (#51)
+would remove. `moving_start`'s four headings sharing one levelling error (#150), a failure
+`data/anees.txt` asserted, is this issue in miniature and went with it. On `2c42096b`, σ_pos_n is
+under `eph` at 1788 fixes of 4614, median ratio 1.039 against 0.726. On `7ce66f0d`, the
+magnetometer that kept pushing a wrongly levelled heading stops outvoting GNSS: `recovered=` 294
+to 69, the magnetometer rejected instead. On `093e806a`, 35 to 29.
+
+**What it did not buy.** `harsh_imu` (#149) and `gnss_latency` stopped failing on attitude
+because the covariance widened, not because the error shrank: `harsh_imu`'s tilt moved 1.19° to
+1.12° while its `nees_att` fell 0.76 to 0.21. Their causes stand.
+
+**What was measured against it**, on GNSS position alone. A floor on `P` at each fix's variance,
+the invariant that the filter may not know a quantity better than the only source constraining
+it: honest (`nees_pos` 1.02), and it raises the gain with the covariance, so the estimate follows
+each fix instead of averaging (`mission` `pos_h` 0.244 m to 0.746). Floored horizontally alone,
+`nees_pos` stayed at 22.1, the height carrying the fault. PX4's floor on `R` sits below most
+corpus receivers' `eph` and moved neither. The inflated `R` in the gate as well as the gain passed
+innovations whose variance was up to 42 times what one fix supports: it took `093e806a` to one
+recovery and `7ce66f0d` from 294 to 23, which read as a cure and was a gate that stopped looking.
+
+**What it costs.** Horizontal position where a source is white, which the simulator's are by
+construction, and heading where the magnetometer holds it alone: `mission` `pos_h` 0.244 m to
+0.293, `static` `pos_h` 0.272 to 0.517 and yaw 0.50° to 0.58°, `moving_start` yaw 1.12° to 1.46°,
+`flight` 7.67° to 8.04°. `mission`'s height, velocity and yaw improve (0.249 m to 0.170, 0.187 m/s
+to 0.138, 0.66° to 0.36°), the heading no longer driving tilt through (20) at 20 Hz as though each
+sample were news. `baro_drift` `pos_v` goes 0.284 m to 0.917, GNSS height deweighted against a
+barometer that does drift. On the corpus, `285ee2e7`'s barometer, at a `τ` a seventieth of GNSS
+height's, holds the height 4 m from GNSS through a back-transition until the receiver is rejected
+and adopted. A sensor characterized as white is the reason to set its source's `τ` to `None`.
 
 ### Local gravity as a constant, derived offline
 

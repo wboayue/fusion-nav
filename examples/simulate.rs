@@ -541,6 +541,11 @@ struct GnssErrors {
     sigma_vertical: f64,
     /// m s⁻¹, all three axes.
     sigma_velocity: f64,
+    /// s: time constants of the position error, north and east then down, and of the velocity
+    /// error; see [`GaussMarkov`].
+    tau_horizontal: f64,
+    tau_vertical: f64,
+    tau_velocity: f64,
     /// Seconds between the instant a fix describes and the timestamp it is logged under.
     latency: f64,
     /// When the receiver is in the log at all.
@@ -559,6 +564,9 @@ const GNSS: GnssErrors = GnssErrors {
     sigma_horizontal: 0.9,
     sigma_vertical: 1.8,
     sigma_velocity: 0.15,
+    tau_horizontal: 0.0,
+    tau_vertical: 0.0,
+    tau_velocity: 0.0,
     latency: 0.0,
     available: Window::ALWAYS,
     outage: None,
@@ -572,10 +580,52 @@ struct Fix {
     velocity_variance: [f64; 3],
 }
 
+/// A first-order Gauss-Markov error: `e_k = φ e_{k−1} + √(1 − φ²) w_k`, `φ = exp(−T / τ)`, per
+/// axis, for a sensor sampled every `T`.
+///
+/// `w_k` is the white draw at the stationary σ, so the error's σ is the same whatever `τ` is and
+/// the sample the sensor reports stays honest about it; what correlation changes is how much of
+/// the error averaging can remove, which is equation (24)'s assumption and #117's subject. The
+/// first draw comes from the stationary distribution, `w_0` itself. At `τ = 0`, `φ = 0` and the
+/// result is `w_k` bit for bit, which keeps every white scenario paired with one that is not.
+struct GaussMarkov<const N: usize> {
+    phi: [f64; N],
+    last: Option<[f64; N]>,
+}
+
+impl<const N: usize> GaussMarkov<N> {
+    fn new(period: f64, tau: [f64; N]) -> Self {
+        Self {
+            phi: tau.map(|tau| {
+                if tau > 0.0 {
+                    (-period / tau).exp()
+                } else {
+                    0.0
+                }
+            }),
+            last: None,
+        }
+    }
+
+    fn next(&mut self, white: [f64; N]) -> [f64; N] {
+        let error = match self.last {
+            None => white,
+            Some(last) => std::array::from_fn(|i| {
+                let phi = self.phi[i];
+                phi * last[i] + (1.0 - phi * phi).sqrt() * white[i]
+            }),
+        };
+        self.last = Some(error);
+        error
+    }
+}
+
 struct Gnss {
     errors: GnssErrors,
     position: Noise,
     velocity: Noise,
+    position_error: GaussMarkov<3>,
+    velocity_error: GaussMarkov<3>,
 }
 
 impl Gnss {
@@ -584,6 +634,15 @@ impl Gnss {
             errors,
             position: Noise::new(seed, channel::GNSS_POSITION),
             velocity: Noise::new(seed, channel::GNSS_VELOCITY),
+            position_error: GaussMarkov::new(
+                errors.period,
+                [
+                    errors.tau_horizontal,
+                    errors.tau_horizontal,
+                    errors.tau_vertical,
+                ],
+            ),
+            velocity_error: GaussMarkov::new(errors.period, [errors.tau_velocity; 3]),
         }
     }
 
@@ -603,8 +662,11 @@ impl Gnss {
             self.errors.sigma_horizontal,
             self.errors.sigma_vertical,
         ];
-        let position_noise = self.position.vector_with(sigma);
-        let velocity_noise = self.velocity.vector(self.errors.sigma_velocity);
+        let white = self.position.vector_with(sigma);
+        let position_noise = self.position_error.next(white);
+        let velocity_noise = self
+            .velocity_error
+            .next(self.velocity.vector(self.errors.sigma_velocity));
 
         if !self.errors.available.contains(t) {
             return None;
@@ -641,6 +703,8 @@ struct BaroErrors {
     /// every later altitude is relative to it, so a non-zero value makes a scenario that never
     /// establishes a reference visibly wrong rather than accidentally right.
     reference: f64,
+    /// s: time constant of the noise; see [`GaussMarkov`].
+    tau: f64,
     available: Window,
 }
 
@@ -649,6 +713,7 @@ const BARO: BaroErrors = BaroErrors {
     sigma: 0.35,
     drift: 0.0,
     reference: 112.0,
+    tau: 0.0,
     available: Window::ALWAYS,
 };
 
@@ -661,6 +726,7 @@ struct Altitude {
 struct Baro {
     errors: BaroErrors,
     noise: Noise,
+    error: GaussMarkov<1>,
 }
 
 impl Baro {
@@ -668,6 +734,7 @@ impl Baro {
         Self {
             errors,
             noise: Noise::new(seed, channel::BARO),
+            error: GaussMarkov::new(errors.period, [errors.tau]),
         }
     }
 
@@ -677,7 +744,7 @@ impl Baro {
     /// against a reference that may no longer be where it was, which (30′) is there to follow.
     fn sample(&mut self, t: f64, truth: &Truth) -> Option<Altitude> {
         // Drawn before the availability window is consulted, for the reason [`Gnss::fix`] gives.
-        let noise = self.errors.sigma * self.noise.sample();
+        let [noise] = self.error.next([self.errors.sigma * self.noise.sample()]);
         if !self.errors.available.contains(t) {
             return None;
         }
@@ -703,6 +770,8 @@ struct MagErrors {
     period: f64,
     /// gauss, per axis.
     sigma_field: f64,
+    /// s: time constant of the field noise, every axis; see [`GaussMarkov`].
+    tau: f64,
     available: Window,
     disturbance: Option<Disturbance>,
 }
@@ -710,6 +779,7 @@ struct MagErrors {
 const MAG: MagErrors = MagErrors {
     period: 0.05,
     sigma_field: 0.012,
+    tau: 0.0,
     available: Window::ALWAYS,
     disturbance: None,
 };
@@ -723,6 +793,7 @@ struct Field {
 struct Mag {
     errors: MagErrors,
     noise: Noise,
+    error: GaussMarkov<3>,
 }
 
 impl Mag {
@@ -730,12 +801,13 @@ impl Mag {
         Self {
             errors,
             noise: Noise::new(seed, channel::MAG),
+            error: GaussMarkov::new(errors.period, [errors.tau; 3]),
         }
     }
 
     fn sample(&mut self, t: f64, truth: &Truth) -> Option<Field> {
         // Drawn before the availability window is consulted, for the reason [`Gnss::fix`] gives.
-        let noise = self.noise.vector(self.errors.sigma_field);
+        let noise = self.error.next(self.noise.vector(self.errors.sigma_field));
         if !self.errors.available.contains(t) {
             return None;
         }
@@ -943,13 +1015,13 @@ fn short_hop() -> Trajectory {
 
 /// The scenario table.
 ///
-/// Five of them — `harsh_imu`, `gnss_outage`, `baro_drift`, `gnss_latency`, `mag_disturbance` —
-/// are one-variable departures from `mission`, and the pairing is by construction rather than by
-/// assertion: same trajectory, same duration, and **the same seed**. Streams are split per
-/// sensor, so a departure that leaves a sensor alone reproduces the baseline's draws for it bit
-/// for bit, and `diff mission.csv <departure>.csv` shows the fault and nothing else. Differing
-/// seeds would have left every sensor differing everywhere, which is the attribution this whole
-/// arrangement exists to buy.
+/// Six of them — `harsh_imu`, `gnss_outage`, `baro_drift`, `gnss_latency`, `correlated`,
+/// `mag_disturbance` — are one-variable departures from `mission`, and the pairing is by
+/// construction rather than by assertion: same trajectory, same duration, and **the same seed**.
+/// Streams are split per sensor, so a departure that leaves a sensor alone reproduces the
+/// baseline's draws for it bit for bit, and `diff mission.csv <departure>.csv` shows the fault and
+/// nothing else. Differing seeds would have left every sensor differing everywhere, which is the
+/// attribution this whole arrangement exists to buy.
 ///
 /// The three that are not departures — `static`, `moving_start`, `flight` — carry their own
 /// seeds, so a statistic aggregated across the set still has independent draws to work with.
@@ -1057,6 +1129,29 @@ fn scenarios() -> Vec<Scenario> {
                 latency: 0.15,
                 ..GNSS
             },
+            ..base
+        },
+        // Every aiding error persisting between samples, which (24) fuses as independent and
+        // averages down. The time constants are the corpus's: each real log's `acf1_` per source
+        // with every measurement fused as white, read as τ = −T / ln ρ at that log's own sample
+        // interval, over the logs whose autocorrelation is positive. `Config::correlation`
+        // takes their median; this takes the median of their upper half, sources slower than
+        // the filter assumes. Not the default on purpose: an error drawn at the filter's own `τ`
+        // scores it against its assumption, and innovations are whiter than the error behind
+        // them, so the corpus understates `τ` and slower is the direction a real sensor errs in.
+        Scenario {
+            name: "correlated",
+            covers: "the baseline with every aiding error correlated in time, slower than the filter \
+                     assumes: GNSS position 8.7 s and 38 s, velocity 0.89 s, barometer 1.1 s, \
+                     magnetometer 4.3 s",
+            gnss: GnssErrors {
+                tau_horizontal: 8.7,
+                tau_vertical: 38.0,
+                tau_velocity: 0.89,
+                ..GNSS
+            },
+            baro: BaroErrors { tau: 1.1, ..BARO },
+            mag: MagErrors { tau: 4.3, ..MAG },
             ..base
         },
         // Gating: 10 s of a field turned 30° about the down axis, which reads as a 30° heading

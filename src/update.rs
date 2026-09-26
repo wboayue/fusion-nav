@@ -30,6 +30,22 @@ pub(crate) struct Observation<const M: usize> {
     /// The diagonal of `R_m`. Every noise type this crate takes is a diagonal, so the
     /// off-diagonal entries are never carried.
     pub(crate) r_m: SVector<f32, M>,
+    /// The diagonal of the `R` the gain and (27) are computed with: `r_m` as the observation
+    /// module forms it, and (24′)'s `R̃` once [`correlated`](Self::correlated) has priced in a
+    /// measurement's error persisting from the last. The gate reads `r_m`, because one
+    /// measurement's innovation variance is `H P Hᵀ + R_m` however correlated the next is.
+    pub(crate) r_gain: SVector<f32, M>,
+}
+
+impl<const M: usize> Observation<M> {
+    /// The same observation with its gain computed at `R̃ = R_m · inflation`, equation (24′);
+    /// `inflation` is [`correlation_inflation`](crate::math::correlation_inflation)'s.
+    pub(crate) fn correlated(self, inflation: f32) -> Self {
+        Self {
+            r_gain: self.r_m * inflation,
+            ..self
+        }
+    }
 }
 
 /// What one update produced, before anything is committed.
@@ -61,12 +77,18 @@ pub(crate) enum Update {
 /// Gate a measurement and, if it passes, fold it into the state. Equations (23)–(27) and
 /// (37)–(41).
 ///
-/// `S` is factored once, by Cholesky, and that factor serves both the gate and the gain:
+/// `S` is factored by Cholesky, and the factor serves both the gate and the gain:
 /// `ε = yᵀ S⁻¹ y` and `K = P Hᵀ S⁻¹` each need a solve against `S`, and neither needs `S⁻¹`
-/// itself. The factorization is also the check that `S` is positive-definite. With `R_m > 0`
-/// and `P` positive semi-definite it always is, so a failure means `P` has lost that property
-/// in f32 — the filter's fault rather than the measurement's, reported as
-/// [`Update::Invalid`] rather than gated.
+/// itself. A correlated measurement is the exception, gated on its own `R_m` and gained on the
+/// larger `R̃` of (24′), so its gain is solved against a second factor; where `r_gain` is
+/// `r_m` the second factor is the first. The second costs 272 bytes of `update::<3>`'s frame
+/// on `thumbv6m` and 64 on `thumbv7em`, 320 and 64 of `update::<1>`'s, measured by building
+/// each without it.
+///
+/// The factorization is also the check that `S` is positive-definite. With `R_m > 0` and `P`
+/// positive semi-definite it always is, so a failure means `P` has lost that property in f32 —
+/// the filter's fault rather than the measurement's, reported as [`Update::Invalid`] rather
+/// than gated.
 ///
 /// The gate runs **before** the gain. A rejected measurement costs one factorization and one
 /// solve, and nothing it could have changed has been computed.
@@ -88,8 +110,8 @@ pub(crate) enum Update {
 /// exactly that. Formed here, it cost 4168 bytes more of stack on `thumbv6m` — a 1024-byte
 /// 16 × 16 for each 900-byte temporary, and a copy in and out of it.
 ///
-/// The frame is the largest in the crate: `update::<3>` is 7816 bytes on `thumbv6m-none-eabi`
-/// and 7936 on `thumbv7em-none-eabihf` at `opt-level = 3`, against 2832 for
+/// The frame is the largest in the crate: `update::<3>` is 8088 bytes on `thumbv6m-none-eabi`
+/// and 7960 on `thumbv7em-none-eabihf` at `opt-level = 3`, against 2832 for
 /// `propagate_covariance`, the largest single frame propagation reaches. Most of it is (27),
 /// whose `A_xx`, its two products and `K R Kᵀ` are each a 900-byte 15 × 15; the offset's blocks
 /// are vectors, and cost 968 bytes over the fifteen-state update. That is comfortable on the
@@ -97,7 +119,7 @@ pub(crate) enum Update {
 /// high-water on hardware, is what would say a less obvious form is worth writing.
 ///
 /// `M` is what the rest scales with, and a scalar source is cheaper rather than free:
-/// `update::<1>` takes 6072 bytes on `thumbv6m` and 6176 on `thumbv7em`, so neither scalar
+/// `update::<1>` takes 6368 bytes on `thumbv6m` and 6216 on `thumbv7em`, so neither scalar
 /// source moves the crate's high-water mark — `update::<3>` still sets it. The two scalar
 /// sources share that one monomorphization: the barometer of (30) paid for it, and the
 /// magnetic heading of (34)–(36) added 1204 bytes of `.text` linking the whole public API for
@@ -118,23 +140,43 @@ pub(crate) fn update<const M: usize>(
         cross: c,
         variance: v,
     } = *offset;
-    let Observation { y, h, h_b, r_m } = observation;
-    let r_m = SMatrix::<f32, M, M>::from_diagonal(r_m);
+    let Observation {
+        y,
+        h,
+        h_b,
+        r_m,
+        r_gain,
+    } = observation;
+    let correlated = r_gain != r_m;
+    let (r_m, r_gain) = (
+        SMatrix::<f32, M, M>::from_diagonal(r_m),
+        SMatrix::<f32, M, M>::from_diagonal(r_gain),
+    );
 
     // `H P` of the augmented state, by blocks: `[H P_xx + H_b P_bx, H P_xb + H_b P_bb]`.
     let hp_x = h * p + h_b * c.transpose();
     let hp_b = h * c + h_b * v;
 
-    let s = hp_x * h.transpose() + hp_b * h_b.transpose() + r_m; // (24)
-    let Some(s_factor) = Cholesky::new(s) else {
+    let hph = hp_x * h.transpose() + hp_b * h_b.transpose();
+    let s = hph + r_m; // (24)
+    let Some(gate_factor) = Cholesky::new(s) else {
         return Update::Invalid;
     };
     let innovation = Innovation::new(y, &s);
 
-    let ratio = test_ratio(nis(y, &s_factor), gate);
+    let ratio = test_ratio(nis(y, &gate_factor), gate);
     if ratio > 1.0 {
         return Update::Rejected { ratio, innovation };
     }
+    // (24′)'s `S̃`, for a source whose `R` the gain reads apart from the gate.
+    let s_factor = if correlated {
+        let Some(factor) = Cholesky::new(hph + r_gain) else {
+            return Update::Invalid;
+        };
+        factor
+    } else {
+        gate_factor
+    };
 
     let k_x = s_factor.solve(&hp_x).transpose(); // (25)
     let k_b = s_factor.solve(&hp_b).transpose();
@@ -153,8 +195,8 @@ pub(crate) fn update<const M: usize>(
     let ap_xb = a_xx * c + a_xb * v;
     let ap_bx = a_bx * p + a_bb * c.transpose();
     let ap_bb = a_bx.dot(&c.transpose()) + a_bb * v;
-    let kr_x = k_x * r_m;
-    let kr_b = k_b * r_m;
+    let kr_x = k_x * r_gain;
+    let kr_b = k_b * r_gain;
     let cross = ap_xx * a_bx.transpose() + ap_xb * a_bb + kr_x * k_b.transpose();
     let variance = ap_bx.dot(&a_bx) + ap_bb * a_bb + kr_b.dot(&k_b);
     // The cross-covariance is taken from the rows above rather than averaged with its
@@ -326,6 +368,7 @@ mod tests {
             h: observes_position(),
             h_b: SVector::zeros(),
             r_m: SVector::from([r_m; 3]),
+            r_gain: SVector::from([r_m; 3]),
         }
     }
 
@@ -378,6 +421,39 @@ mod tests {
         assert!(is_symmetric(covariance.as_matrix()));
         // Gain 4/5 of the innovation.
         assert!((state.position.vector() - Vector3::new(0.4, -0.4, 0.16)).norm() < TOLERANCE);
+    }
+
+    #[test]
+    fn the_gate_reads_the_fixs_own_variance_and_the_gain_the_larger_one() {
+        // A fix fused at (24′)'s variance, nine times its own: the gate asks whether this one
+        // fix is consistent, which its own `R_m` answers, while the gain is what a run of
+        // such fixes is worth.
+        let prior = diagonal(1.0);
+        let own = position([1.5, 0.0, 0.0], 1.0);
+        let correlated = Observation {
+            r_gain: SVector::from([9.0; 3]),
+            ..position([1.5, 0.0, 0.0], 1.0)
+        };
+        let (_, _, white_ratio) = accepted(update(
+            &State::default(),
+            &prior,
+            &Offset::default(),
+            &own,
+            gate(7.8),
+        ));
+        let (state, covariance, ratio) = accepted(update(
+            &State::default(),
+            &prior,
+            &Offset::default(),
+            &correlated,
+            gate(7.8),
+        ));
+
+        assert_eq!(ratio, white_ratio);
+        // Scalar Kalman at R = 9: a tenth of the innovation, and 1 · 9 / (1 + 9) of the
+        // variance.
+        assert!((state.position.vector()[0] - 0.15).abs() < TOLERANCE);
+        assert!((covariance.variance(ErrorState::PositionNorth) - 0.9).abs() < TOLERANCE);
     }
 
     #[test]
@@ -441,6 +517,7 @@ mod tests {
             },
             h_b: SVector::zeros(),
             r_m: SVector::from([1.0e-6]),
+            r_gain: SVector::from([1.0e-6]),
         };
 
         let (_, joseph, _) = accepted(update(
@@ -480,6 +557,7 @@ mod tests {
             h: observes_down(),
             h_b: SVector::zeros(),
             r_m: SVector::from([0.5]),
+            r_gain: SVector::from([0.5]),
         };
         let prior = diagonal(0.5);
         let (_, _, ratio) = accepted(update(
@@ -581,6 +659,7 @@ mod tests {
                 h: observes_down(),
                 h_b: SVector::zeros(),
                 r_m: SVector::from([1.0]),
+                r_gain: SVector::from([1.0]),
             },
             gate::<1>(3.84),
         );
@@ -739,6 +818,7 @@ mod tests {
             h,
             h_b: SVector::from([1.0]),
             r_m: SVector::from([0.5]),
+            r_gain: SVector::from([0.5]),
         };
         assert_matches_augmented(&baro, gate::<1>(100.0));
 

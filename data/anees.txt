@@ -34,21 +34,28 @@
 # gates its other blocks as usual. Each names its cause; the assertion trips when the cause is
 # removed, so the line is rewritten in the diff that fixes it rather than left passing silently.
 #
-#   gnss_latency     fixes 150 ms stale that `R` does not describe; #52 owns latency.
-#                    anees_pos=56.39, and every block fails.
+#   gnss_latency     position and velocity: fixes 150 ms stale that `R` does not describe; #52
+#                    owns latency. anees_pos=4.06, anees_vel=1.09. (24') took it from 56.39: a
+#                    stale fix is one more error that persists from fix to fix.
+#   correlated       position only: every aiding error correlated, slower than
+#                    `Config::correlation`'s defaults, which are the corpus's medians and
+#                    understate it (`examples/simulate.rs`). (24') fuses it at too small a
+#                    variance: anees_pos=1.45, over_pos=0.95, any_pos=5197. Fused as white it read
+#                    anees_pos=29.16 and anees_att=3.48, over on every epoch of both. A sensor's
+#                    `tau` measured offline (#51) is what removes it. #117.
 #   logging_dropout  1.2 s refused at speed, then ~7 s of rejected fixes before the recovery;
-#                    #144 would coast the gap. anees_pos=10.94, peak_pos=1847.5 at 61.2 s.
-#   harsh_imu        attitude only: its accelerometer bias is fixed at [0.129, -0.186, 0.081]
-#                    m/s^2, 1.86 of `Initialization`'s 0.1 prior on y, and a horizontal
-#                    accelerometer bias reads as tilt. Every seed shares it, so the ensemble
-#                    cannot average it away. At the nominal IMU's bias the same line reads
-#                    any_att=0 and peak_att 0.65 (2.22 as fixed); raising `gyro_bias_walk` to cover
-#                    its gyroscope walk moves nothing. #149.
-#   moving_start     attitude only: in the 0.2 s after the heading adoption at initialization and
-#                    before the first GNSS velocity fusion, four magnetometer headings share one
-#                    levelling tilt error that (36') prices into each `R` as though independent.
-#                    peak_att 1.80 at 10.16 s; once velocity fuses it corrects that tilt and the
-#                    ensemble is back under the bound. #150.
+#                    #144 would coast the gap. anees_pos=2.81, peak_pos=142.2 at 61.6 s; (24')
+#                    took it from 10.94 and 1847.5, the fixes before the gap no longer having
+#                    averaged the covariance down.
+#
+# Three lines (24') rewrote from failing to passing, each on attitude, and only one of them for
+# its cause. `moving_start` (#150) was four magnetometer headings sharing one levelling tilt error
+# in the 0.2 s after the heading adoption, priced by (36') as though independent: peak_att 1.80,
+# now 0.89, which is the failure itself removed. `harsh_imu` (#149) passes by a wider covariance
+# rather than a smaller error: its accelerometer bias is still fixed at 1.86 of the prior on y
+# and shared by every seed, and single-seed `tilt` moved only 1.188 deg to 1.117 while `nees_att`
+# went 0.7563 to 0.2137; peak_att 2.20, now 0.60. `gnss_latency`'s attitude passes the same way.
+# Both causes stand, and the lines would pass whether or not they were fixed.
 #
 # `runs=` repeats the column as an expectation, so an ensemble that lost a run breaches rather than
 # being scored against the looser bound of fewer seeds.
@@ -59,11 +66,12 @@
 
 static           50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
 mission          50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
-harsh_imu        50  runs=50  any_pos=0   any_vel=0   any_att>=1  over_pos<=0.10 over_vel<=0.10
+harsh_imu        50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
 gnss_outage      50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
-moving_start     50  runs=50  any_pos=0   any_vel=0   any_att>=1  over_pos<=0.10 over_vel<=0.10 over_att<=0.10
+moving_start     50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
 baro_drift       50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
-gnss_latency     50  runs=50  any_pos>=1  any_vel>=1  any_att>=1
+gnss_latency     50  runs=50  any_pos>=1  any_vel>=1  any_att=0   over_att<=0.10
+correlated       50  runs=50  any_pos>=1  any_vel=0   any_att=0   over_vel<=0.10 over_att<=0.10
 mag_disturbance  50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
 logging_dropout  50  runs=50  any_pos>=1  any_vel>=1  any_att>=1
 flight           50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10

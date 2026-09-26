@@ -106,7 +106,7 @@ $ data/expect.sh --self-test                           # the comparator's own fi
 It generates every scenario first rather than reusing `target/sim/`, so no ceiling can be met by
 a flight produced before the change under test; it fails on a scenario the simulator generated and
 this file does not gate, and on a line carrying no ceilings at all, since either reads as a green
-run over a gate that is not there. It runs the debug build: the nine scenarios
+run over a gate that is not there. It runs the debug build: the eleven scenarios
 are about ten seconds all told, against a minute to build the crate again under a second profile,
 and `score` is identical either way. `fetch.sh --check` uses `--release` for a reason that does
 not apply here — a two-hour log at 1.4M epochs.
@@ -403,7 +403,7 @@ Reading the columns back is what verifies them — a wrong index is silence, not
 delta-angle bias agree to 5.3e-4 rad/s (0.03 °/s), which is what confirms the units and the index
 map. The rounding itself rests on PX4 source rather than on that number: it moves `2c42096b` by
 0.5 %, and the log where it would matter carries 58 bias samples against a velocity source this
-filter rejects 287 of 609 solutions from, so its own bias wanders by ±0.01 rad/s and cannot
+filter rejects 266 of 609 solutions from, so its own bias wanders by ±0.01 rad/s and cannot
 adjudicate anything.
 
 Tilt agreed with EKF2 within 0.13° on the five logs it was checked on (#129) at EKF2's first attitude sample after the
@@ -511,16 +511,17 @@ figure they produce:
 
 - PX4 logs **no variance at all** for the barometer or the magnetic heading, so
   `tools/ulog2replay.py` substitutes a constant. `nis_baro` and `nis_mag` therefore measure that
-  constant rather than the filter's tuning, and the corpus reads 0.0067–0.2093 and 0.0025–0.1984
-  — conservative by 2.2–12.2× in σ for the barometer and 2.2–20.0× for the magnetometer, stated
-  separately because one range across both understates the magnetometer's low end by two thirds.
+  constant rather than the filter's tuning, and the corpus reads 0.0309–0.5164 and 0.0026–0.9046
+  on the real logs whose estimate held, conservative by 1.4–5.7× in σ for the barometer and
+  1.1–19.6× for the magnetometer, stated separately because one range across both understates the
+  magnetometer's low end. `data/manifest.txt` names the logs set aside.
   Nothing here had ever tested them; that is the first measurement
   [#50](https://github.com/wboayue/fusion-nav/issues/50) can argue from.
 - For GNSS the statistic tests the receiver's own `eph`/`epv`/`s_variance_m_s`, which the harness
   passes through unfloored where both production estimators bound theirs. Horizontal position
-  reads 0.0056, 0.0110 and 0.1221 and height 0.0048, 0.0547 and 0.1024, so those figures are
-  wider than their residuals earn; `a299e722`'s velocity reads 7.5592, a receiver contradicting its
-  own differenced positions.
+  reads 0.0184–0.2251 on the real logs whose position gate stays quiet and height 0.0865–0.9207,
+  so those figures are wider than their residuals earn; `a299e722`'s velocity reads 6.6705, a
+  receiver contradicting its own differenced positions.
 
 **Unfloored is the policy, and it is deliberate.** Both production estimators bound a receiver's
 reported accuracy before fusing, and this crate ships the same facility for an integrator who
@@ -537,10 +538,11 @@ for three measured reasons:
   is 0.622 m and up on the rest, and σ_v averages 0.51–6.26 m against 0.75 where there is no
   RTK. Since the barometer and the magnetometer already carry
   converter constants, flooring would leave almost no receiver-reported variance in the corpus.
-- **It costs most or all of the only GNSS rejection the multirotors have.** `rejected_gnss_vel=287`
+- **It costs most or all of the only GNSS rejection the multirotors have.** `rejected_gnss_vel=266`
   on `a299e722` is the single non-zero GNSS count across the eight multirotor and SITL logs. (Of
-  the four airframe logs, measured at `Recovery::OFF`, the floors correct one: `093e806a`'s 860
-  position rejections read 92 under them, where recovery alone reads 291. They leave `4b473e91`'s
+  the four airframe logs, measured at `Recovery::OFF` with every fix fused as white, the floors
+  correct one: `093e806a`'s 860 position rejections read 92 under them, where recovery alone read
+  291, and 278 with (24′). They leave `4b473e91`'s
   lockout, which recovery removes, and `7ce66f0d`'s divergence, which neither removes.) Replayed with the floors applied,
   the 278 it read before #137 read 0 under PX4's treatment — the 0.5 m/s floor *and* the separate `sq(1.5f)` vertical
   widening — 2 under that floor alone, and 44 under ArduPilot's per-axis 0.3/0.5, which is the one

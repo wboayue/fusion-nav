@@ -576,6 +576,13 @@ pub struct SourceHealth {
     /// had shrunk around an error it could not see. A source that recovers regularly on good
     /// data is a finding against the covariance, not a working filter.
     pub recovered: u32,
+    /// Time since a measurement from this source was last accepted or adopted: the `Δt` of
+    /// equation (24′). (24′) discounts a measurement for the error it shares with those
+    /// already fused, so only a fused one restarts it; a rejected or refused measurement
+    /// changed nothing the next could repeat. Kept per source and restarted at each fused
+    /// measurement, rather than read as a difference of `since_initialized`, because an `f32`
+    /// clock counting hours loses the digits a 0.2 s interval needs.
+    pub(crate) since_measured: Option<Seconds>,
 }
 
 impl SourceHealth {
@@ -593,8 +600,10 @@ impl SourceHealth {
 
     /// Advance the fusion clock. Called from `predict`, since the filter has no clock.
     pub(crate) fn advance(&mut self, dt: Seconds) {
-        if let Some(elapsed) = self.time_since_accepted {
-            self.time_since_accepted = Some(Seconds::from_secs(elapsed.as_secs() + dt.as_secs()));
+        for clock in [&mut self.time_since_accepted, &mut self.since_measured] {
+            if let Some(elapsed) = *clock {
+                *clock = Some(Seconds::from_secs(elapsed.as_secs() + dt.as_secs()));
+            }
         }
     }
 
@@ -604,6 +613,7 @@ impl SourceHealth {
         self.test_ratio = Some(test_ratio);
         self.innovation = innovation;
         self.time_since_accepted = Some(Seconds::ZERO);
+        self.since_measured = Some(Seconds::ZERO);
         self.consecutive_rejections = 0;
         self.accepted = self.accepted.saturating_add(1);
     }

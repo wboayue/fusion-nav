@@ -361,9 +361,84 @@ impl Default for Timeouts {
     }
 }
 
-/// How long each source may be rejected before the filter adopts it again: automatic
-/// recovery from [gate lockout](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#gate-lockout),
-/// one switch per source. `None` turns that source's recovery off.
+/// How long each source's measurement error persists: the time constant `τ` of equation
+/// (24′), per source. `None` fuses that source as white, which is (24) as written.
+///
+/// Equation (24) treats each measurement's error as independent of the last, and almost no
+/// source in the corpus is. Fused as white, the lag-1 autocorrelation of every real log's
+/// innovations (the `acf1_` keys of the replay `summary` line) is positive on GNSS position on
+/// every log but the RTK receiver's, and on the barometer and magnetometer on nearly every
+/// one. A filter that fuses such measurements as white averages down an error it cannot
+/// observe, and its covariance claims the averaging worked. (24′) fuses each at the variance
+/// that makes a run of them carry what they actually carry, which is less the shorter the
+/// interval is against `τ`.
+///
+/// Inflating `R` rather than flooring `P`, and in the gain rather than the gate, is measured; the
+/// [decision](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#correlated-measurement-error-as-equivalent-white-noise)
+/// records what each alternative read.
+///
+/// Per source, like [`Recovery`] and [`Gates`], because a source is what the gate judges and
+/// what (24′) times. Configured rather than derived, as [`ImuNoise`] is: it is a property of
+/// the sensor, and the filter cannot measure it in flight without retuning itself. The replay
+/// harness measures it offline, `τ = −T / ln ρ` at a log's sample interval `T` and its `acf1_`
+/// value `ρ`. That reading is a lower bound: an innovation is whiter than the error behind it,
+/// because the filter follows part of that error.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Correlation {
+    /// GNSS horizontal position.
+    pub gnss_position: Option<Seconds>,
+    /// GNSS height.
+    pub gnss_height: Option<Seconds>,
+    /// GNSS velocity, all three axes.
+    pub gnss_velocity: Option<Seconds>,
+    /// Barometric altitude. The reference's drift is (30′)'s, not this: this is the noise
+    /// about it.
+    pub baro_altitude: Option<Seconds>,
+    /// Magnetic heading, with the levelling variance of (36′) it carries.
+    pub mag_heading: Option<Seconds>,
+}
+
+impl Correlation {
+    /// Every measurement independent of the last: equation (24) with nothing added.
+    pub const WHITE: Self = Self {
+        gnss_position: None,
+        gnss_height: None,
+        gnss_velocity: None,
+        baro_altitude: None,
+        mag_heading: None,
+    };
+}
+
+impl Default for Correlation {
+    /// The corpus's: `τ = −T / ln ρ` from each real log's `acf1_` for the source, read with
+    /// every measurement fused as white, at that log's own sample interval, and the median over
+    /// the real logs whose autocorrelation is positive (the SITL log excluded, and the RTK
+    /// log's GNSS, a receiver whose innovations alternate):
+    ///
+    /// | source | logs | range, s | median, s |
+    /// | ------ | ---- | -------- | --------- |
+    /// | GNSS horizontal position | 8 | 2.1–15.8 | 4.2 |
+    /// | GNSS height | 8 | 3.7–70 | 14 |
+    /// | GNSS velocity | 5 | 0.31–2.2 | 0.50 |
+    /// | barometer | 10 | 0.006–4.2 | 0.20 |
+    /// | magnetometer | 10 | 0.006–14.6 | 1.2 |
+    ///
+    /// Three receivers' velocity innovations and one magnetometer's alternate in sign, which no
+    /// `τ` describes, and are left out rather than read as white.
+    fn default() -> Self {
+        Self {
+            gnss_position: Some(Seconds::from_secs(4.2)),
+            gnss_height: Some(Seconds::from_secs(14.0)),
+            gnss_velocity: Some(Seconds::from_secs(0.5)),
+            baro_altitude: Some(Seconds::from_secs(0.2)),
+            mag_heading: Some(Seconds::from_secs(1.2)),
+        }
+    }
+}
+
+/// How long each source may be rejected before the filter adopts it again: automatic recovery from
+/// [gate lockout](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#gate-lockout), one
+/// switch per source. `None` turns that source's recovery off.
 ///
 /// A source recovers when the gate rejects one of its measurements and none has been accepted
 /// for at least this long — since initialization, for a source never accepted. That
@@ -378,8 +453,8 @@ impl Default for Timeouts {
 /// same timeout-and-reset loop to write. An application that owns its failsafe policy — a
 /// controller that cannot take a step, an operator alert instead of a reset — turns off the
 /// source it owns, or all of them with [`Recovery::OFF`], and drives
-/// [`Eskf::reset_position_to`](crate::Eskf::reset_position_to) itself. The decision is
-/// [rejection handling](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#rejection-handling-recover-by-default-opt-out-per-source).
+/// [`Eskf::reset_position_to`](crate::Eskf::reset_position_to) itself. The decision is [rejection
+/// handling](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#rejection-handling-recover-by-default-opt-out-per-source).
 ///
 /// Per source, not per quantity, because a source is what the gate rejects: the fields mirror
 /// [`Gates`] and [`Diagnostics`](crate::Diagnostics).
@@ -631,6 +706,8 @@ pub struct Config {
     pub timeouts: Timeouts,
     /// Automatic recovery from gate lockout, per source.
     pub recovery: Recovery,
+    /// How long each source's measurement error persists, equation (24′).
+    pub correlation: Correlation,
     /// Static initialization.
     pub init: Initialization,
     /// How good an estimate must be to count as valid.
@@ -668,7 +745,7 @@ pub struct Config {
     /// the barometer has drifted away from.
     ///
     /// What it costs is height where the barometer does not drift. The simulator's never
-    /// does, and there `mission` scores 0.249 m of vertical RMSE here against 0.078 at zero:
+    /// does, and there `mission` scores 0.170 m of vertical RMSE here against 0.085 at zero:
     /// the offset walks away from what the barometer knew, and GNSS height takes over the low
     /// frequencies. A barometer characterized on the bench as more stable than this is the
     /// reason to lower it.
@@ -704,6 +781,7 @@ impl Default for Config {
             gates: Gates::default(),
             timeouts: Timeouts::default(),
             recovery: Recovery::default(),
+            correlation: Correlation::default(),
             init: Initialization::default(),
             accuracy: Accuracy::default(),
             max_predict_dt: Seconds::from_secs(0.1),

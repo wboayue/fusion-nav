@@ -149,15 +149,16 @@
 //! wrong by the distance flown in the delay while `R` claims otherwise. Three more need the
 //! ensemble of `data/anees.sh` to see, and `data/anees.txt` names them.
 //!
-//! Five of the scenarios are one-variable departures from `mission` on `mission`'s seed, so
+//! Six of the scenarios are one-variable departures from `mission` on `mission`'s seed, so
 //! what attributes a fault is `score(departure) − score(mission)` rather than either alone.
-//! `gnss_outage` and `gnss_latency` separate through the GNSS they change, and `harsh_imu`
+//! `gnss_outage`, `gnss_latency` and `correlated` separate through the GNSS they change,
+//! and `harsh_imu`
 //! through propagation — no longer on the position keys at all, which read `mission`'s figures
 //! now that two quantities are aided, but on `tilt` and on `ba`, the keys that read the IMU's
-//! own errors. `baro_drift` separates on height — `pos_v` 0.284 m against `mission`'s 0.249,
-//! and `nees_pos` 1.19 against 1.07, which is what a drifting reference costs once (30′)
-//! estimates it. `mag_disturbance` separates on `yaw` alone — 0.726 deg against `mission`'s
-//! 0.649 — which is what a 30 deg field error costs a filter that refuses all 200 samples of
+//! own errors. `baro_drift` separates on height — `pos_v` 0.917 m against `mission`'s 0.170,
+//! and `nees_pos` 0.44 against 0.09, which is what a drifting reference costs once (30′)
+//! estimates it. `mag_disturbance` separates on `yaw` alone — 0.381 deg against `mission`'s
+//! 0.361 — which is what a 30 deg field error costs a filter that refuses all 200 samples of
 //! it.
 //!
 //! A refused propagation step is still scored. The epoch row is written either way — the
@@ -1188,7 +1189,7 @@ impl Replay {
     /// The total alone averages two sources moving in opposite directions, which is the
     /// reading `ba=` and `bg=` were split to avoid: fusing velocity halved one bias and
     /// worsened the other, and one key would have reported a clean win. A gate makes the
-    /// same shape of claim — `a299e722` turns down 284 velocity solutions, and an altitude
+    /// same shape of claim — `a299e722` turns down 266 velocity solutions, and an altitude
     /// its barometer gate also turned down would arrive on that line as a larger number
     /// with nothing saying which source grew.
     ///
@@ -3367,7 +3368,7 @@ mod tests {
         // σ_v = 0.01 m/s the gate turns it down; at 0.5 — PX4's `ekf2_gps_v_noise`, which
         // sits above 13163 of the corpus's 13676 velocity solutions — the same innovation is
         // accepted. So a floor applied in `Replay::row` would flip the first assertion,
-        // which is the mutation this guards and the one `a299e722` runs 287 times.
+        // which is the mutation this guards and the one `a299e722` runs 266 times.
         let moving = |var: &str| {
             still_start().raw(&format!(
                 "2.000000,gnss_vel,1.0,0.0,0.0,,,,{var},{var},{var}"

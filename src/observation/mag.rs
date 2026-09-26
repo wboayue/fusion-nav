@@ -114,11 +114,14 @@ pub(crate) fn heading_observation(
     let down = h
         .fixed_view::<1, 3>(0, ErrorState::AttitudeX.index())
         .transpose();
+    let r_m =
+        SVector::<f32, 1>::new(noise.variance() + levelling_variance(covariance, field, down));
     Observation {
         y: SVector::<f32, 1>::new(heading_innovation(state, field, declination)),
         h,
         h_b: SVector::<f32, 1>::zeros(),
-        r_m: SVector::<f32, 1>::new(noise.variance() + levelling_variance(covariance, field, down)),
+        r_m,
+        r_gain: r_m,
     }
 }
 
@@ -135,8 +138,10 @@ pub(crate) fn heading_observation(
 /// horizontal plane: the variance of tilt about the worst horizontal axis. To first order
 /// only tilt about the field's own horizontal direction `f̂` leaks, so `f̂ᵀ P f̂` is the exact
 /// price of one reading, and it measured worse than the bound: consecutive headings share a
-/// tilt error that velocity fusion corrects only over seconds, and (24) takes them as
-/// independent. `EQUATIONS.md` has the derivation and the measurement.
+/// tilt error that velocity fusion corrects only over seconds, and (24) took them as
+/// independent. That was measured with headings fused as white; (24′) now prices part of that
+/// sharing, and the comparison has not been run again. `EQUATIONS.md` has the derivation and
+/// the measurement.
 ///
 /// The eigenvalue depends on no choice of axes, where the larger of two diagonals does: on
 /// an anisotropic block the north/east and body x/y pairs give different maxima, and the
