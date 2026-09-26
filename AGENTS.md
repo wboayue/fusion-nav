@@ -8,7 +8,7 @@ This file provides guidance to coding agents working with code in this repositor
 except (31)–(33), the three-axis magnetometer, which is out of scope, and (5′)'s subtraction,
 which is #59's. The `**Stub.**` marker survives on those two and nowhere else, and every status
 banner says built rather than intended. What is left is mostly measurement and publication —
-#41 (cost on hardware), #8 (the EKF2 comparison), #47 (the release), #89 (ANEES) — plus the
+#41 (cost on hardware), #8 (the EKF2 comparison), #47 (the release) — plus the
 defect the consistency keys of #112 surfaced on `2c42096b`: no corpus source is white
 (`acf1_` 0.11–0.99, and negative on `89a498ce`'s RTK and `eb799954`'s magnetometer) while (24)
 fuses each as white (#117). That overconfidence is the lockout
@@ -32,7 +32,10 @@ once the two origins (3.68 m S, 2.18 m E apart) are aligned, and height does not
 EKF2 climbs 11.97 m with its barometer and this filter falls 8.20 m with GNSS height's low
 frequencies — #8's to explain. The raw `pos_d` columns differ by a further 24.2 m of origin height,
 so a gap read between them is not a disagreement.
-Order: #89 (the gate the remedies are judged by), #117, then #8. #86's tailsitter is no
+#89 landed (#151): `data/anees.sh` gates per-epoch ensemble NEES on 50 seeds against χ² in CI,
+and asserts four failures by cause: `gnss_latency` (#52), `logging_dropout` (#144), and two it
+found that no single seed showed, `harsh_imu` attitude (#149) and `moving_start`'s first 0.2 s
+(#150). Order: #117 (its scenario is the gate's next line), then #8. #86's tailsitter is no
 longer blocked: #131 (#133) reads tilt and heading on navigation axes, `diag(R P_θθ Rᵀ)` through
 `AttitudeVariance`, in `Validity`, the latch, the heading adoption and (8)'s prior, and the
 `tilt`/`yaw`/`false_valid` score keys moved with it — tilt² + yaw² unchanged, the body split had
@@ -85,7 +88,7 @@ is short it buys nothing and costs a little — `mission` `yaw` 0.644 → 0.651,
 `bg` 0.000677 → 0.001013 — because a heading carrying 3.1° of noise has nothing to tell an
 alignment that knew yaw to 0.6°, and its corrections reach tilt and gyroscope bias through (20).
 `nees_att` rose on every line (`mission` 0.0353 → 0.2005) and is still under 1 everywhere: an
-attitude that is finally observed approaches 1 from below, which is #89's to read as a bound.
+attitude that is finally observed approaches 1 from below, which `data/anees.txt` reads as a bound.
 
 (36′) is what made the stage shippable rather than a refinement of it. Pricing the levelling error
 into `R` — `tan²δ · σ_tilt²`, the `tan δ` of (8′) read off the field rather than configured — is
@@ -135,7 +138,7 @@ existed while the table listed the geodetic origin as built, and stage 9's own f
 carried the same rot: `basic.rs` and `degradation.rs` still told a reader heading and velocity
 accepted without correcting, two stages after they stopped. `GLOSSARY.md`
 repeats no caveat by design — it defines terms and defers status to the document that owns it —
-but a few entries do name what is unbuilt (ANEES, the GSF yaw estimator), and those are on the
+but a few entries do name what is unbuilt (the GSF yaw estimator), and those are on the
 list.
 
 ## Backlog
