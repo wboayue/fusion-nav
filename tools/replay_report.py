@@ -1132,7 +1132,7 @@ AGREEMENT_SECTIONS = [
     ("Attitude", ("tilt_", "heading_", "att_nd2")),
     ("Biases", ("ba_", "bg_")),
     ("Rejections, seconds", ("rej_s_",)),
-    ("Resets and harness keys", ("ekf2_", *HARNESS_KEYS)),
+    ("Resets and harness keys", ("estimator", "ekf2_", *HARNESS_KEYS)),
 ]
 
 
@@ -1141,7 +1141,17 @@ def reference_offset(notes):
     for note in notes:
         found = re.match(r"EKF2 origin in replay frame: (\S+) (\S+) (\S+) m", note)
         if found:
-            return tuple(float(v) for v in found.groups())
+            # `none` down is a fix with no MSL height: horizontal still aligns.
+            return tuple(math.nan if v == "none" else float(v) for v in found.groups())
+    return None
+
+
+def reference_estimator(notes):
+    """Which PX4 estimator the reference came from, as its header names it."""
+    for note in notes:
+        found = re.match(r"Estimator: (\w+)", note)
+        if found:
+            return found.group(1)
     return None
 
 
@@ -1171,14 +1181,19 @@ def agreement_of(replay, reference, sources):
                  np.array([verdict == "rejected" for verdict in entry["outcome"]]))
         for source, entry in sources.items()
     }
-    return agreement.compare(ours, ekf2, rejected, reference_offset(notes),
-                             reference_height(notes))
+    values = agreement.compare(ours, ekf2, rejected, reference_offset(notes),
+                               reference_height(notes))
+    # Not a statistic: which estimator every figure beside it is a distance from.
+    return {"estimator": reference_estimator(notes), **values}
 
 
-def agreement_line(values, keys):
-    """`key=value ...`: the agreement keys, then the harness keys read beside them."""
-    pairs = [(k, agreement.format_value(v)) for k, v in values.items()]
-    pairs += [(k, keys[k]) for k in HARNESS_KEYS if k in keys]
+def agreement_line(values, keys, harness=True):
+    """`key=value ...`: `r_policy`, the agreement keys, then the harness keys read
+    beside them unless `harness` is false."""
+    pairs = [("r_policy", keys.get("r_policy", "none"))]
+    pairs += [(k, agreement.format_value(v)) for k, v in values.items()]
+    if harness:
+        pairs += [(k, keys[k]) for k in HARNESS_KEYS if k in keys and k != "r_policy"]
     return " ".join(f"{k}={v}" for k, v in pairs)
 
 
@@ -1212,19 +1227,79 @@ def agreement_tables(runs):
 
 
 AGREEMENT_CAPTION = (
-    "Distance from EKF2's own solution on the same log. EKF2 is not truth: a "
+    "Distance from EKF2's own solution on the same log, or from whichever PX4 "
+    "estimator <code>estimator</code> names where that is not EKF2. EKF2 is not truth: a "
     "figure here is agreement, and a divergence is a finding to explain before it "
     "is an error on either side. Positions after aligning EKF2's origin into this "
     "filter's frame, from the reference header; height as each filter's climb, first "
     "60 s mean to last, since the two converge to different references "
     "(<code>height_reference_ekf2</code>); <code>_nd2</code> is the mean squared "
     "difference over the sum of both filters' variances, a scale rather than a "
-    "chi-square, since both read the same sensors; heading after EKF2's last "
-    "attitude reset; rejections as seconds each filter spent over its gate and "
-    "the seconds both did. <code>none</code> is a quantity this log cannot supply. "
+    "chi-square, since both read the same sensors; heading after EKF2's first "
+    "attitude reset once this filter runs; rejections as seconds each filter "
+    "spent over its gate and the seconds both did. <code>none</code> is a quantity "
+    "this log cannot supply. "
     "Harness keys are read from the summary, never recomputed. "
     "See data/README.md, \"Agreement with EKF2\"."
 )
+
+
+def build_corpus(directory):
+    """`(page, lines)` for every run under `directory`, as `data/fetch.sh --compare`
+    lays it out: `<log>/input.csv`, `<log>/reference.csv`, and per `R` policy
+    `<log>/<policy>.csv` with its `.fusion.csv` and captured `.summary`, plus a
+    `commit` file naming the build that replayed them.
+
+    Each run passes the same pairing and provenance checks a single report
+    does, so one stale file in the directory stops the table rather than
+    publishing a row from another run.
+    """
+    directory = Path(directory)
+    commit_file = directory / "commit"
+    commit = commit_file.read_text().strip() if commit_file.exists() else "unknown"
+    runs, lines, notes_rows = [], [], []
+    for log in sorted(p for p in directory.iterdir() if p.is_dir()):
+        input_path, reference = log / "input.csv", log / "reference.csv"
+        reference = reference if reference.exists() else None
+        reference_notes = read_notes(reference)
+        notes_rows.append((log.name, reference_notes))
+        for summary in sorted(log.glob("*.summary")):
+            replay = summary.with_suffix(".csv")
+            keys = read_summary(summary)
+            _, sources = read_fusion(fusion_path(replay))
+            problems = check_pairing(read_notes(input_path), reference_notes, [])
+            problems += check_provenance(keys, count_rows(replay), sources, reference_notes)
+            if keys.get("r_policy") != summary.stem:
+                problems.append(f"{summary.name} says r_policy={keys.get('r_policy')}")
+            if problems:
+                raise ReportError(f"{log.name}/{summary.stem}: these files do not "
+                                  "describe the same run:\n  - " + "\n  - ".join(problems))
+            values = agreement_of(replay, reference, sources) if reference else {}
+            # A raw run's harness keys are data/manifest.txt's to pin, so its line
+            # leaves them to it; any other policy's are pinned nowhere else.
+            lines.append(f"agreement log={log.name} "
+                         + agreement_line(values, keys, harness=summary.stem != "raw"))
+            line = agreement_line(values, keys)
+            runs.append((f"{log.name[:8]} {summary.stem}",
+                         dict(token.split("=", 1) for token in line.split())))
+    if not runs:
+        raise ReportError(f"{directory}: no `<log>/<policy>.summary` runs")
+
+    origins = "".join(
+        f"<tr><th>{html.escape(name[:8])}</th><td>"
+        + "<br>".join(html.escape(n) for n in notes
+                      if n.startswith(("Estimator", "EKF2 origin", "EKF2 aiding",
+                                       "EKF2 layout")))
+        + "</td></tr>"
+        for name, notes in notes_rows
+    )
+    body = (f'<p class="caption">{AGREEMENT_CAPTION}</p>'
+            + agreement_tables(runs)
+            + "<h3>What each reference says about itself</h3><table>" + origins + "</table>")
+    page = PAGE.format(title="Agreement with EKF2",
+                       meta=f"commit {html.escape(commit)} &middot; {len(runs)} runs",
+                       body=body)
+    return page, lines
 
 
 # -------------------------------------------------------------------- main
@@ -1572,11 +1647,28 @@ def main():
     parser.add_argument("--points", type=int, default=4000, help="approximate "
                         "points per trace after decimation (default: 4000)")
     parser.add_argument("--title", help="report title (default: the input's stem)")
+    parser.add_argument("--corpus", type=Path, help="a directory `data/fetch.sh "
+                        "--compare` wrote: one agreement table for every run in it, "
+                        "and one `agreement` line per run on stdout")
     parser.add_argument("--self-test", action="store_true",
                         help="run the attitude fixtures no corpus log can check, and exit")
     args = parser.parse_args()
     if args.self_test:
         return self_test()
+    if args.corpus:
+        if args.out is None:
+            parser.error("--corpus needs -o/--out")
+        try:
+            page, lines = build_corpus(args.corpus)
+        except ReportError as e:
+            print(f"replay_report: {e}", file=sys.stderr)
+            return 1
+        for line in lines:
+            print(line)
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(page)
+        print(f"{args.out} ({len(page) / 1e6:.2f} MB)", file=sys.stderr)
+        return 0
     if args.input is None or args.replay is None or args.out is None:
         parser.error("input, replay and -o/--out are required")
 
