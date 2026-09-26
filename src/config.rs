@@ -745,7 +745,7 @@ pub struct Config {
     /// the barometer has drifted away from.
     ///
     /// What it costs is height where the barometer does not drift. The simulator's never
-    /// does, and there `mission` scores 0.171 m of vertical RMSE here against 0.085 at zero:
+    /// does, and there `mission` scores 0.170 m of vertical RMSE here against 0.085 at zero:
     /// the offset walks away from what the barometer knew, and GNSS height takes over the low
     /// frequencies. A barometer characterized on the bench as more stable than this is the
     /// reason to lower it.

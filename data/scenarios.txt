@@ -152,16 +152,16 @@
 # removes exactly that error and nothing else was changed to make it: `pos_v` 3.07 to 0.819,
 # `pos_h` 9.14 to 3.03, `yaw` 12.96 deg to 7.59. A heading the window observed, stage 8's, is
 # the other half -- this one corrects the consequence and leaves the 0.6 rad in place.
-static           1  pos_h<=0.523 pos_v<=0.351 vel<=0.142 pos_h_max<=0.934  tilt<=0.538 yaw<=0.583 ba<=0.07733 bg<=0.000856 in3s>=0.9900 nees_pos<=0.3339   nees_vel<=0.1090 nees_att<=0.0466 false_valid<=0   false_valid_att<=0   scored>=11600  recovered=0
-mission          2  pos_h<=0.296 pos_v<=0.173 vel<=0.140 pos_h_max<=0.780  tilt<=0.419 yaw<=0.365 ba<=0.05517 bg<=0.000367 in3s>=0.9900 nees_pos<=0.0907   nees_vel<=0.1054 nees_att<=0.0287 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
-harsh_imu        2  pos_h<=0.297 pos_v<=0.171 vel<=0.146 pos_h_max<=0.786  tilt<=1.129 yaw<=1.055 ba<=0.16218 bg<=0.002149 in3s>=0.9900 nees_pos<=0.0914   nees_vel<=0.1132 nees_att<=0.2159 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
+static           1  pos_h<=0.523 pos_v<=0.350 vel<=0.142 pos_h_max<=0.934  tilt<=0.538 yaw<=0.583 ba<=0.07733 bg<=0.000856 in3s>=0.9900 nees_pos<=0.3337   nees_vel<=0.1090 nees_att<=0.0466 false_valid<=0   false_valid_att<=0   scored>=11600  recovered=0
+mission          2  pos_h<=0.296 pos_v<=0.172 vel<=0.140 pos_h_max<=0.780  tilt<=0.419 yaw<=0.365 ba<=0.05517 bg<=0.000367 in3s>=0.9900 nees_pos<=0.0906   nees_vel<=0.1054 nees_att<=0.0287 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
+harsh_imu        2  pos_h<=0.297 pos_v<=0.170 vel<=0.146 pos_h_max<=0.786  tilt<=1.129 yaw<=1.055 ba<=0.16218 bg<=0.002149 in3s>=0.9900 nees_pos<=0.0914   nees_vel<=0.1132 nees_att<=0.2159 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
 gnss_outage      2  pos_h<=1.265 pos_v<=0.099 vel<=0.180 pos_h_max<=8.381 tilt<=0.422 yaw<=0.403 ba<=0.05548 bg<=0.000368 in3s>=0.9900 nees_pos<=0.2100   nees_vel<=0.0958 nees_att<=0.0282 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
 moving_start     4  pos_h<=0.363 pos_v<=0.613 vel<=0.147 pos_h_max<=0.702  tilt<=1.577 yaw<=1.476 ba<=0.06449 bg<=0.001951 in3s>=0.9900 nees_pos<=0.1555   nees_vel<=0.1086 nees_att<=0.0463 false_valid<=0   false_valid_att<=0   scored>=15999  recovered=0
-baro_drift       2  pos_h<=0.296 pos_v<=0.928 vel<=0.141 pos_h_max<=0.780  tilt<=0.419 yaw<=0.364 ba<=0.05515 bg<=0.000368 in3s>=0.9900 nees_pos<=0.4456   nees_vel<=0.1056 nees_att<=0.0287 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
+baro_drift       2  pos_h<=0.296 pos_v<=0.927 vel<=0.141 pos_h_max<=0.780  tilt<=0.419 yaw<=0.364 ba<=0.05515 bg<=0.000368 in3s>=0.9900 nees_pos<=0.4453   nees_vel<=0.1056 nees_att<=0.0287 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
 gnss_latency     2  pos_h<=2.219 pos_v<=0.168 vel<=0.464 pos_h_max<=3.603  tilt<=0.753 yaw<=0.639 ba<=0.05303 bg<=0.001008 in3s>=0.9555 nees_pos<=4.0986  nees_vel<=1.1249 nees_att<=0.0834 false_valid<=283 false_valid_att<=0  scored>=36600  recovered=0
 correlated       2  pos_h<=1.164 pos_v<=1.154 vel<=0.233 pos_h_max<=2.414  tilt<=0.765 yaw<=2.379 ba<=0.05530 bg<=0.001568 in3s>=0.9882 nees_pos<=1.7330  nees_vel<=0.2910 nees_att<=0.2718 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
-mag_disturbance  2  pos_h<=0.296 pos_v<=0.173 vel<=0.140 pos_h_max<=0.780  tilt<=0.419 yaw<=0.372 ba<=0.05515 bg<=0.000367 in3s>=0.9900 nees_pos<=0.0907   nees_vel<=0.1054 nees_att<=0.0287 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
-logging_dropout  2  pos_h<=3.129 pos_v<=0.238 vel<=0.580 pos_h_max<=23.439 tilt<=0.662 yaw<=0.678 ba<=0.04967 bg<=0.000842 in3s>=0.9847 nees_pos<=2.9479  nees_vel<=0.4420 nees_att<=0.0800 false_valid<=2006 false_valid_att<=404 scored>=36360  recovered=1
+mag_disturbance  2  pos_h<=0.296 pos_v<=0.172 vel<=0.140 pos_h_max<=0.780  tilt<=0.422 yaw<=0.385 ba<=0.05520 bg<=0.000366 in3s>=0.9900 nees_pos<=0.0907   nees_vel<=0.1054 nees_att<=0.0292 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
+logging_dropout  2  pos_h<=3.091 pos_v<=0.238 vel<=0.582 pos_h_max<=23.487 tilt<=0.652 yaw<=0.673 ba<=0.04939 bg<=0.000843 in3s>=0.9846 nees_pos<=3.0347  nees_vel<=0.4441 nees_att<=0.0784 false_valid<=1966 false_valid_att<=364 scored>=36360  recovered=1
 flight           8  pos_h<=1.987 pos_v<=0.303 vel<=0.618 pos_h_max<=5.109  tilt<=0.832 yaw<=8.117 ba<=0.07228 bg<=0.001901 in3s>=0.9900 nees_pos<=0.1248   nees_vel<=0.0922 nees_att<=0.1206 false_valid<=0   false_valid_att<=0   scored>=600  recovered=0
 
 # (34)-(36) are what `yaw` reads now, and what it buys depends entirely on what the start knew.
@@ -307,12 +307,12 @@ flight           8  pos_h<=1.987 pos_v<=0.303 vel<=0.618 pos_h_max<=5.109  tilt<
 # 1.174 to 1.152. Still overconfident on position, because its sources are slower than the
 # defaults assume. The white scenarios pay in horizontal position and gain in height, velocity
 # and tilt, the heading no longer driving tilt through (20) at 20 Hz as though each sample were
-# news: `mission` `pos_h` 0.244 m to 0.293, but `pos_v` 0.249 to 0.171, `vel` 0.187 to 0.138,
+# news: `mission` `pos_h` 0.244 m to 0.293, but `pos_v` 0.249 to 0.170, `vel` 0.187 to 0.138,
 # `yaw` 0.656 deg to 0.361 and `tilt` 0.523 to 0.414. Heading loses where a start or a gap leaves
 # the magnetometer to hold it alone: `static` `yaw` 0.499 to 0.577, with `pos_h` 0.272 to 0.517
-# and `pos_v` 0.215 to 0.347 as 60 s at rest averages the most fixes; `moving_start` `yaw` 1.116 to
+# and `pos_v` 0.215 to 0.346 as 60 s at rest averages the most fixes; `moving_start` `yaw` 1.116 to
 # 1.461 and `tilt` 1.492 to 1.561; `flight` `yaw` 7.669 to 8.036. `baro_drift` `pos_v` 0.284 to
-# 0.918, GNSS height deweighted against a barometer that does drift. `gnss_outage` `pos_h` 1.922
+# 0.917, GNSS height deweighted against a barometer that does drift. `gnss_outage` `pos_h` 1.922
 # to 1.252 and `pos_h_max` 17.99 to 8.30, the heading held through the gap. `gnss_latency`
 # `nees_pos` 56.96 to 4.06, a stale fix being one more error that persists, and
-# `logging_dropout` 11.36 to 2.92 with its recovery intact.
+# `logging_dropout` 11.36 to 3.00 with its recovery intact.

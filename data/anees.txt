@@ -40,11 +40,11 @@
 #   correlated       position only: every aiding error correlated, slower than
 #                    `Config::correlation`'s defaults, which are the corpus's medians and
 #                    understate it (`examples/simulate.rs`). (24') fuses it at too small a
-#                    variance: anees_pos=1.45, over_pos=0.95, any_pos=5212. Fused as white it read
+#                    variance: anees_pos=1.45, over_pos=0.95, any_pos=5197. Fused as white it read
 #                    anees_pos=29.16 and anees_att=3.48, over on every epoch of both. A sensor's
 #                    `tau` measured offline (#51) is what removes it. #117.
 #   logging_dropout  1.2 s refused at speed, then ~7 s of rejected fixes before the recovery;
-#                    #144 would coast the gap. anees_pos=2.71, peak_pos=142.4 at 61.6 s; (24')
+#                    #144 would coast the gap. anees_pos=2.81, peak_pos=142.2 at 61.6 s; (24')
 #                    took it from 10.94 and 1847.5, the fixes before the gap no longer having
 #                    averaged the covariance down.
 #

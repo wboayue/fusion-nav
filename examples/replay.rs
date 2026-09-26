@@ -155,9 +155,9 @@
 //! and `harsh_imu`
 //! through propagation — no longer on the position keys at all, which read `mission`'s figures
 //! now that two quantities are aided, but on `tilt` and on `ba`, the keys that read the IMU's
-//! own errors. `baro_drift` separates on height — `pos_v` 0.918 m against `mission`'s 0.171,
+//! own errors. `baro_drift` separates on height — `pos_v` 0.917 m against `mission`'s 0.170,
 //! and `nees_pos` 0.44 against 0.09, which is what a drifting reference costs once (30′)
-//! estimates it. `mag_disturbance` separates on `yaw` alone — 0.368 deg against `mission`'s
+//! estimates it. `mag_disturbance` separates on `yaw` alone — 0.381 deg against `mission`'s
 //! 0.361 — which is what a 30 deg field error costs a filter that refuses all 200 samples of
 //! it.
 //!
@@ -1189,7 +1189,7 @@ impl Replay {
     /// The total alone averages two sources moving in opposite directions, which is the
     /// reading `ba=` and `bg=` were split to avoid: fusing velocity halved one bias and
     /// worsened the other, and one key would have reported a clean win. A gate makes the
-    /// same shape of claim — `a299e722` turns down 276 velocity solutions, and an altitude
+    /// same shape of claim — `a299e722` turns down 266 velocity solutions, and an altitude
     /// its barometer gate also turned down would arrive on that line as a larger number
     /// with nothing saying which source grew.
     ///
@@ -3368,7 +3368,7 @@ mod tests {
         // σ_v = 0.01 m/s the gate turns it down; at 0.5 — PX4's `ekf2_gps_v_noise`, which
         // sits above 13163 of the corpus's 13676 velocity solutions — the same innovation is
         // accepted. So a floor applied in `Replay::row` would flip the first assertion,
-        // which is the mutation this guards and the one `a299e722` runs 276 times.
+        // which is the mutation this guards and the one `a299e722` runs 266 times.
         let moving = |var: &str| {
             still_start().raw(&format!(
                 "2.000000,gnss_vel,1.0,0.0,0.0,,,,{var},{var},{var}"

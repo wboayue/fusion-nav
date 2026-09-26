@@ -313,7 +313,7 @@ The options, in the order they are worth doing:
 
    **And tilt can be left to the ordinary gate, which is what the data says.** The corpus
    answers half of it, and `data/manifest.txt` carries the counts: the gate turns down two
-   headings on `eb799954`, two consecutive samples 1.1 rad out, and 1422 on `7ce66f0d`, a hand
+   headings on `eb799954`, two consecutive samples 1.1 rad out, and 1419 on `7ce66f0d`, a hand
    launch levelled 12° wrong whose heading was never established, where the failure is the
    levelling and not the gate. The tailsitter
    `285ee2e7` fuses every heading through 125° of tilt, so nothing is locked out at any tilt
@@ -501,7 +501,8 @@ error it cannot observe: on `2c42096b` it held σ_pos_n under the receiver's own
 
 **Decided (#117):** each measurement is fused at the variance that makes a run of them carry what
 they actually carry, equation (24′), `R_m (1 + ρ)/(1 − ρ)` with `ρ = exp(−Δt/τ)`, and gated on its
-own `R_m`. `τ` is `Config::correlation`, per source like `Recovery`, a property of the sensor
+own `R_m`, with the interval `Δt` measured from the source's last fused measurement, since a
+rejected one fused nothing the next could repeat. `τ` is `Config::correlation`, per source like `Recovery`, a property of the sensor
 configured the way `ImuNoise` is, and defaults to the corpus's medians: GNSS position 4.2 s
 horizontally and 14 s in height, velocity 0.50 s, barometer 0.20 s, magnetometer 1.2 s. The
 covariance stays fifteen states: a Gauss–Markov state per source and axis would be exact and would
@@ -517,7 +518,7 @@ would remove. `moving_start`'s four headings sharing one levelling error (#150),
 `data/anees.txt` asserted, is this issue in miniature and went with it. On `2c42096b`, σ_pos_n is
 under `eph` at 1788 fixes of 4614, median ratio 1.039 against 0.726. On `7ce66f0d`, the
 magnetometer that kept pushing a wrongly levelled heading stops outvoting GNSS: `recovered=` 294
-to 69, the magnetometer rejected instead.
+to 69, the magnetometer rejected instead. On `093e806a`, 35 to 29.
 
 **What it did not buy.** `harsh_imu` (#149) and `gnss_latency` stopped failing on attitude
 because the covariance widened, not because the error shrank: `harsh_imu`'s tilt moved 1.19° to
@@ -535,14 +536,10 @@ recovery and `7ce66f0d` from 294 to 23, which read as a cure and was a gate that
 **What it costs.** Horizontal position where a source is white, which the simulator's are by
 construction, and heading where the magnetometer holds it alone: `mission` `pos_h` 0.244 m to
 0.293, `static` `pos_h` 0.272 to 0.517 and yaw 0.50° to 0.58°, `moving_start` yaw 1.12° to 1.46°,
-`flight` 7.67° to 8.04°. `mission`'s height, velocity and yaw improve (0.249 m to 0.171, 0.187 m/s
+`flight` 7.67° to 8.04°. `mission`'s height, velocity and yaw improve (0.249 m to 0.170, 0.187 m/s
 to 0.138, 0.66° to 0.36°), the heading no longer driving tilt through (20) at 20 Hz as though each
-sample were news. `baro_drift` `pos_v` goes 0.284 m to 0.918, GNSS height deweighted against a
-barometer that does drift. On the corpus, a receiver whose reported σ is too small pays twice:
-`a299e722`'s gate, reading its velocity σ raw, rejects half its solutions, and (24′) weights the
-half it accepts at a tenth, so in a manoeuvre at 19–22 s the estimate leaves its positions by 14 m
-and recovers twice; with velocity fused as white it reads as before, and a floor on that σ would
-presumably do the same, unmeasured. And `285ee2e7`'s barometer, at a `τ` a seventieth of GNSS
+sample were news. `baro_drift` `pos_v` goes 0.284 m to 0.917, GNSS height deweighted against a
+barometer that does drift. On the corpus, `285ee2e7`'s barometer, at a `τ` a seventieth of GNSS
 height's, holds the height 4 m from GNSS through a back-transition until the receiver is rejected
 and adopted. A sensor characterized as white is the reason to set its source's `τ` to `None`.
 
