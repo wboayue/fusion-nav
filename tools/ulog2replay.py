@@ -961,11 +961,13 @@ def vibration_metric(encoded):
     the old metric differences averages, which is where vibration is filtered out
     -- so the screen names the metric rather than converting it. The commit is on
     master between v1.12 and v1.13.0-beta1: a v1.12 dev build could be either.
-    `estimator_status.vibe[2]` on older builds is the delta-velocity one.
+    `estimator_status.vibe[2]` on older builds is the delta-velocity one. A version
+    outside PX4's v1 series is a vendor's own numbering -- `a299e722` reports v6.5.22
+    -- and says nothing about which PX4 it forked.
     """
-    if not encoded:
-        return "unknown"
     major, minor = (encoded >> 24) & 0xFF, (encoded >> 16) & 0xFF
+    if not encoded or major != 1:
+        return "unknown"
     if (major, minor) >= (1, 13):
         return "accel"
     if (major, minor) == (1, 12) and encoded & 0xFF != 255:
@@ -1099,7 +1101,7 @@ class FixtureLog:
 def self_test():
     """Literal fixtures for what no corpus log can check about the converter.
 
-    None of the five logs is a VTOL and every one fuses a near-level attitude, so
+    No corpus log is a VTOL and every one fuses a near-level attitude, so
     neither a mode read from the wrong field nor a quaternion written scalar-last
     would show in their output: a scalar-last quaternion is still a rotation.
     """
@@ -1188,6 +1190,7 @@ def self_test():
     for encoded, want in [
         (0x010B03FF, "dv"), (0x010C01FF, "dv"), (0x010C0100, "unknown"),
         (0x010D0080, "accel"), (0x010F0400, "accel"), (0, "unknown"),
+        (0x06051680, "unknown"),
     ]:
         expect(f"vibration metric {encoded:#x}", vibration_metric(encoded), want)
     # 25 states against 24 entries, 24 against 23, 24 against 24: only the pair names each.
