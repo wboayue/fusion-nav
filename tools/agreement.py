@@ -148,11 +148,9 @@ def attitude_difference(ours, reference):
     other pairs of runs decides its own stride.
     """
     (t_ours, q_ours), (t_ref, q_ref) = ours, reference
-    tolerance = 2.0 * float(np.median(np.diff(t_ours))) if len(t_ours) > 1 else 0.0
-    pick = nearest(t_ours, t_ref, tolerance)
-    keep = pick >= 0
+    keep, pick = paired(t_ours, t_ref)
     d = rotation_difference(tuple(q_ref[n][keep] for n in QUATERNION),
-                            tuple(q_ours[n][pick[keep]] for n in QUATERNION))
+                            tuple(q_ours[n][pick] for n in QUATERNION))
     return t_ref[keep], d
 
 
@@ -216,8 +214,9 @@ def intervals(t, flag, hold=None):
 
 
 def total(runs):
-    """Seconds covered by a list of disjoint runs."""
-    return sum(end - start for start, end in runs)
+    """Seconds covered by a list of disjoint runs; a float even when there are none,
+    so no time prints as a time and not as a count."""
+    return sum((end - start for start, end in runs), 0.0)
 
 
 def overlap(a, b):
@@ -233,13 +232,6 @@ def overlap(a, b):
         else:
             j += 1
     return both
-
-
-def changes(values):
-    """How many times a counter moved: EKF2's resets over the log."""
-    values = np.asarray(values, dtype=float)
-    values = values[np.isfinite(values)]
-    return int(np.count_nonzero(np.diff(values))) if len(values) > 1 else 0
 
 
 def distance(ours, theirs, sigma_ours=None, sigma_theirs=None):
@@ -294,53 +286,78 @@ def compare(ours, ekf2, rejected, offset, height_reference):
     quantity this log cannot supply, printed as `none` rather than dropped.
 
     Angles are degrees, positions metres, velocities m/s, biases rad/s and
-    m/s^2, rejection times seconds.
+    m/s^2, rejection times seconds. Each family is its own function, so a caller
+    wanting one -- scoring a rejection as correct needs only the last two --
+    calls that one.
     """
+    return {
+        **position_velocity(ours, ekf2.get("local"), ekf2.get("states"), offset),
+        **biases(ours, ekf2.get("states")),
+        **height(ours, ekf2.get("local"), height_reference),
+        **attitude(ours, ekf2.get("att"), ekf2.get("states")),
+        **rejections(rejected, ekf2.get("ratio"), height_reference),
+        **resets(ekf2.get("local"), ekf2.get("att")),
+    }
+
+
+def position_velocity(ours, local, states, offset):
+    """`pos_*`/`vel_*` `_rms`, `_max` and `_nd2` per NED axis. Position needs an
+    origin; velocity does not."""
     t, our = ours
     out = {}
-
-    local = ekf2.get("local")
-    for kind, axes in (("pos", "ned"), ("vel", "ned")):
-        for i, axis in enumerate(axes):
+    if local is not None:
+        t_ref, ref = local
+        keep, pick = paired(t, t_ref)
+    if states is not None and local is not None:
+        # EKF2's sigma is on its states' timeline and its estimate on its
+        # position's: pair the two first, then each with ours.
+        t_s, st = states
+        keep_s, pick_s = paired(t, t_s)
+        here = nearest(t_ref, t_s[keep_s], tolerance_of(t_ref))
+        good = here >= 0
+    for kind in ("pos", "vel"):
+        usable = local is not None and (kind == "vel" or offset is not None)
+        for i, axis in enumerate("ned"):
             name = f"{kind}_{axis}"
-            rms = peak = None
-            if local is not None and (kind == "vel" or offset is not None):
-                t_ref, ref = local
-                keep, pick = paired(t, t_ref)
-                shift = offset[i] if kind == "pos" else 0.0
+            shift = offset[i] if kind == "pos" and usable else 0.0
+            rms = peak = nd2 = None
+            if usable:
                 rms, peak, _ = distance(our[name][pick], ref[name][keep] + shift)
-            out[f"{name}_rms"], out[f"{name}_max"] = rms, peak
-
-    states = ekf2.get("states")
-    for kind, axes in (("pos", "ned"), ("vel", "ned"), ("ba", "xyz"), ("bg", "xyz")):
-        for axis in axes:
-            name = f"{kind}_{axis}"
-            nd2 = rms = None
-            if states is not None:
-                t_s, st = states
-                keep, pick = paired(t, t_s)
-                if kind in ("ba", "bg"):
-                    rms, _, nd2 = distance(our[name][pick], st[name][keep],
-                                           our[f"sigma_{name}"][pick],
-                                           st[f"sigma_{name}"][keep])
-                elif local is not None and (kind == "vel" or offset is not None):
-                    # EKF2's sigma is on its states' timeline and its estimate on
-                    # its position's: pair the two first, then each with ours.
-                    t_ref, ref = local
-                    here = nearest(t_ref, t_s[keep], tolerance_of(t_ref))
-                    good = here >= 0
-                    shift = offset["ned".index(axis)] if kind == "pos" else 0.0
-                    _, _, nd2 = distance(our[name][pick[good]],
+                if states is not None:
+                    _, _, nd2 = distance(our[name][pick_s[good]],
                                          ref[name][here[good]] + shift,
-                                         our[f"sigma_{name}"][pick[good]],
-                                         st[f"sigma_{name}"][keep][good])
-            if kind in ("ba", "bg"):
-                out[f"{name}_rms"] = rms
-            out[f"{name}_nd2"] = nd2
+                                         our[f"sigma_{name}"][pick_s[good]],
+                                         st[f"sigma_{name}"][keep_s][good])
+            out[f"{name}_rms"], out[f"{name}_max"], out[f"{name}_nd2"] = rms, peak, nd2
+    return out
 
-    # Height as change, never as a gap: the two `pos_d` columns are relative to
-    # origins tens of metres apart, and each filter converges to its own
-    # reference. Over the span both cover, climb positive.
+
+def biases(ours, states):
+    """`ba_*`/`bg_*` `_rms` and `_nd2` per body axis."""
+    t, our = ours
+    out = {}
+    if states is not None:
+        t_s, st = states
+        keep, pick = paired(t, t_s)
+    for kind in ("ba", "bg"):
+        for axis in "xyz":
+            name = f"{kind}_{axis}"
+            rms = nd2 = None
+            if states is not None:
+                rms, _, nd2 = distance(our[name][pick], st[name][keep],
+                                       our[f"sigma_{name}"][pick], st[f"sigma_{name}"][keep])
+            out[f"{name}_rms"], out[f"{name}_nd2"] = rms, nd2
+    return out
+
+
+def height(ours, local, height_reference):
+    """`climb`, `climb_ekf2` and the reference EKF2 converged to.
+
+    As change, never as a gap: the two `pos_d` columns are relative to origins
+    tens of metres apart, and each filter converges to its own reference. Over
+    the span both cover, climb positive.
+    """
+    t, our = ours
     climb = climb_ekf2 = None
     if local is not None and len(local[0]) and len(t):
         start, end = max(t[0], local[0][0]), min(t[-1], local[0][-1])
@@ -348,49 +365,54 @@ def compare(ours, ekf2, rejected, offset, height_reference):
         theirs_change = change(local[0], local[1]["pos_d"], start, end)
         climb = None if ours_change is None else -ours_change
         climb_ekf2 = None if theirs_change is None else -theirs_change
-    out["climb"], out["climb_ekf2"] = climb, climb_ekf2
-    out["height_reference_ekf2"] = height_reference
+    return {"climb": climb, "climb_ekf2": climb_ekf2,
+            "height_reference_ekf2": height_reference}
 
-    att = ekf2.get("att")
-    tilt_rms = tilt_max = heading_med = att_nd2 = None
-    if att is not None:
-        t_a, a = att
-        keep, pick = paired(t, t_a)
-        q_ours = tuple(our[n][pick] for n in QUATERNION)
-        q_ref = tuple(a[n][keep] for n in QUATERNION)
-        tilt_o, heading_o = tilt_heading(*q_ours)
-        tilt_e, heading_e = tilt_heading(*q_ref)
-        tilt_rms, tilt_max, _ = distance(np.degrees(tilt_o), np.degrees(tilt_e))
-        # Heading after EKF2's first attitude reset once this filter is running:
-        # EKF2 aligns yaw in the first seconds of a flight, and a comparison
-        # across that step measures its alignment rather than either estimate.
-        # Not after its *last*: `093e806a` resets again at 758 s and 0.56 s
-        # before the log ends, which would leave nothing to compare.
-        after = t_a[keep] > first_change(t_a, a.get("att_reset"), since=t[0])
-        gap = np.abs(np.mod(heading_o - heading_e + math.pi, 2 * math.pi) - math.pi)
-        gap = gap[after & np.isfinite(gap)]
-        heading_med = float(np.degrees(np.median(gap))) if len(gap) else None
-        # The attitude difference in units of both covariances, on the one
-        # attitude scalar both files carry in comparable form: a trace, invariant
-        # under the rotation between EKF2's NED sigmas and this filter's body ones.
-        if states is not None and np.isfinite(states[1]["sigma_att_total"]).any():
-            t_s, st = states
-            d = np.sqrt(sum(c * c for c in rotation_difference(q_ref, q_ours)))
-            at = nearest(t_a[keep], t_s, tolerance_of(t_a))
-            good = at >= 0
-            ours_var = sum(our[f"sigma_att_{x}"][pick[at[good]]] ** 2 for x in "xyz")
-            both = ours_var + st["sigma_att_total"][good] ** 2
-            ratio = d[at[good]] ** 2 / both
-            ratio = ratio[np.isfinite(ratio)]
-            att_nd2 = float(np.mean(ratio)) if len(ratio) else None
-    out["tilt_rms"], out["tilt_max"] = tilt_rms, tilt_max
-    out["heading_med"], out["att_nd2"] = heading_med, att_nd2
 
-    ratio = ekf2.get("ratio")
+def attitude(ours, att, states):
+    """`tilt_diff_rms`, `tilt_diff_max`, `heading_diff_med` and `att_nd2`."""
+    t, our = ours
+    out = {"tilt_diff_rms": None, "tilt_diff_max": None, "heading_diff_med": None,
+           "att_nd2": None}
+    if att is None:
+        return out
+    t_a, a = att
+    keep, pick = paired(t, t_a)
+    q_ours = tuple(our[n][pick] for n in QUATERNION)
+    q_ref = tuple(a[n][keep] for n in QUATERNION)
+    tilt_o, heading_o = tilt_heading(*q_ours)
+    tilt_e, heading_e = tilt_heading(*q_ref)
+    out["tilt_diff_rms"], out["tilt_diff_max"], _ = distance(np.degrees(tilt_o),
+                                                             np.degrees(tilt_e))
+    # Heading after EKF2's first attitude reset once this filter is running:
+    # EKF2 aligns yaw in the first seconds of a flight, and a comparison across
+    # that step measures its alignment rather than either estimate. Not after its
+    # *last*: `093e806a` resets again at 758 s and 0.56 s before the log ends,
+    # which would leave nothing to compare.
+    after = t_a[keep] > first_change(t_a, a.get("att_reset"), since=t[0])
+    gap = np.abs(np.mod(heading_o - heading_e + math.pi, 2 * math.pi) - math.pi)
+    gap = gap[after & np.isfinite(gap)]
+    out["heading_diff_med"] = float(np.degrees(np.median(gap))) if len(gap) else None
+    # The attitude difference in units of both covariances, on the one attitude
+    # scalar both files carry in comparable form: a trace, invariant under the
+    # rotation between EKF2's NED sigmas and this filter's body ones.
+    if states is not None and np.isfinite(states[1]["sigma_att_total"]).any():
+        t_s, st = states
+        d = np.sqrt(sum(c * c for c in rotation_difference(q_ref, q_ours)))
+        at = nearest(t_a[keep], t_s, tolerance_of(t_a))
+        good = at >= 0
+        ours_var = sum(our[f"sigma_att_{x}"][pick[at[good]]] ** 2 for x in "xyz")
+        ratio = d[at[good]] ** 2 / (ours_var + st["sigma_att_total"][good] ** 2)
+        ratio = ratio[np.isfinite(ratio)]
+        out["att_nd2"] = float(np.mean(ratio)) if len(ratio) else None
+    return out
+
+
+def rejections(rejected, ratio, height_reference):
+    """`rej_s_<source>`, `_ekf2` and `_both`: seconds over the gate."""
+    out = {}
     for source, column in RATIO_OF.items():
-        ours_runs = None
-        if source in rejected:
-            ours_runs = intervals(*rejected[source])
+        ours_runs = intervals(*rejected[source]) if source in rejected else None
         theirs_runs = None
         comparable = source != "baro" or height_reference == "baro"
         if ratio is not None and comparable:
@@ -403,15 +425,27 @@ def compare(ours, ekf2, rejected, offset, height_reference):
         out[f"rej_s_{source}_ekf2"] = None if theirs_runs is None else total(theirs_runs)
         out[f"rej_s_{source}_both"] = (None if ours_runs is None or theirs_runs is None
                                        else overlap(ours_runs, theirs_runs))
-
-    for name in ("xy_reset", "z_reset", "vxy_reset", "vz_reset"):
-        values = None if local is None else local[1].get(name)
-        out[f"ekf2_{name}s"] = (None if values is None or not np.isfinite(values).any()
-                                else changes(values))
-    values = None if att is None else att[1].get("att_reset")
-    out["ekf2_att_resets"] = (None if values is None or not np.isfinite(values).any()
-                              else changes(values))
     return out
+
+
+def resets(local, att):
+    """`ekf2_<counter>_resets`: how often each of EKF2's reset counters moved."""
+    out = {}
+    counters = [(local, name) for name in ("xy_reset", "z_reset", "vxy_reset", "vz_reset")]
+    for kind, name in counters + [(att, "att_reset")]:
+        values = None if kind is None else kind[1].get(name)
+        out[f"ekf2_{name}s"] = (None if values is None or not np.isfinite(values).any()
+                                else len(change_times(kind[0], values)))
+    return out
+
+
+def change_times(t, counter):
+    """When a counter moved: the time of each sample whose value differs from the
+    last finite one before it. The report marks EKF2's attitude resets with it."""
+    t, counter = np.asarray(t, dtype=float), np.asarray(counter, dtype=float)
+    finite = np.isfinite(counter)
+    t, counter = t[finite], counter[finite]
+    return t[1:][np.diff(counter) != 0]
 
 
 def first_change(t, counter, since):
@@ -419,18 +453,20 @@ def first_change(t, counter, since):
     never did."""
     if counter is None:
         return -math.inf
-    counter = np.asarray(counter, dtype=float)
-    moved = np.flatnonzero(np.diff(counter) != 0) + 1
-    moved = moved[np.isfinite(counter[moved]) & (np.asarray(t)[moved] >= since)]
-    return float(t[moved[0]]) if len(moved) else -math.inf
+    moved = change_times(t, counter)
+    moved = moved[moved >= since]
+    return float(moved[0]) if len(moved) else -math.inf
 
 
 def format_value(value):
-    """How a key prints: `none` for a hole, four significant figures otherwise.
+    """How a key prints: `none` for a hole, a count as an integer, and anything
+    else to four significant figures in fixed point.
 
-    Fixed-point with its trailing zeros, because `data/expect.sh` bands a value by
-    its last printed place and reads no exponent: `.4g` printed 2.000 as `2`,
-    banding it 1..3, and 9.59e-05 as a word, pinning it exactly.
+    Fixed point with its trailing zeros, because `data/expect.sh` bands a value by
+    its last printed place, reads no exponent, and tells a statistic from a count
+    by its decimal point: `.4g` printed 2.000 as `2`, banding it 1..3, and
+    9.59e-05 as a word, pinning it exactly. Decimals from the magnitude, so 0.31
+    prints `0.3100` rather than the three figures a fixed precision would give.
     """
     if value is None:
         return "none"
@@ -438,10 +474,17 @@ def format_value(value):
         return value
     if isinstance(value, int):
         return str(value)
+    if value == 0 or not math.isfinite(value):
+        return "0.000" if value == 0 else str(value)
+    # At least one decimal, so a statistic of 1000 or more still reads as one.
+    # Rounding can carry into the next decade (0.099996 to 0.1000), so the
+    # magnitude is read again from the rounded value.
+    decimals = max(1, 3 - math.floor(math.log10(abs(value))))
+    rounded = round(value, decimals)
+    if rounded:
+        decimals = max(1, 3 - math.floor(math.log10(abs(rounded))))
     # `+ 0.0` drops the sign a -0.0 would print with.
-    text = np.format_float_positional(value + 0.0, precision=4, unique=False,
-                                      fractional=False, trim="k")
-    return text.rstrip(".")
+    return f"{round(value, decimals) + 0.0:.{decimals}f}"
 
 
 # -------------------------------------------------------------- self-test
@@ -523,7 +566,9 @@ def self_test():
     near("hold across a dropout", total(runs), 2.0)
     near("overlap", overlap([(0.0, 2.0), (5.0, 9.0)], [(1.0, 6.0)]), 2.0)
     near("no overlap", overlap([(0.0, 1.0)], [(2.0, 3.0)]), 0.0)
-    near("changes", changes(np.array([2.0, 2.0, 3.0, np.nan, 3.0, 5.0])), 2)
+    # A NaN between two 3.0s is a sample with no counter, not a move.
+    near("change times", change_times(np.arange(6.0), np.array([2.0, 2.0, 3.0, np.nan, 3.0,
+                                                                5.0])), (2.0, 5.0))
     near("first change", first_change(np.arange(4.0), np.array([0.0, 1.0, 1.0, 2.0]), 0.0), 1.0)
     near("first change since", first_change(np.arange(4.0), np.array([0.0, 1.0, 1.0, 2.0]), 2.0),
          3.0)
@@ -535,16 +580,31 @@ def self_test():
     near("distance", distance(np.zeros(4), np.full(4, 3.0), np.full(4, 2.0),
                               np.full(4, math.sqrt(5.0))), (3.0, 3.0, 1.0))
     near("distance of nothing", distance(np.array([np.nan]), np.array([1.0]))[0], None)
+    # `_max` is the largest magnitude: -3 outranks +1.
+    near("max of a negative difference", distance(np.zeros(2), np.array([-3.0, 1.0]))[:2],
+         (math.sqrt(5.0), 3.0))
     # A climb of 10 m over 200 s, flat at each end under +/-1 m of alternating
     # noise that each 60 s window averages out, reads 10. Its endpoints read 8.
     t = np.arange(0.0, 200.0, 0.5)
     d = np.where(t < 60, 0.0, np.where(t > 140, 10.0, (t - 60) / 8.0))
     d = d + np.where(np.arange(len(t)) % 2, -1.0, 1.0)
     near("change", change(t, d, 0.0, t[-1]), 10.0)
-    printed = [format_value(v) for v in (9.59e-05, 2.0, 304.9, 1402.3, -0.0, None, 3)]
-    if printed != ["0.00009590", "2.000", "304.9", "1402", "0.000", "none", "3"]:
+    # Four figures in every decade, a decimal point on every statistic and none on a
+    # count, and a rounding that carries into the next decade reads its new one.
+    printed = [format_value(v) for v in (9.59e-05, 0.31, 0.0999996, 2.0, 304.9, 1402.3,
+                                         -0.0, 0.0, None, 3)]
+    if printed != ["0.00009590", "0.3100", "0.1000", "2.000", "304.9", "1402.3", "0.000",
+                   "0.000", "none", "3"]:
         failures.append(f"format_value: got {printed}")
+    near("no time is a time", total([]), 0.0)
+    if format_value(total([])) != "0.000":
+        failures.append(f"total([]) prints {format_value(total([]))}")
     near("no change over a short log", change(t[:200], d[:200], 0.0, t[199]), None)
+    # Descending 10 m while EKF2 holds its height: climb is up-positive, so -10 and 0.
+    level_d = np.zeros(len(t))
+    near("climb is up-positive",
+         tuple(height((t, {"pos_d": d}), (t, {"pos_d": level_d}), "gps")[k]
+               for k in ("climb", "climb_ekf2")), (-10.0, 0.0))
 
     # compare(): EKF2's origin 3 m north of ours, both filters at one place, so
     # EKF2's own position reads -3 m north and aligns to zero. Its velocity
@@ -569,7 +629,9 @@ def self_test():
                           "pos_d": np.zeros(m), "vel_n": np.zeros(m),
                           "vel_e": np.full(m, 0.5), "vel_d": np.zeros(m),
                           "xy_reset": np.where(t_ref > 5, 3.0, 2.0),
-                          "z_reset": np.full(m, np.nan)}),
+                          "z_reset": np.full(m, np.nan),
+                          "vxy_reset": np.where(t_ref > 3, 1.0, 0.0) + (t_ref > 7),
+                          "vz_reset": np.zeros(m)}),
         "att": (t_ref, {**dict(zip(QUATERNION, yawed)), "att_reset": np.zeros(m)}),
         "states": (t_ref, {**{f"sigma_{k}_{a}": np.full(m, math.sqrt(3.0))
                               for k in ("pos", "vel") for a in "ned"},
@@ -584,6 +646,8 @@ def self_test():
     rejected = {"gnss_pos": (np.array([1.0, 2.0, 3.0]), np.array([False, True, False]))}
     got = compare(ours, ekf2, rejected, (3.0, 0.0, 0.0), "gps")
     near("aligned north", got["pos_n_rms"], 0.0)
+    # Unaligned, 3 m over a variance of 1 + 3 is 9 / 4.
+    near("aligned north in sigma too", got["pos_n_nd2"], 0.0)
     near("velocity east", (got["vel_e_rms"], got["vel_e_max"], got["vel_e_nd2"]),
          (0.5, 0.5, 0.0625))
     near("bias", (got["bg_x_rms"], got["bg_x_nd2"]), (0.1, 0.0025))
@@ -592,9 +656,15 @@ def self_test():
                                               "sigma_bg_x": np.zeros(m)})}
     near("zero EKF2 sigma", compare(ours, unestimated, rejected, (3.0, 0.0, 0.0),
                                     "gps")["bg_x_nd2"], None)
-    near("heading", got["heading_med"], 10.0, 1e-6)
-    near("tilt", got["tilt_rms"], 0.0, 1e-6)
+    near("heading", got["heading_diff_med"], 10.0, 1e-6)
+    near("tilt", got["tilt_diff_rms"], 0.0, 1e-6)
     near("no attitude sigma, no att_nd2", got["att_nd2"], None)
+    # 10 deg of heading over our three unit sigmas plus EKF2's unit trace:
+    # (pi/18)^2 / 4.
+    traced = {**ekf2, "states": (t_ref, {**ekf2["states"][1],
+                                         "sigma_att_total": np.ones(m)})}
+    near("att_nd2", compare(ours, traced, rejected, (3.0, 0.0, 0.0), "gps")["att_nd2"],
+         (math.pi / 18) ** 2 / 4, 1e-9)
     # EKF2 at 90 deg of heading until a reset at 6 s, 10 deg after, and a second
     # reset on the last sample: the median over the whole log would read 90, and
     # after the last reset there is nothing to read. After the first, 10.
@@ -606,13 +676,14 @@ def self_test():
     resetting = {**ekf2, "att": (t_ref, {**dict(zip(QUATERNION, stepped)),
                                          "att_reset": counter})}
     near("heading after the first reset",
-         compare(ours, resetting, rejected, (3.0, 0.0, 0.0), "gps")["heading_med"],
+         compare(ours, resetting, rejected, (3.0, 0.0, 0.0), "gps")["heading_diff_med"],
          10.0, 1e-6)
     near("our rejection", got["rej_s_gnss_pos"], 1.0)
     near("EKF2 over its gate", got["rej_s_gnss_pos_ekf2"], 2.0, 1e-9)
     near("both", got["rej_s_gnss_pos_both"], 1.0)
     near("baro only against a baro reference", got["rej_s_baro_ekf2"], None)
-    near("xy resets", got["ekf2_xy_resets"], 1)
+    near("resets", tuple(got[f"ekf2_{c}_resets"] for c in ("xy", "vxy", "vz", "att")),
+         (1, 2, 0, 0))
     near("z resets never logged", got["ekf2_z_resets"], None)
     near("no origin, no position", compare(ours, ekf2, rejected, None, "gps")["pos_n_rms"],
          None)
