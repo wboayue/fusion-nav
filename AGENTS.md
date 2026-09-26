@@ -914,10 +914,14 @@ expanded inline in the document using it. It carries *this* crate's vocabulary r
 field's, with one exception: a term PX4 or ArduPilot uses for a different thing, which is where a
 reader arrives already holding the wrong definition — `Reset` is recovery there and adoption
 here. `GOALS.md` records positioning, the six differentiators, and decisions already made — check
-it before changing scope; the non-goals list is deliberate. Its landscape carries a
-survey date, so write competitor facts in a shape that survives re-checking: "a few dozen
-downloads a quarter" keeps, "~36 in the last 90 days" was already 33 when someone looked, and
-"nine minor versions behind" became ten when `nalgebra` shipped.
+it before changing scope; the non-goals list is deliberate. Its landscape says what each
+alternative is and why it is not this crate, and carries no versions, release dates, download
+counts or dependency lag: "~36 in the last 90 days" was already 33 when someone looked, and
+"nine minor versions behind" became ten when `nalgebra` shipped. crates.io and the linked
+repositories own those figures.
+
+Prose in the documents avoids em dashes: a comma, colon, parenthesis or a new sentence carries
+the same aside. `GOALS.md` is written that way; the rest converts as it is edited.
 
 The README **is** the crate's front page: `src/lib.rs` is one `#![doc = include_str!]` and no
 prose of its own, so `cargo test --doc` compiles every snippet the user guide shows. A snippet
