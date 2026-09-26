@@ -8,7 +8,7 @@ This file provides guidance to coding agents working with code in this repositor
 except (31)–(33), the three-axis magnetometer, which is out of scope, and (5′)'s subtraction,
 which is #59's. The `**Stub.**` marker survives on those two and nowhere else, and every status
 banner says built rather than intended. What is left is mostly measurement and publication —
-#41 (cost on hardware), #8 (the EKF2 comparison), #47 (the release). The defect the
+#41 (cost on hardware) and #47 (the release); #8, the EKF2 comparison, landed in #156. The defect the
 consistency keys of #112 surfaced, no corpus source white while (24) fused each as white, is
 #117's, and #152 answered it with equation (24′): every source is fused at
 `R_m (1+ρ)/(1−ρ)`, `ρ = exp(−Δt/τ)`, gated on `R_m`, with `Δt` from the source's last fused
@@ -31,17 +31,25 @@ leaves no reference, correlated with the height it was read against (`P_xb = −
 `Config::baro_reference_from_estimate`: `2c42096b` fused its barometer that way while it started
 coarse (35575 rows refused → 4; 3825 rejected at `baro_offset_walk = 0`), and since it starts
 `short` it reads `alpha0=window`, so `cd7e0001` and `7ce66f0d` are the logs that cover the seed;
-`moving_start` `nees_pos` 1.0877. Beside EKF2 on `2c42096b`, horizontal agrees to 0.28 m median
-once the two origins (3.68 m S, 2.18 m E apart) are aligned, and height does not: start to end,
-EKF2 climbs 11.97 m with its barometer and this filter falls 8.20 m with GNSS height's low
-frequencies — #8's to explain. The raw `pos_d` columns differ by a further 24.2 m of origin height,
-so a gap read between them is not a disagreement.
+`moving_start` `nees_pos` 1.0877.
+#8 landed (#156): `data/fetch.sh --compare` replays every log `raw` and `px4` (`--r-policy px4`,
+EKF2's own GNSS floors from the log's parameters) and asserts 24 `agreement` lines against
+`data/ekf2.txt`; the statistics are `tools/agreement.py`'s, and `replay_report.py --corpus` draws
+the table #123 consumes. On `2c42096b`, horizontal agrees to 0.29 / 0.28 m RMS north / east once
+EKF2's origin (3.67 m S, 2.14 m E, 4.21 m below ours) is aligned, and height does not: `climb`,
+first 60 s mean to last, is +11.97 m for EKF2 on its barometer and −7.28 m for this filter on GNSS
+height's low frequencies (`height_reference_ekf2=baro`). The 24.2 m origin gap once quoted was
+mostly the geoid, the replay origin being ellipsoidal and `ref_alt` MSL; the converter now puts
+both on one datum. The `R` policy is most of the rejection disagreement (`093e806a` 278.8 s raw,
+27.1 px4, EKF2 304.9). One finding has no cause yet: on `89a498ce`, the RTK log, EKF2 sits a
+median 3.6 m north of its own receiver's fixes (`pos_n_rms` 4.73). #157 owns giving `clamped` the
+per-axis floors `RPolicy` had to build without it.
 #89 landed (#151): `data/anees.sh` gates per-epoch ensemble NEES on 50 seeds against χ² in CI,
 and asserts failures by cause: `gnss_latency` and `logging_dropout` on position, and
 `correlated` (#117's residual). Of the two it found that no single seed showed, #150
 (`moving_start`'s first 0.2 s) was fixed by (24′); #149 (`harsh_imu` attitude) now passes only
 by a wider covariance, its cause standing, and a line that passes either way is no evidence for
-closing it. Order: #8 (re-measure its height gap on (24′) first), with #144 and #149 beside it.
+closing it. Order: #144 and #149, then #123, which now has everything it reads.
 #48 and #49 landed (#154): `Display` on every outcome, an optional `defmt` feature, and
 `examples/embedded.rs`, built for both thumb targets in CI. `Display` prints numbers through
 `src/display.rs`'s `Fixed`, because core's `f32` formatting reaches `core::panicking` (the
