@@ -159,6 +159,7 @@ gnss_outage      2  pos_h<=1.942 pos_v<=0.265 vel<=0.290 pos_h_max<=18.170 tilt<
 moving_start     4  pos_h<=0.266 pos_v<=0.291 vel<=0.194 pos_h_max<=0.975  tilt<=1.507 yaw<=1.128 ba<=0.06030 bg<=0.002214 in3s>=0.9900 nees_pos<=1.0986   nees_vel<=0.4529 nees_att<=0.2045 false_valid<=0   false_valid_att<=0   scored>=15999  recovered=0
 baro_drift       2  pos_h<=0.247 pos_v<=0.287 vel<=0.190 pos_h_max<=0.887  tilt<=0.528 yaw<=0.663 ba<=0.05581 bg<=0.000667 in3s>=0.9899 nees_pos<=1.1975   nees_vel<=0.4460 nees_att<=0.2069 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
 gnss_latency     2  pos_h<=2.221 pos_v<=0.265 vel<=0.475 pos_h_max<=3.361  tilt<=0.888 yaw<=1.294 ba<=0.05560 bg<=0.001823 in3s>=0.8615 nees_pos<=57.5194  nees_vel<=2.7398 nees_att<=0.7215 false_valid<=327 false_valid_att<=32  scored>=36600  recovered=0
+gnss_correlated  2  pos_h<=0.883 pos_v<=1.817 vel<=0.189 pos_h_max<=2.079  tilt<=0.535 yaw<=0.667 ba<=0.05566 bg<=0.000653 in3s>=0.8834 nees_pos<=30.7595  nees_vel<=0.4424 nees_att<=0.2107 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
 mag_disturbance  2  pos_h<=0.247 pos_v<=0.252 vel<=0.190 pos_h_max<=0.887  tilt<=0.527 yaw<=0.723 ba<=0.05562 bg<=0.000677 in3s>=0.9900 nees_pos<=1.0759   nees_vel<=0.4459 nees_att<=0.2074 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
 logging_dropout  2  pos_h<=3.398 pos_v<=0.287 vel<=0.666 pos_h_max<=26.780 tilt<=0.727 yaw<=1.031 ba<=0.05494 bg<=0.001139 in3s>=0.9819 nees_pos<=11.4736  nees_vel<=0.9208 nees_att<=0.4771 false_valid<=2066 false_valid_att<=367 scored>=36360  recovered=1
 flight           8  pos_h<=2.524 pos_v<=0.345 vel<=0.694 pos_h_max<=6.244  tilt<=1.025 yaw<=7.750 ba<=0.07435 bg<=0.003571 in3s>=0.9900 nees_pos<=0.5617   nees_vel<=0.2304 nees_att<=0.1915 false_valid<=0   false_valid_att<=0   scored>=600  recovered=0
@@ -292,3 +293,11 @@ flight           8  pos_h<=2.524 pos_v<=0.345 vel<=0.694 pos_h_max<=6.244  tilt<
 # `tilt` 1.079 to 1.188, `yaw` 1.118 to 1.191, `nees_att` 0.5891 to 0.7563 -- because its simulated
 # gyroscope walk, 2.0e-4, is now above the filter's 1.1e-4. That is the airframe the scenario
 # describes: one whose `ImuNoise` a caller has to raise, and the defaults no longer cover it.
+#
+# `gnss_correlated` is `mission` with its GNSS position error drawn first-order Gauss-Markov
+# (4.2 s horizontal, 14 s vertical, the corpus medians; `examples/simulate.rs` says how they were
+# read) at the same stationary sigma the fixes report. Nothing but that error differs, and every
+# key that reads position moved: `pos_h` 0.244 m to 0.874, `pos_v` 0.249 to 1.799, `nees_pos`
+# 1.0649 to 30.4549 and `in3s` 1.0000 to 0.8924. Velocity and attitude are `mission`'s to the
+# third figure. The error is no larger than the white one; (24) averages it down as though it
+# were, and the covariance claims the averaging worked. #117.

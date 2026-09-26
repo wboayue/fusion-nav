@@ -49,6 +49,10 @@
 #                    levelling tilt error that (36') prices into each `R` as though independent.
 #                    peak_att 1.80 at 10.16 s; once velocity fuses it corrects that tilt and the
 #                    ensemble is back under the bound. #150.
+#   gnss_correlated  position only: GNSS error correlated over 4.2 s horizontally and 14 s
+#                    vertically, fused by (24) as independent and averaged down. anees_pos=17.72,
+#                    over_pos=0.9978, peak_pos=23.06 at 168.4 s: never honest after the first
+#                    seconds, and growing. #117.
 #
 # `runs=` repeats the column as an expectation, so an ensemble that lost a run breaches rather than
 # being scored against the looser bound of fewer seeds.
@@ -64,6 +68,7 @@ gnss_outage      50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10
 moving_start     50  runs=50  any_pos=0   any_vel=0   any_att>=1  over_pos<=0.10 over_vel<=0.10 over_att<=0.10
 baro_drift       50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
 gnss_latency     50  runs=50  any_pos>=1  any_vel>=1  any_att>=1
+gnss_correlated  50  runs=50  any_pos>=1  any_vel=0   any_att=0   over_vel<=0.10 over_att<=0.10
 mag_disturbance  50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
 logging_dropout  50  runs=50  any_pos>=1  any_vel>=1  any_att>=1
 flight           50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10

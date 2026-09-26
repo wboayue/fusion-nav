@@ -541,6 +541,13 @@ struct GnssErrors {
     sigma_vertical: f64,
     /// m s⁻¹, all three axes.
     sigma_velocity: f64,
+    /// s: the time constant of a first-order Gauss-Markov position error, north and east.
+    /// Zero is white. The stationary σ is still `sigma_horizontal`, so the fix reports the σ its
+    /// error has; what correlation changes is how much of it averaging can remove, which is
+    /// equation (24)'s assumption and #117's subject.
+    tau_horizontal: f64,
+    /// s: the same, down.
+    tau_vertical: f64,
     /// Seconds between the instant a fix describes and the timestamp it is logged under.
     latency: f64,
     /// When the receiver is in the log at all.
@@ -559,6 +566,8 @@ const GNSS: GnssErrors = GnssErrors {
     sigma_horizontal: 0.9,
     sigma_vertical: 1.8,
     sigma_velocity: 0.15,
+    tau_horizontal: 0.0,
+    tau_vertical: 0.0,
     latency: 0.0,
     available: Window::ALWAYS,
     outage: None,
@@ -576,6 +585,9 @@ struct Gnss {
     errors: GnssErrors,
     position: Noise,
     velocity: Noise,
+    /// The position error last drawn, which a correlated error carries into the next fix.
+    /// `None` before the first draw.
+    position_error: Option<[f64; 3]>,
 }
 
 impl Gnss {
@@ -584,7 +596,35 @@ impl Gnss {
             errors,
             position: Noise::new(seed, channel::GNSS_POSITION),
             velocity: Noise::new(seed, channel::GNSS_VELOCITY),
+            position_error: None,
         }
+    }
+
+    /// The next position error: `e_k = φ e_{k−1} + √(1 − φ²) w_k`, `φ = exp(−T / τ)`, per axis.
+    ///
+    /// `w_k` is the white draw at the stationary σ, so the error's σ is the same whatever `τ` is
+    /// and the first fix, drawn from the stationary distribution, is `w_0` itself. At `τ = 0`,
+    /// `φ = 0` and the result is `w_k` bit for bit, which keeps every white scenario paired with
+    /// the one that is not.
+    fn position_error(&mut self, white: [f64; 3]) -> [f64; 3] {
+        let tau = [
+            self.errors.tau_horizontal,
+            self.errors.tau_horizontal,
+            self.errors.tau_vertical,
+        ];
+        let error = match self.position_error {
+            None => white,
+            Some(last) => std::array::from_fn(|i| {
+                let phi = if tau[i] > 0.0 {
+                    (-self.errors.period / tau[i]).exp()
+                } else {
+                    0.0
+                };
+                phi * last[i] + (1.0 - phi * phi).sqrt() * white[i]
+            }),
+        };
+        self.position_error = Some(error);
+        error
     }
 
     /// The fix logged at `t`, if the receiver is reporting one.
@@ -603,7 +643,8 @@ impl Gnss {
             self.errors.sigma_horizontal,
             self.errors.sigma_vertical,
         ];
-        let position_noise = self.position.vector_with(sigma);
+        let white = self.position.vector_with(sigma);
+        let position_noise = self.position_error(white);
         let velocity_noise = self.velocity.vector(self.errors.sigma_velocity);
 
         if !self.errors.available.contains(t) {
@@ -943,8 +984,8 @@ fn short_hop() -> Trajectory {
 
 /// The scenario table.
 ///
-/// Five of them — `harsh_imu`, `gnss_outage`, `baro_drift`, `gnss_latency`, `mag_disturbance` —
-/// are one-variable departures from `mission`, and the pairing is by construction rather than by
+/// Six of them — `harsh_imu`, `gnss_outage`, `baro_drift`, `gnss_latency`, `gnss_correlated`,
+/// `mag_disturbance` — are one-variable departures from `mission`, and the pairing is by construction rather than by
 /// assertion: same trajectory, same duration, and **the same seed**. Streams are split per
 /// sensor, so a departure that leaves a sensor alone reproduces the baseline's draws for it bit
 /// for bit, and `diff mission.csv <departure>.csv` shows the fault and nothing else. Differing
@@ -1055,6 +1096,24 @@ fn scenarios() -> Vec<Scenario> {
                      current state",
             gnss: GnssErrors {
                 latency: 0.15,
+                ..GNSS
+            },
+            ..base
+        },
+        // The GNSS counterpart of `baro_drift`: position error that persists between fixes, which
+        // (24) fuses as independent and averages down. The time constants are the corpus's, not
+        // chosen: each log's `acf1_gnss_pos` and `acf1_gnss_hgt` in `data/manifest.txt`, read as
+        // τ = −T / ln ρ at that log's fix interval, median over the eight real logs with positive
+        // autocorrelation (the SITL log and the RTK log excluded). Innovations are whiter than
+        // the error behind them, because the filter follows part of it, so these understate the
+        // corpus.
+        Scenario {
+            name: "gnss_correlated",
+            covers: "the baseline with GNSS position error correlated over 4.2 s horizontally and \
+                     14 s vertically, the corpus medians: what fusing it as white costs",
+            gnss: GnssErrors {
+                tau_horizontal: 4.2,
+                tau_vertical: 14.0,
                 ..GNSS
             },
             ..base
