@@ -18,6 +18,9 @@ reason README.md carries no mermaid, so it renders wherever it lands.
 This tool computes no statistic the harness already publishes. `nis_`, `acf1_`,
 `nu_` and the score keys are read off the captured `summary` and `score` lines
 and printed; the innovation and its covariance are read out of the fusion CSV.
+Agreement with EKF2, which the harness cannot own because CI has no reference,
+is `tools/agreement.py`'s: this tool reads the files and prints what it returns,
+for one run beside its figures or, with `--corpus`, for every log in one table.
 A second implementation of any of them would eventually disagree with the first,
 and the disagreement would be found by somebody chasing a filter bug that does
 not exist (GOALS.md, "Harness constraint"; data/README.md, "One statistic, one
@@ -51,6 +54,16 @@ matplotlib.use("Agg")  # No display; the figures only ever become PNG bytes.
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 from scipy import stats  # noqa: E402
+
+# A sibling module, found on the path Python puts this script's directory at the
+# head of. It owns the quaternion geometry and every agreement-with-EKF2 statistic.
+import agreement  # noqa: E402
+from agreement import (  # noqa: E402
+    QUATERNION,
+    attitude_difference,
+    quaternion_from_euler,
+    tilt_heading,
+)
 
 
 class ReportError(Exception):
@@ -94,14 +107,6 @@ STATE_GROUPS = [
      ["sigma_bg_x", "sigma_bg_y", "sigma_bg_z"]),
 ]
 
-QUATERNION = ["q0", "q1", "q2", "q3"]
-
-#: Past this tilt heading is not drawn. The swing-twist heading below is
-#: singular only when the vehicle is inverted, where `q0` and `q3` both vanish,
-#: and a few degrees short of that it turns small attitude noise into large
-#: heading swings.
-INVERTED = math.radians(170.0)
-
 #: Shorter names for the sigma figure, whose panels are a fifth of a page tall
 #: and whose full titles overlap each other down the shared axis.
 SHORT_LABELS = {
@@ -114,116 +119,8 @@ SHORT_LABELS = {
 
 # ---------------------------------------------------------------- attitude
 #
-# Pictures of a quaternion, derived here because drawing is this tool's job and
-# none of them is a statistic the harness publishes. Every function takes the
-# Hamilton scalar-first body-to-NED convention the epoch and reference files
-# both write (`Attitude::body_to_ned`), elementwise over numpy arrays.
-
-
-def quaternion_from_euler(roll, pitch, yaw):
-    """ZYX Euler to quaternion, `R = Rz(yaw) Ry(pitch) Rx(roll)`.
-
-    Only the truth file is still Euler (`examples/simulate.rs`). This direction
-    is defined at every attitude, so truth passes through 90 deg of pitch
-    losslessly; only the reverse is ambiguous.
-    """
-    cr, sr = np.cos(roll / 2), np.sin(roll / 2)
-    cp, sp = np.cos(pitch / 2), np.sin(pitch / 2)
-    cy, sy = np.cos(yaw / 2), np.sin(yaw / 2)
-    return (
-        cr * cp * cy + sr * sp * sy,
-        sr * cp * cy - cr * sp * sy,
-        cr * sp * cy + sr * cp * sy,
-        cr * cp * sy - sr * sp * cy,
-    )
-
-
-def tilt_heading(q0, q1, q2, q3):
-    """Tilt and heading, radians, from the swing-twist split about NED down.
-
-    `q = twist(down) * swing(horizontal axis)`: the twist is heading, the
-    swing's angle is tilt, the angle between body down and navigation down.
-    These are the two quantities `Validity` and `Accuracy` split attitude into,
-    and unlike ZYX roll and yaw they separate at 90 deg of pitch, where a
-    tailsitter cruises. Heading is NaN past `INVERTED`, where the split is
-    singular. `q` and `-q` give the same pair.
-    """
-    tilt = np.arccos(np.clip(1.0 - 2.0 * (q1 * q1 + q2 * q2), -1.0, 1.0))
-    heading = np.mod(2.0 * np.arctan2(q3, q0) + math.pi, 2.0 * math.pi) - math.pi
-    return tilt, np.where(tilt > INVERTED, np.nan, heading)
-
-
-def conjugate(q):
-    """The inverse of a unit quaternion."""
-    q0, q1, q2, q3 = q
-    return q0, -q1, -q2, -q3
-
-
-def multiply(p, r):
-    """The Hamilton product `p * r`."""
-    p0, p1, p2, p3 = p
-    r0, r1, r2, r3 = r
-    return (p0 * r0 - p1 * r1 - p2 * r2 - p3 * r3,
-            p0 * r1 + p1 * r0 + p2 * r3 - p3 * r2,
-            p0 * r2 - p1 * r3 + p2 * r0 + p3 * r1,
-            p0 * r3 + p1 * r2 - p2 * r1 + p3 * r0)
-
-
-def rotation_vector(q):
-    """`log(q)` as a rotation vector, radians, taking the shorter of the two
-    rotations `q` and `-q` describe."""
-    w, x, y, z = q
-    sign = np.where(w < 0.0, -1.0, 1.0)
-    w, x, y, z = w * sign, x * sign, y * sign, z * sign
-    norm = np.sqrt(x * x + y * y + z * z)
-    angle = 2.0 * np.arctan2(norm, w)
-    # angle / norm tends to 2 as the rotation vanishes; guard the 0 / 0.
-    scale = np.where(norm > 1e-12, angle / np.where(norm > 1e-12, norm, 1.0), 2.0)
-    return x * scale, y * scale, z * scale
-
-
-def rotation_difference(a, b):
-    """The rotation vector of `a^-1 * b`, in `a`'s body axes, radians.
-
-    `b = a * exp(d)`, the local perturbation of equation (3), which is the
-    frame the epoch file's `sigma_att_x/y/z` are in -- so a band drawn from them
-    around `d` compares like with like at any attitude.
-    """
-    return rotation_vector(multiply(conjugate(a), b))
-
-
-def nearest(times, at, tolerance):
-    """For each of `at`, the index of the nearest of the sorted `times`, or -1.
-
-    `tolerance` refuses a pairing across a gap: a reference sample with no
-    epoch near it compares against nothing rather than against the far side.
-    """
-    if len(times) == 1:
-        pick = np.zeros(len(at), dtype=int)
-    else:
-        right = np.clip(np.searchsorted(times, at), 1, len(times) - 1)
-        left = right - 1
-        pick = np.where(np.abs(times[left] - at) <= np.abs(times[right] - at),
-                        left, right)
-    return np.where(np.abs(times[pick] - at) <= tolerance, pick, -1)
-
-
-def attitude_difference(ours, reference):
-    """`(t, (dx, dy, dz))`: each reference sample's rotation to ours, undecimated.
-
-    Both arguments are `(t, {"q0": .., "q3": ..})` as read_columns returns them.
-    Each reference sample is paired with the nearest of ours, never
-    interpolated, within two of our sample intervals: a reference sample in a
-    gap in ours compares against nothing. Undecimated so that a caller comparing
-    other pairs of runs decides its own stride.
-    """
-    (t_ours, q_ours), (t_ref, q_ref) = ours, reference
-    tolerance = 2.0 * float(np.median(np.diff(t_ours))) if len(t_ours) > 1 else 0.0
-    pick = nearest(t_ours, t_ref, tolerance)
-    keep = pick >= 0
-    d = rotation_difference(tuple(q_ref[n][keep] for n in QUATERNION),
-                            tuple(q_ours[n][pick[keep]] for n in QUATERNION))
-    return t_ref[keep], d
+# The quaternion geometry lives in agreement.py, which the comparison with EKF2
+# shares; what is left here is decimation for drawing.
 
 
 def attitude_series(pair, points):
@@ -394,12 +291,35 @@ def read_columns(path, names, source=None, source_column="source"):
     return scan(path, (), 0, source, source_column, keep=names)[2]
 
 
+def read_table(path, names, source=None, source_column="source"):
+    """Undecimated `(t, {name: array})` over every row of the kind, blanks as NaN.
+
+    Where `read_columns` drops a row missing any column, this keeps it: the
+    reference leaves `sigma_att_total` blank on a whole era and a reset counter
+    blank where the topic lacks it, and dropping those rows would drop the log.
+    A name the file does not carry is absent from the result. None for no rows.
+    """
+    _, columns, stream = rows_of(path, source, source_column)
+    present = [name for name in names if name in columns]
+    index = [columns.index(name) for name in present]
+    t, values = array.array("d"), [array.array("d") for _ in present]
+    nan = math.nan
+    for cells in stream:
+        t.append(float(cells[0]))
+        for column, position in zip(values, index):
+            cell = cells[position]
+            column.append(float(cell) if cell else nan)
+    if not t:
+        return None
+    return np.frombuffer(t), {n: np.frombuffer(v) for n, v in zip(present, values)}
+
+
 def envelope(t, y, stride):
     """The min/max envelope Decimator keeps, over arrays already in memory.
 
     Vectorized because the arrays are: fed to Decimator a sample at a time, the
     tilt and heading of the 2 h log alone took 1.9 s. Non-finite samples are
-    skipped, so a NaN heading past `INVERTED` leaves a gap rather than a bucket
+    skipped, so a NaN heading past `agreement.INVERTED` leaves a gap rather than a bucket
     extreme. Buckets are by sample index, as Decimator's are by row.
     """
     index = np.flatnonzero(np.isfinite(y))
@@ -874,7 +794,7 @@ def attitude_figure(ours, reference, truth, backdrop, resets):
 def difference_figure(difference, epochs, backdrop, resets):
     """This filter's attitude relative to EKF2's, in body axes, with its own band.
 
-    `difference` is `{"d_x": (t, y), ...}`, radians, from rotation_difference.
+    `difference` is `{"d_x": (t, y), ...}`, radians, from `agreement.rotation_difference`.
     The band is this filter's `sigma_att_x/y/z` around zero -- the same frame as
     the trace it surrounds, at any attitude.
     """
@@ -1175,6 +1095,138 @@ def key_table(keys):
     return "<table>" + "".join(rows) + "</table>"
 
 
+# --------------------------------------------------------- agreement with EKF2
+#
+# The files read here, the statistics in agreement.py. What each key means, and
+# what it cannot say, is data/README.md's "Agreement with EKF2".
+
+AGREEMENT_EPOCH_COLUMNS = (
+    [f"{k}_{a}" for k in ("pos", "vel") for a in "ned"]
+    + [f"sigma_{k}_{a}" for k in ("pos", "vel") for a in "ned"]
+    + [f"{k}_{a}" for k in ("ba", "bg") for a in "xyz"]
+    + [f"sigma_{k}_{a}" for k in ("ba", "bg", "att") for a in "xyz"]
+    + QUATERNION
+)
+
+REFERENCE_KINDS = {
+    "local": ("ekf2_local", [f"{k}_{a}" for k in ("pos", "vel") for a in "ned"]
+              + ["xy_reset", "z_reset", "vxy_reset", "vz_reset"]),
+    "att": ("ekf2_att", QUATERNION + ["att_reset"]),
+    "states": ("ekf2_states", [f"{k}_{a}" for k in ("ba", "bg") for a in "xyz"]
+               + [f"sigma_{k}_{a}" for k in ("pos", "vel") for a in "ned"]
+               + [f"sigma_{k}_{a}" for k in ("ba", "bg") for a in "xyz"]
+               + ["sigma_att_total"]),
+    "ratio": ("ekf2_ratio", ["r_gnss_pos", "r_gnss_vel", "r_baro", "r_mag"]),
+}
+
+#: Harness keys printed beside the agreement ones, read off the `summary` line
+#: and never recomputed: what each filter fused and how often it stepped.
+HARNESS_KEYS = ["r_policy", "alpha0", "resets", "recovered", "rejected_gnss_pos",
+                "rejected_gnss_hgt", "rejected_gnss_vel", "rejected_baro", "rejected_mag",
+                "nis_gnss_pos", "nis_gnss_hgt", "nis_gnss_vel", "nis_baro", "nis_mag"]
+
+#: The corpus table's sections, each a set of key prefixes, in reading order.
+AGREEMENT_SECTIONS = [
+    ("Position and velocity", ("pos_", "vel_")),
+    ("Height", ("climb", "height_reference")),
+    ("Attitude", ("tilt_", "heading_", "att_nd2")),
+    ("Biases", ("ba_", "bg_")),
+    ("Rejections, seconds", ("rej_s_",)),
+    ("Resets and harness keys", ("ekf2_", *HARNESS_KEYS)),
+]
+
+
+def reference_offset(notes):
+    """EKF2's origin in the replay frame, `(n, e, d)`, from the reference header."""
+    for note in notes:
+        found = re.match(r"EKF2 origin in replay frame: (\S+) (\S+) (\S+) m", note)
+        if found:
+            return tuple(float(v) for v in found.groups())
+    return None
+
+
+def reference_height(notes):
+    """The height reference EKF2 converged to, as the reference header names it."""
+    for note in notes:
+        found = re.search(r"EKF2 aiding: height reference (\w+)", note)
+        if found and found.group(1) != "unknown":
+            return found.group(1)
+    return None
+
+
+def agreement_of(replay, reference, sources):
+    """Every agreement key for one run, from its epoch file, the reference beside
+    it, and its fusion rows grouped by source (read_fusion)."""
+    ours = read_table(replay, AGREEMENT_EPOCH_COLUMNS)
+    if ours is None:
+        raise ReportError(f"{replay}: no epochs to compare")
+    notes = read_notes(reference)
+    ekf2 = {}
+    for kind, (source, names) in REFERENCE_KINDS.items():
+        table = read_table(reference, names, source=source)
+        if table is not None:
+            ekf2[kind] = table
+    rejected = {
+        source: (np.array(entry["t"]),
+                 np.array([verdict == "rejected" for verdict in entry["outcome"]]))
+        for source, entry in sources.items()
+    }
+    return agreement.compare(ours, ekf2, rejected, reference_offset(notes),
+                             reference_height(notes))
+
+
+def agreement_line(values, keys):
+    """`key=value ...`: the agreement keys, then the harness keys read beside them."""
+    pairs = [(k, agreement.format_value(v)) for k, v in values.items()]
+    pairs += [(k, keys[k]) for k in HARNESS_KEYS if k in keys]
+    return " ".join(f"{k}={v}" for k, v in pairs)
+
+
+def section_of(name):
+    for title, prefixes in AGREEMENT_SECTIONS:
+        if any(name == p or name.startswith(p) for p in prefixes):
+            return title
+    return AGREEMENT_SECTIONS[-1][0]
+
+
+def agreement_tables(runs):
+    """One HTML table per section, a row per run: `runs` is `[(label, {key: text})]`."""
+    blocks = []
+    for title, _ in AGREEMENT_SECTIONS:
+        names = []
+        for _, line in runs:
+            names += [n for n in line if section_of(n) == title and n not in names]
+        if not names:
+            continue
+        head = "".join(f"<th><code>{html.escape(n)}</code></th>" for n in names)
+        body = "".join(
+            f"<tr><th>{html.escape(label)}</th>"
+            + "".join(f"<td>{html.escape(line.get(n, '-'))}</td>" for n in names)
+            + "</tr>"
+            for label, line in runs
+        )
+        blocks.append(f"<h3>{html.escape(title)}</h3>"
+                      f'<div style="overflow-x:auto"><table><tr><th></th>{head}</tr>'
+                      f"{body}</table></div>")
+    return "\n".join(blocks)
+
+
+AGREEMENT_CAPTION = (
+    "Distance from EKF2's own solution on the same log. EKF2 is not truth: a "
+    "figure here is agreement, and a divergence is a finding to explain before it "
+    "is an error on either side. Positions after aligning EKF2's origin into this "
+    "filter's frame, from the reference header; height as each filter's climb, first "
+    "60 s mean to last, since the two converge to different references "
+    "(<code>height_reference_ekf2</code>); <code>_nd2</code> is the mean squared "
+    "difference over the sum of both filters' variances, a scale rather than a "
+    "chi-square, since both read the same sensors; heading after EKF2's last "
+    "attitude reset; rejections as seconds each filter spent over its gate and "
+    "the seconds both did. <code>none</code> is a quantity this log cannot supply. "
+    "Harness keys are read from the summary, never recomputed. "
+    "See data/README.md, \"Agreement with EKF2\"."
+)
+
+
 # -------------------------------------------------------------------- main
 
 
@@ -1424,6 +1476,13 @@ def build_report(args):
         height=7.0)
     blocks.append(png_block(png, caption))
 
+    if args.reference:
+        values = agreement_of(args.replay, args.reference, sources)
+        line = dict(token.split("=", 1) for token in agreement_line(values, keys).split())
+        blocks.append("<h2>Agreement with EKF2</h2>")
+        blocks.append(agreement_tables([(keys.get("r_policy", "?"), line)]))
+        blocks.append(f'<p class="caption">{AGREEMENT_CAPTION}</p>')
+
     if keys:
         blocks.append("<h2>Published keys</h2>")
         blocks.append(key_table(keys))
@@ -1468,49 +1527,8 @@ def self_test():
         if not (same.all() and close.all()):
             failures.append(f"{what}: got {got}, want {want}")
 
-    d = math.radians
-    half = math.sqrt(0.5)
+    failures.extend(agreement.self_test())
 
-    # ZYX composition, against a hand-derived value: pitched 90 deg is
-    # (cos 45, 0, sin 45, 0), and yawed 90 deg (cos 45, 0, 0, sin 45).
-    near("euler pitch 90", quaternion_from_euler(0.0, d(90), 0.0), (half, 0, half, 0))
-    near("euler yaw 90", quaternion_from_euler(0.0, 0.0, d(90)), (half, 0, 0, half))
-
-    def attitude(roll, pitch, yaw):
-        return tilt_heading(*quaternion_from_euler(d(roll), d(pitch), d(yaw)))
-
-    near("level", attitude(0, 0, 30), (0.0, d(30)))
-    near("rolled 10", attitude(10, 0, -45), (d(10), d(-45)))
-    # Pitched 90 deg and yawed 30: ZYX roll and yaw are inseparable here, and
-    # the split is not -- a tailsitter's cruise.
-    near("pitched 90", attitude(0, 90, 30), (d(90), d(30)))
-    near("pitched 90, rolled", attitude(20, 90, 30)[0], d(90), 1e-9)
-    near("inverted", attitude(178, 0, 30), (d(178), np.nan))
-    near("-q", tilt_heading(*(-c for c in quaternion_from_euler(0.1, 0.2, 2.9))),
-         attitude(math.degrees(0.1), math.degrees(0.2), math.degrees(2.9)))
-    # Scalar-last read of a scalar-first quaternion: still a rotation, the
-    # wrong one. Level and yawed 30 deg, read as (q1, q2, q3, q0).
-    q = quaternion_from_euler(0.0, 0.0, d(30))
-    if abs(tilt_heading(q[1], q[2], q[3], q[0])[0] - 0.0) < 1e-6:
-        failures.append("a scalar-last read is indistinguishable from the right one")
-
-    # The difference is body-frame: 5 deg about body x on a vehicle pitched
-    # 90 deg is (5, 0, 0), where a navigation-frame one would read it on down.
-    pitched = quaternion_from_euler(0.0, d(90), d(30))
-    nudge = (math.cos(d(2.5)), math.sin(d(2.5)), 0.0, 0.0)
-    near("difference in body axes", rotation_difference(pitched, multiply(pitched, nudge)),
-         (d(5), 0.0, 0.0))
-    # The same 5 deg with the second quaternion negated: q and -q are one
-    # rotation, and the long way round is 355 deg about -x.
-    near("difference across -q",
-         rotation_difference(pitched, tuple(-c for c in multiply(pitched, nudge))),
-         (d(5), 0.0, 0.0))
-    near("no difference", rotation_difference(pitched, pitched), (0.0, 0.0, 0.0))
-
-    near("nearest", nearest(np.array([0.0, 1.0, 2.0]), np.array([0.4, 1.6, 9.0]), 0.5),
-         (0, 2, -1))
-    near("nearest of one", nearest(np.array([5.0]), np.array([4.9, 5.1, 9.0]), 0.5),
-         (0, 0, -1))
     t, y = decimate(np.array([0.0, 1.0, 2.0]), {"h": np.array([1.0, np.nan, 3.0])},
                     10)["h"]
     near("decimate skips NaN", np.unique(y), (1.0, 3.0))
