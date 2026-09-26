@@ -65,12 +65,14 @@ fi
 # The same for `Display`, which a caller reaches through `write!` rather than by name, and
 # which is where a panic is easiest to add: core's float formatting reaches
 # `core::panicking`, so one `{}` of an `f32` fails the gate. `Fixed` is exempt because it is
-# private and every other impl that prints a number goes through it.
+# private and every other impl that prints a number goes through it. Matched however the
+# trait is spelled (`Display`, `fmt::Display`, `core::fmt::Display`) and on a generic impl
+# too, whose type is then shown with its parameters: `show::<Position<Ned>>(`.
 missing=()
-for name in $(grep -hoE 'impl (core::)?fmt::Display for [A-Za-z0-9_]+' ../src/*.rs ../src/*/*.rs |
-  awk '{ print $NF }' | sort -u); do
+for name in $(grep -hoE 'impl(<[^>]*>)? +((core::)?fmt::)?Display +for +[A-Za-z0-9_]+' \
+  ../src/*.rs ../src/*/*.rs | awk '{ print $NF }' | sort -u); do
   [[ $name == Fixed ]] && continue
-  grep -qE "show::<$name>\(" src/main.rs || missing+=("$name")
+  grep -qE "show::<$name[<>]" src/main.rs || missing+=("$name")
 done
 if ((${#missing[@]})); then
   echo "error: src/main.rs formats none of these Display impls through show::<T>(:" >&2
