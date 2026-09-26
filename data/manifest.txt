@@ -589,9 +589,10 @@ a92963922efc6a46a227584a4434d2b3c5488eb0e2ff16b3eb36eaf0ae04ee0c  89a498ce-ad2e-
 # 0.30 s, before the rotors spin up and the vibration never stops, so the
 # start is the still prefix -- align=short, as on 2c42096b, but from a vehicle
 # that then flies. What nothing else here covers:
-#   - The corpus's only magnetometer rejections: rejected_mag=3 of 19567, at
-#     t = 413.7, 447.2 and 865.1 s, innovations of -1.10, -1.15 and +1.09 rad
-#     against a 0.33 rad sigma, each a single sample with the next accepted.
+#   - The corpus's only magnetometer rejections on a sound estimate:
+#     rejected_mag=3 of 19567, at t = 413.7, 447.2 and 865.1 s, innovations
+#     of -1.10, -1.15 and +1.09 rad against a 0.33 rad sigma, each a single
+#     sample with the next accepted.
 #     That is the gate of (37)-(38) doing its job on a real glitch.
 #   - A vehicle_magnetometer that interleaves two streams under one
 #     device_id: |B| near 0.48 G arriving 60 ms after sampling and near 0.54
