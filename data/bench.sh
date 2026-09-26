@@ -92,16 +92,22 @@ while read -r name seed expect || [ -n "$name" ]; do
         continue
     fi
 
-    score=$(cd "$root" && cargo run --quiet --example replay -- \
-        "$out/$name.csv" "$out/$name.replay.csv" "$out/$name.truth.csv" | grep '^score ') ||
-        die "$name: replay printed no score line"
+    printed=$(cd "$root" && cargo run --quiet --example replay -- \
+        "$out/$name.csv" "$out/$name.replay.csv" "$out/$name.truth.csv") ||
+        die "$name: replay failed"
+    score=$(printf '%s\n' "$printed" | grep '^score ') || die "$name: replay printed no score line"
+    # `summary` too, for the one key a ceiling reads off it: `recovered`, pinned beside the
+    # accuracy it may have bought. A scenario that scores well only by recovering is a finding
+    # against the covariance (#116), and this is where it would show.
+    summary=$(printf '%s\n' "$printed" | grep '^summary ') ||
+        die "$name: replay printed no summary line"
 
-    if compare_pairs "$score" "$expect" "$name"; then
+    if compare_pairs "$score $summary" "$expect" "$name"; then
         echo "  ok       $name"
     else
         # The whole line, so re-measuring a ceiling that moved for a good reason is a copy
         # rather than a second run.
-        echo "    got ${score#score }" >&2
+        echo "    got ${score#score }  recovered=$(pair_value "$summary" recovered)" >&2
         failed=1
     fi
 done < "$scenarios"

@@ -58,14 +58,12 @@
 //! filter has. `data/README.md` owns that boundary, and it is why `data/flight.csv` is committed
 //! rather than regenerated.
 //!
-//! # What no scenario covers
+//! # A gap in the log
 //!
-//! An IMU gap. Every scenario emits a sample at every epoch, so nothing here reaches
-//! `Propagation::StepTooLong`; the corpus log `f16771dd` is still the only thing that does, and
-//! it has no truth. What a filter should be *scored* on across a hole it refused to propagate is
-//! now settled — `examples/replay.rs` scores those epochs like any other, because the epoch row is
-//! written either way and the stale state is what the filter published — so a scenario that drops
-//! IMU rows is buildable whenever one is wanted.
+//! `logging_dropout` is the one scenario that reaches `Propagation::StepTooLong`: it writes no
+//! row of any kind for 1.2 s, as a logger that lost its buffer does. Its truth file keeps every
+//! epoch, and `examples/replay.rs` scores the epochs it has, the first after the gap included —
+//! the stale state is what the filter published.
 
 use std::env;
 use std::error::Error;
@@ -783,6 +781,9 @@ struct Scenario {
     gnss: GnssErrors,
     baro: BaroErrors,
     mag: MagErrors,
+    /// A stretch the logger lost: every row in it is drawn and then not written, IMU and aiding
+    /// alike, so the streams stay paired with a scenario that has none.
+    dropout: Option<Window>,
 }
 
 /// Sitting on the ground, pointing somewhere unremarkable.
@@ -964,6 +965,7 @@ fn scenarios() -> Vec<Scenario> {
         gnss: GNSS,
         baro: BARO,
         mag: MAG,
+        dropout: None,
     };
 
     vec![
@@ -1069,6 +1071,21 @@ fn scenarios() -> Vec<Scenario> {
                 }),
                 ..MAG
             },
+            ..base
+        },
+        // Recovery from gate lockout, and the one scenario that reaches `StepTooLong`. The logger
+        // loses 1.2 s at 20 m s⁻¹ in a turn, as `4b473e91`'s did at 30 m s⁻¹: `predict` refuses
+        // the step, so the state stays where the gap began while its covariance does not grow,
+        // and every fix after it is tens of σ away. Without `Config::recovery` that is a lockout
+        // for the rest of the flight; with it, the position is adopted `Recovery::gnss_position`
+        // after the last accepted fix.
+        Scenario {
+            name: "logging_dropout",
+            covers: "1.2 s of the log lost at speed: a refused step, gate lockout, and recovery",
+            dropout: Some(Window {
+                start: 60.0,
+                end: 61.2,
+            }),
             ..base
         },
         // `data/flight.csv`, the log CI replays, and the only scenario whose output is committed.
@@ -1177,26 +1194,35 @@ fn generate(scenario: &Scenario, out_dir: &Path) -> Result<Report, Box<dyn Error
         let t = epoch as f64 * dt;
         let state = scenario.trajectory.at(t);
 
+        // Every draw is made whether or not it is written, so a dropout costs rows and nothing
+        // else: the samples either side of it are the ones the paired scenario has.
+        let logged = !scenario.dropout.is_some_and(|dropout| dropout.contains(t));
+
         let reading = imu.sample(&state);
         let [gx, gy, gz] = reading.gyro;
         let [ax, ay, az] = reading.accel;
-        log.row(t, "imu", &[gx, gy, gz, ax, ay, az], &[])?;
+        if logged {
+            log.row(t, "imu", &[gx, gy, gz, ax, ay, az], &[])?;
+        }
         write_truth_row(&mut truth, t, &state, &reading)?;
         report.epoch(t, &state, &reading);
 
         if epoch % gnss_every == 0
             && let Some(fix) = gnss.fix(t, &scenario.trajectory)
+            && logged
         {
             log.row(t, "gnss_pos", &fix.position, &fix.position_variance)?;
             log.row(t, "gnss_vel", &fix.velocity, &fix.velocity_variance)?;
         }
         if epoch % baro_every == 0
             && let Some(altitude) = baro.sample(t, &state)
+            && logged
         {
             log.row(t, "baro", &[altitude.meters], &[altitude.variance])?;
         }
         if epoch % mag_every == 0
             && let Some(field) = mag.sample(t, &state)
+            && logged
         {
             log.row(t, "mag", &field.body, &[field.heading_variance])?;
         }
