@@ -1283,9 +1283,19 @@ def self_test():
         got = round(table_declination(lat, lon), 1)
         expect(f"table at ({lat}, {lon}) within PX4's tolerance", abs(got - want) <= 1.4, True)
     # Halfway between two grid points is the mean of the two, exactly.
-    expect("bilinear midpoint", table_declination(-50, -175),
-           (table_declination(-50, -180) + table_declination(-50, -170)) / 2)
+    expect("bilinear midpoint", round(table_declination(-50, -175), 9),
+           round((table_declination(-50, -180) + table_declination(-50, -170)) / 2, 9))
     expect("longitude wraps", table_declination(0, 190), table_declination(0, -170))
+    expect("bilinear between rows", round(table_declination(-45, -180), 9),
+           round((table_declination(-50, -180) + table_declination(-40, -180)) / 2, 9))
+    # The origin the table is read at is the first 3D fix, not the first message.
+    import numpy
+    gps = Fixture("sensor_gps", timestamp=numpy.array([0, 1, 2]), fix_type=[2, 3, 3],
+                  latitude_deg=numpy.array([10.0, 56.41, 56.5]),
+                  longitude_deg=numpy.array([10.0, 43.76, 43.8]),
+                  altitude_ellipsoid_m=numpy.array([0.0, 70.0, 71.0]),
+                  eph=[1.0] * 3, epv=[1.0] * 3)
+    expect("origin at the first 3D fix", convert_gnss(FixtureLog(gps), [], {})[:2], (56.41, 43.76))
     geo = {"EKF2_DECL_TYPE": 3, "EKF2_MAG_DECL": 0.0}
     expect("bit 0 and a fix: the table", declination_note(geo, (56.41, 43.76)).split(" (")[0],
            f"Magnetic declination {math.radians(table_declination(56.41, 43.76)):.6f} rad")
