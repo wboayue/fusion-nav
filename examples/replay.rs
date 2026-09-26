@@ -16,6 +16,8 @@
 //! ```
 //!
 //! The third argument is optional and turns on scoring against truth; see *Scoring* below.
+//! It also writes `<out>.nees.csv`, `ε` per block per epoch, which `data/anees.sh` averages
+//! across seeds (#89).
 //!
 //! # Input
 //!
@@ -38,7 +40,7 @@
 //!
 //! # Output
 //!
-//! Two files. `<out>.csv` holds one row per IMU epoch after initialization: the state, the
+//! Two files, and a third when scoring. `<out>.csv` holds one row per IMU epoch after initialization: the state, the
 //! covariance diagonal as standard deviations, and the most recent test ratio per source.
 //! The sigma columns are what make the result plottable as estimate ± 3σ against truth; the
 //! test ratios are directly comparable with the innovation ratios PX4 publishes.
@@ -4306,6 +4308,30 @@ mod tests {
         }
         assert_eq!(scoring.score.scored, 3);
         assert_eq!(scoring.score.unmatched, 2);
+    }
+
+    #[test]
+    fn the_nees_file_has_a_row_per_epoch_and_leaves_an_unscored_one_empty() {
+        // Truth for two epochs of three. The third is written, empty, rather than dropped:
+        // `tools/anees.py` aligns seeds row by row and refuses an empty field, so a missing
+        // truth row stops the ensemble instead of shifting every later epoch by one.
+        let mut scoring = TruthLog::new().still(0.0, 2, DT).scoring();
+        scoring.scenario = Some(("fixture".to_string(), 7));
+        let state = state_at(0.0, 0.0, 0.0);
+        let covariance = Covariance::from_sigmas([0.5; STATES]);
+        for epoch in 0..3 {
+            scoring.epoch(epoch as f64 * DT, &state, &covariance, &Accuracy::default());
+        }
+        let mut out = Vec::new();
+        scoring.write_nees(&mut out).expect("written");
+        let text = String::from_utf8(out).expect("utf-8");
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "# fusion-nav nees for `fixture`, seed 7");
+        assert_eq!(lines[2], "t_s,nees_pos,nees_vel,nees_att");
+        // A zero error has zero NEES in every block.
+        assert_eq!(lines[3], "0.0000,0.000000,0.000000,0.000000");
+        assert_eq!(lines[5], "0.0400,,,");
+        assert_eq!(lines.len(), 6);
     }
 
     #[test]
