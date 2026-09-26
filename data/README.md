@@ -242,13 +242,15 @@ manifest — and read what the ULog alone can say about it:
 
 ```console
 $ uv run tools/ulog2replay.py candidate.ulg --screen
-screen sitl=no hw=PX4_FMU_V5 sw=v1.11.3 duration=7127 gnss=vehicle_gps_position fix_max=4
-  eph_min=1.17 eph_max=2.18 sats_min=17 sats_max=26 clip=0 vib_p95=0.094 vib_metric=dv
+screen sitl=no hw=PX4_FMU_V5 sw=v1.11.3 duration=7127 imu_hz=199 gnss=vehicle_gps_position
+  fix_max=4 eph_min=1.17 eph_max=2.18 sats_min=17 sats_max=26 clip=0 vib_p95=0.094 vib_metric=dv
   ekf2=quat24 vehicle_imu=yes type=mc mode_changes=0
 ```
 
 Every value is one number or one word, so most of a gap's criteria are `expect.sh` pairs, checked
-with `compare_pairs` after sourcing the file. `sw=` carries the firmware type (`v1.16.0-rc`).
+with `compare_pairs` after sourcing the file. `sw=` carries the firmware type (`v1.16.0-rc`). `imu_hz=`
+is `sensor_combined`'s median rate: a logger profile can sample it at 5 Hz, which replays as a
+refused step at every epoch.
 `ekf2=` names the covariance layout `--reference` will read — `err24`, `err23` or `quat24`, the
 table below — or says `unmapped` (LPE) or `none`. `vib_metric=` says which quantity `vib_p95=`
 is, since PX4 `f2ae8ae814` changed it under one field name: `dv`, a filtered Δv difference in m/s
@@ -259,7 +261,7 @@ only within one metric. What a pair cannot say is in prose:
 
 | gap | on the `screen` line | then, on the `summary` line |
 | --- | --- | --- |
-| every entry | `sitl=no`, and `eph_min` differing from `eph_max` | |
+| every entry | `sitl=no`, `imu_hz>=100`, and `eph_min` differing from `eph_max` | |
 | real baseline | `vehicle_imu=yes duration>=600`, and `ekf2=` a layout | `align=static` |
 | short-and-still start | | `align=short alpha0=window` |
 | RTK receiver | `fix_max>=6` | `nis_gnss_pos=`, recorded in the note |
@@ -322,14 +324,14 @@ map lives, with the PX4 commits that moved it cited above it. What it means per 
 
 | `ekf2=` | `n_states`, entries | covariance | bias states | corpus |
 |---|---|---|---|---|
-| `err24` | 25, 24 | error-state, terrain last | rad/s and m/s² | `3949f175`, `eb799954` |
+| `err24` | 25, 24 | error-state, terrain last | rad/s and m/s² | `3949f175`, `eb799954`, `285ee2e7`, `4b473e91`, `7ce66f0d`, `093e806a` |
 | `err23` | 24, 23 | error-state, no terrain (v1.15) | rad/s and m/s² | `89a498ce`, `cd7e0001` |
 | `quat24` | 24, 24 | indexed like the state vector, four quaternion entries first | delta-angle and delta-velocity per filter update | `a299e722`, `2c42096b`, `f16771dd` |
 | `unmapped` | anything else | refused | refused | `7592c9b2`, an LPE log reporting 10 |
 
 Three boundaries follow, and they are properties of the logs rather than of the converter:
 
-- **The quaternion era supplies no attitude σ**, on three of the eight corpus logs. Four quaternion
+- **The quaternion era supplies no attitude σ**, on three of the twelve corpus logs. Four quaternion
   variances become a rotation-vector σ only through the full 4×4 block, and the log carries the
   diagonal alone. The cells are blank rather than filled.
 - **Where there is one, it is in NED.** PX4 stores the error-state attitude covariance in the
@@ -343,7 +345,7 @@ Three boundaries follow, and they are properties of the logs rather than of the 
   single tilt σ is deliberately *not* emitted — PX4's `getTiltVariance` sums the two horizontal
   variances where (36′) and `Validity` read each against the bar, and naming those alike would
   compare two different quantities.
-- **Two of eight logs report no origin** (`xy_global` false, the reference fields all zero), so
+- **Two of twelve logs report no origin** (`xy_global` false, the reference fields all zero), so
   EKF2's `x,y,z` there are origin-relative with no origin and cannot be aligned to this filter's.
   The origin is a `#` header line, not a column, since it is one geodetic point per log.
 
@@ -506,15 +508,18 @@ platforms' parameters, `file:line` and the shas they were read at. The harness a
 for three measured reasons:
 
 - **A floor erases the figure rather than bounding it.** PX4's `ekf2_gps_v_noise`, 0.5 m/s, sits
-  above 8365 of the corpus's 8830 velocity solutions — every solution or all but one on five logs
-  and 90 % on `2c42096b`, honest receivers included — so it is the operative value rather than a
-  backstop. The position floors would replace one receiver's figures outright and no other's:
-  reported σ_h is 0.685 m and up on the five without RTK, against a 0.5 m bound, and σ_v averages
-  1.53–6.26 m against 0.75, while `89a498ce`'s RTK receiver reports 0.014 m horizontally and
-  0.01 m vertically on every fix. Since the barometer and the magnetometer already carry
+  above 13163 of the corpus's 13676 velocity solutions — every solution or all but one on eight
+  logs, 97.5 % on `7ce66f0d` and 90 % on `2c42096b`, honest receivers included — so it is the
+  operative value rather than a backstop. The position floors bind on three receivers: reported
+  σ_h falls to 0.297 m on `093e806a` and 0.436 m on `4b473e91` against a 0.5 m bound, and
+  `89a498ce`'s RTK receiver reports 0.014 m horizontally and 0.01 m vertically on every fix; σ_h
+  is 0.622 m and up on the rest, and σ_v averages 0.51–6.26 m against 0.75 where there is no
+  RTK. Since the barometer and the magnetometer already carry
   converter constants, flooring would leave almost no receiver-reported variance in the corpus.
-- **It costs most or all of the only GNSS rejection the corpus has.** `rejected_gnss_vel=287` on
-  `a299e722` is the single non-zero GNSS count across eight logs. Replayed with the floors applied,
+- **It costs most or all of the only GNSS rejection the multirotors have.** `rejected_gnss_vel=287`
+  on `a299e722` is the single non-zero GNSS count across the eight multirotor and SITL logs. (Of
+  the four airframe logs, the floors correct one: `093e806a`'s 860 position rejections read 92
+  under them. They leave `4b473e91`'s lockout and `7ce66f0d`'s divergence where they are.) Replayed with the floors applied,
   the 278 it read before #137 read 0 under PX4's treatment — the 0.5 m/s floor *and* the separate `sq(1.5f)` vertical
   widening — 2 under that floor alone, and 44 under ArduPilot's per-axis 0.3/0.5, which is the one
   policy that would leave the gate of (37)–(38) still exercised by real data. `transitions=` goes

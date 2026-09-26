@@ -432,8 +432,8 @@ impl Series {
 /// disagree with the first. `AGENTS.md`, *one statistic, one implementation*.
 ///
 /// What these say that `rejected_` cannot: a rejection count of zero is equally consistent
-/// with an `R` that is right and with one a hundred times too wide, and three of the four
-/// gated sources have never been turned down by a corpus log. A NIS mean is what tells those
+/// with an `R` that is right and with one a hundred times too wide, and on most corpus logs
+/// most gated sources have never been turned down. A NIS mean is what tells those
 /// apart. For the barometer and the magnetometer it tests a constant `tools/ulog2replay.py`
 /// invented, PX4 logging no variance for either; for GNSS it tests the receiver's own
 /// `eph`/`epv`/`s_variance_m_s`. `data/README.md` carries that caveat beside the keys.
@@ -3283,7 +3283,7 @@ mod tests {
         // `r_policy=raw` as a fixture rather than a restatement of its own constant: the
         // same 1 m/s innovation twice, differing only in the variance beside it. At
         // σ_v = 0.01 m/s the gate turns it down; at 0.5 — PX4's `ekf2_gps_v_noise`, which
-        // sits above 8365 of the corpus's 8830 velocity solutions — the same innovation is
+        // sits above 13163 of the corpus's 13676 velocity solutions — the same innovation is
         // accepted. So a floor applied in `Replay::row` would flip the first assertion,
         // which is the mutation this guards and the one `a299e722` runs 287 times.
         let moving = |var: &str| {

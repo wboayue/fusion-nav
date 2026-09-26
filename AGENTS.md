@@ -53,9 +53,12 @@ drifts reads as pure loss (`data/scenarios.txt`).
 The gate turns a fix down rather than taking everything offered — on the corpus, where
 `a299e722` refuses 287 of its 609 velocity solutions, a receiver its own differenced positions
 contradict (#105 settled that the harness does *not* floor `R` as both production estimators do,
-and `r_policy=raw` pins that); the barometer has never been turned down there, 76 915 altitudes
-on eight logs, and the magnetometer three times in 72 990 headings, all on `eb799954`, single
-samples 1.1 rad out. Between
+and `r_policy=raw` pins that). The multirotors barely reach the other gates: the magnetometer
+three times on `eb799954`, single samples 1.1 rad out, and never the barometer. The four
+airframe logs of #86's PR 3 reach all of them, each for a cause its manifest entry names:
+a dishonest receiver at speed, a logging dropout that locks a 30 m/s vehicle out (#116's
+case), a hand launch levelled wrong ((5′)'s), and a tailsitter's back-transitions reaching the
+barometer. Between
 fixes — and on every axis a fix reaches only through the covariance — the estimate is still dead
 reckoning, which is what `Validity` and `attitude_lost=` stay honest about.
 
@@ -96,8 +99,8 @@ it, `static` 2.04 → 1.02 once the offset walks. `baro_drift` was the same at f
 257 → 1.19 under (30′). **What stage 9 added.** (42′), a per-group diagonal variance floor, applied at
 `Eskf::commit_covariance` so the invariant belongs to the filter — *every covariance it commits
 has been floored* — and reaches the ones no product built: an adoption, a `reset_*_to`, the (8) a
-window commits. An honest source never reaches it, and that is measured: `floored=0` on seven of
-the eight corpus logs, 1.4 M epochs on the 2 h one, and 21 on `cd7e0001`, whose receiver claims
+window commits. An honest source never reaches it, and that is measured: `floored=0` on eleven of
+the twelve corpus logs, 1.4 M epochs on the 2 h one, and 21 on `cd7e0001`, whose receiver claims
 0.43 mm/s after touchdown and is fused raw. `math.rs`'s `FLOOR` owns the headroom figures and every other mention cites it.
 And `predicted_validity` stopped meaning *aiding is arriving*: `P` is projected
 `Accuracy::horizon` forward with nothing fusing and each quantity tested at the far end, **or**
@@ -301,7 +304,7 @@ uv run tools/replay_report.py in.csv out.csv [truth.csv] \
 index map is keyed on the pair `(n_states, covariance entries)`, because EKF2's covariance layout
 changed three times and neither count alone separates the eras: `n_states=24` is both the
 state-indexed layout and v1.15's error-state one, and no field spelling distinguishes them either.
-Three of the eight corpus logs therefore supply no attitude σ at all, two supply no origin, and the
+Three of the twelve corpus logs therefore supply no attitude σ at all, two supply no origin, and the
 LPE log is refused outright. `data/README.md`, "What `--reference` writes, and what it cannot", owns
 those boundaries and the bias-scaling factor; the map itself lives in `tools/ulog2replay.py` and
 nowhere else, so a consumer reads column names and never the layout.
