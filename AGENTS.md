@@ -26,8 +26,8 @@ entries say so. #144 (#158) removed the lockout recovery was covering on `4b473e
 `Config::coast`'s acceleration and rotation densities, so the first fix after a gap is accepted
 (`4b473e91` recovered 12 → 0, rejected 67 → 4; `logging_dropout` `pos_h_max` 23.25 → 2.74 m).
 The rotation term is the corpus's finding, not the simulator's: the course turns 44° across
-`4b473e91`'s 3.1 s gap, and without it 7 recoveries remain. Its 4 rejections left are fixes
-timestamped inside a gap, fused before the IMU row that coasts it. #118 gated GNSS height apart from horizontal
+`4b473e91`'s 3.1 s gap, and without it 7 recoveries remain. The 4 rejections it left, fixes
+timestamped inside a gap, are refused as `Fusion::OutOfHorizon` since #52: ahead of the state. #118 gated GNSS height apart from horizontal
 position, which removed the lockout fusing that barometer caused. #119 (#122) estimates the
 barometric offset beside the 15-state covariance, equation (30′), walking at
 `Config::baro_offset_walk` (PX4's 0.13); GOALS' "Barometric reference as an estimated offset"
@@ -57,7 +57,8 @@ ArduPilot's GNSS `R` rules are one call each and `RPolicy::Px4` holds no floor o
 caller can correct an antenna offset (#25 option 1; #25 is now the filter applying it); and #27's
 two boundary notes. No corpus or scenario output moved.
 #89 landed (#151): `data/anees.sh` gates per-epoch ensemble NEES on 50 seeds against χ² in CI,
-and asserts failures by cause: `gnss_latency` on position and `correlated` (#117's residual);
+and asserts failures by cause: `correlated` (#117's residual) on position; `gnss_latency`'s
+assertion tripped when #52 landed, and it now passes all three blocks;
 `logging_dropout`'s assertion tripped when #144 coasted its gap, and it now passes all three. Of the two it found that no single seed showed, #150
 (`moving_start`'s first 0.2 s) was fixed by (24′), and #149 (`harsh_imu` attitude) by #160.
 #160 made (8) correlate tilt with accelerometer bias, since (5) levels a biased accelerometer
@@ -70,9 +71,31 @@ scenario (`mission` 0.414° → 0.330); `7ce66f0d` recovers 28 times rather than
 a reader who has never computed a NEES. Every number and table comes through a placeholder in
 `validation/src/`, and every figure through `replay_report.py --figures`. `tools/validation.sh`
 regenerates them from the gates it runs, and `--check` re-derives them. The pages state the
-losses: `gnss_latency` (#52) and `correlated` (#51) are overconfident, `7ce66f0d` levels wrong
-(#59), and `89a498ce`'s 4.7 m north offset from EKF2 is open. Order: #47, which needs the *API
-frozen* milestone closed or each open issue deferred in writing; #41 needs a board.
+losses: `correlated` (#51) is overconfident, `7ce66f0d` levels wrong (#59), and `89a498ce`'s
+4.7 m north offset from EKF2 is open. Order: #47, which needs the *API frozen* milestone closed or
+each open issue deferred in writing; #41 needs a board.
+#21 and #52 landed together (#162), one time model for `predict` and `fuse_*`. `ImuSample` is
+PX4's `imuSample`: a `Timestamp` (u64 µs), delta angle and delta velocity, each with its own
+interval; `predict(imu)` differences timestamps for the step the timers and the gap test read,
+and integrates each increment over its own interval. Every `fuse_*` takes the measurement's time,
+and equation (23′) fuses it there: the innovation against `src/history.rs`, a 32-entry ring of
+the nominal state with every correction shifted through it, and `H` carried to today's error by
+`H(I − Aτ + ½A²τ²)` at the mean rates over the age. `gnss_latency` `pos_h` 2.197 → 0.295 m
+(`mission` 0.292), flat across 50–300 ms and half to twice the speed. Extrapolating back from
+the last IMU sample matched it in simulation and was refused on the corpus (`eb799954` 2 → 917
+rejections: one sample's vibration). Fixes are dated by each log's `EKF2_GPS_DELAY` (`t_meas_s`),
+which moves agreement with EKF2 closer on most logs; `a299e722` (266 → 396 rejections, 15.6 m
+from EKF2 under raw `R`) and `7ce66f0d` (1828 → 1966) prefer no delay in a per-log sweep, and
+both entries name causes latency does not touch. GOALS, "Measurement latency", owns the decision
+and why not PX4's delayed horizon. The four-lens review of #162 added what the corpus could not
+ask for: a measurement ahead of the state is carried forward on attitude (the last sample's rate)
+as well as position, since a heading 100 ms ahead in a 90°/s turn was 9° off (five logs re-pinned
+at noise level, all from this: zeroed, the old manifest passes); `OutOfHorizon { age }` names how
+far out; a window whose timestamps do not run forward is `InitError::InvalidStep`; a measurement
+dated before a start not at rest is refused, which no corpus log or scenario reaches; and
+`ImuSample::accumulate` sums a driver's batch, coning left out and cited against PX4's
+`ImuDownSampler`. `Eskf::commit_state` is the one writer that keeps the history in step, and a
+test fails without it.
 #48 and #49 landed (#154): `Display` on every outcome, an optional `defmt` feature, and
 `examples/embedded.rs`, built for both thumb targets in CI. `Display` prints numbers through
 `src/display.rs`'s `Fixed`, because core's `f32` formatting reaches `core::panicking` (the
@@ -144,7 +167,7 @@ The same `R` prices the **adoption**, where the tilt doing the levelling is wors
 `Accuracy::heading` of 0.5236, so the heading is reported established and *invalid* rather than
 established and believed. One line loosened on a claim rather than a number: `gnss_latency`
 `false_valid` 340 → 413 and `false_valid_att` 57 → 120, the attitude covariance coming down where a
-late fix leaves the error (#52 owns the cause).
+late fix leaves the error (removed by (23′), #52: both read 0).
 
 **What (30) bought, and what it cost.** Height was the key that moved — `mission` `pos_v` 0.273 m →
 0.083, `flight` 0.819 → 0.414 — and `moving_start` is byte-identical on all fifteen keys, because
@@ -160,9 +183,10 @@ it, `static` 2.04 → 1.02 once the offset walks. `baro_drift` was the same at f
 257 → 1.19 under (30′). **What stage 9 added.** (42′), a per-group diagonal variance floor, applied at
 `Eskf::commit_covariance` so the invariant belongs to the filter — *every covariance it commits
 has been floored* — and reaches the ones no product built: an adoption, a `reset_*_to`, the (8) a
-window commits. An honest source never reaches it, and that is measured: `floored=0` on eleven of
-the twelve corpus logs, 1.4 M epochs on the 2 h one, and 21 on `cd7e0001`, whose receiver claims
-0.43 mm/s after touchdown and is fused raw. `math.rs`'s `FLOOR` owns the headroom figures and every other mention cites it.
+window commits. An honest source never reaches it, and that is measured: `floored=0` on all twelve
+corpus logs, 1.4 M epochs on the 2 h one. `cd7e0001`, whose receiver claims 0.43 mm/s after
+touchdown and is fused raw, read 21 until (23′)'s carried-back `H` spread each velocity fix over
+attitude and bias. `math.rs`'s `FLOOR` owns the headroom figures and every other mention cites it.
 And `predicted_validity` stopped meaning *aiding is arriving*: `P` is projected
 `Accuracy::horizon` forward with nothing fusing and each quantity tested at the far end, **or**
 counted because a constraining source is being accepted. Tilt is what it bought — a static start
@@ -245,8 +269,8 @@ surface, not this one.
 **Sequencing hazard, and what it taught:** #31's stages were stacked branches while the
 signature-changing issues (#21, #25) changed the API underneath them, so an API change had to land
 *before* the stage that built on it. The hazard is rebase cost between branches, not users: the
-stages are done, but #25 and #21 are still open, and a branch stacked on a surface another branch
-is changing inherits it. It
+stages are done and #21 has landed, but #25 is still open, and a branch stacked on a surface
+another branch is changing inherits it. It
 held throughout: #58 landed before stage 5, the first code to read
 `Config::gates`, so the gate reads a `Gate<M>` typed by its degrees of freedom rather than a bare
 `f32`, and stage 5 then decided the default percentile from replay (`P999`) in the diff that first
@@ -591,6 +615,28 @@ error it was cited as ruling out. `f16771dd`, where the period moved 12 ms → 1
 that could have. A statistic that reads the same whether or not the code is right is not weak
 evidence, it is none, and quoting it is worse than quoting nothing because it reads as checked.
 
+**A simulator's IMU cannot judge a method that reads one sample.** Its noise is ~58 times under
+`ImuNoise`'s defaults and it has no vibration, so a method that uses the last IMU sample and one
+that averages across many score alike on every scenario. #52's extrapolation back on `v − a_n τ`
+matched the state history everywhere in simulation, and on the corpus took `eb799954` from 2
+GNSS rejections to 917 and `2c42096b`, which never moves, from 0 to 94. Replay every finalist on
+the corpus before choosing, and prefer a quantity integrated over time to a raw sample.
+
+**Set a new input to its neutral value and check the old pins come back.** #52 added a
+measurement time; replaying the corpus with every delay at zero reproduced the previous manifest
+to within two counts, which is what showed every other move was the age and not the plumbing. A
+neutral replay that does not reproduce the baseline is a finding about the change, and names
+the part of it that is not what it claims (here, barometer readings timed between two IMU
+samples being carried forward rather than taken as current).
+
+**A figure quoted in prose is a measurement of a specific commit.** #52's review fixes moved
+numbers after `data/manifest.txt`, `GOALS.md`, `data/scenarios.txt` and `data/ekf2.txt` had
+quoted them, and every quote had to be re-measured: a sweep, a delay scan, an ANEES, a mechanism
+check. Quote after the last code change, and re-run what the prose cites when the code moves
+again. On a rendered page the same rot can hide inside placeholders: `a299e722`'s agreement
+sentence argued "closer" from two heading figures that, once the numbers moved, said the
+opposite, with every placeholder still resolving.
+
 **An absence is measured only on what was fused.** `Gates`' doc comment dismissed the cost of a
 joint GNSS gate because "the corpus shows no such fix" — true, because `2c42096b`'s barometer was
 being discarded. The first change that fused it (#115) rejected 3945 of its 4616 fixes, every one
@@ -709,14 +755,21 @@ off-by-default feature of the same name.
   `attitude_sigmas`, `initial_covariance`, `baro_reference`, `inertial_acceleration`).
   The `initialize*` methods on `Eskf` call these and commit the result. Tests for the pure
   functions live here; tests of what the filter does with them stay in `eskf.rs`.
-- `src/propagate.rs` — `ImuSample` and equations (9)–(22).
+- `src/propagate.rs` — `ImuSample` and equations (9)–(22), in increments; `error_dynamics`, the
+  `A` of (16)–(19) that (23′) carries `H` through.
+- `src/history.rs` — the recent past of the nominal state for (23′): 32 entries 10 ms apart,
+  interpolated, carried forward on velocity and the last sample's rate for a time ahead of the
+  present, and shifted by every correction in navigation axes through `Eskf::commit_state`, the
+  one writer of the state outside a propagation or a start. `Eskf::observe` and `Eskf::past` are
+  its only readers, and it costs 1.5 KB of `Eskf`.
 - `src/update.rs` — the update every observation shares: (23)–(27) in Joseph form, the gate of
   (37)–(38), the injection and reset of (39)–(41). Generic over `dim(z)` and free of `Eskf`, so it
   is tested against a synthetic `H`. One Cholesky factorization of `S` serves the gate and the
   gain, and the gate runs first, so a rejection computes nothing it could commit. `Eskf::apply` is
   the one path that commits what it returns and records it. Its stack frame is the largest in the
-  crate — `update::<3>`, 8088 bytes on `thumbv6m` and 7960 on `thumbv7em`, `Eskf::apply` itself
-  inlining away — which is why `reparameterize` applies `G P Gᵀ` block-wise and (30′)'s offset
+  crate — `update::<3>`, 8120 bytes on `thumbv6m`, `Eskf::apply` itself
+  inlining away, and the high-water mark is `fuse_gnss_velocity` into it at 9520, with `observe`
+  and `apply_or_recover` kept out of line beside it rather than beneath (inlined, 10800) — which is why `reparameterize` applies `G P Gᵀ` block-wise and (30′)'s offset
   enters (27) in blocks rather than as a 16 × 16 (+4168 bytes measured); the figure
   and the #41 that would revisit it are in the doc comments.
 - `src/observation/` — one module per sensor, each forming `y`, `H` and diagonal `R_m` and
@@ -795,10 +848,14 @@ off-by-default feature of the same name.
   only where it differs from the previous sample's. The corollary for fixtures: `[sample; N]`
   with a barometer is *one reading held*, which sets no reference — the fixtures, both examples
   and the `prelude` doctest all had to be given real scatter.
-- **The filter never reads a clock.** `dt` is a parameter everywhere, including `initialize`,
-  which measures the static window in seconds rather than samples.
-- **`predict` refuses or coasts, never fakes.** Zero/negative/NaN `dt` → `InvalidStep`, before
-  the timers move. `dt > Config::max_predict_dt` is never integrated from the one sample: it is
+- **The filter never reads a clock; time is supplied.** Every `ImuSample` and every measurement
+  carries a `Timestamp`, a seed names its own, and the step and a measurement's age are
+  differenced in integer microseconds. A window's span is the time its samples integrated,
+  summed in `f64`: 100 intervals of 20 ms sum to 1.9999987 s in `f32`, and `flight.csv` started
+  `short`.
+- **`predict` refuses or coasts, never fakes.** A sample not after the clock → `InvalidStep`,
+  before the timers and the clock move. An interval under 1 µs or past `max_predict_dt` →
+  `InvalidInterval`. `dt > Config::max_predict_dt` is never integrated from the one sample: it is
   `Coasted` by (22′), an assumption the covariance prices, or `StepTooLong` with `Config::coast`
   off. Both come *after* `Diagnostics::advance`, because the time really passed and `Status` must
   not claim otherwise, and both note the gap in `longest_gap` whatever becomes of the step.
@@ -883,11 +940,14 @@ off-by-default feature of the same name.
 
 Every source touches the same ten places, and three of them are public:
 
-- `src/observation/` gains a module forming `y`, `H` and `R_m`, and its `fuse_*` calls
-  `update::update` and `Eskf::apply`. This is the cheap part, and the only one the compiler checks:
+- `src/observation/` gains a module forming `y`, `H` and `R_m` from a `&State`, and its `fuse_*`
+  takes the measurement's `Timestamp`, checks it with `admit`, builds the observation through
+  `Eskf::observe` (so it is formed against the state at that time, (23′)) and calls
+  `update::update` and `Eskf::apply_or_recover`. An adoption carries the measurement forward with
+  `carried_position`/`carried_velocity`. This is the cheap part, and the only one the compiler checks:
   a `Gate<M>` of the wrong dimension does not build.
 - `Diagnostics` gains a field and `sources()`'s return type changes length
-  (`src/health.rs:703-744`) — `#[non_exhaustive]` covers the new field, but not the array length,
+  (`src/health.rs:954-997`) — `#[non_exhaustive]` covers the new field, but not the array length,
   so settle the source set before publishing.
 - `Gates` gains a field, a `Gate<DOF>` at the observation's dimension — the type states the degrees
   of freedom, and `Gates::at` needs a line for the new field.
