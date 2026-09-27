@@ -952,6 +952,7 @@ mod tests {
             &state.attitude,
             Radians::from_radians(0.02),
             Radians::from_radians(0.35),
+            Some(0.0),
         );
 
         for _ in 0..12_000 {
@@ -1176,6 +1177,7 @@ mod projection_steps {
                 &State::default().attitude,
                 Radians::from_radians(0.02),
                 Radians::from_radians(0.35),
+                Some(0.0),
             ),
             ImuNoise::default(),
         )

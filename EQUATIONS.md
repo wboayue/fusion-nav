@@ -238,10 +238,13 @@ P_{\theta\theta} = R(\hat q_0)^\mathsf{T}\, \mathrm{diag}(\bar\sigma_{\text{tilt
 \qquad
 P_{\theta\beta_a} = -\frac{\sigma_{\beta a,0}^2}{\gamma} [\hat d]_\times,
 \qquad
-\bar\sigma_{\text{tilt}} = \max\left( \sigma_{\text{tilt},0},\; \frac{\sigma_{\beta a,0}}{\gamma} \right)
+\bar\sigma_{\text{tilt}}^2 = \frac{\sigma_{\beta a,0}^2}{\gamma^2} + \max\left( \sigma_{\text{tilt},0}^2 - \frac{\sigma_{\beta a,0}^2}{\gamma^2},\; \lambda \right)
 ```
 
-with $`\hat d = R(\hat q_0)^\mathsf{T} e_3`$, navigation down in body axes.
+with $`\hat d = R(\hat q_0)^\mathsf{T} e_3`$, navigation down in body axes, and $`\lambda`$ the
+window's own scatter across gravity as a tilt: the sample covariance $`C`$ of the specific force,
+$`\lambda = \tfrac{1}{2}\bigl(\operatorname{tr} C - \hat d^\mathsf{T} C \hat d\bigr) / (N \gamma^2)`$
+per horizontal axis. A window of one measures none, and takes $`\lambda = \sigma_{\text{tilt},0}^2`$.
 
 The cross block is what (5) does to a biased accelerometer. At rest the sensor reads
 $`\bar f = R^\mathsf{T}(-\gamma e_3) + \beta_a`$, and (5) levels to $`\bar f`$ as though
@@ -256,8 +259,11 @@ $`\lVert \bar f \rVert`$ and not its direction. At $`t_0`$ the tilt error and th
 error are one error, and $`P_{\theta\beta_a} = \mathrm{E}[\delta\theta\, \delta\beta_a^\mathsf{T}]`$ says so.
 Left out, velocity fusion that learns the bias has no way to move the tilt it caused. The share of
 the tilt the bias explains, $`\sigma_{\beta a,0}/\gamma`$ per horizontal axis, is part of
-$`\sigma_{\text{tilt},0}`$ rather than added to it, and where it is the larger it is the prior:
-the block is positive semi-definite exactly when $`\bar\sigma_{\text{tilt}} \ge \sigma_{\beta a,0}/\gamma`$.
+$`\sigma_{\text{tilt},0}`$ rather than added to it, and where it is the larger it is the prior.
+What is left once the bias is known, the Schur complement across tilt, is the second term, and
+$`\lambda`$ keeps it from zero: at the defaults the bias's share is over
+$`\sigma_{\text{tilt},0}`$, and without $`\lambda`$ the prior would call every level error the
+bias, leaving none for the vibration or noise the average levelled through.
 A seeded start commits the caller's covariance instead, having levelled nothing. What the
 correlation and the `max` were each measured against is `init::initial_covariance`'s.
 

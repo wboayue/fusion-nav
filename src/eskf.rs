@@ -1704,8 +1704,13 @@ impl Eskf {
         // time as motion the window could not vouch for; see `init::coarse_sigmas`.
         let (sigma_tilt, sigma_yaw) =
             init::attitude_sigmas(&self.config.init, alignment, measured, state.gyro_bias);
-        let covariance =
-            init::initial_covariance(&self.config.init, &state.attitude, sigma_tilt, sigma_yaw);
+        let covariance = init::initial_covariance(
+            &self.config.init,
+            &state.attitude,
+            sigma_tilt,
+            sigma_yaw,
+            measured.level_variance,
+        );
         self.state = state;
         // Before the commit, which counts into them; see `initialize_from`.
         self.diagnostics = Diagnostics::default();

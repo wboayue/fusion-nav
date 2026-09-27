@@ -598,7 +598,8 @@ pub struct Initialization {
     ///
     /// The whole tilt uncertainty of a levelled start, including the share an accelerometer
     /// bias explains: that share, `σ_βa / γ`, is carried as the tilt's correlation with the
-    /// bias rather than added to it, and where it exceeds this figure it is the prior
+    /// bias rather than added to it, and where it exceeds this figure it is the prior, with
+    /// the window's own scatter across gravity added as the share the bias does not explain
     /// (equation (8)). At the defaults it does, 0.0204 rad against 0.02.
     pub sigma_tilt: Radians,
     /// Initial yaw standard deviation. Much larger than
