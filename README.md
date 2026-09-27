@@ -404,7 +404,9 @@ solution cannot be read without them.
 | `DeadReckoning` | neither GNSS position nor velocity has been accepted for `Config::timeouts.dead_reckoning_after`; horizontal position drifts without bound, whatever the barometer and magnetometer still hold |
 
 When several apply the most severe wins, in the order `DeadReckoning` > `Aligning` > `Degraded` >
-`Healthy`. Only sources that have ever been accepted count toward `Degraded`, so a vehicle with no
+`Healthy`, so a vehicle waiting for its first GNSS fix reads `DeadReckoning`, not `Aligning`, while
+its barometer and magnetometer arrive. Only sources that have ever been accepted count toward
+`Degraded`, so a vehicle with no
 magnetometer is not `Degraded` for lacking one. Each source times out against its own rate: after
 two and a half of its measured periods (`SourceHealth::period`, `SourceHealth::timeout`), so a
 20 Hz barometer that stops is noticed in an eighth of a second and a 1 Hz receiver in two and a

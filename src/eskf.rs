@@ -1775,8 +1775,8 @@ impl Eskf {
     }
 
     /// Per-source health. Off the hot path.
-    pub const fn diagnostics(&self) -> Diagnostics {
-        self.diagnostics
+    pub const fn diagnostics(&self) -> &Diagnostics {
+        &self.diagnostics
     }
 
     /// The 15 x 15 error covariance, in the error-state ordering.
@@ -5372,7 +5372,7 @@ mod tests {
         });
         for (name, source) in filter.diagnostics().sources() {
             assert_eq!(source.accepted, 0, "{name}");
-            let period = source.period.map(Seconds::as_secs);
+            let period = source.period().map(Seconds::as_secs);
             assert!(
                 period.is_some_and(|period| (period - 0.2).abs() < 1e-4),
                 "{name}: {period:?}"
