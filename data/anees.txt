@@ -43,10 +43,6 @@
 #                    variance: anees_pos=1.45, over_pos=0.95, any_pos=5197. Fused as white it read
 #                    anees_pos=29.16 and anees_att=3.48, over on every epoch of both. A sensor's
 #                    `tau` measured offline (#51) is what removes it. #117.
-#   logging_dropout  1.2 s refused at speed, then ~7 s of rejected fixes before the recovery;
-#                    #144 would coast the gap. anees_pos=2.81, peak_pos=142.2 at 61.6 s; (24')
-#                    took it from 10.94 and 1847.5, the fixes before the gap no longer having
-#                    averaged the covariance down.
 #
 # Three lines (24') rewrote from failing to passing, each on attitude, and only one of them for
 # its cause. `moving_start` (#150) was four magnetometer headings sharing one levelling tilt error
@@ -56,6 +52,13 @@
 # and shared by every seed, and single-seed `tilt` moved only 1.188 deg to 1.117 while `nees_att`
 # went 0.7563 to 0.2137; peak_att 2.20, now 0.60. `gnss_latency`'s attitude passes the same way.
 # Both causes stand, and the lines would pass whether or not they were fixed.
+#
+# One line (22') rewrote from failing to passing, for its cause. `logging_dropout` refused its
+# 1.2 s gap at speed and was ~7 s of rejected fixes before the recovery: anees_pos=2.81,
+# peak_pos=142.2 at 61.6 s, failing all three blocks. Coasted, the state moves with the vehicle
+# and the covariance grows with the gap, so the first fix is accepted: anees_pos=0.115,
+# peak_pos=0.74 at the gap's end, and single-seed `pos_h_max` 23.25 m to 2.74, the error itself
+# removed rather than covered. With `Config::coast` off the line fails as before.
 #
 # `runs=` repeats the column as an expectation, so an ensemble that lost a run breaches rather than
 # being scored against the looser bound of fewer seeds.
@@ -73,5 +76,5 @@ baro_drift       50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10
 gnss_latency     50  runs=50  any_pos>=1  any_vel>=1  any_att=0   over_att<=0.10
 correlated       50  runs=50  any_pos>=1  any_vel=0   any_att=0   over_vel<=0.10 over_att<=0.10
 mag_disturbance  50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
-logging_dropout  50  runs=50  any_pos>=1  any_vel>=1  any_att>=1
+logging_dropout  50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
 flight           50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10

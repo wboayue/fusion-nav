@@ -64,10 +64,11 @@
 //!
 //! # A gap in the log
 //!
-//! `logging_dropout` is the one scenario that reaches `Propagation::StepTooLong`: it writes no
-//! row of any kind for 1.2 s, as a logger that lost its buffer does. Its truth file keeps every
-//! epoch, and `examples/replay.rs` scores the epochs it has, the first after the gap included —
-//! the stale state is what the filter published.
+//! `logging_dropout` is the one scenario with a step longer than `Config::max_predict_dt`: it
+//! writes no row of any kind for 1.2 s, as a logger that lost its buffer does, and the filter
+//! coasts across it (equation (22′)). Its truth file keeps every epoch, and `examples/replay.rs`
+//! scores the epochs it has, the first after the gap included — the coasted state is what the
+//! filter published.
 
 use std::env;
 use std::error::Error;
@@ -1173,15 +1174,14 @@ fn scenarios() -> Vec<Scenario> {
             },
             ..base
         },
-        // Recovery from gate lockout, and the one scenario that reaches `StepTooLong`. The logger
-        // loses 1.2 s at 20 m s⁻¹ in a turn, as `4b473e91`'s did at 30 m s⁻¹: `predict` refuses
-        // the step, so the state stays where the gap began while its covariance does not grow,
-        // and every fix after it is tens of σ away. Without `Config::recovery` that is a lockout
-        // for the rest of the flight; with it, the position is adopted `Recovery::gnss_position`
-        // after the last accepted fix.
+        // An IMU gap at speed, and the one scenario that reaches (22′). The logger loses 1.2 s at
+        // 20 m s⁻¹ in a turn, as `4b473e91`'s did at 30 m s⁻¹. Coasted, the first fix after it is
+        // accepted; refused (`Config::coast = None`), the state stays where the gap began under a
+        // covariance that did not grow, every fix after it is tens of σ away, and only
+        // `Config::recovery` gets it back.
         Scenario {
             name: "logging_dropout",
-            covers: "1.2 s of the log lost at speed: a refused step, gate lockout, and recovery",
+            covers: "1.2 s of the log lost at speed in a turn: the gap coasted by (22')",
             dropout: Some(Window {
                 start: 60.0,
                 end: 61.2,
