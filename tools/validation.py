@@ -328,7 +328,7 @@ def self_test():
     with tempfile.TemporaryDirectory() as tmp:
         root, out = Path(tmp) / "repo", Path(tmp) / "runs"
         (root / "data").mkdir(parents=True)
-        (root / "data/scenarios.txt").write_text("# header\nmission 2 pos_h<=1\nstatic 1 x\n")
+        (root / "data/scenarios.txt").write_text("# header\nstatic 1 x\nmission 2 pos_h<=1\n")
         (root / "data/anees.txt").write_text("# header\nmission 50 runs=50\n")
         (root / "data/manifest.txt").write_text(
             "# header\nabc 89a498ce-9aa1.ulg https://x rate=1\n")
@@ -362,10 +362,12 @@ def self_test():
         expect("count of the corpus", rendered("{{count @corpus/raw}}"), "1")
         expect("table", rendered("{{table score mission pos_h}}"),
                "| run | seed | `pos_h` |\n|---|---|---|\n| `mission` | 2 | 0.244 |")
-        # A list is every run in its gate file, in that file's order.
+        # A list is every run in its gate file, in that file's order rather than sorted.
         expect("table over a list", rendered("{{table score @scenarios pos_h}}"),
-               "| run | seed | `pos_h` |\n|---|---|---|\n| `mission` | 2 | 0.244 |\n"
-               "| `static` | 1 | 0.5 |")
+               "| run | seed | `pos_h` |\n|---|---|---|\n| `static` | 1 | 0.5 |\n"
+               "| `mission` | 2 | 0.244 |")
+        expect("table over the ensembles", rendered("{{table anees @anees any_pos}}"),
+               "| run | `any_pos` |\n|---|---|\n| `mission` | 0 |")
         expect("figure from a page under validation/", rendered(
             "{{figure mission error_position}}"),
             "![error_position for mission](figures/mission/error_position.png)"
