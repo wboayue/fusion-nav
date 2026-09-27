@@ -852,17 +852,15 @@ pub struct PropagationHealth {
 }
 
 impl PropagationHealth {
-    /// Record what one step did, if it was coasted or refused.
+    /// Count what one step did, if it was coasted or refused.
     pub(crate) fn record(&mut self, outcome: Propagation) {
         match outcome {
-            // The gap is noted by `Eskf::predict` before the coast is committed, so that one
-            // discarded as non-finite is still measured.
+            // The gap's length is noted by `Eskf::predict`, which sees it whatever the outcome.
             Propagation::Coasted { .. } => {
                 self.coasted = self.coasted.saturating_add(1);
             }
-            Propagation::StepTooLong { dt, .. } => {
+            Propagation::StepTooLong { .. } => {
                 self.refused_too_long = self.refused_too_long.saturating_add(1);
-                self.note_gap(dt);
             }
             Propagation::InvalidStep { .. } => {
                 self.refused_invalid = self.refused_invalid.saturating_add(1);

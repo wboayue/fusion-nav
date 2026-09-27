@@ -545,12 +545,12 @@ impl Eskf {
 
         let limit = self.config.max_predict_dt;
         if dt > limit {
+            // Noted here, whatever becomes of the step: nothing else records how far the
+            // interval ran, and a coast discarded as non-finite is a gap all the same.
+            self.diagnostics.propagation.note_gap(dt);
             let Some(coast) = self.config.coast else {
                 return self.refuse_step(Propagation::StepTooLong { dt, limit });
             };
-            // Noted before the coast can be discarded as non-finite: nothing else records how far
-            // the interval ran, and a refused step with coasting off is measured too.
-            self.diagnostics.propagation.note_gap(dt);
             // The sample is not read, so a non-finite one does not stop a coast.
             let coasted = propagate::coast(
                 self.state,
