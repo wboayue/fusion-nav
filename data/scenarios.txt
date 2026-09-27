@@ -152,17 +152,17 @@
 # removes exactly that error and nothing else was changed to make it: `pos_v` 3.07 to 0.819,
 # `pos_h` 9.14 to 3.03, `yaw` 12.96 deg to 7.59. A heading the window observed, stage 8's, is
 # the other half -- this one corrects the consequence and leaves the 0.6 rad in place.
-static           1  pos_h<=0.523 pos_v<=0.350 vel<=0.142 pos_h_max<=0.934  tilt<=0.538 yaw<=0.583 ba<=0.07733 bg<=0.000856 in3s>=0.9900 nees_pos<=0.3337   nees_vel<=0.1090 nees_att<=0.0466 false_valid<=0   false_valid_att<=0   scored>=11600  recovered=0
-mission          2  pos_h<=0.296 pos_v<=0.172 vel<=0.140 pos_h_max<=0.780  tilt<=0.419 yaw<=0.365 ba<=0.05517 bg<=0.000367 in3s>=0.9900 nees_pos<=0.0906   nees_vel<=0.1054 nees_att<=0.0287 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
-harsh_imu        2  pos_h<=0.297 pos_v<=0.170 vel<=0.146 pos_h_max<=0.786  tilt<=1.129 yaw<=1.055 ba<=0.16218 bg<=0.002149 in3s>=0.9900 nees_pos<=0.0914   nees_vel<=0.1132 nees_att<=0.2159 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
-gnss_outage      2  pos_h<=1.265 pos_v<=0.099 vel<=0.180 pos_h_max<=8.381 tilt<=0.422 yaw<=0.403 ba<=0.05548 bg<=0.000368 in3s>=0.9900 nees_pos<=0.2100   nees_vel<=0.0958 nees_att<=0.0282 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
-moving_start     4  pos_h<=0.363 pos_v<=0.613 vel<=0.147 pos_h_max<=0.702  tilt<=1.577 yaw<=1.476 ba<=0.06449 bg<=0.001951 in3s>=0.9900 nees_pos<=0.1555   nees_vel<=0.1086 nees_att<=0.0463 false_valid<=0   false_valid_att<=0   scored>=15999  recovered=0
-baro_drift       2  pos_h<=0.296 pos_v<=0.927 vel<=0.141 pos_h_max<=0.780  tilt<=0.419 yaw<=0.364 ba<=0.05515 bg<=0.000368 in3s>=0.9900 nees_pos<=0.4453   nees_vel<=0.1056 nees_att<=0.0287 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
-gnss_latency     2  pos_h<=2.219 pos_v<=0.168 vel<=0.464 pos_h_max<=3.603  tilt<=0.753 yaw<=0.639 ba<=0.05303 bg<=0.001008 in3s>=0.9555 nees_pos<=4.0986  nees_vel<=1.1249 nees_att<=0.0834 false_valid<=283 false_valid_att<=0  scored>=36600  recovered=0
-correlated       2  pos_h<=1.164 pos_v<=1.154 vel<=0.233 pos_h_max<=2.414  tilt<=0.765 yaw<=2.379 ba<=0.05530 bg<=0.001568 in3s>=0.9882 nees_pos<=1.7330  nees_vel<=0.2910 nees_att<=0.2718 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
-mag_disturbance  2  pos_h<=0.296 pos_v<=0.172 vel<=0.140 pos_h_max<=0.780  tilt<=0.422 yaw<=0.385 ba<=0.05520 bg<=0.000366 in3s>=0.9900 nees_pos<=0.0907   nees_vel<=0.1054 nees_att<=0.0292 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
-logging_dropout  2  pos_h<=0.296 pos_v<=0.152 vel<=0.143 pos_h_max<=2.763  tilt<=0.486 yaw<=0.429 ba<=0.05640 bg<=0.000398 in3s>=0.9900 nees_pos<=0.0855   nees_vel<=0.1059 nees_att<=0.0309 false_valid<=0   false_valid_att<=0   scored>=36360  recovered=0
-flight           8  pos_h<=1.987 pos_v<=0.303 vel<=0.618 pos_h_max<=5.109  tilt<=0.832 yaw<=8.117 ba<=0.07228 bg<=0.001901 in3s>=0.9900 nees_pos<=0.1248   nees_vel<=0.0922 nees_att<=0.1206 false_valid<=0   false_valid_att<=0   scored>=600  recovered=0
+static           1  pos_h<=0.522 pos_v<=0.350 vel<=0.142 pos_h_max<=0.932  tilt<=0.530 yaw<=0.639 ba<=0.07615 bg<=0.000898 in3s>=0.9900 nees_pos<=0.3324   nees_vel<=0.1083 nees_att<=0.0380 false_valid<=0   false_valid_att<=0   scored>=11600  recovered=0
+mission          2  pos_h<=0.295 pos_v<=0.173 vel<=0.140 pos_h_max<=0.775  tilt<=0.334 yaw<=0.292 ba<=0.03584 bg<=0.000339 in3s>=0.9900 nees_pos<=0.0905   nees_vel<=0.1054 nees_att<=0.0166 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
+harsh_imu        2  pos_h<=0.296 pos_v<=0.171 vel<=0.145 pos_h_max<=0.782  tilt<=0.837 yaw<=0.812 ba<=0.10916 bg<=0.002133 in3s>=0.9900 nees_pos<=0.0911   nees_vel<=0.1118 nees_att<=0.1056 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
+gnss_outage      2  pos_h<=1.651 pos_v<=0.099 vel<=0.213 pos_h_max<=11.074 tilt<=0.342 yaw<=0.329 ba<=0.03606 bg<=0.000341 in3s>=0.9900 nees_pos<=0.2101   nees_vel<=0.0960 nees_att<=0.0167 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
+moving_start     4  pos_h<=0.363 pos_v<=0.613 vel<=0.147 pos_h_max<=0.702  tilt<=1.571 yaw<=1.473 ba<=0.04096 bg<=0.002023 in3s>=0.9900 nees_pos<=0.1555   nees_vel<=0.1086 nees_att<=0.0338 false_valid<=0   false_valid_att<=0   scored>=15999  recovered=0
+baro_drift       2  pos_h<=0.295 pos_v<=0.928 vel<=0.141 pos_h_max<=0.775  tilt<=0.333 yaw<=0.291 ba<=0.03579 bg<=0.000340 in3s>=0.9900 nees_pos<=0.4458   nees_vel<=0.1057 nees_att<=0.0165 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
+gnss_latency     2  pos_h<=2.219 pos_v<=0.168 vel<=0.464 pos_h_max<=3.602  tilt<=0.677 yaw<=0.594 ba<=0.03969 bg<=0.000959 in3s>=0.9555 nees_pos<=4.0980  nees_vel<=1.1221 nees_att<=0.0646 false_valid<=283 false_valid_att<=0  scored>=36600  recovered=0
+correlated       2  pos_h<=1.164 pos_v<=1.155 vel<=0.234 pos_h_max<=2.414  tilt<=0.707 yaw<=2.330 ba<=0.03899 bg<=0.001501 in3s>=0.9882 nees_pos<=1.7329  nees_vel<=0.2913 nees_att<=0.2396 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
+mag_disturbance  2  pos_h<=0.295 pos_v<=0.173 vel<=0.140 pos_h_max<=0.775  tilt<=0.336 yaw<=0.313 ba<=0.03588 bg<=0.000338 in3s>=0.9900 nees_pos<=0.0905   nees_vel<=0.1054 nees_att<=0.0170 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
+logging_dropout  2  pos_h<=0.296 pos_v<=0.153 vel<=0.143 pos_h_max<=2.761  tilt<=0.411 yaw<=0.397 ba<=0.03713 bg<=0.000367 in3s>=0.9900 nees_pos<=0.0853   nees_vel<=0.1060 nees_att<=0.0187 false_valid<=0   false_valid_att<=0   scored>=36360  recovered=0
+flight           8  pos_h<=1.797 pos_v<=0.310 vel<=0.530 pos_h_max<=4.436  tilt<=0.595 yaw<=8.040 ba<=0.08422 bg<=0.001354 in3s>=0.9900 nees_pos<=0.1179   nees_vel<=0.0867 nees_att<=0.1062 false_valid<=0   false_valid_att<=0   scored>=600  recovered=0
 
 # (34)-(36) are what `yaw` reads now, and what it buys depends entirely on what the start knew.
 # Where yaw was never observed the magnetometer is the whole estimate: `moving_start` goes 3.228
@@ -324,3 +324,17 @@ flight           8  pos_h<=1.987 pos_v<=0.303 vel<=0.618 pos_h_max<=5.109  tilt<
 # The line now reads like `mission`'s. `ba` is the one key that loosens, 0.0489 to 0.0558: the
 # first corrections after the gap are larger than a stale state's adoption, and reach the
 # accelerometer bias through the correlations the coast builds.
+#
+# (8)'s tilt-bias correlation, with `Initialization::sigma_accel_bias` 0.1 to 0.2 m/s^2 (#149),
+# moved every line, and attitude and accelerometer bias are what it is for. A level from a biased
+# accelerometer is wrong by that bias over g, and once P0 says so, velocity fusion that learns the
+# bias moves the tilt with it: `mission` `tilt` 0.414 deg to 0.330, `yaw` 0.361 to 0.289, `ba`
+# 0.0546 to 0.0355, `nees_att` 0.0284 to 0.0164; `harsh_imu`, whose bias the old prior put at
+# 1.86 sigma, `tilt` 1.117 to 0.828 and `ba` 0.1606 to 0.1081; `flight` `tilt` 0.823 to 0.589,
+# `pos_h` 1.967 m to 1.779 and `vel` 0.611 to 0.524. Five keys loosen. `gnss_outage` `pos_h`
+# 1.252 m to 1.634, `pos_h_max` 8.30 to 10.96 and `vel` 0.178 to 0.210 is this seed's draw: the
+# horizontal acceleration error the gap integrates, g times tilt less the bias, is 0.01 m/s^2
+# larger at 60 s, while over seeds 1-20 the mean `pos_h` falls 1.647 to 1.556 and `pos_h_max`
+# 11.20 to 10.64, better on 12, and `tilt` and `ba` better on all 20. `flight` `ba` 0.0716 to
+# 0.0834 is 14 s too short for a prior twice as wide to converge. `static` `yaw` 0.577 to 0.632
+# and `bg` 0.000847 to 0.000889, and `moving_start` `bg` 0.001931 to 0.002002, were not chased.

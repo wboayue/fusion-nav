@@ -595,11 +595,29 @@ pub struct Initialization {
     /// Initial velocity standard deviation.
     pub sigma_velocity: MetersPerSecond,
     /// Initial roll and pitch standard deviation. Gravity determines these well.
+    ///
+    /// The whole tilt uncertainty of a levelled start, including the share an accelerometer
+    /// bias explains: that share, `σ_βa / γ`, is carried as the tilt's correlation with the
+    /// bias rather than added to it, and where it exceeds this figure it is the prior
+    /// (equation (8)). At the defaults it does, 0.0204 rad against 0.02.
     pub sigma_tilt: Radians,
     /// Initial yaw standard deviation. Much larger than
     /// [`sigma_tilt`](Self::sigma_tilt): yaw inherits the magnetometer's calibration error.
     pub sigma_yaw: Radians,
     /// Initial accelerometer bias standard deviation.
+    ///
+    /// 0.2 m/s², the switch-on bias both production estimators assume: PX4's
+    /// `EKF2_ABIAS_INIT` (`src/modules/ekf2/EKF/common.h:340`, `c4e4ef98`), and ArduPilot's
+    /// `0.2 · EK3_ACC_BIAS_LIM` at its default of 1.0
+    /// (`libraries/AP_NavEKF3/AP_NavEKF3_core.cpp:616`, `AP_NavEKF3_core.h:52`,
+    /// `AP_NavEKF3.cpp:567`, `368dc0c4`). A static window cannot measure it, since (5) reads a
+    /// horizontal bias as tilt, which is why the tilt carries its correlation with it.
+    ///
+    /// At 0.1 the `harsh_imu` scenario's 0.186 m/s² sat at 1.86σ, and its attitude was
+    /// overconfident on 50 seeds wherever (24′) did not inflate the covariance past it: 2281
+    /// epochs over the family-wise bound at `Correlation::WHITE`, none at 0.2 with the
+    /// correlation. On the corpus it is worth most on `7ce66f0d`, the hand launch levelled
+    /// 12° wrong: 69 recoveries → 28, and aligned at 17.7 s rather than 32.7.
     pub sigma_accel_bias: MetersPerSecond2,
     /// Initial gyroscope bias standard deviation.
     pub sigma_gyro_bias: RadiansPerSecond,
@@ -625,7 +643,7 @@ impl Default for Initialization {
             sigma_velocity: MetersPerSecond::from_m_per_s(0.1),
             sigma_tilt: Radians::from_radians(0.02),
             sigma_yaw: Radians::from_radians(0.35),
-            sigma_accel_bias: MetersPerSecond2::from_m_per_s2(0.1),
+            sigma_accel_bias: MetersPerSecond2::from_m_per_s2(0.2),
             sigma_gyro_bias: RadiansPerSecond::from_rad_per_s(0.01),
         }
     }
@@ -702,7 +720,7 @@ impl Default for Accuracy {
     /// again. On every static log in `data/manifest.txt` that read as a valid attitude for
     /// exactly one sample.
     ///
-    /// What these buy, measured on a static start at [`ImuNoise`]'s defaults: 3.85 s of unaided
+    /// What these buy, measured on a static start at [`ImuNoise`]'s defaults: 3.83 s of unaided
     /// propagation before tilt leaves the bar, 37.8 s before heading does
     /// (`an_unaided_start_holds_its_attitude_for_the_margin_the_defaults_buy`). Neither is the
     /// `σ_g² t` the white-noise density alone gives, which would be 10.4 s and 674 s — the

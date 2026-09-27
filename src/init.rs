@@ -10,7 +10,7 @@ use nalgebra::{ComplexField, RealField, Rotation3, UnitQuaternion, Vector3};
 use crate::config::{GRAVITY, Initialization};
 use crate::display::{Decimals, Fixed};
 use crate::frames::{Body, Ned};
-use crate::math::wrap_pi;
+use crate::math::{skew, wrap_pi};
 use crate::propagate::ImuSample;
 use crate::state::{AttitudeVariance, Covariance, State};
 use crate::units::{
@@ -771,10 +771,27 @@ fn coarse_sigmas(
 /// alignment's own. Diagonal only at level: on a vehicle standing on its tail, body x points
 /// up and the yaw prior belongs on `δθ_x`.
 ///
-/// Writing the block after construction costs a copy of `P`: on `thumbv6m` this frame is
-/// 1056 bytes where a diagonal-only `P₀` inlined to 80, and `Eskf::apply_alignment` grows by
-/// the same 960. The initialization chain then reaches about 3.3 KB, well under the 10 KB of
-/// `fuse_gnss_position` into `update::<3>`, so the crate's peak does not move.
+/// The tilt and the accelerometer bias are **one error**, not two. (5) levels the window's
+/// average specific force, which reads a horizontal accelerometer bias as gravity leaning, so
+/// the committed attitude is wrong by `δθ = −[d̂]× δβa / γ` with `d̂` navigation down in body
+/// axes (EQUATIONS.md, (8)). A block-diagonal `P₀` says the two are independent: when
+/// velocity fusion then learns the bias, nothing tells the tilt it caused to follow, and the
+/// attitude is overconfident by exactly the share of it the bias explains. Measured on
+/// `harsh_imu`, 50 seeds with every source fused white (`Correlation::WHITE`, where the
+/// inflation of (24′) cannot hide it): 2281 epochs over the family-wise bound with the
+/// block diagonal, 214 at the wider [`Initialization::sigma_accel_bias`] alone, none with
+/// the correlation as well.
+///
+/// So the tilt prior is `max(σ_tilt, σ_βa / γ)`: `sigma_tilt` is the whole tilt uncertainty,
+/// the share the bias explains carried as correlation, and a bias prior wider than it raises
+/// it rather than being claimed away. Adding the two instead counts that share twice, and it
+/// costs: `f16771dd` lost its unaided tilt at 3.41 s against 3.84 with the `max`, and `tilt`
+/// rose on ten of the eleven scenarios (`harsh_imu` 1.022° against 0.828).
+///
+/// Writing the blocks after construction costs a copy of `P`: on `thumbv6m` this frame is
+/// 1112 bytes where a diagonal-only `P₀` inlined to 80, with `Eskf::apply_alignment` at 952
+/// above it. The initialization chain stays well under the 10 KB of `fuse_gnss_position` into
+/// `update::<3>`, so the crate's peak does not move.
 pub(crate) fn initial_covariance(
     init: &Initialization,
     attitude: &Attitude,
@@ -795,6 +812,8 @@ pub(crate) fn initial_covariance(
         accel_bias, accel_bias, accel_bias,
         gyro_bias,  gyro_bias,  gyro_bias,
     ];
+    let explained = accel_bias / GRAVITY;
+    let tilt = tilt.max(explained);
     let mut covariance = Covariance::from_sigmas(sigmas);
     covariance.set_attitude_block(
         AttitudeVariance {
@@ -804,6 +823,13 @@ pub(crate) fn initial_covariance(
         }
         .in_body(attitude),
     );
+    // `P_θβa = E[δθ δβaᵀ] = −[d̂]× σ_βa² / γ`, from `δθ = −[d̂]× δβa / γ` and `δβa` of
+    // variance `σ_βa² I`. Horizontal only: `[d̂]×` has no component along `d̂`, and a bias
+    // along gravity moves `‖f̄‖`, not the direction (5) levels to.
+    let down = attitude
+        .quaternion()
+        .inverse_transform_vector(&Vector3::z());
+    covariance.set_attitude_accel_bias_block(skew(down) * (-accel_bias * explained));
     covariance
 }
 
@@ -917,6 +943,7 @@ pub(crate) mod tests {
     use std::format;
 
     use super::*;
+    use crate::state::ErrorState;
 
     #[test]
     fn a_coarse_start_reads_as_what_was_measured() {
@@ -1066,6 +1093,47 @@ pub(crate) mod tests {
             mag: Some(field_at(roll, pitch, yaw, declination)),
             ..still()
         }; 8]
+    }
+
+    #[test]
+    fn the_tilt_prior_predicts_the_level_error_a_biased_accelerometer_causes() {
+        // What (8)'s cross-covariance claims, checked against what (5) actually commits:
+        // told the bias, `P₀` must predict the tilt error, `E[δθ | δβa] = P_θβa P_βaβa⁻¹ δβa`.
+        // Flipping the sign of `P_θβa` fails every case here; so does leaving it out.
+        let init = Initialization::default();
+        let variance = init.sigma_accel_bias.as_m_per_s2().powi(2);
+        let bias = Vector3::new(0.15, -0.1, 0.05);
+        for (roll, pitch) in TILTS {
+            let truth = attitude_of(roll, pitch, 0.7);
+            let window = [StaticSample {
+                imu: ImuSample {
+                    accel: Acceleration::from_vector(gravity_at(roll, pitch, 0.7).vector() + bias),
+                    ..still().imu
+                },
+                mag: Some(field_at(roll, pitch, 0.7, 0.0)),
+                ..still()
+            }; 8];
+            let state = nominal(&window, Radians::ZERO, true);
+            let committed = state.attitude.quaternion();
+            // `q = q̂ ⊗ δq`, the local error of equation (2).
+            let error =
+                (committed.inverse() * UnitQuaternion::from_rotation_matrix(&truth)).scaled_axis();
+
+            let p = initial_covariance(&init, &state.attitude, init.sigma_tilt, init.sigma_yaw);
+            let theta = ErrorState::AttitudeX.index();
+            let beta = ErrorState::AccelBiasX.index();
+            let predicted = p.as_matrix().fixed_view::<3, 3>(theta, beta) * bias / variance;
+
+            // (5) observes no heading, so only the error across gravity is predictable.
+            let down = committed.inverse_transform_vector(&Vector3::z());
+            let across = |v: Vector3<f32>| v - down * v.dot(&down);
+            assert!(
+                (across(error) - across(predicted)).norm() < 2e-4,
+                "roll {roll} pitch {pitch}: levelled {:?}, predicted {:?}",
+                across(error),
+                across(predicted)
+            );
+        }
     }
 
     /// The roll, pitch and yaw equation (7) committed, in radians.

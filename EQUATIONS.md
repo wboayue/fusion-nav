@@ -218,13 +218,48 @@ same distinction `α₀` draws below. Neither production estimator averages at a
 the bias at bootstrap (`libraries/AP_NavEKF3/AP_NavEKF3_core.cpp:546`, `368dc0c4`) and PX4 refuses
 to initialize outside 0.8–1.2 g and 15°/s (`src/modules/ekf2/EKF/ekf.cpp:213-227`, `c4e4ef98`).
 
-The initial covariance is block-diagonal, and diagonal apart from attitude:
+The initial covariance is diagonal apart from attitude and the attitude's correlation with the
+accelerometer bias:
 
 **(8)**
 
 ```math
-P_0 = \mathrm{diag}\left( \sigma_{p,0}^2 I,\quad \sigma_{v,0}^2 I,\quad R(\hat q_0)^\mathsf{T}\, \mathrm{diag}(\sigma_{\text{tilt},0}^2, \sigma_{\text{tilt},0}^2, \sigma_{\psi,0}^2)\, R(\hat q_0),\quad \sigma_{\beta a,0}^2 I,\quad \sigma_{\beta g,0}^2 I \right)
+P_0 = \begin{bmatrix}
+\sigma_{p,0}^2 I & 0 & 0 & 0 & 0 \\
+0 & \sigma_{v,0}^2 I & 0 & 0 & 0 \\
+0 & 0 & P_{\theta\theta} & P_{\theta\beta_a} & 0 \\
+0 & 0 & P_{\theta\beta_a}^\mathsf{T} & \sigma_{\beta a,0}^2 I & 0 \\
+0 & 0 & 0 & 0 & \sigma_{\beta g,0}^2 I
+\end{bmatrix}
 ```
+
+```math
+P_{\theta\theta} = R(\hat q_0)^\mathsf{T}\, \mathrm{diag}(\bar\sigma_{\text{tilt}}^2, \bar\sigma_{\text{tilt}}^2, \sigma_{\psi,0}^2)\, R(\hat q_0),
+\qquad
+P_{\theta\beta_a} = -\frac{\sigma_{\beta a,0}^2}{\gamma} [\hat d]_\times,
+\qquad
+\bar\sigma_{\text{tilt}} = \max\left( \sigma_{\text{tilt},0},\; \frac{\sigma_{\beta a,0}}{\gamma} \right)
+```
+
+with $`\hat d = R(\hat q_0)^\mathsf{T} e_3`$, navigation down in body axes.
+
+The cross block is what (5) does to a biased accelerometer. At rest the sensor reads
+$`\bar f = R^\mathsf{T}(-\gamma e_3) + \beta_a`$, and (5) levels to $`\bar f`$ as though
+$`\hat\beta_{a,0} = 0`$ of (7) were the bias, so to first order the committed attitude is wrong by
+
+```math
+\delta\theta = -\frac{1}{\gamma} [\hat d]_\times\, \delta\beta_a
+```
+
+This is the horizontal bias read as a lean, and the vertical one read as nothing, since it moves
+$`\lVert \bar f \rVert`$ and not its direction. At $`t_0`$ the tilt error and the accelerometer-bias
+error are one error, and $`P_{\theta\beta_a} = \mathrm{E}[\delta\theta\, \delta\beta_a^\mathsf{T}]`$ says so.
+Left out, velocity fusion that learns the bias has no way to move the tilt it caused. The share of
+the tilt the bias explains, $`\sigma_{\beta a,0}/\gamma`$ per horizontal axis, is part of
+$`\sigma_{\text{tilt},0}`$ rather than added to it, and where it is the larger it is the prior:
+the block is positive semi-definite exactly when $`\bar\sigma_{\text{tilt}} \ge \sigma_{\beta a,0}/\gamma`$.
+A seeded start commits the caller's covariance instead, having levelled nothing. What the
+correlation and the `max` were each measured against is `init::initial_covariance`'s.
 
 Tilt and yaw are uncertainties about navigation axes — rotation about north and east, and about
 down — while $`\delta\theta`$ is a body-frame rotation vector whose navigation-frame counterpart
@@ -1053,7 +1088,7 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | equations | concept | module | function |
 | --------- | ------- | ------ | -------- |
 | (1)–(4) | state definitions | `state.rs` | `State`, `ErrorState` |
-| (5)–(8) | static initialization | `init.rs` | `measure`, `level_from_accel`, `heading_from_mag`, `nominal_state`, `classify`, `attitude_sigmas`, `initial_covariance`, with `state.rs`'s `AttitudeVariance::in_body` |
+| (5)–(8) | static initialization | `init.rs` | `measure`, `level_from_accel`, `heading_from_mag`, `nominal_state`, `classify`, `attitude_sigmas`, `initial_covariance`, with `state.rs`'s `AttitudeVariance::in_body` and `Covariance::set_attitude_accel_bias_block` |
 | (8′) | what a coarse window supports | `init.rs` | `coarse_sigmas`, `window_drift`, `heading_sensitivity` — `tan δ` shared with (36′) |
 | (5′) `ā_n` | in-motion levelling | `init.rs` | `inertial_acceleration`; the correction itself is unbuilt — #59 |
 | (30) `α₀` | barometric reference and its variance | `init.rs` | `baro_reference` |
@@ -1122,5 +1157,5 @@ Section 5, the locally-defined angular error; Section 7 is the global alternativ
 | $`\mathrm{Exp}(\phi)`$ | (101) | |
 
 The rest is not his. Initialization (5)–(8) follows the practice of PX4 and ArduPilot cited at
-(7); (43) is Groves (2.112); the observation models (28)–(36), the gating of (37)–(38) and the
+(7), except (8)'s tilt–bias correlation, which neither carries; (43) is Groves (2.112); the observation models (28)–(36), the gating of (37)–(38) and the
 origin placement of (44) are derived here.

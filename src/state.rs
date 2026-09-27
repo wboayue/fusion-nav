@@ -168,6 +168,19 @@ impl Covariance {
             .copy_from(&block);
     }
 
+    /// Replace `P_θβa`, the attitude's cross-covariance with the accelerometer bias, and its
+    /// transpose, leaving both diagonal blocks as they were.
+    pub(crate) fn set_attitude_accel_bias_block(&mut self, block: Matrix3<f32>) {
+        let (theta, beta) = (
+            ErrorState::AttitudeX.index(),
+            ErrorState::AccelBiasX.index(),
+        );
+        self.0.fixed_view_mut::<3, 3>(theta, beta).copy_from(&block);
+        self.0
+            .fixed_view_mut::<3, 3>(beta, theta)
+            .copy_from(&block.transpose());
+    }
+
     /// [`reset_state`](Self::reset_state) along a direction of the attitude block rather
     /// than one of its axes: the component `uᵀδθ` gets `variance` and loses its correlations,
     /// and everything orthogonal to it is left as it was.

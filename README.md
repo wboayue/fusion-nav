@@ -14,7 +14,7 @@ Embedded-first inertial navigation using a 15-state Error-State Kalman Filter (E
 > `fuse_mag_heading` by (34)–(36). Yaw is the one attitude component any of them observes
 > directly; roll and pitch are corrected as far as the covariance carries an observation into
 > them. Where no aiding arrives, the uncertainty grows without bound and `Validity` says so:
-> each flag goes false as its own variance passes `Config::accuracy`, 3.85 s in for tilt at
+> each flag goes false as its own variance passes `Config::accuracy`, 3.83 s in for tilt at
 > the default noise on an unaided start. Accuracy is measured rather than asserted — see
 > [data/README.md](https://github.com/wboayue/fusion-nav/blob/main/data/README.md). The API is
 > not yet frozen.
@@ -413,7 +413,7 @@ no horizontal position to propagate, and that fixes are arriving is the whole an
 
 Tilt is where it matters most, because nothing aids it — a static window brings it in and
 gyroscope-bias uncertainty takes it back out, on a schedule only the covariance knows. At the
-default noise an unaided start holds tilt for 3.85 s, so a horizon under that arms and one over
+default noise an unaided start holds tilt for 3.83 s, so a horizon under that arms and one over
 it does not.
 
 `Accuracy::horizon` is the one number in the crate no data could settle: how long after arming
