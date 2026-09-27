@@ -21,10 +21,10 @@ use crate::units::{
 /// One sample from the quasi-static initialization window.
 ///
 /// The magnetometer is optional: without it nothing observes the rotation about gravity,
-/// `ψ₀` of equation (6) stays zero, and the first accepted magnetic heading is what
-/// establishes it. A window with none anywhere in it says so —
-/// [`Validity::heading`](crate::Validity) stays false until
-/// [`Eskf::fuse_mag_heading`](crate::Eskf::fuse_mag_heading) accepts one — because
+/// `ψ₀` of equation (6) stays zero, and the first accepted heading, magnetic, GNSS or
+/// course, is what establishes it. A window with none anywhere in it says so:
+/// [`Validity::heading`](crate::Validity) stays false until a heading source accepts one,
+/// because
 /// [`sigma_yaw`](crate::Initialization::sigma_yaw) is a prior and would otherwise read as
 /// an estimate of a quantity nothing measured.
 ///

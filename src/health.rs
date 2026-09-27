@@ -596,7 +596,9 @@ pub struct Validity {
     pub tilt: bool,
     /// Heading. False until something observes the rotation about gravity: a
     /// magnetometer in the initialization window, or an accepted
-    /// [`Eskf::fuse_mag_heading`](crate::Eskf::fuse_mag_heading). Stillness does not
+    /// [`Eskf::fuse_mag_heading`](crate::Eskf::fuse_mag_heading),
+    /// [`fuse_gnss_heading`](crate::Eskf::fuse_gnss_heading) or
+    /// [`fuse_course`](crate::Eskf::fuse_course). Stillness does not
     /// observe it, so a perfect static alignment on a vehicle with no magnetometer
     /// reports `tilt` and not this.
     pub heading: bool,
@@ -1022,6 +1024,20 @@ impl Diagnostics {
             ("mag_heading", self.mag_heading),
             ("gnss_heading", self.gnss_heading),
             ("course", self.course),
+        ]
+    }
+
+    /// The sources [`Status`] counts: every one but the course constraint, which reads the
+    /// filter's own velocity rather than a sensor. See
+    /// [`Eskf::fuse_course`](crate::Eskf::fuse_course).
+    pub(crate) const fn aiding(&self) -> [SourceHealth; 6] {
+        [
+            self.gnss_position,
+            self.gnss_height,
+            self.gnss_velocity,
+            self.baro_altitude,
+            self.mag_heading,
+            self.gnss_heading,
         ]
     }
 

@@ -165,9 +165,10 @@ and [equation (30′)](EQUATIONS.md#barometric-offset).
 
 ### Magnetometer
 
-The magnetometer is the only source that observes yaw. Gravity pins roll and pitch and says
-nothing about the rotation about them, so without one, yaw follows the gyroscope bias wherever it
-goes.
+The magnetometer is the heading source most vehicles carry. Gravity pins roll and pitch and says
+nothing about the rotation about them, so without a heading source yaw follows the gyroscope bias
+wherever it goes. The other two are a dual-antenna GNSS heading and, for a vehicle that points
+where it goes, the course constraint: [heading from GNSS](EQUATIONS.md#heading-from-gnss).
 
 Fusion is **heading only** by default: the field is reduced to a single scalar heading and fused
 as one measurement, leaving roll and pitch to gravity where they are well determined. A magnetic
