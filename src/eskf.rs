@@ -64,7 +64,7 @@ use nalgebra::Vector3;
 /// // `clamped` bounds the receiver's own `eph` and `epv` the way both autopilots do.
 /// let outcome = filter.fuse_gnss_geodetic(
 ///     Geodetic::from_degrees(47.397_742, 8.545_594, 488.0),
-///     PositionNoise::clamped(1.5, 3.0, 0.5, 100.0),
+///     PositionNoise::clamped(1.5, 3.0, SigmaBounds::new(0.5, 100.0), SigmaBounds::new(0.75, 100.0)),
 /// );
 /// assert!(outcome.is_accepted());
 /// assert!(filter.origin().is_some());
@@ -727,7 +727,7 @@ impl Eskf {
     ///
     /// `noise` is the receiver's own accuracy where it reports one, bounded before it
     /// arrives: [`PositionNoise::clamped`](crate::PositionNoise::clamped) takes `eph` and
-    /// `epv` and holds each between a floor and a cap, for the reasons recorded there. A
+    /// `epv` and holds each within its own floor and cap, for the reasons recorded there. A
     /// two-dimensional fix instead goes through
     /// [`PositionNoise::horizontal_vertical`](crate::PositionNoise::horizontal_vertical),
     /// which leaves the vertical σ where the caller put it: `clamped` caps both axes, so

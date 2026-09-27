@@ -642,19 +642,49 @@ noise3!(
     variance = "meters squared per second squared"
 );
 
-/// One σ held between two bounds, for the `clamped` constructors below.
+/// Where a reported standard deviation is allowed to lie, for the `clamped` constructors of
+/// [`PositionNoise`] and [`VelocityNoise`]: a floor, a cap, or both.
 ///
-/// Written with comparisons rather than [`f32::clamp`], which panics when `min > max`,
-/// and rather than [`f32::max`], which returns the bound when the σ is NaN and would
-/// turn a measurement [`Fusion::NotFinite`](crate::Fusion::NotFinite) exists to refuse
-/// into a plausible-looking number. Every comparison against NaN is false, so a NaN σ
-/// falls through unchanged and is refused where every other non-finite noise is.
-///
-/// Bounds the wrong way round saturate to `max` rather than refusing: `clamped` is on the
-/// per-measurement path, and a filter that cannot panic has no better answer available.
-fn clamp_sigma(sigma: f32, min: f32, max: f32) -> f32 {
-    let floored = if sigma < min { min } else { sigma };
-    if floored > max { max } else { floored }
+/// A type rather than two bare `f32`s, and one per axis, because both production estimators
+/// bound the horizontal and vertical axes of one fix differently (PX4 and ArduPilot each floor
+/// vertical position at 1.5 times the horizontal floor), and a caller holds these in its own
+/// configuration and passes them on every fix. `Copy` for that reason, where a
+/// `RangeInclusive` would need cloning at each call.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SigmaBounds {
+    min: f32,
+    max: f32,
+}
+
+impl SigmaBounds {
+    /// A σ held between `min` and `max`, in the unit of the noise it bounds.
+    ///
+    /// Bounds the wrong way round saturate to `max` rather than refusing: `clamped` is on the
+    /// per-measurement path, and a filter that cannot panic has no better answer available.
+    pub const fn new(min: f32, max: f32) -> Self {
+        Self { min, max }
+    }
+
+    /// A σ floored at `min` and not capped, as PX4 bounds a receiver's speed accuracy.
+    pub const fn at_least(min: f32) -> Self {
+        Self::new(min, f32::INFINITY)
+    }
+
+    /// Hold `sigma` between the bounds.
+    ///
+    /// Written with comparisons rather than [`f32::clamp`], which panics when `min > max`,
+    /// and rather than [`f32::max`], which returns the bound when the σ is NaN and would
+    /// turn a measurement [`Fusion::NotFinite`](crate::Fusion::NotFinite) exists to refuse
+    /// into a plausible-looking number. Every comparison against NaN is false, so a NaN σ
+    /// falls through unchanged and is refused where every other non-finite noise is.
+    fn apply(self, sigma: f32) -> f32 {
+        let floored = if sigma < self.min { self.min } else { sigma };
+        if floored > self.max {
+            self.max
+        } else {
+            floored
+        }
+    }
 }
 
 impl PositionNoise<Ned> {
@@ -674,38 +704,67 @@ impl PositionNoise<Ned> {
         Self::from_sigma(horizontal, horizontal, vertical)
     }
 
-    /// The same, with each σ held between `min_sigma` and `max_sigma` in meters.
+    /// The same, with each σ held within its own [`SigmaBounds`] in meters.
     ///
     /// For the axes the receiver actually measured. Both are capped, so this is not the
-    /// way to drop one — `clamped(eph, 1000.0, 0.5, 100.0)` gives the vertical axis
-    /// σ = 100 m, which is a height measurement the filter will lean on rather than the
-    /// one being declined. A two-dimensional fix goes through
-    /// [`horizontal_vertical`](Self::horizontal_vertical) instead, bounding `eph` first
-    /// if it came from the receiver.
+    /// way to drop one: a vertical σ of 1000 m under a 100 m cap is a height measurement the
+    /// filter will lean on rather than the one being declined. A two-dimensional fix goes
+    /// through [`horizontal_vertical`](Self::horizontal_vertical) instead, bounding `eph`
+    /// first if it came from the receiver.
     ///
     /// A receiver's accuracy estimate is its view of its own geometry and residuals, and
-    /// under multipath it stays small while the fix is metres wrong — so both production
-    /// estimators bound it on both sides rather than trusting it. ArduPilot writes the
-    /// two-sided form directly, `constrain_ftype(gpsPosAccuracy, _gpsHorizPosNoise, 100)`
-    /// at `AP_NavEKF3_PosVelFusion.cpp:836` — the ordinary GNSS branch, not the identical
-    /// line at `:807`, which is the synthetic-zero-velocity case opened at `:789`.
-    /// PX4 floors at `ekf2_gps_p_noise`
-    /// (`EKF/aid_sources/gnss/gps_control.cpp:358`) and caps at `ekf2_noaid_noise`, 10 m,
-    /// but only while GNSS is the sole horizontal aid (`:363-364`) — the cap is about
-    /// what the filter can afford to lean on, not about the fix.
+    /// under multipath it stays small while the fix is metres wrong, so both production
+    /// estimators bound it rather than trusting it, each axis by its own rule:
     ///
-    /// Keeping both bounds here rather than in [`Config`](crate::Config) keeps them
-    /// travelling with the measurement they describe, which is the same reason `R` is a
-    /// per-call argument at all.
+    /// ```
+    /// # use fusion_nav::prelude::*;
+    /// let (eph, epv) = (0.05, 0.05); // an RTK fix claiming 5 cm
+    ///
+    /// // PX4 floors horizontal at EKF2_GPS_P_NOISE and vertical at 1.5 times it, and caps
+    /// // both at EKF2_NOAID_NOISE while GNSS is the only aiding on that axis.
+    /// let (p, noaid) = (0.5, 10.0);
+    /// let px4 = PositionNoise::clamped(
+    ///     eph,
+    ///     epv,
+    ///     SigmaBounds::new(p, noaid),
+    ///     SigmaBounds::new(1.5 * p, noaid),
+    /// );
+    /// assert_eq!(px4, PositionNoise::horizontal_vertical(0.5, 0.75));
+    ///
+    /// // ArduPilot floors horizontal at EK3_POSNE_M_NSE and vertical at 1.5 times it, and
+    /// // caps both at 100 m.
+    /// let posne = 0.5;
+    /// let ardupilot = PositionNoise::clamped(
+    ///     eph,
+    ///     epv,
+    ///     SigmaBounds::new(posne, 100.0),
+    ///     SigmaBounds::new(1.5 * posne, 100.0),
+    /// );
+    /// assert_eq!(ardupilot, px4);
+    /// ```
+    ///
+    /// PX4: `EKF/aid_sources/gnss/gps_control.cpp:358-368` for horizontal, whose cap applies
+    /// only while no other source aids horizontally and whose variance is floored again at
+    /// 0.01² m², and `gnss_height_control.cpp:62-69` for vertical, capped only while GNSS is
+    /// *not* the sole height source. The cap is about what the filter can afford to lean on,
+    /// not about the fix. ArduPilot: `constrain_ftype(gpsPosAccuracy, _gpsHorizPosNoise, 100)`
+    /// at `AP_NavEKF3_PosVelFusion.cpp:836`, the ordinary GNSS branch rather than the
+    /// identical line at `:807`, which is the synthetic-zero-velocity case opened at `:789`;
+    /// vertical at `:1402`.
+    ///
+    /// Keeping the bounds here rather than in [`Config`](crate::Config) keeps them travelling
+    /// with the measurement they describe, which is the same reason `R` is a per-call
+    /// argument at all.
     ///
     /// Read at PX4-Autopilot `c4e4ef98` (v1.18.0-beta1) and ardupilot `368dc0c4`.
-    pub fn clamped(horizontal: f32, vertical: f32, min_sigma: f32, max_sigma: f32) -> Self {
-        let horizontal = clamp_sigma(horizontal, min_sigma, max_sigma);
-        Self::from_sigma(
-            horizontal,
-            horizontal,
-            clamp_sigma(vertical, min_sigma, max_sigma),
-        )
+    pub fn clamped(
+        horizontal: f32,
+        vertical: f32,
+        horizontal_bounds: SigmaBounds,
+        vertical_bounds: SigmaBounds,
+    ) -> Self {
+        let horizontal = horizontal_bounds.apply(horizontal);
+        Self::from_sigma(horizontal, horizontal, vertical_bounds.apply(vertical))
     }
 }
 
@@ -753,32 +812,62 @@ impl VelocityNoise<Ned> {
         Self::from_sigma(horizontal, horizontal, vertical)
     }
 
-    /// From horizontal and vertical speed accuracies, each held between `min_sigma` and
-    /// `max_sigma` in meters per second. An isotropic `sacc` is
-    /// `clamped(sacc, sacc, min, max)`.
+    /// From horizontal and vertical speed accuracies, each held within its own
+    /// [`SigmaBounds`] in meters per second. An isotropic `sacc` bounded alike on every
+    /// axis is `clamped(sacc, sacc, b, b)`.
     ///
-    /// Bounded on both sides for the reason [`PositionNoise::clamped`] is, and per axis
-    /// because ArduPilot is: it floors the axes at different parameters, 0.3 m/s
-    /// horizontal against 0.5 vertical on copter, under one shared 50 m/s cap
-    /// (`AP_NavEKF3_PosVelFusion.cpp:821-822`, `AP_NavEKF3.cpp:23-24`). PX4 floors at
-    /// `ekf2_gps_v_noise` and caps nothing (`EKF/aid_sources/gnss/gps_control.cpp:320`);
-    /// that is the `EKF2_GPS_V_NOISE` parameter, 0.3 m/s by default since 11585dfb67
-    /// (`src/modules/ekf2/params_gnss.yaml:68-72` at c4e4ef98), though the struct's own
-    /// initializer still reads 0.5 (`EKF/common.h:370`). The corpus flies 0.25–0.5.
+    /// Bounded for the reason [`PositionNoise::clamped`] is, and per axis because both
+    /// platforms treat vertical differently, each in its own way:
+    ///
+    /// ```
+    /// # use fusion_nav::prelude::*;
+    /// let sacc = 0.1; // a receiver claiming 0.1 m/s
+    ///
+    /// // PX4 floors sacc at EKF2_GPS_V_NOISE, caps nothing, and widens vertical by 1.5
+    /// // after the floor. Floor-then-widen is 1.5·max(sacc, v) = max(1.5·sacc, 1.5·v),
+    /// // so it is a vertical floor of 1.5·v on a vertical σ of 1.5·sacc.
+    /// let v = 0.3;
+    /// let px4 = VelocityNoise::clamped(
+    ///     sacc,
+    ///     1.5 * sacc,
+    ///     SigmaBounds::at_least(v),
+    ///     SigmaBounds::at_least(1.5 * v),
+    /// );
+    /// // 0.1 m/s reads 0.3 / 0.45, where one floor applied after widening reads 0.3 / 0.3.
+    /// assert_eq!(px4, VelocityNoise::horizontal_vertical(v, 1.5 * v));
+    ///
+    /// // ArduPilot floors the one sacc at EK3_VELNE_M_NSE horizontally and EK3_VELD_M_NSE
+    /// // vertically, under one 50 m/s cap.
+    /// let (velne, veld) = (0.3, 0.5);
+    /// let ardupilot = VelocityNoise::clamped(
+    ///     sacc,
+    ///     sacc,
+    ///     SigmaBounds::new(velne, 50.0),
+    ///     SigmaBounds::new(veld, 50.0),
+    /// );
+    /// assert_eq!(ardupilot, VelocityNoise::horizontal_vertical(0.3, 0.5));
+    /// ```
+    ///
+    /// PX4: `max(sacc, ekf2_gps_v_noise, 0.01)` and the 1.5 at
+    /// `EKF/aid_sources/gnss/gps_control.cpp:320-321`. `EKF2_GPS_V_NOISE` is 0.3 m/s by
+    /// default since 11585dfb67 (`src/modules/ekf2/params_gnss.yaml:68-72`), though the
+    /// struct's own initializer still reads 0.5 (`EKF/common.h:370`); the corpus flies
+    /// 0.25–0.5. ArduPilot: `AP_NavEKF3_PosVelFusion.cpp:821-822`, copter defaults at
+    /// `AP_NavEKF3.cpp:23-24`.
     ///
     /// Bounds are for axes the receiver measured. A solution with no usable vertical
-    /// velocity goes through
-    /// [`horizontal_vertical`](Self::horizontal_vertical), for the reason
-    /// [`PositionNoise::clamped`] gives.
+    /// velocity goes through [`horizontal_vertical`](Self::horizontal_vertical), for the
+    /// reason [`PositionNoise::clamped`] gives.
     ///
     /// Read at PX4-Autopilot `c4e4ef98` (v1.18.0-beta1) and ardupilot `368dc0c4`.
-    pub fn clamped(horizontal: f32, vertical: f32, min_sigma: f32, max_sigma: f32) -> Self {
-        let horizontal = clamp_sigma(horizontal, min_sigma, max_sigma);
-        Self::from_sigma(
-            horizontal,
-            horizontal,
-            clamp_sigma(vertical, min_sigma, max_sigma),
-        )
+    pub fn clamped(
+        horizontal: f32,
+        vertical: f32,
+        horizontal_bounds: SigmaBounds,
+        vertical_bounds: SigmaBounds,
+    ) -> Self {
+        let horizontal = horizontal_bounds.apply(horizontal);
+        Self::from_sigma(horizontal, horizontal, vertical_bounds.apply(vertical))
     }
 }
 
@@ -945,26 +1034,43 @@ mod tests {
         );
     }
 
+    fn within(min: f32, max: f32) -> SigmaBounds {
+        SigmaBounds::new(min, max)
+    }
+
     #[test]
     fn clamping_bounds_a_sigma_on_both_sides() {
         // Inside the bounds, the receiver's own number survives untouched.
         assert_eq!(
-            PositionNoise::clamped(1.5, 3.0, 0.5, 100.0),
+            PositionNoise::clamped(1.5, 3.0, within(0.5, 100.0), within(0.5, 100.0)),
             PositionNoise::horizontal_vertical(1.5, 3.0)
         );
         // An optimistic fix is floored, an implausible one capped, per axis.
         assert_eq!(
-            PositionNoise::clamped(0.01, 250.0, 0.5, 100.0),
+            PositionNoise::clamped(0.01, 250.0, within(0.5, 100.0), within(0.5, 100.0)),
             PositionNoise::horizontal_vertical(0.5, 100.0)
         );
         assert_eq!(
-            VelocityNoise::clamped(0.02, 0.02, 0.5, 50.0).variance(),
+            VelocityNoise::clamped(0.02, 0.02, within(0.5, 50.0), within(0.5, 50.0)).variance(),
             Vector3::repeat(0.25)
         );
         // Per axis, so PX4's 1.5 vertical ratio survives the bounds it is applied under.
         assert_eq!(
-            VelocityNoise::clamped(0.4, 0.6, 0.3, 50.0),
+            VelocityNoise::clamped(0.4, 0.6, within(0.3, 50.0), within(0.3, 50.0)),
             VelocityNoise::horizontal_vertical(0.4, 0.6)
+        );
+        // And each axis reads its own bounds: the same σ floored differently per axis.
+        assert_eq!(
+            PositionNoise::clamped(0.05, 0.05, within(0.5, 10.0), within(0.75, 10.0)),
+            PositionNoise::horizontal_vertical(0.5, 0.75)
+        );
+        assert_eq!(
+            VelocityNoise::clamped(0.1, 0.15, SigmaBounds::at_least(0.3), within(0.4, 0.42)),
+            VelocityNoise::horizontal_vertical(0.3, 0.4)
+        );
+        assert_eq!(
+            VelocityNoise::clamped(80.0, 80.0, within(0.3, 50.0), within(0.5, 60.0)),
+            VelocityNoise::horizontal_vertical(50.0, 60.0)
         );
     }
 
@@ -972,7 +1078,7 @@ mod tests {
     fn a_clamped_nan_stays_nan_rather_than_becoming_a_bound() {
         // `f32::max` would return the bound here, and the fix would be fused with an
         // invented accuracy instead of refused as Fusion::NotFinite.
-        let noise = PositionNoise::clamped(f32::NAN, 3.0, 0.5, 100.0);
+        let noise = PositionNoise::clamped(f32::NAN, 3.0, within(0.5, 100.0), within(0.5, 100.0));
         assert!(noise.variance()[0].is_nan());
         assert!(!noise.is_finite());
     }
@@ -980,7 +1086,7 @@ mod tests {
     #[test]
     fn bounds_the_wrong_way_round_saturate_rather_than_panicking() {
         assert_eq!(
-            VelocityNoise::clamped(1.0, 1.0, 10.0, 5.0).variance(),
+            VelocityNoise::clamped(1.0, 1.0, within(10.0, 5.0), within(10.0, 5.0)).variance(),
             Vector3::repeat(25.0)
         );
     }

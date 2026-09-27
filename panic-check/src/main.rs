@@ -88,14 +88,14 @@ fn drive() {
     let position_noise = PositionNoise::clamped(
         black_box(1.5),
         black_box(3.0),
-        black_box(0.5),
-        black_box(100.0),
+        SigmaBounds::new(black_box(0.5), black_box(100.0)),
+        SigmaBounds::new(black_box(0.75), black_box(100.0)),
     );
     let velocity_noise = VelocityNoise::clamped(
         black_box(0.3),
         black_box(0.45),
-        black_box(0.5),
-        black_box(50.0),
+        SigmaBounds::at_least(black_box(0.5)),
+        SigmaBounds::new(black_box(0.75), black_box(50.0)),
     );
     let _ = black_box(PositionNoise::horizontal_vertical(
         black_box(1.5),

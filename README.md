@@ -87,7 +87,7 @@ loop {
     // the first one places the navigation origin. The names are a u-blox PVT's.
     let fix = Geodetic::from_degrees_e7(lat_e7, lon_e7, height_mm);
     let (eph, epv) = (h_acc_mm as f32 * 1e-3, v_acc_mm as f32 * 1e-3);
-    let noise = PositionNoise::clamped(eph, epv, 0.5, 100.0);
+    let noise = PositionNoise::clamped(eph, epv, SigmaBounds::new(0.5, 100.0), SigmaBounds::new(0.75, 100.0));
     if !filter.fuse_gnss_geodetic(fix, noise).is_accepted() {
         /* diagnostics() has the detail */
     }
@@ -315,8 +315,9 @@ The noise is an argument, not configuration, because the accuracy of a fix is a 
 fix. Build it the way the source reports it: `PositionNoise::horizontal_vertical(eph, epv)` and
 `VelocityNoise::from_speed_accuracy(sacc)` take a receiver's standard deviations, `from_variance`
 takes a covariance diagonal as ROS carries it. Bound a receiver's figures first —
-`PositionNoise::clamped(eph, epv, 0.5, 100.0)` and `VelocityNoise::clamped(sacc, sacc, 0.5, 50.0)` —
-since neither production autopilot fuses one raw. Both floor it, against a receiver whose accuracy
+`PositionNoise::clamped` and `VelocityNoise::clamped` take a `SigmaBounds` per axis, and their
+documentation writes PX4's and ArduPilot's rules as one call each, since neither production
+autopilot fuses a receiver's figures raw. Both floor it, against a receiver whose accuracy
 stays small under multipath while the fix is metres wrong; ArduPilot also caps, and PX4 caps
 horizontal position only while GNSS is its sole horizontal aid. Where an axis was not measured at
 all — a two-dimensional fix, a solution with no vertical velocity — `horizontal_vertical` is the
