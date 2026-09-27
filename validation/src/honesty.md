@@ -36,7 +36,7 @@ The pinned run of each scenario, the one the [accuracy page](accuracy.md) tabula
 `false_valid` counts quantity-epochs where `Validity` said a quantity was usable and the truth
 error was outside `Config::accuracy`: the lie, counted where an integrator would act on it.
 
-## Fifty flights each
+## Over the ensemble
 
 `anees_` is the mean over epochs of the ensemble average, per degree of freedom. `any_` counts
 epochs where the ensemble average crosses the bound made family-wise over the whole log (on the
