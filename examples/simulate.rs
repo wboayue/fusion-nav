@@ -1763,7 +1763,7 @@ fn write_log_header(
          #   gnss_vel  v0..v2 NED velocity m/s    var0..var2 m^2/s^2\n\
          #   baro      v0     altitude m (up)     var0      m^2\n\
          #   mag       v0..v2 field, calibrated   var0      heading rad^2\n\
-         #   gnss_yaw  v0     dual-antenna heading rad  var0  rad^2\n\
+         #   gnss_yaw  v0     heading rad, 2 ant  var0      rad^2\n\
          #   t_meas_s  when a fix was taken, t_s less the receiver's latency",
         name = scenario.name,
         seed = scenario.seed,
