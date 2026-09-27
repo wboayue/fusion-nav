@@ -786,7 +786,12 @@ impl Eskf {
     ///
     /// The filter applies no bound of its own, because `R` describes the measurement and
     /// belongs with it rather than in [`Config`]. A caller handing over a raw `eph` is
-    /// therefore trusting the receiver further than either production autopilot does. What
+    /// therefore trusting the receiver further than either production autopilot does.
+    /// Nor does it smooth one: ArduPilot runs each accuracy through a decaying envelope with a
+    /// 5 s time constant before bounding it (`AP_NavEKF3_Measurements.cpp:609-633` at
+    /// `368dc0c4`), so a spike in `eph` deweights the fixes after it for seconds there and
+    /// only its own fix here. The replay harness takes the same stance for the reasons `data/README.md` gives
+    /// under `r_policy=` (#105). What
     /// the filter does add is the receiver's rather than the fix's: a fix's error persists
     /// into the next one, and the update is computed at the variance that leaves, equation
     /// (24′), with the gate still reading `noise` itself. See

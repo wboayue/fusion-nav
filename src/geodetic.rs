@@ -44,6 +44,10 @@ pub struct Geodetic {
 
 impl Geodetic {
     /// Construct from latitude and longitude in degrees, and height in meters.
+    ///
+    /// Current PX4 publishes exactly this, as `float64`: `latitude_deg`, `longitude_deg` and
+    /// `altitude_ellipsoid_m` of `SensorGps` (`msg/SensorGps.msg:8-11` at `c4e4ef98`) pass
+    /// straight through, with no scaling.
     pub fn from_degrees(latitude: f64, longitude: f64, height: f64) -> Self {
         Self::from_radians(latitude.to_radians(), longitude.to_radians(), height)
     }
@@ -60,6 +64,10 @@ impl Geodetic {
     /// Construct from the integer encoding u-blox `NAV-PVT`, MAVLink `GPS_RAW_INT`, and
     /// PX4's older `vehicle_gps_position` all share: latitude and longitude in 10⁻⁷
     /// degrees, height in millimeters.
+    ///
+    /// ArduPilot's `Location` shares the latitude and longitude but not the height, which is
+    /// centimetres (`int32_t alt; // in cm`, `libraries/AP_Common/Location.h:17` at `368dc0c4`):
+    /// passed here unconverted it is ten times too low. Multiply it by ten first.
     pub fn from_degrees_e7(latitude: i32, longitude: i32, height_mm: i32) -> Self {
         Self::from_degrees(
             f64::from(latitude) * 1e-7,
