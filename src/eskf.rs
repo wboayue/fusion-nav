@@ -5346,6 +5346,41 @@ mod tests {
     }
 
     #[test]
+    fn every_source_measures_its_period_from_what_it_offers() {
+        // Refused, every one of them: a period is how often the sensor speaks, not how often
+        // it is believed, so a source turning out NaN is still timed against its own rate.
+        let mut filter = initialized();
+        let nan = f32::NAN;
+        hold(&mut filter, 2.0, 20, |filter| {
+            let now = filter.now();
+            let noise = PositionNoise::horizontal_vertical(1.5, 1.5);
+            let _ = filter.fuse_gnss_position(now, Position::ned(nan, nan, nan), noise);
+            let _ = filter.fuse_gnss_velocity(
+                now,
+                Velocity::ned(nan, 0.0, 0.0),
+                VelocityNoise::from_speed_accuracy(0.3),
+            );
+            let _ = filter.fuse_baro_altitude(
+                now,
+                Altitude::from_meters(nan),
+                AltitudeNoise::from_sigma(2.0),
+            );
+            let heading = HeadingNoise::from_variance(nan);
+            let _ = filter.fuse_mag_heading(now, MagField::body(0.2, 0.0, 0.4), heading);
+            let _ = filter.fuse_gnss_heading(now, Radians::from_radians(0.0), heading);
+            let _ = filter.fuse_course(now, heading);
+        });
+        for (name, source) in filter.diagnostics().sources() {
+            assert_eq!(source.accepted, 0, "{name}");
+            let period = source.period.map(Seconds::as_secs);
+            assert!(
+                period.is_some_and(|period| (period - 0.2).abs() < 1e-4),
+                "{name}: {period:?}"
+            );
+        }
+    }
+
+    #[test]
     fn every_source_refuses_a_variance_no_sensor_could_have() {
         let mut filter = initialized();
         assert!(filter.set_baro_reference(
