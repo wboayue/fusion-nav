@@ -3196,6 +3196,30 @@ mod tests {
         assert!(matches!(current, Fusion::Rejected { .. }), "{current:?}");
     }
 
+    /// A correction reaches the past it was propagated from, so a second fix of the same moment
+    /// is judged against the corrected past and agrees with it better than the first did. Were
+    /// the history left behind, the second would innovate as the first did against a covariance
+    /// the first had already narrowed: 1.33 against 0.12, where this reads 0.08.
+    #[test]
+    fn a_correction_reaches_the_history_the_next_old_fix_is_judged_against() {
+        let mut filter = Eskf::new(Config::default());
+        let _ = filter
+            .seed(State::default(), Covariance::from_sigmas([2.0; STATES]))
+            .expect("a sane seed");
+        for _ in 0..50 {
+            assert!(filter.step(still().imu, DT).is_propagated());
+        }
+        let taken = filter.now().before(Seconds::from_secs(0.2));
+        let off = Position::ned(3.0, 0.0, 0.0);
+        let noise = PositionNoise::horizontal_vertical(0.5, 0.5);
+        let first = filter.fuse_gnss_position(taken, off, noise).horizontal;
+        let second = filter.fuse_gnss_position(taken, off, noise).horizontal;
+        let (Some(first), Some(second)) = (first.test_ratio(), second.test_ratio()) else {
+            panic!("both fixes reach the gate: {first:?}, {second:?}");
+        };
+        assert!(second < first, "{second} against {first}");
+    }
+
     /// A fix timed ahead of the last IMU sample is where the vehicle will be: carried forward
     /// on the velocity rather than taken as current.
     #[test]
