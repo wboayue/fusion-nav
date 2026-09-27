@@ -8,7 +8,8 @@ This file provides guidance to coding agents working with code in this repositor
 except (31)–(33), the three-axis magnetometer, which is out of scope, and (5′)'s subtraction,
 which is #59's. The `**Stub.**` marker survives on those two and nowhere else, and every status
 banner says built rather than intended. What is left is mostly measurement and publication —
-#41 (cost on hardware) and #47 (the release); #8, the EKF2 comparison, landed in #156. The defect the
+#41 (cost on hardware) and #47 (the release); #8, the EKF2 comparison, landed in #156, and
+#123, the validation report that publishes it, in #161. The defect the
 consistency keys of #112 surfaced, no corpus source white while (24) fused each as white, is
 #117's, and #152 answered it with equation (24′): every source is fused at
 `R_m (1+ρ)/(1−ρ)`, `ρ = exp(−Δt/τ)`, gated on `R_m`, with `Δt` from the source's last fused
@@ -64,8 +65,14 @@ and asserts failures by cause: `gnss_latency` on position and `correlated` (#117
 floors the tilt the bias does not explain at the window's own scatter across gravity, without
 which the defaults' `P₀` was singular. The evidence is the run that could fail, `harsh_imu`
 fused white on 50 seeds: `any_att` 2281 → 0 (214 at the prior alone). Tilt tightened on every
-scenario (`mission` 0.414° → 0.330); `7ce66f0d` recovers 28 times rather than 69. Order: #123,
-which has everything it reads.
+scenario (`mission` 0.414° → 0.330); `7ce66f0d` recovers 28 times rather than 69.
+#123 landed (#161): `VALIDATION.md` and `validation/{accuracy,honesty,robustness,ekf2}.md`, for
+a reader who has never computed a NEES. Every number and table comes through a placeholder in
+`validation/src/`, and every figure through `replay_report.py --figures`. `tools/validation.sh`
+regenerates them from the gates it runs, and `--check` re-derives them. The pages state the
+losses: `gnss_latency` (#52) and `correlated` (#51) are overconfident, `7ce66f0d` levels wrong
+(#59), and `89a498ce`'s 4.7 m north offset from EKF2 is open. Order: #47, which needs the *API
+frozen* milestone closed or each open issue deferred in writing; #41 needs a board.
 #48 and #49 landed (#154): `Display` on every outcome, an optional `defmt` feature, and
 `examples/embedded.rs`, built for both thumb targets in CI. `Display` prints numbers through
 `src/display.rs`'s `Fixed`, because core's `f32` formatting reaches `core::panicking` (the
