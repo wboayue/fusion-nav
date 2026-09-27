@@ -7,6 +7,12 @@
 //! [`Status`] — and an application that owns recovery: it turns the filter's own off with
 //! [`Recovery::OFF`] and resets the state itself.
 //!
+//! Two outages, one per rule. A source that stops is timed out against its own period, so a
+//! 20 Hz barometer is missed within 125 ms rather than on a 1 Hz receiver's schedule. And the
+//! status reads `DeadReckoning` once GNSS has been gone for
+//! [`Timeouts::dead_reckoning_after`], with the barometer and magnetometer still arriving:
+//! height and heading are held, and horizontal position drifts regardless.
+//!
 //! Run with `cargo run --example degradation`. For the loop itself, see `basic.rs`.
 
 use fusion_nav::prelude::*;
@@ -20,10 +26,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("fusion-nav degradation example\n");
 
     let config = Config {
-        timeouts: Timeouts {
-            degraded_after: Seconds::from_secs(1.0),
-            ..Timeouts::default()
-        },
         // This application resets the state itself, below, so the filter's recovery is off.
         recovery: Recovery::OFF,
         ..Config::default()
@@ -68,18 +70,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!();
 
+    // --- the barometer drops out ------------------------------------------------------
+    run(
+        &mut filter,
+        &mut samples,
+        IMU_HZ / 2,
+        Sources::without_baro(),
+    );
+    report("no barometer for 0.5 s", &filter);
+    run(&mut filter, &mut samples, IMU_HZ, Sources::all());
+    report("the barometer back for 1 s", &filter);
+
     // --- GNSS drops out ----------------------------------------------------------------
     run(
         &mut filter,
         &mut samples,
-        3 * IMU_HZ,
+        6 * IMU_HZ,
         Sources::without_gnss(),
     );
-    report("no GNSS for 3 s", &filter);
-
-    // --- everything drops out ----------------------------------------------------------
-    run(&mut filter, &mut samples, 6 * IMU_HZ, Sources::none());
-    report("nothing for 6 s", &filter);
+    report("no GNSS for 6 s", &filter);
 
     // Recovery is this application's call, having turned the filter's off.
     if filter.state().status == Status::DeadReckoning {
@@ -146,11 +155,11 @@ impl Sources {
         }
     }
 
-    const fn none() -> Self {
+    const fn without_baro() -> Self {
         Self {
-            gnss: false,
+            gnss: true,
             baro: false,
-            mag: false,
+            mag: true,
         }
     }
 }
@@ -184,7 +193,8 @@ fn run(filter: &mut Eskf, samples: &mut u64, ticks: u32, sources: Sources) {
                 "baro",
                 filter.fuse_baro_altitude(
                     time,
-                    Altitude::from_meters(60.0),
+                    // Still on the ground, which is where the window put the reference.
+                    Altitude::from_meters(52.0),
                     AltitudeNoise::from_sigma(2.0),
                 ),
             );
@@ -229,9 +239,12 @@ fn check_gnss(source: &str, outcome: GnssFusion) {
 fn report(label: &str, filter: &Eskf) {
     println!("after {label}: {:?}", filter.state().status);
     for (name, health) in filter.diagnostics().sources() {
+        // A source's own timeout, off its measured period, is what `Status` reads.
+        let timeout = health.timeout(&filter.config().timeouts).as_secs();
         match health.time_since_accepted {
             Some(elapsed) => println!(
-                "  {name:<14} last accepted {:>5.1} s ago, {} accepted, {} rejected",
+                "  {name:<14} last accepted {:>5.2} s ago, times out after {timeout:.3} s, \
+                 {} accepted, {} rejected",
                 elapsed.as_secs(),
                 health.accepted,
                 health.rejected
@@ -274,8 +287,8 @@ fn stationary_sample(i: usize) -> StaticSample {
         ),
         mag: Some(MagField::body(0.22, 0.0, 0.44)),
         // Ground level at the launch point, 52 m, with the scatter a real barometer
-        // has. This is what fixes the barometer's reference, so the 60 m fused later
-        // reads as 8 m above the origin rather than as an absolute altitude, and the
+        // has. This is what fixes the barometer's reference, so the 52 m fused later
+        // reads as the origin's height rather than as an absolute altitude, and the
         // scatter is how well it is fixed: one reading held across the window has none
         // and fixes nothing. Without it the first altitude is spent reading a reference
         // from the estimate instead.

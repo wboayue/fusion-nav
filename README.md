@@ -400,12 +400,18 @@ solution cannot be read without them.
 | -------- | ------- |
 | `Healthy` | every source that has been fused is still accepted, and attitude has converged; the course constraint, which reads no sensor, is not counted |
 | `Aligning` | running and aided, but attitude has not converged — a coarse start still learning, or a heading no magnetometer has observed yet |
-| `Degraded` | a source has timed out; others still aid the solution |
-| `DeadReckoning` | nothing is aiding; position and velocity drift without bound |
+| `Degraded` | a source has timed out; horizontal position is still aided |
+| `DeadReckoning` | neither GNSS position nor velocity has been accepted for `Config::timeouts.dead_reckoning_after`; horizontal position drifts without bound, whatever the barometer and magnetometer still hold |
 
 When several apply the most severe wins, in the order `DeadReckoning` > `Aligning` > `Degraded` >
-`Healthy`. Only sources that have ever been accepted count, so a vehicle with no GNSS is not
-`Degraded` for lacking it.
+`Healthy`, so a vehicle waiting for its first GNSS fix reads `DeadReckoning`, not `Aligning`, while
+its barometer and magnetometer arrive. Only sources that have ever been accepted count toward
+`Degraded`, so a vehicle with no
+magnetometer is not `Degraded` for lacking one. Each source times out against its own rate: after
+two and a half of its measured periods (`SourceHealth::period`, `SourceHealth::timeout`), so a
+20 Hz barometer that stops is noticed in an eighth of a second and a 1 Hz receiver in two and a
+half. `DeadReckoning` is horizontal, as PX4's and ArduPilot's are; `validity` answers per
+quantity.
 
 ### `validity` — which outputs can I use
 
@@ -602,8 +608,6 @@ Known, and stated here rather than discovered in flight. Some are deliberate; th
   offset `r` reads rotation as velocity (`ω × r`), and the filter believes it. The caller corrects
   it with `angular_rate()`, the bias-corrected `ω`, whose documentation writes the correction out;
   PX4 applies it inside the filter. See [#25](https://github.com/wboayue/fusion-nav/issues/25).
-* **One set of timeouts for every source.** `Config::timeouts` applies one threshold to every
-  source, and any accepted source counts as aiding. See [#56](https://github.com/wboayue/fusion-nav/issues/56).
 * **Local tangent plane.** Position is Cartesian NED about a fixed origin. The geodetic
   conversion is exact at any range ([equation (43)](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#geodetic-origin)), but a plane
   leaves a curved Earth: `d` from the origin it sits `d²/2R` above the surface, 8 cm at 1 km and
