@@ -483,15 +483,22 @@ def convert(path, baro_variance, mag_variance):
     t = stamps(sensor_combined)
     imu_dt = median([(b - a) * 1e-6 for a, b in zip(t, t[1:]) if b > a])
     # Header lines the harness configures itself from: what EKF2 on this log used.
+    delays, delays_note = measurement_delays(ulog.initial_parameters)
     parameters = [
         declination_note(ulog.initial_parameters, origin and origin[:2]),
         gnss_noise_note(ulog.initial_parameters),
+        delays_note,
     ]
-    return rows, used, note, imu_dt, parameters, origin
+    return rows, used, note, imu_dt, parameters, origin, delays
 
 
-def write_rows(rows, out, note):
-    """Sort by time, rebase to the first sample, and write the replay schema."""
+def write_rows(rows, out, note, delays):
+    """Sort by time, rebase to the first sample, and write the replay schema.
+
+    `t_meas_s` is a row's time less its source's delay in `delays`, microseconds by
+    source name, and blank where there is none: when the measurement was taken, where
+    `t_s` is when it was logged.
+    """
     rows.sort(key=lambda r: r[0])
     if not rows:
         raise ConversionError("nothing to write")
@@ -500,13 +507,15 @@ def write_rows(rows, out, note):
     with open(out, "w", newline="") as handle:
         for line in note:
             handle.write(f"# {line}\n")
-        handle.write("t_s,source,v0,v1,v2,v3,v4,v5,var0,var1,var2\n")
+        handle.write("t_s,source,v0,v1,v2,v3,v4,v5,var0,var1,var2,t_meas_s\n")
         for timestamp, source, values, variances in rows:
             t = (timestamp - t0) * 1e-6  # ULog timestamps are microseconds
             values = list(values) + [None] * (6 - len(values))
             variances = list(variances) + [None] * (3 - len(variances))
             cells = [f"{t:.6f}", source]
             cells += ["" if v is None else f"{v:.6g}" for v in values + variances]
+            delay = delays.get(source, 0)
+            cells.append(f"{(timestamp - delay - t0) * 1e-6:.6f}" if delay else "")
             handle.write(",".join(cells) + "\n")
     return len(rows), t0
 
@@ -1218,6 +1227,38 @@ def gnss_noise_note(params):
     return "GNSS noise parameters: " + ", ".join(cells)
 
 
+# How EKF2 dates a measurement: its timestamp less a configured delay, per source.
+# Baro and mag at `src/modules/ekf2/EKF/estimator_interface.cpp:145,230`; GNSS in the
+# sensors module since SENS_GPS0_DELAY (`src/modules/sensors/vehicle_gps_position/
+# VehicleGPSPosition.cpp:168-169`), in EKF2 as EKF2_GPS_DELAY before it. All at
+# c4e4ef98. The first name a log carries is the one it ran.
+MEASUREMENT_DELAYS = [
+    (("gnss_pos", "gnss_vel"), ("SENS_GPS0_DELAY", "EKF2_GPS_DELAY")),
+    (("baro",), ("EKF2_BARO_DELAY",)),
+    (("mag",), ("EKF2_MAG_DELAY",)),
+]
+
+
+def measurement_delays(params):
+    """Each aiding source's delay in microseconds, and the header line saying so.
+
+    A receiver's fix describes where the vehicle was when it was computed, and EKF2
+    fuses it there, `EKF2_GPS_DELAY` (110 ms by default) before it was logged. This
+    carries EKF2's own figure for this log into `t_meas_s`, so a replay dates each
+    measurement as EKF2 did rather than as current. A parameter the log does not carry
+    is no delay, and the line says so.
+    """
+    delays, cells = {}, []
+    for sources, names in MEASUREMENT_DELAYS:
+        name = next((n for n in names if n in params), None)
+        millis = float(params[name]) if name else 0.0
+        for source in sources:
+            delays[source] = int(round(millis * 1000))
+        label = sources[0].split("_")[0]
+        cells.append(f"{label} {millis:.6g} ms ({name or 'not in the log'})")
+    return delays, "Measurement delays: " + ", ".join(cells)
+
+
 def vibration_metric(encoded):
     """Which quantity `accel_vibration_metric` is on this build: `dv`, `accel` or `unknown`.
 
@@ -1583,6 +1624,14 @@ def self_test():
            "GNSS noise parameters: EKF2_GPS_P_NOISE 0.5, EKF2_GPS_V_NOISE 0.3, "
            "EKF2_NOAID_NOISE 10 (PX4 default; not in the log)")
 
+    delays, line = measurement_delays({"EKF2_GPS_DELAY": 110.0, "EKF2_BARO_DELAY": 0.0})
+    expect("an older log's delays", line,
+           "Measurement delays: gnss 110 ms (EKF2_GPS_DELAY), baro 0 ms (EKF2_BARO_DELAY), "
+           "mag 0 ms (not in the log)")
+    expect("both halves of a fix", (delays["gnss_pos"], delays["gnss_vel"]), (110000, 110000))
+    expect("the newer name wins", measurement_delays(
+        {"SENS_GPS0_DELAY": 33.0, "EKF2_GPS_DELAY": 110.0})[0]["gnss_pos"], 33000)
+
     for failure in failures:
         print(f"FAIL {failure}", file=sys.stderr)
     print(f"ulog2replay self-test: {'FAIL' if failures else 'ok'}", file=sys.stderr)
@@ -1632,7 +1681,7 @@ def main():
 
     output = args.output or args.ulog.with_suffix(".csv")
     try:
-        rows, used, dropout_note, imu_dt, parameters, origin = convert(
+        rows, used, dropout_note, imu_dt, parameters, origin, delays = convert(
             args.ulog, args.baro_variance, args.mag_variance
         )
         note = [
@@ -1645,7 +1694,7 @@ def main():
         ]
         if dropout_note:
             note.append(dropout_note)
-        count, t0 = write_rows(rows, output, note)
+        count, t0 = write_rows(rows, output, note, delays)
 
         if args.reference:
             target = (

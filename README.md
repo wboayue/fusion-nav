@@ -69,20 +69,22 @@ caused it to drift. The error-state form keeps attitude as a quaternion and esti
 use fusion_nav::prelude::*;
 # let (static_window, imu) = ([StaticSample::default(); 800], ImuSample::default());
 # let (lat_e7, lon_e7, height_mm, h_acc_mm, v_acc_mm) = (473_977_420, 85_455_940, 488_000, 1_500, 3_000);
+# let arrived = Timestamp::from_micros(12_500_000);
 
 let mut filter = Eskf::new(Config::default());
-let dt = Seconds::from_secs(0.0025); // 400 Hz IMU
 
 // Initialize from a window of samples taken while the vehicle sits still. A short or
 // moving window still starts the filter, as `Alignment::Coarse`.
-if let Alignment::Coarse(_) = filter.initialize(&static_window, dt)? {
+if let Alignment::Coarse(_) = filter.initialize(&static_window)? {
     /* running, but reports `Status::Aligning` until attitude converges */
 }
 
 loop {
-    // High-rate propagation on every IMU sample. The outcome is #[must_use]: a step too long
-    // to integrate is coasted on an assumption, or refused with `Config::coast` off.
-    if !filter.predict(imu, dt).is_propagated() { /* log the gap */ }
+    // High-rate propagation on every IMU sample: the increments an integrating driver hands
+    // over, with its timestamp, or `ImuSample::from_rates(time, gyro, accel, interval)` from
+    // a rate gyroscope. The outcome is #[must_use]: a step too long to integrate is coasted
+    // on an assumption, or refused with `Config::coast` off.
+    if !filter.predict(imu).is_propagated() { /* log the gap */ }
 
     // Measurement updates whenever a sensor delivers, each with its own noise. Bound a
     // receiver's accuracy the way PX4 and ArduPilot do, and fuse only a real fix —
@@ -91,7 +93,10 @@ loop {
     let (eph, epv) = (h_acc_mm as f32 * 1e-3, v_acc_mm as f32 * 1e-3);
     let (horizontal, vertical) = (SigmaBounds::new(0.5, 100.0), SigmaBounds::new(0.75, 100.0));
     let noise = PositionNoise::clamped(eph, epv, horizontal, vertical);
-    if !filter.fuse_gnss_geodetic(fix, noise).is_accepted() {
+    // The time the fix describes, on the IMU's clock: when it arrived, less the receiver's
+    // latency. PX4's EKF2_GPS_DELAY is that latency, 110 ms by default.
+    let taken = arrived.before(Seconds::from_secs(0.110));
+    if !filter.fuse_gnss_geodetic(taken, fix, noise).is_accepted() {
         /* diagnostics() has the detail */
     }
 
@@ -103,7 +108,7 @@ loop {
 ```
 
 `fusion_nav::prelude` carries the whole integration surface. Three runnable programs show it in
-full, and a fourth is the embedded counterpart, `no_std` with no `println!`: where `dt` comes
+full, and a fourth is the embedded counterpart, `no_std` with no `println!`: where the time comes
 from, sources at their own rates, every outcome handled and logged where it is returned.
 
 ```console
@@ -149,7 +154,10 @@ Units are SI and named only where a source commonly supplies something else:
 built `from_sigma` or `from_variance`, so a receiver's σ cannot arrive as a variance.
 Components come out as plain numbers: `.x()`, `.to_array()`, or `.vector()` for `nalgebra`.
 
-The filter never reads a clock. `dt` is an argument everywhere, including initialization.
+The filter never reads a clock. Every `ImuSample` carries a `Timestamp` on the caller's clock and
+the intervals its increments were integrated over; the step between samples is differenced from
+the timestamps, in integer microseconds, and a seed names its time too. A driver that reads its
+IMU in batches hands them over one at a time or summed, `earlier.accumulate(later)`.
 
 ## Initialization
 
@@ -207,11 +215,11 @@ its *averaged* specific force is from gravity, and a real `ā_n` is part of what
 
 | entry point | for |
 | ----------- | --- |
-| `initialize(window, dt)` | the usual case; `Alignment::Static` if the window was genuinely still, `Alignment::Coarse` with what it measured otherwise |
+| `initialize(window)` | the usual case; `Alignment::Static` if the window was genuinely still, `Alignment::Coarse` with what it measured otherwise |
 | `initialize_coarse(imu)` | no window at all — one sample of gravity, and the filter runs |
-| `initialize_from(state, covariance)` | an estimate the application already holds: a companion AHRS such as `fusion-ahrs`, the last flight's saved state. [Seeding an attitude](#seeding-an-attitude) is where its convention gets named |
+| `initialize_from(state, covariance, time)` | an estimate the application already holds: a companion AHRS such as `fusion-ahrs`, the last flight's saved state. [Seeding an attitude](#seeding-an-attitude) is where its convention gets named |
 
-`alignment_of(window, dt)` reports what `initialize` would make of a window without touching the
+`alignment_of(window)` reports what `initialize` would make of a window without touching the
 filter, for an application that would rather wait for stillness than start coarsely.
 
 A **seed** is checked where a window is not, because it crosses a boundary the filter does not
@@ -278,7 +286,9 @@ let covariance = Covariance::from_sigmas([
     0.01, 0.01, 0.01, // gyroscope bias
 ]);
 
-assert_eq!(filter.initialize_from(state, covariance)?, Alignment::Seeded);
+// When the seed is valid, on the clock the IMU's timestamps are on.
+let time = Timestamp::from_micros(12_500_000);
+assert_eq!(filter.initialize_from(state, covariance, time)?, Alignment::Seeded);
 assert!((filter.state().attitude.euler_angles().2 - 1.1).abs() < 1.0e-6);
 # Ok::<(), InitError>(())
 ```
@@ -287,15 +297,18 @@ assert!((filter.state().attitude.euler_angles().2 - 1.1).abs() < 1.0e-6);
 
 ### Propagation
 
-Call `predict(imu, dt)` on every IMU sample. The result is `#[must_use]`:
+Call `predict(imu)` on every IMU sample. The step `dt` is the time from the last sample's
+timestamp to this one's, and it is what the health timers and the gap test read; the increments
+are integrated over their own intervals. The result is `#[must_use]`:
 
 | `Propagation` | meaning |
 | ------------- | ------- |
-| `Propagated` | state advanced over the full `dt` |
+| `Propagated` | state advanced across the sample |
 | `Coasted { dt }` | `dt` exceeded `Config::max_predict_dt`, so the sample was not integrated: position advanced on the estimated velocity and the covariance grew by what `Config::coast` allows ([equation (22′)](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#coasting-across-a-gap)) |
 | `StepTooLong { dt, limit }` | the same, with `Config::coast` off; state unchanged, but health timers advanced because the time really passed |
-| `InvalidStep { dt }` | `dt` zero, negative, or NaN; nothing moved |
+| `InvalidStep { dt }` | the sample is not after the last: `dt` zero or negative; nothing moved, the clock included |
 | `NotFinite` | the **sample** carried a NaN or an infinity; state unchanged, health timers advanced as above |
+| `InvalidInterval { interval }` | an integration interval under a microsecond, or longer than `Config::max_predict_dt`; as `NotFinite` |
 | `StateNotFinite` | the propagated **state** did, so it was discarded; a finite sample can still overflow f32 through (11)–(14) |
 | `NotInitialized` | no state to propagate |
 
@@ -303,16 +316,22 @@ Call `predict(imu, dt)` on every IMU sample. The result is `#[must_use]`:
 
 | method | measurement |
 | ------ | ----------- |
-| `fuse_gnss_geodetic(fix, noise)` | latitude, longitude, height; converted about the filter's origin |
-| `fuse_gnss_position(position, noise)` | NED position about the filter's origin, for a caller that converts itself |
+| `fuse_gnss_geodetic(time, fix, noise)` | latitude, longitude, height; converted about the filter's origin |
+| `fuse_gnss_position(time, position, noise)` | NED position about the filter's origin, for a caller that converts itself |
 
 Both GNSS position calls return a `GnssFusion`, a `Fusion` for each half of the fix —
 `horizontal` and `height` — because the two are gated apart: a height the estimate disagrees with
 is rejected without costing the horizontal fix beside it, and `diagnostics()` carries each half
 as its own source, `gnss_position` and `gnss_height`. `is_accepted()` on it asks for both.
-| `fuse_gnss_velocity(velocity, noise)` | NED velocity |
-| `fuse_baro_altitude(altitude, noise)` | altitude, relative to `α₀` |
-| `fuse_mag_heading(field, noise)` | body-frame field, reduced to a heading and fused as one scalar |
+| `fuse_gnss_velocity(time, velocity, noise)` | NED velocity |
+| `fuse_baro_altitude(time, altitude, noise)` | altitude, relative to `α₀` |
+| `fuse_mag_heading(time, field, noise)` | body-frame field, reduced to a heading and fused as one scalar |
+
+`time` is when the measurement was taken, on the clock the IMU's samples are timed on, and it is
+an argument for the reason the noise is: a receiver's latency is a property of that receiver and
+that fix. A measurement older than `LATENCY_HORIZON` or later than the state by more than
+`Config::max_predict_dt` is refused as `OutOfHorizon { age }`, and the age tells a latency past the
+horizon from a clock on another epoch.
 
 The noise is an argument, not configuration, because the accuracy of a fix is a property of that
 fix. Build it the way the source reports it: `PositionNoise::horizontal_vertical(eph, epv)` and
@@ -346,6 +365,7 @@ a `Reset` steps the state, and a refusal says the measurement never reached the 
 | `NoReference` | barometer altitude with no `α₀` and no established position to read one against, or a geodetic fix that cannot place an origin |
 | `NotFinite` | a NaN or infinity in the measurement or its noise; discarded |
 | `InvalidNoise` | a zero or negative variance in the noise — no sensor has one, and `S` would be singular or worse; discarded |
+| `OutOfHorizon { age }` | `time` older than `LATENCY_HORIZON`, or ahead of the state by more than `Config::max_predict_dt`; discarded |
 | `StateInvalid` | the filter's own covariance or correction could not support an update — `S` not positive-definite, or f32 overflow; nothing committed, and the measurement is not at fault |
 | `NotInitialized` | no state to fuse against |
 
@@ -449,8 +469,9 @@ source, which the outcome does not know:
 use core::fmt::Write;
 use fusion_nav::prelude::*;
 
-fn fuse(filter: &mut Eskf, log: &mut impl Write, fix: Geodetic) -> core::fmt::Result {
-    let outcome = filter.fuse_gnss_geodetic(fix, PositionNoise::horizontal_vertical(1.5, 3.0));
+fn fuse(filter: &mut Eskf, log: &mut impl Write, at: Timestamp, fix: Geodetic) -> core::fmt::Result {
+    let noise = PositionNoise::horizontal_vertical(1.5, 3.0);
+    let outcome = filter.fuse_gnss_geodetic(at, fix, noise);
     if !outcome.is_accepted() {
         writeln!(log, "gnss position {outcome}")?; // gnss position rejected, ratio 2.70
     }
@@ -536,9 +557,12 @@ The crate is also `#![forbid(unsafe_code)]`, `no_std`, and allocation-free.
 
 Known, and stated here rather than discovered in flight. Some are deliberate; the rest link the issue that removes them.
 
-* **Measurement latency is not modelled.** GNSS solutions arrive typically 100–200 ms stale and
-  are fused as though current; the error grows with speed. PX4 fuses at a delayed horizon and
-  propagates forward from it (`src/modules/ekf2/EKF/output_predictor/output_predictor.cpp`). See
+* **A measurement's latency is the caller's to know.** Each is fused at the time it is given,
+  against the state as it was then, so a late fix costs nothing, but the filter cannot measure how
+  late a receiver is: PX4 takes a parameter and ArduPilot the driver's figure. A wrong one is an error
+  that grows with speed, and a receiver with none that fits is worse than fused as current: one
+  corpus log rejects 396 fixes at PX4's 110 ms and 267 at none. Anything older than
+  `LATENCY_HORIZON`, 0.3 s, is refused. See
   [measurement latency](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#measurement-latency).
 * **Barometer drift costs height where there is none.** The reference is estimated and allowed to
   walk, at PX4's rate by default, so GNSS height carries the low frequencies and a barometer

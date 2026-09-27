@@ -205,7 +205,8 @@ macro_rules! scalar {
 }
 
 scalar!(
-    /// A time interval. The filter never reads a clock; `dt` is always supplied.
+    /// A time interval. The filter never reads a clock; intervals are always supplied,
+    /// or differenced from supplied [`Timestamp`]s.
     Seconds,
     unit = "seconds",
     new = from_secs,
@@ -217,6 +218,74 @@ impl Seconds {
     /// spelled out because `<= 0.0` alone is false for NaN.
     pub(crate) fn is_usable_step(self) -> bool {
         self.0 > 0.0 && !self.0.is_nan()
+    }
+}
+
+/// A moment on the caller's clock, in whole microseconds.
+///
+/// The filter reads no clock. Every [`ImuSample`](crate::ImuSample) and every measurement
+/// carries the time it describes, and the filter differences them: the interval a step
+/// covers, and how long ago a measurement was taken. Where the epoch sits does not matter,
+/// since only differences are read, but IMU and measurement times must be on one clock.
+///
+/// Microseconds in a `u64`, the unit PX4's `hrt_abstime` and ArduPilot's `micros64` count
+/// in, rather than seconds in an `f32`: two hours in, as on `2c42096b`'s 7127 s, `f32` times
+/// are 0.49 ms apart, so a difference of two can be off by a fifth of a 400 Hz IMU interval.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct Timestamp(u64);
+
+impl Timestamp {
+    /// The clock's epoch.
+    pub const ZERO: Self = Self(0);
+
+    /// From a count of microseconds.
+    pub const fn from_micros(micros: u64) -> Self {
+        Self(micros)
+    }
+
+    /// The count of microseconds.
+    pub const fn as_micros(self) -> u64 {
+        self.0
+    }
+
+    /// From seconds since the epoch, rounded to the nearest microsecond. A time before the
+    /// epoch, or one that is not a number, is the epoch.
+    ///
+    /// `f64` because a log's time column is: an `f32` would lose the microseconds this type
+    /// exists to keep.
+    pub fn from_secs_f64(seconds: f64) -> Self {
+        // `as` saturates, and takes NaN and anything negative to zero.
+        Self((seconds * 1e6 + 0.5) as u64)
+    }
+
+    /// The moment `interval` after this one, to the nearest microsecond, saturating at the
+    /// ends of the clock. A negative interval is a moment before it.
+    pub fn after(self, interval: Seconds) -> Self {
+        let micros = f64::from(interval.as_secs()) * 1e6;
+        if micros >= 0.0 {
+            Self(self.0.saturating_add((micros + 0.5) as u64))
+        } else {
+            // NaN fails the test above and lands here as zero microseconds.
+            Self(self.0.saturating_sub((0.5 - micros) as u64))
+        }
+    }
+
+    /// The moment `interval` before this one: a measurement's time from its age.
+    pub fn before(self, interval: Seconds) -> Self {
+        self.after(Seconds::from_secs(-interval.as_secs()))
+    }
+
+    /// `self − earlier`, negative when `earlier` is the later of the two.
+    ///
+    /// The subtraction is exact, in integers, and only its result is rounded to `f32`, so
+    /// a short interval late in a long flight keeps every microsecond it has. The interval a
+    /// rate IMU's reading stands for, for [`ImuSample::from_rates`](crate::ImuSample::from_rates).
+    pub fn since(self, earlier: Self) -> Seconds {
+        // Two's complement: the wrapped difference read as signed is the signed difference
+        // for any two times within 2⁶³ µs of each other, which is 292 000 years.
+        let micros = self.0.wrapping_sub(earlier.0) as i64;
+        Seconds::from_secs(micros as f32 / 1_000_000.0)
     }
 }
 
@@ -507,6 +576,28 @@ framed!(
     unit = "arbitrary units"
 );
 
+framed!(
+    /// A rotation increment: angular rate integrated over an interval, in radians.
+    ///
+    /// What an IMU driver that integrates between reads hands over, and what PX4's
+    /// `vehicle_imu.delta_angle` and ArduPilot's `get_delta_angle` publish. A type apart
+    /// from [`AngularRate`] because confusing the two is a factor of the interval, several
+    /// hundred at IMU rate, that nothing downstream can see.
+    DeltaAngle,
+    unit = "radians"
+);
+
+framed!(
+    /// A velocity increment: specific force integrated over an interval, in meters per
+    /// second.
+    ///
+    /// Body-frame, and specific force rather than acceleration, so a level vehicle at rest
+    /// gains `(0, 0, −γ Δt)`. A type apart from [`Velocity`], which is a navigation-frame
+    /// state, and from [`Acceleration`], which it is integrated from.
+    DeltaVelocity,
+    unit = "meters per second"
+);
+
 /// Constructors that name the navigation frame, and the ENU conversion into it.
 ///
 /// ENU to NED swaps the horizontal axes and flips the vertical: `(n, e, d) = (y, x, -z)`.
@@ -565,6 +656,8 @@ macro_rules! body {
 body!(Acceleration, "Specific force");
 body!(AngularRate, "Angular rate");
 body!(MagField, "Field");
+body!(DeltaAngle, "Rotation increment");
+body!(DeltaVelocity, "Velocity increment");
 
 impl AngularRate<Body> {
     /// Angular rate from forward, right, down components in degrees per second, which is
@@ -876,6 +969,36 @@ mod tests {
     use nalgebra::{Matrix3, Rotation3};
 
     use super::*;
+
+    /// The difference is taken in integers: two hours in, one 400 Hz interval comes back to
+    /// the microsecond, where the same subtraction in `f32` seconds, spaced 0.49 ms apart
+    /// there, is off by 59 µs, and can be by up to a fifth of the interval.
+    #[test]
+    fn a_short_interval_late_in_a_long_flight_keeps_its_microseconds() {
+        let late = Timestamp::from_secs_f64(7127.0);
+        let next = late.after(Seconds::from_secs(0.0025));
+        assert_eq!(next.as_micros() - late.as_micros(), 2500);
+        assert_eq!(next.since(late), Seconds::from_secs(0.0025));
+        assert_eq!(late.since(next), Seconds::from_secs(-0.0025));
+        assert_eq!(next.before(Seconds::from_secs(0.0025)), late);
+
+        let in_f32 = (7127.0f32 + 0.0025) - 7127.0;
+        assert!((in_f32 - 0.0025).abs() > 5e-5, "{in_f32}");
+    }
+
+    #[test]
+    fn a_time_before_the_epoch_or_not_a_number_is_the_epoch() {
+        assert_eq!(Timestamp::from_secs_f64(-1.0), Timestamp::ZERO);
+        assert_eq!(Timestamp::from_secs_f64(f64::NAN), Timestamp::ZERO);
+        assert_eq!(Timestamp::from_secs_f64(1.000_000_4).as_micros(), 1_000_000);
+        assert_eq!(Timestamp::from_secs_f64(1.000_000_6).as_micros(), 1_000_001);
+        assert_eq!(
+            Timestamp::ZERO.before(Seconds::from_secs(1.0)),
+            Timestamp::ZERO
+        );
+        let one = Timestamp::from_micros(1);
+        assert_eq!(one.after(Seconds::from_secs(f32::NAN)), one);
+    }
 
     /// Two rotations agreeing to within a tolerance, compared as rotations: a quaternion
     /// and its negation are the same attitude, and the conversions below produce whichever

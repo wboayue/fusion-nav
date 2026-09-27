@@ -112,7 +112,7 @@ pub(crate) struct Measured {
     pub peak_gyro: RadiansPerSecond,
     /// Largest departure of the specific-force magnitude from gravity.
     pub peak_deviation: MetersPerSecond2,
-    /// `window.len() * dt`.
+    /// The time the window's samples integrated, [`window_span`].
     pub span: Seconds,
     /// The same averages over each half of the window, for [`window_drift`]. `None` for
     /// a window of one, which has no halves to disagree.
@@ -142,14 +142,14 @@ impl Measured {
     ///
     /// [`measure`] is the entry point that checks them. The one other caller is
     /// [`Eskf::initialize_coarse`](crate::Eskf::initialize_coarse), which holds a window
-    /// of one, checks it itself, and spans no time.
+    /// of one, checks it itself, and spans its one sample's interval.
     ///
     /// The averages accumulate in `f64`, which here is precaution rather than necessity:
     /// summing a few thousand readings near `γ` in f32 costs on the order of 10⁻⁵ rad of
     /// tilt, against a 0.02 rad prior. It is the choice [`baro_reference`] has to make for
     /// real — altitudes are metres above mean sea level — and this sum is paid once per
     /// flight.
-    pub(crate) fn over(window: &[StaticSample], dt: Seconds) -> Self {
+    pub(crate) fn over(window: &[StaticSample]) -> Self {
         let mut rate = Vector3::<f64>::zeros();
         let mut peak_gyro = 0.0f32;
         let mut peak_deviation = 0.0f32;
@@ -164,7 +164,12 @@ impl Measured {
         let split = window.len() / 2;
         for (index, sample) in window.iter().enumerate() {
             let half = usize::from(index >= split);
-            let (accel, gyro) = (sample.imu.accel.vector(), sample.imu.gyro.vector());
+            // Rates, one division per sample: every statistic here is a statement about a
+            // rate or a force, and the window is paid for once per flight.
+            let (accel, gyro) = (
+                sample.imu.specific_force().vector(),
+                sample.imu.angular_rate().vector(),
+            );
             force[half] += widen(accel);
             outer += widen(accel) * widen(accel).transpose();
             samples[half] += 1;
@@ -182,10 +187,10 @@ impl Measured {
             force: Acceleration::from_vector(mean(force[0] + force[1], total)),
             rate: AngularRate::from_vector(mean(rate, total)),
             field: (carried > 0).then(|| MagField::from_vector(mean(field[0] + field[1], carried))),
-            inertial_accel: inertial_acceleration(window, dt),
+            inertial_accel: inertial_acceleration(window),
             peak_gyro: RadiansPerSecond::from_rad_per_s(peak_gyro),
             peak_deviation: MetersPerSecond2::from_m_per_s2(peak_deviation),
-            span: Seconds::from_secs(window.len() as f32 * dt.as_secs()),
+            span: window_span(window),
             level_variance: level_variance(outer, force[0] + force[1], total),
             halves: (samples[0] > 0 && samples[1] > 0).then(|| Halves {
                 force: [
@@ -262,22 +267,54 @@ fn mean(sum: Vector3<f64>, count: u32) -> Vector3<f32> {
 ///
 /// Every check initialization makes on raw input is here, so that everything downstream —
 /// [`classify`], [`nominal_state`], [`attitude_sigmas`] — takes a [`Measured`] and cannot
-/// be handed an empty window, an unusable `dt`, or a value that is not a number.
+/// be handed an empty window, an unusable interval, a clock that does not run forward, or a
+/// value that is not a number.
 ///
 /// # Errors
 ///
-/// [`InitError::NoSamples`], [`InitError::InvalidStep`], [`InitError::NotFinite`].
-pub(crate) fn measure(window: &[StaticSample], dt: Seconds) -> Result<Measured, InitError> {
+/// [`InitError::NoSamples`], [`InitError::NotFinite`], [`InitError::InvalidInterval`],
+/// [`InitError::InvalidStep`].
+pub(crate) fn measure(window: &[StaticSample]) -> Result<Measured, InitError> {
     if window.is_empty() {
         return Err(InitError::NoSamples);
-    }
-    if !dt.is_usable_step() {
-        return Err(InitError::InvalidStep { dt });
     }
     if !window.iter().all(StaticSample::is_finite) {
         return Err(InitError::NotFinite);
     }
-    Ok(Measured::over(window, dt))
+    if let Some(interval) = window.iter().find_map(|s| s.imu.unusable_interval()) {
+        return Err(InitError::InvalidInterval { interval });
+    }
+    // The clock starts at the last sample's time, so a window timed anywhere but forward
+    // would start it somewhere the samples do not describe: all at zero, and the first
+    // `predict` coasts the whole flight so far.
+    for pair in window.windows(2) {
+        if let [earlier, later] = pair {
+            let dt = later.imu.time.since(earlier.imu.time);
+            if !dt.is_usable_step() {
+                return Err(InitError::InvalidStep { dt });
+            }
+        }
+    }
+    Ok(Measured::over(window))
+}
+
+/// The time a window's samples integrated: the sum of their angle intervals.
+///
+/// Integrated time rather than the distance between the first and last timestamps, because
+/// it is what the window observed: a window a logger dropped samples from covers the samples
+/// it kept, and a stillness test over time nobody measured would pass on nothing. The angle
+/// interval rather than the velocity one for no reason but one: the two cover the same
+/// sample and differ only by when a driver closed each integral.
+///
+/// Summed in `f64`: in `f32`, 100 intervals of 20 ms come to 1.9999987 s, and a window of
+/// exactly [`Initialization::min_duration`] would read as too short by the rounding. That is
+/// `data/flight.csv`'s window: summed in `f32`, it starts `short`.
+fn window_span(window: &[StaticSample]) -> Seconds {
+    let span: f64 = window
+        .iter()
+        .map(|s| f64::from(s.imu.angle_interval.as_secs()))
+        .sum();
+    Seconds::from_secs(span as f32)
 }
 
 /// What [`Eskf::initialize`](crate::Eskf::initialize) achieved.
@@ -340,7 +377,7 @@ pub enum Coarse {
     WindowTooShort {
         /// Duration the configuration requires.
         required: Seconds,
-        /// Duration the window covers, `window.len() * dt`.
+        /// Duration the window covers: the time its samples integrated.
         provided: Seconds,
     },
     /// The vehicle was moving: angular rate or specific force left the tolerance
@@ -410,10 +447,18 @@ impl core::fmt::Display for Coarse {
 pub enum InitError {
     /// The window held no samples, so there is nothing to align from.
     NoSamples,
-    /// `dt` was zero, negative, or not a number, so the window covers no measurable span
-    /// of time.
+    /// A sample's integration interval was under a microsecond, so it covers no span of time
+    /// to measure the window over or divide its increments by. One that is not a number is
+    /// [`NotFinite`](Self::NotFinite).
+    InvalidInterval {
+        /// The interval offered.
+        interval: Seconds,
+    },
+    /// A sample was timed no later than the one before it, so the window's timestamps say
+    /// nothing about when it ended, which is where the filter's clock starts. As
+    /// [`Propagation::InvalidStep`](crate::Propagation::InvalidStep) for a step.
     InvalidStep {
-        /// The `dt` offered.
+        /// The time from the previous sample to this one.
         dt: Seconds,
     },
     /// A measurement, state, or covariance carried a value that is not finite.
@@ -446,9 +491,13 @@ impl core::fmt::Display for InitError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::NoSamples => write!(f, "initialization window held no samples"),
+            Self::InvalidInterval { interval } => {
+                let interval = Fixed::new(interval.as_secs(), Decimals::Three);
+                write!(f, "initialization interval of {interval} s is not usable")
+            }
             Self::InvalidStep { dt } => {
                 let dt = Fixed::new(dt.as_secs(), Decimals::Three);
-                write!(f, "initialization dt of {dt} s is not usable")
+                write!(f, "initialization window stepped {dt} s, not forward")
             }
             Self::NotFinite => write!(f, "initialization input was not finite"),
             Self::InvalidVariance => {
@@ -829,9 +878,9 @@ fn coarse_sigmas(
 /// measures no scatter, and keeps the whole of `σ_tilt²` independent instead.
 ///
 /// Writing the blocks after construction costs a copy of `P`: on `thumbv6m` this frame is
-/// 1120 bytes where a diagonal-only `P₀` inlined to 80, with `Eskf::apply_alignment` at 960
-/// above it. The initialization chain stays well under the 10 KB of `fuse_gnss_position` into
-/// `update::<3>`, so the crate's peak does not move.
+/// 1120 bytes where a diagonal-only `P₀` inlined to 80, with `Eskf::initialize` at 2168
+/// above it. The initialization chain stays well under the 9.5 KB of `fuse_gnss_velocity`
+/// into `update::<3>`, so the crate's peak does not move.
 pub(crate) fn initial_covariance(
     init: &Initialization,
     attitude: &Attitude,
@@ -916,12 +965,9 @@ pub(crate) fn at_rest(measured: &Measured, init: &Initialization) -> bool {
 /// this is the noisiest part of in-motion levelling: a receiver's velocity error divided
 /// by a span, and a 1 Hz receiver over a 2 s window divides it by very little.
 ///
-/// The span is counted in samples, so it is only as honest as the dating of the window;
-/// see [`StaticSample::velocity`].
-pub(crate) fn inertial_acceleration(
-    window: &[StaticSample],
-    dt: Seconds,
-) -> Option<Acceleration<Ned>> {
+/// The span is the time the samples from the first velocity's to the last's integrated, so it
+/// is only as honest as the dating of the window; see [`StaticSample::velocity`].
+pub(crate) fn inertial_acceleration(window: &[StaticSample]) -> Option<Acceleration<Ned>> {
     let mut first: Option<(usize, Velocity<Ned>)> = None;
     let mut last: Option<(usize, Velocity<Ned>)> = None;
     for (index, sample) in window.iter().enumerate() {
@@ -931,7 +977,7 @@ pub(crate) fn inertial_acceleration(
         }
     }
     let ((first_index, first), (last_index, last)) = (first?, last?);
-    let span = (last_index - first_index) as f32 * dt.as_secs();
+    let span = window_span(window.get(first_index + 1..=last_index).unwrap_or_default()).as_secs();
     // One velocity, or several on the same sample, spans no time. A difference over zero
     // seconds is an infinity, not an acceleration, and this is the only division here.
     (span > 0.0).then(|| Acceleration::from_vector((last.vector() - first.vector()) / span))
@@ -988,6 +1034,7 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::state::ErrorState;
+    use crate::units::Timestamp;
 
     #[test]
     fn a_coarse_start_reads_as_what_was_measured() {
@@ -1002,11 +1049,11 @@ pub(crate) mod tests {
         assert_eq!(
             format!(
                 "{}",
-                InitError::InvalidStep {
-                    dt: Seconds::from_secs(-0.0025)
+                InitError::InvalidInterval {
+                    interval: Seconds::from_secs(-0.0025)
                 }
             ),
-            "initialization dt of -0.003 s is not usable"
+            "initialization interval of -0.003 s is not usable"
         );
     }
 
@@ -1016,10 +1063,10 @@ pub(crate) mod tests {
     /// as motion, correctly.
     pub(crate) fn still() -> StaticSample {
         StaticSample {
-            imu: ImuSample {
-                gyro: AngularRate::body(0.0, 0.0, 0.0),
-                accel: Acceleration::body(0.0, 0.0, -GRAVITY),
-            },
+            imu: ImuSample::reading(
+                AngularRate::body(0.0, 0.0, 0.0),
+                Acceleration::body(0.0, 0.0, -GRAVITY),
+            ),
             ..StaticSample::default()
         }
     }
@@ -1027,14 +1074,34 @@ pub(crate) mod tests {
     /// 8 samples at 4 Hz: exactly the default 2 s `min_duration`.
     const DT: Seconds = Seconds::from_secs(0.25);
 
+    /// `window` with each sample integrated over `dt` and timed `dt` after the last, the
+    /// first ending at `dt`: the fixtures are written as rates, and this is where they get a
+    /// clock.
+    pub(crate) fn spaced(window: &[StaticSample], dt: Seconds) -> std::vec::Vec<StaticSample> {
+        let mut time = Timestamp::ZERO;
+        window
+            .iter()
+            .map(|sample| {
+                time = time.after(dt);
+                StaticSample {
+                    imu: sample.imu.timed(time, dt),
+                    ..*sample
+                }
+            })
+            .collect()
+    }
+
     fn classify_default(window: &[StaticSample], dt: Seconds) -> Result<Alignment, InitError> {
-        Ok(classify(&measure(window, dt)?, &Initialization::default()))
+        Ok(classify(
+            &measure(&spaced(window, dt))?,
+            &Initialization::default(),
+        ))
     }
 
     /// The nominal state a window yields at the default 4 Hz.
     fn nominal(window: &[StaticSample], declination: Radians, at_rest: bool) -> State {
         nominal_state(
-            &measure(window, DT).expect("a usable window"),
+            &measure(&spaced(window, DT)).expect("a usable window"),
             declination,
             at_rest,
         )
@@ -1046,7 +1113,7 @@ pub(crate) mod tests {
     /// supplies it, so a test sees the pair as the filter commits them.
     fn sigmas(window: &[StaticSample], dt: Seconds) -> (f32, f32) {
         let init = Initialization::default();
-        let measured = measure(window, dt).expect("a usable window");
+        let measured = measure(&spaced(window, dt)).expect("a usable window");
         let state = nominal_state(&measured, Radians::ZERO, at_rest(&measured, &init));
         let (tilt, yaw) = attitude_sigmas(
             &init,
@@ -1119,9 +1186,11 @@ pub(crate) mod tests {
         for (index, sample) in window.iter_mut().enumerate() {
             let t = index as f32 * DT.as_secs();
             let (roll, pitch, yaw) = (roll_rate * t, pitch_rate * t, yaw_rate * t);
-            sample.imu.accel = gravity_at(roll, pitch, yaw);
+            sample.imu = sample.imu.with_accel(gravity_at(roll, pitch, yaw));
             // Exact while one axis turns at a time, which is all this builds.
-            sample.imu.gyro = AngularRate::body(roll_rate, pitch_rate, yaw_rate);
+            sample.imu = sample
+                .imu
+                .with_gyro(AngularRate::body(roll_rate, pitch_rate, yaw_rate));
             sample.mag = Some(field_at(roll, pitch, yaw, 0.0));
         }
         window
@@ -1130,10 +1199,7 @@ pub(crate) mod tests {
     /// A still window of `[still(); 8]` reading this specific force and this field.
     fn window_at(roll: f32, pitch: f32, yaw: f32, declination: f32) -> [StaticSample; 8] {
         [StaticSample {
-            imu: ImuSample {
-                accel: gravity_at(roll, pitch, yaw),
-                ..still().imu
-            },
+            imu: still().imu.with_accel(gravity_at(roll, pitch, yaw)),
             mag: Some(field_at(roll, pitch, yaw, declination)),
             ..still()
         }; 8]
@@ -1150,10 +1216,9 @@ pub(crate) mod tests {
         for (roll, pitch) in TILTS {
             let truth = attitude_of(roll, pitch, 0.7);
             let window = [StaticSample {
-                imu: ImuSample {
-                    accel: Acceleration::from_vector(gravity_at(roll, pitch, 0.7).vector() + bias),
-                    ..still().imu
-                },
+                imu: still().imu.with_accel(Acceleration::from_vector(
+                    gravity_at(roll, pitch, 0.7).vector() + bias,
+                )),
                 mag: Some(field_at(roll, pitch, 0.7, 0.0)),
                 ..still()
             }; 8];
@@ -1163,7 +1228,7 @@ pub(crate) mod tests {
             let error =
                 (committed.inverse() * UnitQuaternion::from_rotation_matrix(&truth)).scaled_axis();
 
-            let measured = measure(&window, DT).expect("a usable window");
+            let measured = measure(&spaced(&window, DT)).expect("a usable window");
             let p = initial_covariance(
                 &init,
                 &state.attitude,
@@ -1195,9 +1260,11 @@ pub(crate) mod tests {
         let mut window = [still(); 8];
         for (index, sample) in window.iter_mut().enumerate() {
             let shake = if index % 2 == 0 { 0.5 } else { -0.5 };
-            sample.imu.accel = Acceleration::body(shake, 0.0, -GRAVITY + shake);
+            sample.imu = sample
+                .imu
+                .with_accel(Acceleration::body(shake, 0.0, -GRAVITY + shake));
         }
-        let level = measure(&window, DT)
+        let level = measure(&spaced(&window, DT))
             .expect("a usable window")
             .level_variance
             .expect("eight samples scatter");
@@ -1207,7 +1274,9 @@ pub(crate) mod tests {
             "expected {expected}, got {level}"
         );
         assert_eq!(
-            measure(&[still()], DT).expect("one sample").level_variance,
+            measure(&spaced(&[still()], DT))
+                .expect("one sample")
+                .level_variance,
             None
         );
     }
@@ -1270,7 +1339,7 @@ pub(crate) mod tests {
         for (roll, pitch) in TILTS {
             let window = window_at(roll, pitch, 0.0, 0.0);
             let state = nominal(&window, Radians::ZERO, true);
-            let navigation = state.attitude.quaternion() * window[0].imu.accel.vector();
+            let navigation = state.attitude.quaternion() * window[0].imu.specific_force().vector();
             assert!(
                 (navigation - Vector3::new(0.0, 0.0, -GRAVITY)).norm() < 1e-4,
                 "({roll}, {pitch}) rotated back to {navigation:?}"
@@ -1355,10 +1424,7 @@ pub(crate) mod tests {
         // reading its own bias, and at rest that is the one place it is observable.
         let offset = AngularRate::body(0.01, -0.02, 0.003);
         let window = [StaticSample {
-            imu: ImuSample {
-                gyro: offset,
-                ..still().imu
-            },
+            imu: still().imu.with_gyro(offset),
             ..still()
         }; 8];
         let state = nominal(&window, Radians::ZERO, true);
@@ -1374,10 +1440,7 @@ pub(crate) mod tests {
         // The average is the vehicle turning, not the sensor lying, and seeding it would
         // subtract a turn rate from every later measurement as a sensor error.
         let window = [StaticSample {
-            imu: ImuSample {
-                gyro: AngularRate::body(0.0, 0.4, 0.0),
-                ..still().imu
-            },
+            imu: still().imu.with_gyro(AngularRate::body(0.0, 0.4, 0.0)),
             ..still()
         }; 8];
         let state = nominal(&window, Radians::ZERO, false);
@@ -1403,7 +1466,7 @@ pub(crate) mod tests {
     fn a_short_window_that_moved_is_not_stationary_rather_than_too_short() {
         // Motion is measured before length, so `WindowTooShort` only ever means still.
         let mut window = [still(); 8];
-        window[3].imu.gyro = AngularRate::body(0.0, 0.4, 0.0);
+        window[3].imu = window[3].imu.with_gyro(AngularRate::body(0.0, 0.4, 0.0));
         let alignment = classify_default(&window, Seconds::from_secs(0.1));
         let Ok(Alignment::Coarse(Coarse::NotStationary { span, .. })) = alignment else {
             panic!("0.8 s and moving: {alignment:?}");
@@ -1414,7 +1477,7 @@ pub(crate) mod tests {
     #[test]
     fn a_moving_window_is_coarse_and_reports_what_it_measured() {
         let mut window = [still(); 8];
-        window[3].imu.gyro = AngularRate::body(0.0, 0.4, 0.0);
+        window[3].imu = window[3].imu.with_gyro(AngularRate::body(0.0, 0.4, 0.0));
         let alignment = classify_default(&window, DT).expect("moving, not unusable");
         let Alignment::Coarse(Coarse::NotStationary { peak_gyro, .. }) = alignment else {
             panic!("0.4 rad/s is over the 0.262 default: {alignment:?}");
@@ -1428,7 +1491,10 @@ pub(crate) mod tests {
         let mut window = [still(); 8];
         // 2.94 m/s^2 of unexplained specific force on one sample of eight: over the
         // stationarity tolerance, so the window is coarse, and a mean 0.368 m/s^2 out.
-        window[0].imu.accel = Acceleration::body(0.0, 0.0, -GRAVITY - 2.941_995);
+        window[0].imu =
+            window[0]
+                .imu
+                .with_accel(Acceleration::body(0.0, 0.0, -GRAVITY - 2.941_995));
         let tilt = coarse_tilt(&window);
         assert!(
             (tilt - 0.0375).abs() < 1e-4,
@@ -1444,7 +1510,9 @@ pub(crate) mod tests {
         let mut window = [still(); 8];
         for (index, sample) in window.iter_mut().enumerate() {
             let shake = if index % 2 == 0 { 3.0 } else { -3.0 };
-            sample.imu.accel = Acceleration::body(0.0, 0.0, -GRAVITY + shake);
+            sample.imu = sample
+                .imu
+                .with_accel(Acceleration::body(0.0, 0.0, -GRAVITY + shake));
         }
         let tilt = coarse_tilt(&window);
         assert!(
@@ -1478,7 +1546,7 @@ pub(crate) mod tests {
         // the gyroscope witnesses it.
         let mut window = [still(); 8];
         for sample in &mut window {
-            sample.imu.gyro = AngularRate::body(0.0, 0.4, 0.0);
+            sample.imu = sample.imu.with_gyro(AngularRate::body(0.0, 0.4, 0.0));
         }
         let tilt = coarse_tilt(&window);
         assert!(
@@ -1499,8 +1567,8 @@ pub(crate) mod tests {
         const RATE: [f32; 8] = [0.8, 0.8, -0.8, -0.8, -0.8, -0.8, 0.8, 0.8];
         let mut window = [still(); 8];
         for ((sample, pitch), rate) in window.iter_mut().zip(PITCH).zip(RATE) {
-            sample.imu.accel = gravity_at(0.0, pitch, 0.0);
-            sample.imu.gyro = AngularRate::body(0.0, rate, 0.0);
+            sample.imu = sample.imu.with_accel(gravity_at(0.0, pitch, 0.0));
+            sample.imu = sample.imu.with_gyro(AngularRate::body(0.0, rate, 0.0));
         }
         let tilt = coarse_tilt(&window);
         assert!(
@@ -1537,11 +1605,11 @@ pub(crate) mod tests {
         // 1.6 s window, still, and coarse only for being short.
         let mut window = window_at(0.0, 0.0, 0.0, 0.0);
         for sample in &mut window {
-            sample.imu.gyro = AngularRate::body(0.05, 0.0, 0.0);
+            sample.imu = sample.imu.with_gyro(AngularRate::body(0.05, 0.0, 0.0));
         }
         let dt = Seconds::from_secs(0.2);
         let init = Initialization::default();
-        let measured = measure(&window, dt).expect("a usable window");
+        let measured = measure(&spaced(&window, dt)).expect("a usable window");
         assert!(at_rest(&measured, &init), "0.05 rad/s is inside 0.262");
         let bias = nominal_state(&measured, Radians::ZERO, true)
             .gyro_bias
@@ -1586,8 +1654,8 @@ pub(crate) mod tests {
         // dip is the only thing charging the heading.
         let mut window = window_at(0.0, 0.0, 0.9, 0.0);
         for sample in &mut window {
-            let leaning = sample.imu.accel.vector() - Vector3::new(0.0, 0.0, 2.941_995);
-            sample.imu.accel = Acceleration::from_vector(leaning);
+            let leaning = sample.imu.specific_force().vector() - Vector3::new(0.0, 0.0, 2.941_995);
+            sample.imu = sample.imu.with_accel(Acceleration::from_vector(leaning));
         }
         let (tilt, yaw) = sigmas(&window, DT);
         assert!((tilt - 0.3).abs() < 1e-4, "2.942 / g, got {tilt}");
@@ -1653,8 +1721,8 @@ pub(crate) mod tests {
         // falls back to is the missing vertical's doing and not its own.
         let mut window = [still(); 8];
         for sample in &mut window {
-            sample.imu.accel = Acceleration::body(0.0, 0.0, 0.0);
-            sample.imu.gyro = AngularRate::body(0.0, 0.6, 0.0);
+            sample.imu = sample.imu.with_accel(Acceleration::body(0.0, 0.0, 0.0));
+            sample.imu = sample.imu.with_gyro(AngularRate::body(0.0, 0.6, 0.0));
             sample.mag = Some(MagField::body(0.22, 0.0, 0.44));
         }
         let (tilt, yaw) = sigmas(&window, DT);
@@ -1668,17 +1736,70 @@ pub(crate) mod tests {
         );
     }
 
+    /// `window_span`'s `f64`: the sum in `f32` falls short of the product it replaced.
     #[test]
-    fn an_empty_window_or_an_unusable_step_is_still_an_error() {
+    fn a_window_of_exactly_the_minimum_duration_is_long_enough_at_any_rate() {
+        for (dt, samples) in [(0.02, 100), (0.01, 200), (0.005, 400), (0.0025, 800)] {
+            let window = std::vec![still(); samples];
+            assert_eq!(
+                classify_default(&window, Seconds::from_secs(dt)),
+                Ok(Alignment::Static),
+                "{samples} samples of {dt} s"
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_window_or_an_unusable_interval_is_still_an_error() {
         assert_eq!(classify_default(&[], DT), Err(InitError::NoSamples));
         let zero = Seconds::from_secs(0.0);
         assert_eq!(
             classify_default(&[still(); 8], zero),
-            Err(InitError::InvalidStep { dt: zero })
+            Err(InitError::InvalidInterval { interval: zero })
+        );
+        // The interval named is the one that is unusable, whichever of the two it is.
+        let mut window = spaced(&[still(); 8], DT);
+        let backwards = Seconds::from_secs(-0.1);
+        window[5].imu.velocity_interval = backwards;
+        assert_eq!(
+            measure(&window).map(|_| ()),
+            Err(InitError::InvalidInterval {
+                interval: backwards
+            })
         );
         let mut poisoned = [still(); 8];
-        poisoned[2].imu.accel = Acceleration::body(f32::NAN, 0.0, 0.0);
+        poisoned[2].imu = poisoned[2]
+            .imu
+            .with_accel(Acceleration::body(f32::NAN, 0.0, 0.0));
         assert_eq!(classify_default(&poisoned, DT), Err(InitError::NotFinite));
+    }
+
+    /// The clock starts at the last sample's time, so a window whose times do not run forward
+    /// is refused rather than aligned: stamped all at zero, it would start the clock at zero
+    /// and the first `predict` would coast the whole flight so far.
+    #[test]
+    fn a_window_timed_other_than_forward_is_refused() {
+        let unstamped: std::vec::Vec<_> = spaced(&[still(); 8], DT)
+            .into_iter()
+            .map(|s| StaticSample {
+                imu: s.imu.timed(Timestamp::ZERO, DT),
+                ..s
+            })
+            .collect();
+        assert_eq!(
+            measure(&unstamped).map(|_| ()),
+            Err(InitError::InvalidStep {
+                dt: Seconds::from_secs(0.0)
+            })
+        );
+        let mut reversed = spaced(&[still(); 8], DT);
+        reversed.reverse();
+        assert_eq!(
+            measure(&reversed).map(|_| ()),
+            Err(InitError::InvalidStep {
+                dt: Seconds::from_secs(-0.25)
+            })
+        );
     }
 
     #[test]
@@ -1752,7 +1873,7 @@ pub(crate) mod tests {
 
     #[test]
     fn the_window_acceleration_is_the_endpoint_difference_over_the_span() {
-        let measured = inertial_acceleration(&accelerating_window(), DT)
+        let measured = inertial_acceleration(&spaced(&accelerating_window(), DT))
             .expect("two samples a second apart carry a velocity");
         assert_eq!(measured, Acceleration::ned(4.0, 0.0, 0.0));
     }
@@ -1764,7 +1885,7 @@ pub(crate) mod tests {
         let mut window = accelerating_window();
         window[3].velocity = Some(Velocity::ned(-40.0, 12.0, 7.0));
         assert_eq!(
-            inertial_acceleration(&window, DT),
+            inertial_acceleration(&spaced(&window, DT)),
             Some(Acceleration::ned(4.0, 0.0, 0.0))
         );
     }
@@ -1773,17 +1894,17 @@ pub(crate) mod tests {
     fn a_window_with_no_two_dated_velocities_reports_no_acceleration() {
         // Nothing to difference, and a difference over zero seconds is an infinity
         // rather than an acceleration.
-        assert_eq!(inertial_acceleration(&[still(); 8], DT), None);
+        assert_eq!(inertial_acceleration(&spaced(&[still(); 8], DT)), None);
         let mut one = [still(); 8];
         one[4].velocity = Some(Velocity::ned(9.0, 0.0, 0.0));
-        assert_eq!(inertial_acceleration(&one, DT), None);
+        assert_eq!(inertial_acceleration(&spaced(&one, DT)), None);
     }
 
     #[test]
     fn a_moving_window_reports_the_acceleration_gnss_accounts_for() {
         let mut window = accelerating_window();
         // Over the 0.262 rad/s default, so the window classifies as moving.
-        window[3].imu.gyro = AngularRate::body(0.0, 0.4, 0.0);
+        window[3].imu = window[3].imu.with_gyro(AngularRate::body(0.0, 0.4, 0.0));
         let alignment = classify_default(&window, DT).expect("moving, not unusable");
         let Alignment::Coarse(Coarse::NotStationary { inertial_accel, .. }) = alignment else {
             panic!("0.4 rad/s is over the default: {alignment:?}");
@@ -1799,7 +1920,9 @@ pub(crate) mod tests {
         // what `Alignment::Static` and the barometric reference both mean.
         let mut window = [still(); 8];
         for sample in &mut window {
-            sample.imu.accel = Acceleration::body(8.0, 0.0, -GRAVITY);
+            sample.imu = sample
+                .imu
+                .with_accel(Acceleration::body(8.0, 0.0, -GRAVITY));
         }
         window[1].velocity = Some(Velocity::ned(1.0, 0.0, 0.0));
         window[5].velocity = Some(Velocity::ned(9.0, 0.0, 0.0));

@@ -191,6 +191,26 @@ pub enum Fusion {
     /// a verdict — a rejection says the measurement disagreed with a sound estimate, and
     /// counting this as one would put a filter fault in the column that times out a sensor.
     StateInvalid,
+    /// The measurement's time is one the filter cannot place it at: older than
+    /// [`LATENCY_HORIZON`](crate::LATENCY_HORIZON), later than the state by more than
+    /// [`Config::max_predict_dt`](crate::Config::max_predict_dt), or before a start that did not
+    /// show the vehicle at rest, whose motion before it nothing describes. The measurement was
+    /// discarded and no health timer moved.
+    ///
+    /// Inside those bounds the measurement is fused at its own time, equation (23′): against
+    /// the state as it was, or, for one timed between the last IMU sample and the next, as it
+    /// will be, carried forward on the estimated velocity and the last sample's rate.
+    ///
+    /// Fused anyway, an old measurement is a statement about where the vehicle was, applied to
+    /// where it is: at 20 m/s a fix a second old is 20 m of error handed to the gate as truth.
+    /// One later than the state is a clock the IMU and the sensor do not share, or a sample
+    /// the caller has not yet handed to [`predict`](crate::Eskf::predict). Either way it is the
+    /// timestamp that is wrong, which is a refusal rather than a verdict on the value.
+    OutOfHorizon {
+        /// How long before the state the measurement was taken, negative for one after it:
+        /// what tells a latency longer than the horizon from a clock with another epoch.
+        age: Seconds,
+    },
 }
 
 impl Fusion {
@@ -217,6 +237,7 @@ impl Fusion {
             Self::NotFinite => Some(Refusal::NotFinite),
             Self::InvalidNoise => Some(Refusal::InvalidNoise),
             Self::StateInvalid => Some(Refusal::StateInvalid),
+            Self::OutOfHorizon { .. } => Some(Refusal::OutOfHorizon),
             Self::Accepted { .. } | Self::Rejected { .. } | Self::Reset => None,
         }
     }
@@ -231,7 +252,8 @@ impl Fusion {
             | Self::NoReference
             | Self::NotFinite
             | Self::InvalidNoise
-            | Self::StateInvalid => None,
+            | Self::StateInvalid
+            | Self::OutOfHorizon { .. } => None,
         }
     }
 }
@@ -250,6 +272,12 @@ impl core::fmt::Display for Fusion {
             Self::NotFinite => write!(f, "refused, {}", Refusal::NotFinite),
             Self::InvalidNoise => write!(f, "refused, {}", Refusal::InvalidNoise),
             Self::StateInvalid => write!(f, "refused, {}", Refusal::StateInvalid),
+            Self::OutOfHorizon { age } => write!(
+                f,
+                "refused, {}, age {} s",
+                Refusal::OutOfHorizon,
+                seconds(age)
+            ),
         }
     }
 }
@@ -328,7 +356,7 @@ impl core::fmt::Display for GnssFusion {
 
 /// Why a measurement was turned away before the gate ran.
 ///
-/// The four cases [`Fusion`] reports that are not a verdict on the measurement's *value*: the
+/// The cases [`Fusion`] reports that are not a verdict on the measurement's *value*: the
 /// filter could not form an innovation to judge it against, or the numbers offered were not
 /// ones any sensor could produce. Kept on [`SourceHealth::last_refusal`] so that a count of
 /// refusals says which kind, which is the difference between a miswired sensor and a missing
@@ -350,6 +378,9 @@ pub enum Refusal {
     /// The filter's own covariance or correction could not support an update. See
     /// [`Fusion::StateInvalid`].
     StateInvalid,
+    /// The measurement's time was outside what the filter can place it at. See
+    /// [`Fusion::OutOfHorizon`].
+    OutOfHorizon,
 }
 
 impl core::fmt::Display for Refusal {
@@ -360,6 +391,7 @@ impl core::fmt::Display for Refusal {
             Self::NotFinite => "measurement or noise not finite",
             Self::InvalidNoise => "noise variance not positive",
             Self::StateInvalid => "filter state cannot support an update",
+            Self::OutOfHorizon => "measurement time outside the horizon",
         })
     }
 }
@@ -374,7 +406,7 @@ impl core::fmt::Display for Refusal {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Propagation {
-    /// The state and covariance advanced over the full `dt`.
+    /// The state and covariance advanced across the sample.
     Propagated,
     /// `dt` exceeded [`Config::max_predict_dt`](crate::Config::max_predict_dt), so the sample
     /// was not integrated and the filter coasted across the gap instead. Equation (22′).
@@ -399,17 +431,31 @@ pub enum Propagation {
         /// The configured limit.
         limit: Seconds,
     },
-    /// `dt` was zero, negative, or not a number. Nothing was propagated and no timer
-    /// advanced.
+    /// The sample's [`time`](crate::ImuSample::time) was not after the filter's: `dt` is
+    /// zero or negative. Nothing was propagated, no timer advanced and the filter's clock
+    /// did not move.
     ///
     /// Rejected before the bookkeeping rather than after: a negative `dt` would run the
-    /// per-source timers backwards and make stale aiding look fresh, and a NaN would
-    /// poison them for the rest of the flight. Zero is included because two IMU samples
-    /// sharing a timestamp means duplicated data, which is worth knowing about even
-    /// though propagating over it would be harmless.
+    /// per-source timers backwards and make stale aiding look fresh. Zero is included
+    /// because two IMU samples sharing a timestamp means duplicated data, which is worth
+    /// knowing about even though propagating over it would be harmless.
     InvalidStep {
-        /// The `dt` offered.
+        /// The time from the filter's clock to the sample's.
         dt: Seconds,
+    },
+    /// An integration interval in the [`ImuSample`](crate::ImuSample) was under a microsecond,
+    /// or longer than [`Config::max_predict_dt`](crate::Config::max_predict_dt), which one
+    /// sample does not describe any more than a gap that long. The state and covariance are
+    /// unchanged; the timers and the clock advanced, as under [`NotFinite`](Self::NotFinite) and
+    /// for its reason.
+    ///
+    /// Refused because the interval scales what the increment is corrected by and what
+    /// (21) adds: a negative one subtracts process noise and lands a variance below zero,
+    /// which [`Validity`] reads as an estimate better than any the filter could have. An
+    /// interval that is not a number is [`NotFinite`](Self::NotFinite).
+    InvalidInterval {
+        /// The interval offered.
+        interval: Seconds,
     },
     /// A number in the [`ImuSample`](crate::ImuSample) is NaN or infinite. The state and
     /// covariance are unchanged.
@@ -482,6 +528,11 @@ impl core::fmt::Display for Propagation {
             Self::InvalidStep { dt } => {
                 write!(f, "step of {} s not usable, not propagated", seconds(dt))
             }
+            Self::InvalidInterval { interval } => write!(
+                f,
+                "imu interval of {} s not usable, not propagated",
+                seconds(interval)
+            ),
             Self::NotFinite => f.write_str("imu sample not finite, not propagated"),
             Self::StateNotFinite => f.write_str("propagated state not finite, not committed"),
             Self::NotInitialized => f.write_str("filter not initialized, not propagated"),
@@ -822,7 +873,10 @@ pub struct PropagationHealth {
     /// [`Config::max_predict_dt`](crate::Config::max_predict_dt), with
     /// [`Config::coast`](crate::Config::coast) off.
     pub refused_too_long: u32,
-    /// Steps refused as zero, negative, or not a number.
+    /// Steps refused for their timing: a sample not after the last,
+    /// [`Propagation::InvalidStep`], or an integration interval under a microsecond or past
+    /// [`Config::max_predict_dt`](crate::Config::max_predict_dt),
+    /// [`Propagation::InvalidInterval`].
     pub refused_invalid: u32,
     /// Steps refused because the [`ImuSample`](crate::ImuSample) carried a NaN or an
     /// infinity.
@@ -862,7 +916,7 @@ impl PropagationHealth {
             Propagation::StepTooLong { .. } => {
                 self.refused_too_long = self.refused_too_long.saturating_add(1);
             }
-            Propagation::InvalidStep { .. } => {
+            Propagation::InvalidStep { .. } | Propagation::InvalidInterval { .. } => {
                 self.refused_invalid = self.refused_invalid.saturating_add(1);
             }
             Propagation::NotFinite => {

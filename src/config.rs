@@ -53,6 +53,18 @@ pub const ALIGNED_TILT: Radians = Radians::from_degrees(3.0);
 /// the type system cannot refuse.
 pub const ALIGNED_HEADING: Radians = Radians::from_degrees(30.0);
 
+/// How old a measurement may be and still be fused: the span of the past the filter can place
+/// a measurement in. Older than this, a `fuse_*` refuses it as
+/// [`Fusion::OutOfHorizon`](crate::Fusion::OutOfHorizon).
+///
+/// 0.3 s is what both production estimators hold. PX4 sizes its buffers to one and a half
+/// times `EKF2_DELAY_MAX`, whose default is 200 ms
+/// (`src/modules/ekf2/EKF/estimator_interface.cpp:591-592`, `src/modules/ekf2/module.yaml:26-34`
+/// at `c4e4ef98e9`), and ArduPilot caps a receiver's lag at 250 ms, "the max value the EKF has
+/// been tested for" (`libraries/AP_NavEKF3/AP_NavEKF3_core.cpp:70-71` at `368dc0c428`). The
+/// corpus's receivers are configured at 110 ms, one at 33.
+pub const LATENCY_HORIZON: Seconds = Seconds::from_secs(0.3);
+
 /// IMU noise, as the continuous-time densities of equations (16)–(21).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ImuNoise {
@@ -104,20 +116,19 @@ impl Default for ImuNoise {
     /// real airframe vibrating on the ground — reads a tilt peak of 4.6° against 2.5° (EKF2
     /// never leaves 1.08°), and still 4.5° with PX4's `R` floors applied, so the vibration
     /// needs it; `a299e722` ends `Degraded`, rejecting 493 velocity solutions against 283,
-    /// which PX4's floors cure (43, `Healthy`), so the receiver's raw `R` needs it; and
-    /// `gnss_latency`'s `false_valid` goes 323 to 888 while the same flight without the
-    /// 150 ms of latency stays at 0, so fusing a stale fix as current needs it. Scaling
+    /// which PX4's floors cure (43, `Healthy`), so the receiver's raw `R` needs it.
+    /// `gnss_latency` does not: with each fix fused at the time it was taken, (23′), it reads
+    /// `false_valid` 0 at 0.3× as at 1×, where fused as current it read 888 at 0.3×. Scaling
     /// `gyro_white` down to 0.7× improves `tilt` and `yaw` on every scenario, but `harsh_imu`'s
     /// `nees_att` crosses 1 (1.07), and on the corpus `f16771dd` grows a 14.1° tilt at
     /// t = 51 s where EKF2 reads 2.6°.
     /// The simulator's IMU is 58 times quieter than this figure, so the scenarios favouring
     /// less gyroscope noise are the simulator's preference rather than an airframe's.
     ///
-    /// So the factor stands for three things this filter does not model: the delayed fusion
-    /// horizon PX4 has (#52), the floors both estimators put under a receiver's reported
-    /// accuracy (#105), and vibration, which PX4 meets only by inflating accelerometer noise
-    /// on clipping (`covariance.cpp:125-133`). A change that models one of them is the moment
-    /// to measure this again.
+    /// So the factor stands for two things this filter does not model: the floors both
+    /// estimators put under a receiver's reported accuracy (#105), and vibration, which PX4
+    /// meets only by inflating accelerometer noise on clipping (`covariance.cpp:125-133`). A
+    /// change that models either is the moment to measure this again.
     fn default() -> Self {
         Self {
             gyro_white: 1.5e-2,
@@ -798,6 +809,11 @@ pub struct Config {
     /// interval short of a dropout is 90.5 ms, twice in the 2 h log's 1.4 M samples —
     /// while catching real SD-card dropouts of 0.34 s and up. The margin at that worst
     /// case is 10 ms, so a slower log than any in the corpus would need this raised.
+    ///
+    /// The same bound holds a measurement timed after the state, which is carried forward to
+    /// its time on the estimated velocity and the last sample's rate: the longest the filter
+    /// extrapolates on one sample either way. Later than this, a `fuse_*` refuses it as
+    /// [`Fusion::OutOfHorizon`](crate::Fusion::OutOfHorizon).
     pub max_predict_dt: Seconds,
     /// Coasting across a step longer than [`max_predict_dt`](Self::max_predict_dt), equation
     /// (22′). `None` refuses the step instead, as

@@ -20,8 +20,6 @@ fn main() -> Result<(), InitError> {
     // The site's declination, before initializing: the window's heading reads it.
     assert!(filter.set_magnetic_declination(Radians::from_radians(-0.06)));
 
-    let dt = Seconds::from_secs(1.0 / IMU_HZ as f32);
-
     // Quasi-static initialization: the vehicle sits still, the filter validates it.
     // `Initialization::min_duration` is a span of time, so the sample count depends on the
     // IMU rate — 2 s at 400 Hz here. An array length has to be const, so this 2 tracks the
@@ -30,17 +28,18 @@ fn main() -> Result<(), InitError> {
     // A window that is short or moving is not refused — it gives `Alignment::Coarse` and
     // the filter runs, reporting `Status::Aligning` until attitude converges. Checking
     // which you got is the point of the return value.
-    println!("fusion-nav basic example — no filtering is performed\n");
+    println!("fusion-nav basic example\n");
 
     let window: [StaticSample; (2 * IMU_HZ) as usize] = core::array::from_fn(stationary_sample);
-    let alignment = filter.initialize(&window, dt)?;
+    let alignment = filter.initialize(&window)?;
     println!("alignment {alignment:?}\n");
 
     for tick in 0..(5 * IMU_HZ) {
-        // Hot path: one propagation per IMU sample, `dt` supplied by the caller. The
+        // Hot path: one propagation per IMU sample, timed by the caller's clock. The
         // outcome is `#[must_use]`: a step the filter cannot integrate is coasted or
         // refused, and a caller that ignores it would never know there was a gap.
-        assert!(filter.predict(imu_sample(), dt).is_propagated());
+        let time = sample_time(2 * IMU_HZ + tick + 1);
+        assert!(filter.predict(imu_sample(time)).is_propagated());
 
         if tick % (IMU_HZ / GNSS_HZ) == 0 {
             // Latitude and longitude straight from the receiver: the filter places its
@@ -48,6 +47,7 @@ fn main() -> Result<(), InitError> {
             // outcome is optional — `diagnostics()` keeps the test ratio and the counts —
             // but a refusal the health path cannot show up in is worth catching here.
             let outcome = filter.fuse_gnss_geodetic(
+                time,
                 Geodetic::from_degrees(47.397_742, 8.545_594, 488.0),
                 PositionNoise::horizontal_vertical(1.5, 3.0),
             );
@@ -59,17 +59,23 @@ fn main() -> Result<(), InitError> {
             }
 
             filter.fuse_gnss_velocity(
+                time,
                 Velocity::ned(14.0, 0.5, -0.2),
                 VelocityNoise::from_speed_accuracy(0.3),
             );
         }
 
         if tick % (IMU_HZ / BARO_HZ) == 0 {
-            filter.fuse_baro_altitude(Altitude::from_meters(60.0), AltitudeNoise::from_sigma(2.0));
+            filter.fuse_baro_altitude(
+                time,
+                Altitude::from_meters(60.0),
+                AltitudeNoise::from_sigma(2.0),
+            );
         }
 
         if tick % (IMU_HZ / MAG_HZ) == 0 {
             filter.fuse_mag_heading(
+                time,
                 MagField::body(0.21, 0.03, 0.44),
                 HeadingNoise::from_sigma(0.3),
             );
@@ -107,20 +113,30 @@ fn main() -> Result<(), InitError> {
     Ok(())
 }
 
-fn imu_sample() -> ImuSample {
-    ImuSample {
-        gyro: AngularRate::body(0.01, -0.002, 0.03),
-        accel: Acceleration::body(0.2, 0.1, -GRAVITY),
-    }
+/// When the `n`th IMU sample ends, on a clock counting microseconds from power-on.
+fn sample_time(n: u32) -> Timestamp {
+    Timestamp::from_micros(u64::from(n) * 1_000_000 / u64::from(IMU_HZ))
+}
+
+/// A rate IMU's reading, converted to the increments the filter takes.
+fn imu_sample(time: Timestamp) -> ImuSample {
+    ImuSample::from_rates(
+        time,
+        AngularRate::body(0.01, -0.002, 0.03),
+        Acceleration::body(0.2, 0.1, -GRAVITY),
+        Seconds::from_secs(1.0 / IMU_HZ as f32),
+    )
 }
 
 /// The `i`th sample of a window on the ground.
 fn stationary_sample(i: usize) -> StaticSample {
     StaticSample {
-        imu: ImuSample {
-            gyro: AngularRate::body(0.0, 0.0, 0.0),
-            accel: Acceleration::body(0.0, 0.0, -GRAVITY),
-        },
+        imu: ImuSample::from_rates(
+            sample_time(i as u32 + 1),
+            AngularRate::body(0.0, 0.0, 0.0),
+            Acceleration::body(0.0, 0.0, -GRAVITY),
+            Seconds::from_secs(1.0 / IMU_HZ as f32),
+        ),
         mag: Some(MagField::body(0.22, 0.0, 0.44)),
         // Ground level at the launch point, 52 m, with the scatter a real barometer
         // has. This is what fixes the barometer's reference, so the 60 m fused later

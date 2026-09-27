@@ -238,17 +238,12 @@ Where the two estimators this crate is measured against use a word differently. 
 are `file:line` at PX4 `c4e4ef98e9` and ArduPilot `368dc0c428`; where the claim belongs to another
 document, the entry points there instead of repeating it.
 
-* **Delta angle, delta velocity** — both estimators take *integrated* increments from the IMU
-  (`src/modules/ekf2/EKF/common.h:182-189`;
-  `libraries/AP_NavEKF3/AP_NavEKF3_core.h:599-602`). `ImuSample` takes an instantaneous angular
-  rate and specific force, with `dt` alongside: divide their increments by their integration
-  period. The conversion is exact only when that period is the interval you then pass as `dt`,
-  which is why it is the caller's to do rather than the filter's to assume.
 * **Fusion time horizon**, **output predictor** — PX4 fuses at a *delayed* horizon and runs a
   separate fast predictor forward to the present
   (`src/modules/ekf2/EKF/output_predictor/output_predictor.h:54-59`), which is how it absorbs
-  sensor latency. This filter has neither: every measurement is fused as though current. That is
-  a stated limitation, not an omission — see the README's limitations and
+  sensor latency. This filter has neither: it runs at the present and fuses each measurement
+  against a history of the state at the time it was taken, equation (23′) of `EQUATIONS.md`,
+  so a verdict is returned by the call that offered it. See
   [measurement latency](GOALS.md#measurement-latency).
 * **Reset** — the near-miss. There, a reset is *recovery*: states are set to a measurement after an
   aiding timeout, and a counter is published so consumers can step their own state

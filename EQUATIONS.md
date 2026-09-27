@@ -326,26 +326,38 @@ its heading from, and is the rate at which a tilt error turns that heading.
 
 ## Nominal state propagation
 
+The IMU supplies **increments**: a rotation $`\Delta\theta_m`$ integrated over $`\Delta t_\theta`$
+and a velocity $`\Delta v_m`$, specific force integrated over $`\Delta t_v`$, as both PX4's
+`imuSample` and ArduPilot's `imu_elements` carry them. The equations are written in rates, where
+the algebra is clearer, and the code evaluates each one multiplied through by its interval, so
+$`\omega \Delta t_\theta`$ below is the corrected increment itself and no rate is ever formed. A
+rate gyroscope is the case $`\Delta\theta_m = \omega_m \Delta t`$, which `ImuSample::from_rates`
+forms. The two intervals are each increment's own, and the time between samples is neither: it is
+differenced from their timestamps, and it is what the health timers and the gap test of
+[coasting](#coasting-across-a-gap) read.
+
 Bias-corrected IMU measurements:
 
 **(9)**
 
 ```math
-\omega = \omega_m - \hat{\beta}_g
+\omega = \omega_m - \hat{\beta}_g, \qquad \omega\,\Delta t_\theta = \Delta\theta_m - \hat{\beta}_g \Delta t_\theta
 ```
 
 **(10)**
 
 ```math
-a_b = a_m - \hat{\beta}_a
+a_b = a_m - \hat{\beta}_a, \qquad a_b\,\Delta t_v = \Delta v_m - \hat{\beta}_a \Delta t_v
 ```
 
-Specific force rotated into the navigation frame and gravity added:
+Specific force rotated into the navigation frame and gravity added, gravity over the same
+$`\Delta t_v`$ the accelerometer integrated, so a vehicle at rest gains nothing whatever the two
+intervals are:
 
 **(11)**
 
 ```math
-a_n = R(\hat{q})\, a_b + g
+a_n = R(\hat{q})\, a_b + g, \qquad a_n \Delta t_v = R(\hat{q})\,(a_b \Delta t_v) + g\,\Delta t_v
 ```
 
 Continuous-time kinematics:
@@ -356,7 +368,8 @@ Continuous-time kinematics:
 \dot{p} = v, \qquad \dot{v} = a_n, \qquad \dot{q} = \tfrac{1}{2}\, q \otimes \begin{bmatrix} 0 \\ \omega \end{bmatrix}, \qquad \dot{\beta}_a = 0, \qquad \dot{\beta}_g = 0
 ```
 
-Discrete integration over $`\Delta t`$:
+Discrete integration, translation over $`\Delta t = \Delta t_v`$ and rotation over
+$`\Delta t = \Delta t_\theta`$:
 
 **(13)**
 
@@ -432,6 +445,11 @@ I & I\Delta t & 0 & 0 & 0 \\
 \end{bmatrix}
 ```
 
+Each $`\Delta t`$ is the interval of the increment its block reads: $`\Delta t_v`$ on the position
+and velocity rows, $`\Delta t_\theta`$ on the attitude row. So $`[\,a_b\,]_\times \Delta t`$ is the
+skew of the corrected velocity increment and $`\omega\Delta t`$ the corrected angle increment,
+and $`F`$ reads the sample as it arrived.
+
 The attitude block $`R\{\omega\Delta t\}^\mathsf{T}`$ may be approximated as
 $`I - [\,\omega\,]_\times \Delta t`$ where the cost of the exact form is not justified; that
 approximation is the usual source of small attitude-covariance error at high rotation rates.
@@ -444,7 +462,8 @@ Discrete process noise, impulse form:
 Q = \mathrm{diag}\left( 0,\quad \sigma_a^2 \Delta t\, I,\quad \sigma_g^2 \Delta t\, I,\quad \sigma_{\beta a}^2 \Delta t\, I,\quad \sigma_{\beta g}^2 \Delta t\, I \right)
 ```
 
-Every block carries $`\Delta t`$, and the four $`\sigma`$ are **spectral densities**:
+Every block carries $`\Delta t`$, the accelerometer's two over $`\Delta t_v`$ and the gyroscope's
+over $`\Delta t_\theta`$, and the four $`\sigma`$ are **spectral densities**:
 `ImuNoise`'s fields are stated per $`\sqrt{\mathrm{Hz}}`$ and `examples/simulate.rs` draws its
 per-sample noise as $`\sigma / \sqrt{\Delta t}`$, so a density's contribution to variance over a
 step is $`\sigma^2 \Delta t`$ — for the white-noise blocks exactly as for the two random walks.
@@ -600,6 +619,56 @@ mean of a long run, conservative for a short one, and free of the Gauss–Markov
 and axis that would model the error exactly and grow the covariance past fifteen states. What it
 was measured against, a floor on $`P`$ and PX4's floor on $`R`$, is in
 [the decision](GOALS.md#correlated-measurement-error-as-equivalent-white-noise).
+
+### Delayed measurements
+
+A measurement describes the vehicle when it was taken, and it reaches the filter later: a GNSS
+solution 100–200 ms after the epoch it was computed for (PX4 configures 110 ms,
+`EKF2_GPS_DELAY`). Fused as though current, the innovation of (23) carries the distance flown in
+the delay as error, and a velocity fix the change in velocity: at 20 m s⁻¹ and 3.7 m s⁻², 150 ms is
+3 m and 0.55 m s⁻¹ that $`R`$ does not describe. Every `fuse_*` therefore takes the time
+the measurement was taken, and with $`\tau`$ its age against the state's time, the model is
+evaluated on the state as it was and its Jacobian carried to today's error:
+
+**(23′)**
+
+```math
+y = z - h\big(\hat{x}(t - \tau)\big), \qquad
+H_\tau = H\,e^{-A\tau} \approx H\left(I - A\tau + \tfrac{1}{2}A^2\tau^2\right)
+```
+
+$`H_\tau`$ replaces $`H`$ in (24)–(27); the correction is still applied to the current state,
+which is what makes the verdict synchronous: the `Fusion` a call returns is the gate's. $`A`$ is
+the continuous error dynamics (16)–(19) as a matrix, since
+$`\delta x(t-\tau) \approx e^{-A\tau}\,\delta x(t)`$ with the process noise over the age left
+out, taken at the mean rates over the age: $`\bar\omega`$ from the attitude then and now,
+$`\bar a_n`$ from the velocities. A position fix $`\tau`$ old observes $`\delta p - \tau\,\delta v
++ \dots`$, so $`S`$ carries $`\tau^2 P_{vv}`$ and the fix informs velocity through the right
+correlation.
+
+$`\hat{x}(t-\tau)`$ is read from a history of the nominal state, position, velocity and
+attitude at intervals of about 10 ms across `LATENCY_HORIZON`, interpolated between entries. Two
+things about it are not optional:
+
+* **It is the state as it stood, not an extrapolation.** Extrapolating back from the present on
+  the last IMU sample, $`\hat v - a_n\tau`$, matches the history on a simulated IMU and fails on a
+  real one: one sample's specific force carries the airframe's vibration, which the velocities
+  either side of it average out. GOALS.md, "Measurement latency", has the corpus figures.
+* **Every correction reaches it.** An update moves the estimate of the past with the present, so
+  each one is applied to every entry. Without it a fix taken before the previous fix was fused is
+  judged against a past that fix never corrected, and the same error is corrected twice.
+
+At either end the history runs out. A measurement timed between the last IMU sample and the
+next, ahead of the state, is placed on the present carried forward, position on its velocity
+and attitude on the last sample's rate, and $`\tau`$ is negative. One older than the history, which only happens in the first moments after a
+start, is placed at the history's oldest entry, and $`\tau`$ is the age of that entry, so that
+$`h`$ and $`H_\tau`$ describe the same moment.
+
+An adoption, which writes a measurement as the state, carries it forward by the state's own
+motion over the age: $`p \leftarrow z + \hat p - \hat p(t-\tau)`$. PX4 answers the same
+question with a delayed fusion horizon, the whole filter run $`\tau_{\max}`$ behind and an output
+predictor bringing it forward (`src/modules/ekf2/EKF/output_predictor/`); why this crate does not
+is [the decision](GOALS.md#measurement-latency).
 
 ## Observation models
 
@@ -1106,6 +1175,7 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | (22) | covariance propagation | `propagate.rs` | `propagate_covariance`, called with (9)–(15) by `propagate` |
 | (22′) | coasting across an IMU gap | `propagate.rs`, `eskf.rs` | `coast`, with `unaccelerated_sample` and `repeat_covariance`; chosen by `Eskf::predict` |
 | (23)–(27) | generic update, Joseph form | `update.rs` | `update` |
+| (23′) | delayed measurements | `eskf.rs`, `history.rs`, `update.rs`, `propagate.rs` | `Eskf::observe`, `Eskf::carried`, `Eskf::age_of`; `History`; `Observation::delayed`; `error_dynamics` |
 | (24′) | correlated measurements | `math.rs`, `update.rs`, `health.rs`, `eskf.rs` | `correlation_inflation`; `Observation::correlated` and `r_gain`; `SourceHealth::since_measured` for `Δt`; each `fuse_*` |
 | (28) | GNSS position, as a horizontal and a height half | `observation/gnss.rs` | `horizontal_jacobian`, `horizontal_observation`, `height_jacobian`, `height_observation` |
 | (29) | GNSS velocity | `observation/gnss.rs` | `velocity_jacobian`, `velocity_observation` |
@@ -1124,12 +1194,6 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | (43) | local tangent plane | `geodetic.rs` | `LocalOrigin::to_ned`, `to_geodetic` |
 | (44) | origin placement | `geodetic.rs` | `LocalOrigin::placing`; committed by `Eskf::fuse_gnss_geodetic` |
 | — | skew, quaternion exponential, angle wrap | `math.rs` | `skew`, `exp_quat`, `wrap_pi` |
-
-## Deferred
-
-Measurement latency is not modelled. Every observation above is fused as though it were
-simultaneous with the current state, which is not true of GNSS. See
-[Measurement latency](GOALS.md#measurement-latency).
 
 ## References
 

@@ -49,10 +49,32 @@ fn drive() {
         ..Config::default()
     }));
     let dt = Seconds::from_secs(black_box(0.0025));
+    // Every `Timestamp` conversion, since each one saturates or rounds a float into integers.
+    let start = Timestamp::from_secs_f64(black_box(12.5));
+    let time = Timestamp::from_micros(black_box(start.as_micros()))
+        .after(dt)
+        .before(Seconds::from_secs(black_box(0.001)));
+    let _ = black_box(time.since(start));
+    let rates = ImuSample::from_rates(
+        time,
+        AngularRate::body(black_box(0.01), black_box(-0.02), black_box(0.03)),
+        Acceleration::body(black_box(0.1), black_box(-0.2), black_box(-GRAVITY)),
+        dt,
+    );
+    let _ = black_box(black_box(rates).accumulate(black_box(rates)));
     let sample = StaticSample {
+        // Built field by field as well, so an interval the sample carries is as opaque as
+        // the increments.
         imu: ImuSample {
-            gyro: AngularRate::body(black_box(0.01), black_box(-0.02), black_box(0.03)),
-            accel: Acceleration::body(black_box(0.1), black_box(-0.2), black_box(-GRAVITY)),
+            time: rates.time,
+            delta_angle: DeltaAngle::body(black_box(2.5e-5), black_box(-5.0e-5), black_box(0.0)),
+            angle_interval: Seconds::from_secs(black_box(0.0025)),
+            delta_velocity: DeltaVelocity::flu(
+                black_box(2.5e-4),
+                black_box(0.0),
+                black_box(0.0245),
+            ),
+            velocity_interval: Seconds::from_secs(black_box(0.0025)),
         },
         baro: Some(Altitude::from_meters(black_box(112.0))),
         mag: Some(MagField::body(
@@ -107,24 +129,28 @@ fn drive() {
     ));
     let _ = black_box(VelocityNoise::from_speed_accuracy(black_box(0.3)));
 
-    let _ = black_box(filter.alignment_of(black_box(&window), dt));
-    let _ = black_box(filter.initialize(black_box(&window), dt));
+    let _ = black_box(filter.alignment_of(black_box(&window)));
+    let _ = black_box(filter.initialize(black_box(&window)));
     let _ = black_box(filter.initialize_coarse(black_box(sample.imu)));
     let _ = black_box(filter.initialize_from(
         black_box(State::default()),
         Covariance::from_sigmas(black_box([0.5; STATES])),
+        black_box(start),
     ));
+    let _ = black_box(filter.time());
 
-    let _ = black_box(filter.predict(black_box(sample.imu), dt));
+    let _ = black_box(filter.predict(black_box(rates)));
 
-    let _ = black_box(filter.fuse_gnss_position(position, position_noise));
-    let _ = black_box(filter.fuse_gnss_geodetic(fix, position_noise));
-    let _ = black_box(filter.fuse_gnss_velocity(velocity, velocity_noise));
+    let _ = black_box(filter.fuse_gnss_position(black_box(time), position, position_noise));
+    let _ = black_box(filter.fuse_gnss_geodetic(black_box(time), fix, position_noise));
+    let _ = black_box(filter.fuse_gnss_velocity(black_box(time), velocity, velocity_noise));
     let _ = black_box(filter.fuse_baro_altitude(
+        black_box(time),
         Altitude::from_meters(black_box(60.0)),
         AltitudeNoise::from_sigma(black_box(2.0)),
     ));
     let _ = black_box(filter.fuse_mag_heading(
+        black_box(time),
         MagField::body(black_box(0.22), black_box(0.0), black_box(0.44)),
         HeadingNoise::from_sigma(black_box(0.1)),
     ));
@@ -265,8 +291,14 @@ fn surface(state: State, diagnostics: Diagnostics, covariance: &Covariance) {
     let _ = black_box(Propagation::Propagated.is_propagated());
     let _ = black_box(Alignment::Static.is_static());
 
+    show::<InitError>(InitError::InvalidInterval {
+        interval: Seconds::from_secs(black_box(-0.5)),
+    });
     show::<InitError>(InitError::InvalidStep {
         dt: Seconds::from_secs(black_box(-0.5)),
+    });
+    show::<Fusion>(Fusion::OutOfHorizon {
+        age: Seconds::from_secs(black_box(0.4)),
     });
     show::<Status>(state.status);
     show::<Validity>(state.validity);

@@ -38,17 +38,15 @@ velocity {{score mission vel}} m/s, tilt {{score mission tilt}}° and heading
 ## [Honesty](validation/honesty.md): when it says "within a metre", is it?
 
 Tested over {{anees mission runs}} flights of each simulated scenario. The filter is pessimistic
-everywhere except in these cases, each with an open issue:
-- **GNSS fixes that arrive late** (#52). The filter has no model for measurement delay yet.
-- **Sensor errors that persist longer than the filter assumes** (#51).
+everywhere except where sensor errors persist longer than it assumes (#51).
 
-{{figure gnss_latency anees}}
+{{figure correlated anees}}
 
 ## [Robustness](validation/robustness.md): what happens when a sensor fails?
 
 A GNSS outage, a magnetic disturbance, a gap in the log and a drifting barometer. In each, the
-error stays inside the band and the filter's status reports the problem. Late GNSS fixes are the
-fault it does not handle yet.
+error stays inside the band and the filter's status reports the problem. GNSS fixes that arrive
+late are placed at the moment they describe, and cost nothing.
 
 {{figure gnss_outage error_position}}
 

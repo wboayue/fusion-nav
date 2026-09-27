@@ -12,54 +12,249 @@ use crate::config::{Coast, GRAVITY, ImuNoise};
 use crate::frames::Body;
 use crate::math::{enforce_symmetry, exp_quat, skew};
 use crate::state::{Covariance, ErrorState, Offset, STATES, State};
-use crate::units::{Acceleration, AngularRate, Attitude, Position, Seconds, Velocity};
+use crate::units::{
+    Acceleration, AngularRate, Attitude, DeltaAngle, DeltaVelocity, Position, Seconds, Timestamp,
+    Velocity,
+};
 
-/// One IMU measurement, uncorrected. The filter subtracts its own bias estimates,
-/// equation (9).
+/// One IMU measurement, uncorrected: the rotation and the velocity increments over the
+/// intervals each was integrated across, and when they end. The filter subtracts its own
+/// bias estimates, equations (9) and (10).
+///
+/// PX4's `imuSample` (`src/modules/ekf2/EKF/common.h:182-189` at `c4e4ef98`), and
+/// ArduPilot's `imu_elements` (`libraries/AP_NavEKF3/AP_NavEKF3_core.h:598-604` at
+/// `368dc0c4`). Increments rather than rates, because an integrating driver produces
+/// increments and (13)–(15) consume them: a rate between the two is a division by the
+/// interval that the next line multiplies back. A rate source is the one that converts,
+/// through [`from_rates`](Self::from_rates).
+///
+/// Three times, where a single `dt` would collapse them. The two intervals are what each
+/// increment integrated, kept apart as both estimators keep them, since a driver may close
+/// the gyroscope's and the accelerometer's integrals at different moments. `time` is when
+/// the sample ends, and the step [`Eskf::predict`](crate::Eskf::predict) takes is the time
+/// since the previous sample's, which is neither interval: a logger that drops samples
+/// leaves an increment integrated over 2.5 ms arriving a second after the one before it, and
+/// only the timestamps see the second. Such a sample integrates what it measured and the rest
+/// of the step goes unintegrated: a gap longer than
+/// [`Config::max_predict_dt`](crate::Config::max_predict_dt) is coasted whole, and a shorter
+/// one is not priced, so a driver that drops samples should hand over the integral across the
+/// drop, as an integrating one does.
+///
+/// `Default` is a placeholder for struct-update syntax, not a sample: its intervals are zero,
+/// which [`Eskf::predict`](crate::Eskf::predict) and
+/// [`Eskf::initialize`](crate::Eskf::initialize) both refuse as an invalid interval.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ImuSample {
-    /// Angular rate, body frame.
-    pub gyro: AngularRate<Body>,
-    /// Specific force, body frame. A level, stationary vehicle reads `(0, 0, -g)`.
-    pub accel: Acceleration<Body>,
+    /// When both integration intervals end, on the clock every measurement is timed on.
+    pub time: Timestamp,
+    /// Rotation over [`angle_interval`](Self::angle_interval), body frame.
+    pub delta_angle: DeltaAngle<Body>,
+    /// The interval `delta_angle` integrates.
+    pub angle_interval: Seconds,
+    /// Specific force integrated over [`velocity_interval`](Self::velocity_interval), body
+    /// frame. A level, stationary vehicle gains `(0, 0, −γ Δt)`.
+    pub delta_velocity: DeltaVelocity<Body>,
+    /// The interval `delta_velocity` integrates.
+    pub velocity_interval: Seconds,
 }
 
 impl ImuSample {
-    /// Whether every number in the sample is finite.
+    /// From a rate gyroscope and an accelerometer read at `time`, each reading standing for
+    /// the `interval` since the previous one.
+    ///
+    /// Multiplies, which is the conversion a rate source owes and the only one: ekf2 does the
+    /// same with `sensor_combined` (`src/modules/ekf2/EKF2.cpp:703-707` at `c4e4ef98`).
+    pub fn from_rates(
+        time: Timestamp,
+        gyro: AngularRate<Body>,
+        accel: Acceleration<Body>,
+        interval: Seconds,
+    ) -> Self {
+        let dt = interval.as_secs();
+        Self {
+            time,
+            delta_angle: DeltaAngle::from_vector(gyro.vector() * dt),
+            angle_interval: interval,
+            delta_velocity: DeltaVelocity::from_vector(accel.vector() * dt),
+            velocity_interval: interval,
+        }
+    }
+
+    /// `self` and the `later` sample after it as one sample: increments and intervals summed,
+    /// timed at `later`'s end. What a driver reading a FIFO in batches, or running the filter
+    /// slower than its IMU, hands over.
+    ///
+    /// Summed rather than composed, which is exact for a vehicle that does not rotate across
+    /// the pair and first order for one that does. PX4's `ImuDownSampler` composes the
+    /// rotations as quaternions and rotates the velocity increment into the frame the batch
+    /// ends in (`src/modules/ekf2/EKF/imu_down_sampler/imu_down_sampler.cpp:25-37` at
+    /// `c4e4ef98e9`); summing leaves out `½ Δθ₁ × Δθ₂`, the coning term, and its sculling
+    /// counterpart in velocity. It is nonzero only while the rotation axis moves, and at most
+    /// 3e-6 rad at 1 rad/s across two 2.5 ms samples; an integrating driver that already
+    /// corrects for it should hand its own sum over instead.
+    ///
+    /// The times are not checked: [`Eskf::predict`](crate::Eskf::predict) refuses a sample
+    /// that is not after the last, and a pair out of order is that sample.
+    pub fn accumulate(self, later: ImuSample) -> ImuSample {
+        let sum = |a: Seconds, b: Seconds| Seconds::from_secs(a.as_secs() + b.as_secs());
+        ImuSample {
+            time: later.time,
+            delta_angle: DeltaAngle::from_vector(
+                self.delta_angle.vector() + later.delta_angle.vector(),
+            ),
+            angle_interval: sum(self.angle_interval, later.angle_interval),
+            delta_velocity: DeltaVelocity::from_vector(
+                self.delta_velocity.vector() + later.delta_velocity.vector(),
+            ),
+            velocity_interval: sum(self.velocity_interval, later.velocity_interval),
+        }
+    }
+
+    /// The average angular rate over the sample, `Δθ / Δt`: what initialization's
+    /// stationarity test and gyroscope bias read, both statements about a rate.
+    pub(crate) fn angular_rate(self) -> AngularRate<Body> {
+        AngularRate::from_vector(self.delta_angle.vector() / self.angle_interval.as_secs())
+    }
+
+    /// The average specific force over the sample, `Δv / Δt`; see
+    /// [`angular_rate`](Self::angular_rate).
+    pub(crate) fn specific_force(self) -> Acceleration<Body> {
+        Acceleration::from_vector(self.delta_velocity.vector() / self.velocity_interval.as_secs())
+    }
+
+    /// Whether every number in the sample is finite, intervals included.
     ///
     /// Written once and called from both places a sample enters the filter, so that
     /// [`Eskf::initialize`](crate::Eskf::initialize) and
     /// [`Eskf::predict`](crate::Eskf::predict) refuse the same sample.
     pub(crate) fn is_finite(self) -> bool {
-        self.gyro.is_finite() && self.accel.is_finite()
+        self.delta_angle.is_finite()
+            && self.delta_velocity.is_finite()
+            && self.angle_interval.as_secs().is_finite()
+            && self.velocity_interval.as_secs().is_finite()
+    }
+
+    /// The interval that is not a forward span of time of at least a microsecond, the
+    /// resolution a [`Timestamp`] keeps, if either is not. A zero one divides into a rate, a
+    /// negative one subtracts (21)'s process noise, and one of 1e-40 s divides an increment
+    /// into an infinity.
+    ///
+    /// The interval rather than a verdict, and written once, so that
+    /// [`Eskf::initialize`](crate::Eskf::initialize) and
+    /// [`Eskf::predict`](crate::Eskf::predict) refuse the same sample and name the same number.
+    pub(crate) fn unusable_interval(self) -> Option<Seconds> {
+        const LEAST: f32 = 1.0e-6;
+        [self.angle_interval, self.velocity_interval]
+            .into_iter()
+            .find(|interval| interval.as_secs().is_nan() || interval.as_secs() < LEAST)
+    }
+
+    /// The longer of the two intervals: the span the sample claims to describe.
+    pub(crate) fn longest_interval(self) -> Seconds {
+        if self.angle_interval > self.velocity_interval {
+            self.angle_interval
+        } else {
+            self.velocity_interval
+        }
     }
 }
 
-/// An [`ImuSample`] with the filter's bias estimates removed: `ω` and `a_b` of equations
-/// (9) and (10).
+/// Tests build samples from rates, the form most fixtures state a motion in, and time them
+/// where they are used.
+#[cfg(test)]
+impl ImuSample {
+    /// A sample reading `gyro` and `accel`, over one second until [`timed`](Self::timed).
+    pub(crate) fn reading(gyro: AngularRate<Body>, accel: Acceleration<Body>) -> Self {
+        Self::from_rates(Timestamp::ZERO, gyro, accel, Seconds::from_secs(1.0))
+    }
+
+    /// This sample with the gyroscope reading `gyro` over the same interval.
+    pub(crate) fn with_gyro(self, gyro: AngularRate<Body>) -> Self {
+        Self {
+            delta_angle: DeltaAngle::from_vector(gyro.vector() * self.angle_interval.as_secs()),
+            ..self
+        }
+    }
+
+    /// This sample with the accelerometer reading `accel` over the same interval.
+    pub(crate) fn with_accel(self, accel: Acceleration<Body>) -> Self {
+        Self {
+            delta_velocity: DeltaVelocity::from_vector(
+                accel.vector() * self.velocity_interval.as_secs(),
+            ),
+            ..self
+        }
+    }
+
+    /// The same rates over `interval`, ending at `time`. A sample with no interval, the
+    /// default, reads as zero rates.
+    pub(crate) fn timed(self, time: Timestamp, interval: Seconds) -> Self {
+        let rate = |increment: Vector3<f32>, over: Seconds| {
+            if over.as_secs() > 0.0 {
+                increment / over.as_secs()
+            } else {
+                Vector3::zeros()
+            }
+        };
+        Self::from_rates(
+            time,
+            AngularRate::from_vector(rate(self.delta_angle.vector(), self.angle_interval)),
+            Acceleration::from_vector(rate(self.delta_velocity.vector(), self.velocity_interval)),
+            interval,
+        )
+    }
+}
+
+/// An [`ImuSample`] with the filter's bias estimates removed: `ω Δt` and `a_b Δt` of equations
+/// (9) and (10), with the intervals they cover.
 ///
-/// A type of its own rather than another [`ImuSample`], which carries the same two fields
-/// in the same frames. What separates them is whether the bias has been taken off, and
-/// that is the claim that causes the bug: subtracting twice removes a bias the sample no
-/// longer carries, subtracting never hands (11) the raw measurement. Neither shows up in
-/// the numbers — both are small, plausible accelerations.
+/// A type of its own rather than another [`ImuSample`], which carries the same fields in the
+/// same frames. What separates them is whether the bias has been taken off, and that is the
+/// claim that causes the bug: subtracting twice removes a bias the sample no longer carries,
+/// subtracting never hands (11) the raw measurement. Neither shows up in the numbers, both
+/// being small, plausible increments.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Corrected {
-    /// `ω`, the measured body rate less [`State::gyro_bias`].
-    pub(crate) omega: AngularRate<Body>,
-    /// `a_b`, the measured specific force less [`State::accel_bias`].
-    pub(crate) accel: Acceleration<Body>,
+    /// `ω Δt_θ`, the rotation increment less `β̂_g Δt_θ`.
+    pub(crate) delta_angle: DeltaAngle<Body>,
+    /// `Δt_θ`.
+    pub(crate) angle_interval: Seconds,
+    /// `a_b Δt_v`, the velocity increment less `β̂_a Δt_v`.
+    pub(crate) delta_velocity: DeltaVelocity<Body>,
+    /// `Δt_v`.
+    pub(crate) velocity_interval: Seconds,
 }
 
-/// Subtract the filter's own bias estimates from a raw sample. Equations (9) and (10).
-pub(crate) fn corrected_imu(imu: ImuSample, state: &State) -> Corrected {
-    Corrected {
-        omega: AngularRate::from_vector(imu.gyro.vector() - state.gyro_bias.vector()),
-        accel: Acceleration::from_vector(imu.accel.vector() - state.accel_bias.vector()),
+impl Corrected {
+    /// `ω` of (9), what [`Eskf::angular_rate`](crate::Eskf::angular_rate) reports.
+    pub(crate) fn omega(self) -> AngularRate<Body> {
+        AngularRate::from_vector(self.delta_angle.vector() / self.angle_interval.as_secs())
     }
 }
 
-/// Advance the nominal state over `dt` by dead reckoning. Equations (11) and (13)–(15).
+/// Subtract the filter's own bias estimates from a raw sample, each over its own increment's
+/// interval. Equations (9) and (10).
+pub(crate) fn corrected_imu(imu: ImuSample, state: &State) -> Corrected {
+    Corrected {
+        delta_angle: DeltaAngle::from_vector(
+            imu.delta_angle.vector() - state.gyro_bias.vector() * imu.angle_interval.as_secs(),
+        ),
+        angle_interval: imu.angle_interval,
+        delta_velocity: DeltaVelocity::from_vector(
+            imu.delta_velocity.vector()
+                - state.accel_bias.vector() * imu.velocity_interval.as_secs(),
+        ),
+        velocity_interval: imu.velocity_interval,
+    }
+}
+
+/// Advance the nominal state across one sample by dead reckoning. Equations (11) and
+/// (13)–(15), in increments.
+///
+/// Translation runs over the velocity increment's interval and rotation over the angle
+/// increment's, each the span its measurement covers: gravity is added over the same `Δt_v`
+/// the accelerometer integrated, so a vehicle at rest gains nothing whatever the two
+/// intervals are. PX4 integrates over the same two (`EKF/ekf.cpp:241-271` at `c4e4ef98`).
 ///
 /// Position is evaluated **before** velocity, the one ordering constraint in (13)–(14):
 /// (13) reads the pre-update `v̂`, and applying (14) first adds a spurious `a_n Δt²` to
@@ -74,25 +269,25 @@ pub(crate) fn corrected_imu(imu: ImuSample, state: &State) -> Corrected {
 /// reaches the quaternion and never leaves. There is no channel to refuse through from
 /// here, so [`Eskf::predict`](crate::Eskf::predict) is what declines to commit it, as
 /// [`Propagation::StateNotFinite`](crate::Propagation::StateNotFinite).
-pub(crate) fn propagate_nominal(state: State, imu: Corrected, dt: Seconds) -> State {
-    let dt = dt.as_secs();
+pub(crate) fn propagate_nominal(state: State, imu: Corrected) -> State {
+    let dt = imu.velocity_interval.as_secs();
     let rotation = state.attitude.quaternion();
 
-    // (11): specific force into the navigation frame, gravity added. A level vehicle at
-    // rest measures (0, 0, -γ) and this is zero, which is the sign convention's own test —
-    // down-positive gravity against a down-negative specific force.
-    let a_n = rotation * imu.accel.vector() + gravity();
+    // (11), times `Δt`: the velocity increment into the navigation frame, gravity's added.
+    // A level vehicle at rest gains (0, 0, -γ Δt) and this is zero, which is the sign
+    // convention's own test — down-positive gravity against a down-negative specific force.
+    let delta_v = rotation * imu.delta_velocity.vector() + gravity() * dt;
 
     let velocity = state.velocity.vector();
-    let position = state.position.vector() + velocity * dt + 0.5 * a_n * dt * dt; // (13)
-    let velocity = velocity + a_n * dt; // (14), from the pre-update velocity above
+    let position = state.position.vector() + velocity * dt + 0.5 * delta_v * dt; // (13)
+    let velocity = velocity + delta_v; // (14), from the pre-update velocity above
 
     // (15): the body-frame rotation increment composes on the right. `exp_quat` keeps the
     // first-order term where `UnitQuaternion::from_scaled_axis` substitutes the identity,
     // and the product of two unit quaternions drifts off the manifold in f32 over a
     // flight. Not `renormalize_fast`: its first-order approximation saves a square root on
     // a path that already evaluates a sine and a cosine per sample.
-    let mut attitude = rotation * exp_quat(imu.omega.vector() * dt);
+    let mut attitude = rotation * exp_quat(imu.delta_angle.vector());
     attitude.renormalize();
 
     State {
@@ -135,7 +330,7 @@ impl Propagated {
     }
 }
 
-/// Advance the nominal state and its covariance over `dt`. Equations (9)–(22).
+/// Advance the nominal state and its covariance across one sample. Equations (9)–(22).
 ///
 /// The bias correction of (9)–(10) is applied once here, and both halves read that one
 /// `Corrected` sample and the one attitude it arrived with. `F` is built before the nominal
@@ -148,18 +343,22 @@ pub(crate) fn propagate(
     covariance: Covariance,
     offset: Offset,
     imu: ImuSample,
-    dt: Seconds,
     noise: &ImuNoise,
     offset_walk: f32,
 ) -> Propagated {
     let corrected = corrected_imu(imu, &state);
-    let transition = transition_matrix(&state, corrected, dt);
+    let transition = transition_matrix(&state, corrected);
 
     Propagated {
-        state: propagate_nominal(state, corrected, dt),
-        covariance: propagate_covariance(covariance, &transition, process_noise(noise, dt)),
-        offset: propagate_offset(offset, &transition, offset_walk, dt),
-        omega: Some(corrected.omega),
+        state: propagate_nominal(state, corrected),
+        covariance: propagate_covariance(covariance, &transition, process_noise(noise, corrected)),
+        offset: propagate_offset(
+            offset,
+            &transition,
+            offset_walk,
+            corrected.velocity_interval,
+        ),
+        omega: Some(corrected.omega()),
     }
 }
 
@@ -196,7 +395,9 @@ fn propagate_offset(offset: Offset, f: &Transition, walk: f32, dt: Seconds) -> O
 /// directly.
 ///
 /// Every block is first order in `Δt` except the attitude block, which is the exact solution
-/// of (18)'s homogeneous part, `R{ω Δt}ᵀ = exp(−[ω]ₓ Δt)`. (20) permits `I − [ω]ₓ Δt` where
+/// of (18)'s homogeneous part, `R{ω Δt}ᵀ = exp(−[ω]ₓ Δt)`. Each `Δt` is the interval of the
+/// increment the block reads: `Δt_v` on the translational blocks, `Δt_θ` on the rotational,
+/// so `[a_b]ₓ Δt` is the corrected velocity increment's own skew and no rate is formed. (20) permits `I − [ω]ₓ Δt` where
 /// the exact form is not justified, and here it is: the exact block costs one [`exp_quat`] --
 /// a sine, a cosine, and a quaternion to matrix — against the roughly 6750 multiplications
 /// the two 15 x 15 products of (22) spend on the same sample. The approximation buys nothing
@@ -205,8 +406,11 @@ fn propagate_offset(offset: Offset, f: &Transition, walk: f32, dt: Seconds) -> O
 ///
 /// `imu` is the sample the nominal step reads, and `state` is that step's input rather than
 /// its output; [`propagate`] holds both, which is why neither is looked up here.
-fn transition_matrix(state: &State, imu: Corrected, dt: Seconds) -> Transition {
-    let dt = dt.as_secs();
+fn transition_matrix(state: &State, imu: Corrected) -> Transition {
+    let (dt_v, dt_theta) = (
+        imu.velocity_interval.as_secs(),
+        imu.angle_interval.as_secs(),
+    );
     let rotation = state.attitude.quaternion().to_rotation_matrix();
     let r = rotation.matrix();
 
@@ -223,23 +427,49 @@ fn transition_matrix(state: &State, imu: Corrected, dt: Seconds) -> Transition {
 
     // (16): δp gains δv over the step.
     f.fixed_view_mut::<3, 3>(p, v)
-        .copy_from(&(Matrix3::identity() * dt));
+        .copy_from(&(Matrix3::identity() * dt_v));
     // (17): the two terms an accelerometer error enters velocity through.
     f.fixed_view_mut::<3, 3>(v, theta)
-        .copy_from(&(-r * skew(imu.accel.vector()) * dt));
-    f.fixed_view_mut::<3, 3>(v, beta_a).copy_from(&(-r * dt));
+        .copy_from(&(-r * skew(imu.delta_velocity.vector())));
+    f.fixed_view_mut::<3, 3>(v, beta_a).copy_from(&(-r * dt_v));
     // (18): exact in the attitude block, first order in the gyroscope bias. `R{ω Δt}ᵀ` is
     // the exact solution of `δθ̇ = −[ω]ₓ δθ`, which is why (15)'s own increment builds it.
-    let increment = exp_quat(imu.omega.vector() * dt).to_rotation_matrix();
+    let increment = exp_quat(imu.delta_angle.vector()).to_rotation_matrix();
     f.fixed_view_mut::<3, 3>(theta, theta)
         .copy_from(&increment.matrix().transpose());
     f.fixed_view_mut::<3, 3>(theta, beta_g)
-        .copy_from(&(-Matrix3::identity() * dt));
+        .copy_from(&(-Matrix3::identity() * dt_theta));
 
     f
 }
 
-/// `Q`, the discrete process noise of equation (21), as its diagonal.
+/// `A`, the continuous error dynamics (16)–(19) as a matrix: `δẋ = A δx` with the noise left
+/// out. What (20) discretizes, taken here at the rates `ω` and `a_b` rather than a sample.
+pub(crate) fn error_dynamics(state: &State, omega: Vector3<f32>, a_b: Vector3<f32>) -> Transition {
+    let rotation = state.attitude.quaternion().to_rotation_matrix();
+    let r = rotation.matrix();
+    let mut a = Transition::zeros();
+    let (p, v, theta, beta_a, beta_g) = (
+        ErrorState::PositionNorth.index(),
+        ErrorState::VelocityNorth.index(),
+        ErrorState::AttitudeX.index(),
+        ErrorState::AccelBiasX.index(),
+        ErrorState::GyroBiasX.index(),
+    );
+    a.fixed_view_mut::<3, 3>(p, v)
+        .copy_from(&Matrix3::identity());
+    a.fixed_view_mut::<3, 3>(v, theta)
+        .copy_from(&(-r * skew(a_b)));
+    a.fixed_view_mut::<3, 3>(v, beta_a).copy_from(&(-r));
+    a.fixed_view_mut::<3, 3>(theta, theta)
+        .copy_from(&(-skew(omega)));
+    a.fixed_view_mut::<3, 3>(theta, beta_g)
+        .copy_from(&(-Matrix3::identity()));
+    a
+}
+
+/// `Q`, the discrete process noise of equation (21), as its diagonal, over the intervals the
+/// sample integrated: the accelerometer's densities over `Δt_v`, the gyroscope's over `Δt_θ`.
 ///
 /// A diagonal rather than a 15 x 15 matrix because (21) has twelve nonzero entries: the matrix
 /// form would spend 900 bytes of stack and 225 additions to add twelve numbers, and "the
@@ -271,12 +501,15 @@ fn transition_matrix(state: &State, imu: Corrected, dt: Seconds) -> Transition {
 /// orthogonal `R`. Real IMUs are noisier about z. One scalar per sensor is what [`ImuNoise`]
 /// can express, so the conservatism is in the number rather than in the model: `σ_a` is the
 /// worst axis.
-fn process_noise(noise: &ImuNoise, dt: Seconds) -> [f32; STATES] {
-    let dt = dt.as_secs();
-    let velocity = noise.accel_white * noise.accel_white * dt;
-    let attitude = noise.gyro_white * noise.gyro_white * dt;
-    let accel_bias = noise.accel_bias_walk * noise.accel_bias_walk * dt;
-    let gyro_bias = noise.gyro_bias_walk * noise.gyro_bias_walk * dt;
+fn process_noise(noise: &ImuNoise, imu: Corrected) -> [f32; STATES] {
+    let (dt_v, dt_theta) = (
+        imu.velocity_interval.as_secs(),
+        imu.angle_interval.as_secs(),
+    );
+    let velocity = noise.accel_white * noise.accel_white * dt_v;
+    let attitude = noise.gyro_white * noise.gyro_white * dt_theta;
+    let accel_bias = noise.accel_bias_walk * noise.accel_bias_walk * dt_v;
+    let gyro_bias = noise.gyro_bias_walk * noise.gyro_bias_walk * dt_theta;
 
     // In the `ErrorState` ordering: `[δp δv δθ δβa δβg]`. Position takes none of its own --
     // (16) has no driving noise, and position error is what the velocity block integrates.
@@ -302,8 +535,8 @@ fn process_noise(noise: &ImuNoise, dt: Seconds) -> [f32; STATES] {
 /// The measurement, since the trade was made here (`-Zemit-stack-sizes`, `opt-level = 3`):
 /// this function's own frame is 2832 bytes on `thumbv6m-none-eabi` and 2760 on
 /// `thumbv7em-none-eabihf`, and the chain that reaches it from
-/// [`Eskf::predict`](crate::Eskf::predict) — `predict` at 2032, `propagate` at 1104 — comes
-/// to 5968 and 5888. It is a frame of its own rather than part of `predict`'s because
+/// [`Eskf::predict`](crate::Eskf::predict) — `predict` at 2168 and 2160, `propagate` at 1056
+/// — comes to 6056 and 5976. It is a frame of its own rather than part of `predict`'s because
 /// [`project`] is a second caller; with one caller it inlined, and the same three
 /// temporaries sat in `predict` instead. That is the "few kilobytes rather than one"
 /// `DESIGN.md` predicts for the working set, comfortable on the STM32H7 class it names and
@@ -397,9 +630,9 @@ const MAX_PROJECTION_STEPS: usize = 64;
 /// one `F` and one `Q`, built once because an unaccelerated vehicle does not rotate, then one
 /// [`propagate_covariance`] per step — ten of them at the default 1 s horizon, up to
 /// [`MAX_PROJECTION_STEPS`]. So an arming check is ten times the arithmetic of an IMU epoch.
-/// The stack is a frame of 1920 bytes on `thumbv6m-none-eabi` and 1936 on
+/// The stack is a frame of 1952 bytes on `thumbv6m-none-eabi` and 1936 on
 /// `thumbv7em-none-eabihf`, which with
-/// [`Eskf::predicted_validity`](crate::Eskf::predicted_validity)'s 1888 above it and
+/// [`Eskf::predicted_validity`](crate::Eskf::predicted_validity)'s 1856 above it and
 /// [`propagate_covariance`]'s 2832 below comes to 6640 — under `update::<3>`, so the
 /// crate's high-water mark is where it was.
 pub(crate) fn project(
@@ -420,8 +653,14 @@ pub(crate) fn project(
 
     let steps = projection_steps(horizon);
     let dt = Seconds::from_secs(seconds / steps as f32);
-    let transition = transition_matrix(state, unaccelerated_sample(state), dt);
-    repeat_covariance(covariance, &transition, process_noise(noise, dt), steps)
+    let unaccelerated = unaccelerated_sample(state, dt);
+    let transition = transition_matrix(state, unaccelerated);
+    repeat_covariance(
+        covariance,
+        &transition,
+        process_noise(noise, unaccelerated),
+        steps,
+    )
 }
 
 /// `steps` runs of (22) under one `F` and one `Q`, the growth [`project`] and [`coast`] share.
@@ -456,10 +695,10 @@ fn repeat_covariance(
 ///
 /// What it costs is up to [`MAX_PROJECTION_STEPS`] runs of (22) in one call, 64 IMU epochs'
 /// arithmetic landing on the step after the loop has already overrun. Worst case, not
-/// typical: a 1.2 s gap is 12 runs. The stack is a frame of 2136 bytes on
-/// `thumbv6m-none-eabi` and 2120 on `thumbv7em-none-eabihf`, which with
+/// typical: a 1.2 s gap is 12 runs. The stack is a frame of 2144 bytes on
+/// `thumbv6m-none-eabi` and 2136 on `thumbv7em-none-eabihf`, which with
 /// [`Eskf::predict`](crate::Eskf::predict)'s 2168 above it and [`propagate_covariance`]'s 2832
-/// below comes to 7136, under `update::<3>`. The exact `F` of an unaccelerated vehicle is a
+/// below comes to 7144, under `update::<3>`. The exact `F` of an unaccelerated vehicle is a
 /// four-term polynomial in `Δt`, since `ω = 0` makes the error dynamics nilpotent, and is the
 /// lever if #41 finds the spike too costly; until then the steps are (22) as it reads.
 ///
@@ -485,13 +724,13 @@ pub(crate) fn coast(
         };
     }
 
-    let unaccelerated = unaccelerated_sample(&state);
     let steps = projection_steps(gap);
     let dt = Seconds::from_secs(seconds / steps as f32);
-    let transition = transition_matrix(&state, unaccelerated, dt);
+    let unaccelerated = unaccelerated_sample(&state, dt);
+    let transition = transition_matrix(&state, unaccelerated);
     // The unmeasured rotation goes through (22) with the rest of `Q`: it reaches velocity
     // through (17)'s gravity leak, a coupling the steps integrate and no closed form here does.
-    let mut q = process_noise(noise, dt);
+    let mut q = process_noise(noise, unaccelerated);
     let turned = unmeasured.rotation * unmeasured.rotation * dt.as_secs();
     for axis in [
         ErrorState::AttitudeX,
@@ -533,7 +772,7 @@ pub(crate) fn coast(
     velocity += identity * (density * seconds);
 
     Propagated {
-        state: propagate_nominal(state, unaccelerated, gap),
+        state: propagate_nominal(state, unaccelerated_sample(&state, gap)),
         covariance: Covariance::from_matrix(matrix),
         offset,
         omega: None,
@@ -572,18 +811,21 @@ fn projection_steps(horizon: Seconds) -> usize {
     }
 }
 
-/// What the IMU of an unaccelerated vehicle at `state`'s attitude reads: no rotation, and
-/// the specific force `−R(q̂)ᵀ g` that holds it up. At rest or at constant velocity alike.
+/// What the IMU of an unaccelerated vehicle at `state`'s attitude reads over `dt`: no
+/// rotation, and the specific force `−R(q̂)ᵀ g` that holds it up. At rest or at constant
+/// velocity alike.
 ///
 /// The inverse of the test (11) is written against — a level vehicle at rest reads
 /// `(0, 0, −γ)` — evaluated at an attitude that need not be level. Named because [`coast`],
 /// [`project`] and the measurement behind [`PROJECTION_STEP`] have to use the same one for the
 /// comparison between them to mean anything.
-fn unaccelerated_sample(state: &State) -> Corrected {
+fn unaccelerated_sample(state: &State, dt: Seconds) -> Corrected {
     let rotation = state.attitude.quaternion().to_rotation_matrix();
     Corrected {
-        omega: AngularRate::from_vector(Vector3::zeros()),
-        accel: Acceleration::from_vector(rotation.inverse() * -gravity()),
+        delta_angle: DeltaAngle::from_vector(Vector3::zeros()),
+        angle_interval: dt,
+        delta_velocity: DeltaVelocity::from_vector(rotation.inverse() * -gravity() * dt.as_secs()),
+        velocity_interval: dt,
     }
 }
 
@@ -595,7 +837,7 @@ fn unaccelerated_sample(state: &State) -> Corrected {
 /// would change a propagation constant mid-flight, which is the self-retuning
 /// differentiator 7's boundary forbids. `GOALS.md` records the decision (#66); the
 /// derivation belongs to the offline tool that prints a `Config` (#51).
-fn gravity() -> Vector3<f32> {
+pub(crate) fn gravity() -> Vector3<f32> {
     Vector3::new(0.0, 0.0, GRAVITY)
 }
 
@@ -621,14 +863,14 @@ mod tests {
 
     /// What a level vehicle at rest measures: gravity alone, down-negative.
     fn holding_still() -> ImuSample {
-        ImuSample {
-            gyro: AngularRate::body(0.0, 0.0, 0.0),
-            accel: Acceleration::body(0.0, 0.0, -GRAVITY),
-        }
+        ImuSample::reading(
+            AngularRate::body(0.0, 0.0, 0.0),
+            Acceleration::body(0.0, 0.0, -GRAVITY),
+        )
     }
 
     fn step(state: State, imu: ImuSample, dt: Seconds) -> State {
-        propagate_nominal(state, corrected_imu(imu, &state), dt)
+        propagate_nominal(state, corrected_imu(imu.timed(Timestamp::ZERO, dt), &state))
     }
 
     fn run(mut state: State, imu: ImuSample, steps: u32) -> State {
@@ -654,10 +896,7 @@ mod tests {
     fn a_constant_body_rate_integrates_to_the_closed_form_rotation() {
         let rate = 0.4;
         let steps = 1_000;
-        let imu = ImuSample {
-            gyro: AngularRate::body(0.0, 0.0, rate),
-            ..holding_still()
-        };
+        let imu = holding_still().with_gyro(AngularRate::body(0.0, 0.0, rate));
 
         let mut state = at_rest();
         for _ in 0..steps {
@@ -680,10 +919,7 @@ mod tests {
         let accel = 2.0;
         let seconds = 5.0;
         let steps = (seconds / DT.as_secs()) as u32;
-        let imu = ImuSample {
-            accel: Acceleration::body(accel, 0.0, -GRAVITY),
-            ..holding_still()
-        };
+        let imu = holding_still().with_accel(Acceleration::body(accel, 0.0, -GRAVITY));
 
         let state = run(at_rest(), imu, steps);
         let closed_form = 0.5 * accel * seconds * seconds;
@@ -708,10 +944,7 @@ mod tests {
             gyro_bias: AngularRate::body(0.0, 0.0, rate),
             ..at_rest()
         };
-        let imu = ImuSample {
-            gyro: AngularRate::body(0.0, 0.0, rate),
-            ..holding_still()
-        };
+        let imu = holding_still().with_gyro(AngularRate::body(0.0, 0.0, rate));
 
         let (_, _, yaw) = run(state, imu, 2_000).attitude.euler_angles();
         assert!(yaw.abs() < 1e-6, "{yaw}");
@@ -726,10 +959,7 @@ mod tests {
             accel_bias: Acceleration::body(bias, 0.0, 0.0),
             ..at_rest()
         };
-        let imu = ImuSample {
-            accel: Acceleration::body(bias, 0.0, -GRAVITY),
-            ..holding_still()
-        };
+        let imu = holding_still().with_accel(Acceleration::body(bias, 0.0, -GRAVITY));
 
         let velocity = run(state, imu, 2_000).velocity.vector().norm();
         assert!(velocity < 1e-6, "{velocity}");
@@ -788,10 +1018,10 @@ mod tests {
 
     /// Manoeuvring hard enough that `[a_b]ₓ` and `[ω]ₓ` are both far from zero.
     fn manoeuvring() -> ImuSample {
-        ImuSample {
-            gyro: AngularRate::body(0.15, -0.23, 0.31),
-            accel: Acceleration::body(0.8, -1.3, -9.2),
-        }
+        ImuSample::reading(
+            AngularRate::body(0.15, -0.23, 0.31),
+            Acceleration::body(0.8, -1.3, -9.2),
+        )
     }
 
     /// `x̂ ⊞ δx`: the error state applied to a nominal state, with the attitude composed on
@@ -844,6 +1074,52 @@ mod tests {
     /// differences another `~2e-4` at this `δ`. 2e-3 clears all three and is still five times
     /// smaller than the smallest entry `F` carries here, `Δt = 0.01`, so a dropped or
     /// sign-flipped coupling cannot pass.
+    /// Two samples accumulated are one over both intervals, timed at the second's end: a
+    /// rate read over the sum is the rates' interval-weighted mean.
+    #[test]
+    fn two_samples_accumulate_into_one_over_both_intervals() {
+        let first = manoeuvring().timed(Timestamp::from_micros(2_500), Seconds::from_secs(0.0025));
+        let second = ImuSample::reading(
+            AngularRate::body(0.0, 0.0, 1.0),
+            Acceleration::body(0.0, 0.0, -9.8),
+        )
+        .timed(Timestamp::from_micros(10_000), Seconds::from_secs(0.0075));
+        let both = first.accumulate(second);
+        assert_eq!(both.time, second.time);
+        assert!((both.angle_interval.as_secs() - 0.01).abs() < 1e-7);
+        assert!((both.velocity_interval.as_secs() - 0.01).abs() < 1e-7);
+        let expected = (0.31 * 0.0025 + 1.0 * 0.0075) / 0.01;
+        assert!((both.angular_rate().vector().z - expected).abs() < 1e-5);
+        let expected = (-9.2 * 0.0025 - 9.8 * 0.0075) / 0.01;
+        assert!((both.specific_force().vector().z - expected).abs() < 1e-4);
+    }
+
+    /// `A` is written out beside `F` rather than derived from it, so the two are held together
+    /// here: `F = I + A Δt` to first order, at the rates the same corrected sample carries. At
+    /// 1 ms the second-order remainder is `|ω|² Δt² / 2`, under 1e-7 at this manoeuvre, so a
+    /// block of `A` placed or signed differently from `F`'s, each at least `Δt`, cannot pass.
+    #[test]
+    fn the_error_dynamics_are_the_transition_matrix_per_unit_time() {
+        let dt = Seconds::from_secs(0.001);
+        let state = tilted_and_moving();
+        let imu = corrected_imu(manoeuvring().timed(Timestamp::ZERO, dt), &state);
+        let omega = imu.omega().vector();
+        let a_b = imu.delta_velocity.vector() / dt.as_secs();
+
+        let f = transition_matrix(&state, imu);
+        let first_order =
+            Transition::identity() + error_dynamics(&state, omega, a_b) * dt.as_secs();
+        for row in 0..STATES {
+            for column in 0..STATES {
+                let (exact, linear) = (f[(row, column)], first_order[(row, column)]);
+                assert!(
+                    (exact - linear).abs() < 1.0e-5,
+                    "[{row}][{column}]: F {exact}, I + A dt {linear}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn the_transition_matrix_matches_a_numerical_jacobian_of_the_nominal_step() {
         const DELTA: f32 = 1.0e-3;
@@ -851,8 +1127,12 @@ mod tests {
         let dt = Seconds::from_secs(0.01);
         let (state, imu) = (tilted_and_moving(), manoeuvring());
 
-        let f = transition_matrix(&state, corrected_imu(imu, &state), dt);
-        let reference = propagate_nominal(state, corrected_imu(imu, &state), dt);
+        let f = transition_matrix(
+            &state,
+            corrected_imu(imu.timed(Timestamp::ZERO, dt), &state),
+        );
+        let reference =
+            propagate_nominal(state, corrected_imu(imu.timed(Timestamp::ZERO, dt), &state));
 
         for column in 0..STATES {
             let mut dx = [0.0; STATES];
@@ -861,7 +1141,10 @@ mod tests {
 
             // The perturbed biases change the corrected sample, which is how the bias
             // columns of (20) are exercised at all.
-            let propagated = propagate_nominal(perturbed, corrected_imu(imu, &perturbed), dt);
+            let propagated = propagate_nominal(
+                perturbed,
+                corrected_imu(imu.timed(Timestamp::ZERO, dt), &perturbed),
+            );
             let numerical = error_between(&reference, &propagated);
 
             for row in 0..STATES {
@@ -907,8 +1190,7 @@ mod tests {
                     state,
                     covariance,
                     Offset::default(),
-                    holding_still(),
-                    dt,
+                    holding_still().timed(Timestamp::ZERO, dt),
                     &noise,
                     0.0,
                 );
@@ -961,8 +1243,7 @@ mod tests {
                 state,
                 covariance,
                 Offset::default(),
-                manoeuvring(),
-                dt,
+                manoeuvring().timed(Timestamp::ZERO, dt),
                 &noise,
                 0.0,
             );
@@ -1013,17 +1294,16 @@ mod tests {
 
         // A quarter turn about body x in one step: `Exp(ω Δt)` with `ω Δt = π/2 x̂`.
         let dt = Seconds::from_secs(1.0);
-        let imu = ImuSample {
-            gyro: AngularRate::body(core::f32::consts::FRAC_PI_2, 0.0, 0.0),
-            accel: Acceleration::body(0.0, 0.0, -GRAVITY),
-        };
+        let imu = ImuSample::reading(
+            AngularRate::body(core::f32::consts::FRAC_PI_2, 0.0, 0.0),
+            Acceleration::body(0.0, 0.0, -GRAVITY),
+        );
 
         let step = propagate(
             at_rest(),
             Covariance::from_sigmas(sigmas),
             Offset::default(),
-            imu,
-            dt,
+            imu.timed(Timestamp::ZERO, dt),
             &quiet,
             0.0,
         );
@@ -1055,10 +1335,10 @@ mod tests {
         // A radian of yaw in one step, and an accelerometer-bias prior on body x alone: the
         // only thing that differs between the two orderings is which way that axis points.
         let dt = Seconds::from_secs(0.1);
-        let imu = ImuSample {
-            gyro: AngularRate::body(0.0, 0.0, 10.0),
-            accel: Acceleration::body(0.0, 0.0, -GRAVITY),
-        };
+        let imu = ImuSample::reading(
+            AngularRate::body(0.0, 0.0, 10.0),
+            Acceleration::body(0.0, 0.0, -GRAVITY),
+        );
         #[rustfmt::skip]
         let sigmas = [
             0.0, 0.0, 0.0,
@@ -1069,17 +1349,24 @@ mod tests {
         ];
         let prior = Covariance::from_sigmas(sigmas);
         let state = at_rest();
-        let corrected = corrected_imu(imu, &state);
-        let q = process_noise(&quiet, dt);
+        let corrected = corrected_imu(imu.timed(Timestamp::ZERO, dt), &state);
+        let q = process_noise(&quiet, corrected);
 
-        let before = propagate_covariance(prior, &transition_matrix(&state, corrected, dt), q);
+        let before = propagate_covariance(prior, &transition_matrix(&state, corrected), q);
         let after = propagate_covariance(
             prior,
-            &transition_matrix(&propagate_nominal(state, corrected, dt), corrected, dt),
+            &transition_matrix(&propagate_nominal(state, corrected), corrected),
             q,
         );
 
-        let step = propagate(state, prior, Offset::default(), imu, dt, &quiet, 0.0);
+        let step = propagate(
+            state,
+            prior,
+            Offset::default(),
+            imu.timed(Timestamp::ZERO, dt),
+            &quiet,
+            0.0,
+        );
         assert_eq!(step.covariance, before);
 
         // What the other ordering would have claimed about north velocity: `cos²(0)` of the
@@ -1107,8 +1394,7 @@ mod tests {
             tilted_and_moving(),
             enormous,
             Offset::default(),
-            manoeuvring(),
-            Seconds::from_secs(0.005),
+            manoeuvring().timed(Timestamp::ZERO, Seconds::from_secs(0.005)),
             &ImuNoise::default(),
             0.0,
         );
@@ -1126,10 +1412,7 @@ mod tests {
     /// test that it does.
     #[test]
     fn a_finite_but_enormous_sample_produces_a_state_that_is_not_finite() {
-        let imu = ImuSample {
-            accel: Acceleration::body(f32::MAX, 0.0, -GRAVITY),
-            ..holding_still()
-        };
+        let imu = holding_still().with_accel(Acceleration::body(f32::MAX, 0.0, -GRAVITY));
         assert!(imu.is_finite());
 
         let state = run(at_rest(), imu, 1_000);
@@ -1151,8 +1434,7 @@ mod tests {
             at_rest(),
             Covariance::from_sigmas([0.1; STATES]),
             offset,
-            holding_still(),
-            dt,
+            holding_still().timed(Timestamp::ZERO, dt),
             &ImuNoise::default(),
             2.0,
         );
@@ -1187,8 +1469,9 @@ mod projection_steps {
     /// over it and what [`PROJECTION_STEP`] is chosen against.
     fn at_100_hz(state: &State, from: Covariance, noise: &ImuNoise, seconds: f32) -> Covariance {
         let dt = Seconds::from_secs(0.01);
-        let f = transition_matrix(state, unaccelerated_sample(state), dt);
-        let q = process_noise(noise, dt);
+        let unaccelerated = unaccelerated_sample(state, dt);
+        let f = transition_matrix(state, unaccelerated);
+        let q = process_noise(noise, unaccelerated);
         let mut p = from;
         for _ in 0..(seconds / 0.01) as usize {
             p = propagate_covariance(p, &f, q);

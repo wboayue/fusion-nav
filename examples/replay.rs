@@ -33,11 +33,15 @@
 //! without one.
 //!
 //! ```text
-//! t_s,source,v0,v1,v2,v3,v4,v5,var0,var1,var2
-//! 0.0200,imu,0.0004,0.0020,0.0001,0.0054,0.0299,-9.8067,,,
-//! 2.0000,gnss_pos,0,0,0,,,,2.25,2.25,5.625
-//! 2.0000,baro,0.0273,,,,,,4,,
+//! t_s,source,v0,v1,v2,v3,v4,v5,var0,var1,var2,t_meas_s
+//! 0.0200,imu,0.0004,0.0020,0.0001,0.0054,0.0299,-9.8067,,,,
+//! 2.0000,gnss_pos,0,0,0,,,,2.25,2.25,5.625,1.8900
+//! 2.0000,baro,0.0273,,,,,,4,,,
 //! ```
+//!
+//! `t_s` is when a row arrives, which is the order the harness hands it to the filter in, and
+//! `t_meas_s` when a measurement was taken, the `time` its `fuse_*` is given: a fix computed
+//! 110 ms before it reached the autopilot. Blank, or absent from an older file, it is `t_s`.
 //!
 //! One interleaved stream rather than a file per sensor, because the interleaving is the
 //! thing worth exercising. Converting rosbag, ULog, or a dataflash log into this shape is
@@ -150,10 +154,10 @@
 //! `ImuNoise::default()` is PX4's, an allowance for vibration, scale-factor error and coning
 //! that an analytic simulator does not produce, and it sits 17× above even `HARSH_IMU` on
 //! accelerometer noise. So a consistency key here fails in the *overconfident* direction only
-//! where something reaches the filter that its model does not describe. `gnss_latency` is the
-//! one a single seed shows: its fixes arrive late, which the filter does not model, so each is
-//! wrong by the distance flown in the delay while `R` claims otherwise. Three more need the
-//! ensemble of `data/anees.sh` to see, and `data/anees.txt` names them.
+//! where something reaches the filter that its model does not describe. No scenario shows one
+//! on a single seed; `gnss_latency`'s late fixes would, fused as current, and (23′) fuses each
+//! at the time it was taken. The ensemble of `data/anees.sh` sees the rest, and
+//! `data/anees.txt` names them.
 //!
 //! Six of the scenarios are one-variable departures from `mission` on `mission`'s seed, so
 //! what attributes a fault is `score(departure) − score(mission)` rather than either alone.
@@ -725,6 +729,36 @@ struct Sinks<'a> {
     fusions: &'a mut dyn Write,
 }
 
+/// An IMU row as the log carries it: a rate gyroscope and an accelerometer, PX4's
+/// `sensor_combined`. The interval each reading stands for is the replay's to decide, so the
+/// increments the filter takes are formed where that is known.
+#[derive(Clone, Copy, Default)]
+struct Rates {
+    gyro: AngularRate<Body>,
+    accel: Acceleration<Body>,
+}
+
+/// A window sample before the rate estimator has fixed the interval it stands for.
+#[derive(Clone, Copy, Default)]
+struct Held {
+    time: Timestamp,
+    imu: Rates,
+    mag: Option<MagField<Body>>,
+    baro: Option<Altitude>,
+    velocity: Option<Velocity<Ned>>,
+}
+
+impl Held {
+    fn sample(self, dt: Seconds) -> StaticSample {
+        StaticSample {
+            imu: ImuSample::from_rates(self.time, self.imu.gyro, self.imu.accel, dt),
+            mag: self.mag,
+            baro: self.baro,
+            velocity: self.velocity,
+        }
+    }
+}
+
 /// A start that could still be committed on its still prefix, kept while the harness
 /// waits to see whether a static window arrives. See [`Replay::onset_of_motion`].
 #[derive(Clone)]
@@ -737,7 +771,7 @@ struct Fallback {
     still: usize,
     dt: Seconds,
     /// The sample that moved, the first the filter would propagate.
-    onset: (f64, ImuSample),
+    onset: (f64, Rates),
     /// Every line since the onset.
     lines: Vec<String>,
     /// The fusion rows those lines wrote while the filter was not initialized.
@@ -750,7 +784,7 @@ struct Replay {
     filter: Eskf,
     /// Candidate static window, slid forward one sample at a time until `initialize`
     /// accepts it. A log that begins in motion simply initializes later.
-    window: [StaticSample; WINDOW],
+    window: [Held; WINDOW],
     filled: usize,
     /// Whether every sample since the log began may still be still, which is what lets a
     /// start shorter than a full window commit at the onset of motion. See
@@ -858,7 +892,7 @@ impl Replay {
         Self {
             consistency: Consistency::new(config.gates),
             filter: Eskf::new(config),
-            window: [StaticSample::default(); WINDOW],
+            window: [Held::default(); WINDOW],
             filled: 0,
             still_since_start: true,
             still_prefix: 0,
@@ -933,7 +967,7 @@ impl Replay {
 
         match r.source {
             "imu" => {
-                let imu = ImuSample {
+                let imu = Rates {
                     gyro: AngularRate::body(r.value(0)?, r.value(1)?, r.value(2)?),
                     accel: Acceleration::body(r.value(3)?, r.value(4)?, r.value(5)?),
                 };
@@ -948,6 +982,7 @@ impl Replay {
                 // Variance comes from the log, per sample: a real GNSS reports its own
                 // accuracy, and it degrades before it drops out.
                 let outcome = self.filter.fuse_gnss_position(
+                    r.taken(),
                     Position::ned(r.value(0)?, r.value(1)?, r.value(2)?),
                     self.policy
                         .position([r.variance(0)?, r.variance(1)?, r.variance(2)?]),
@@ -962,6 +997,7 @@ impl Replay {
                 // thing in the row that a window taken in motion can still use.
                 self.pending_velocity = Some(velocity);
                 let outcome = self.filter.fuse_gnss_velocity(
+                    r.taken(),
                     velocity,
                     self.policy
                         .velocity([r.variance(0)?, r.variance(1)?, r.variance(2)?]),
@@ -971,17 +1007,21 @@ impl Replay {
             "baro" => {
                 let altitude = Altitude::from_meters(r.value(0)?);
                 self.last_baro = Some(altitude);
-                let outcome = self
-                    .filter
-                    .fuse_baro_altitude(altitude, AltitudeNoise::from_variance(r.variance(0)?));
+                let outcome = self.filter.fuse_baro_altitude(
+                    r.taken(),
+                    altitude,
+                    AltitudeNoise::from_variance(r.variance(0)?),
+                );
                 self.observe(r.t, BARO, outcome, out)?;
             }
             "mag" => {
                 let field = MagField::body(r.value(0)?, r.value(1)?, r.value(2)?);
                 self.last_mag = Some(field);
-                let outcome = self
-                    .filter
-                    .fuse_mag_heading(field, HeadingNoise::from_variance(r.variance(0)?));
+                let outcome = self.filter.fuse_mag_heading(
+                    r.taken(),
+                    field,
+                    HeadingNoise::from_variance(r.variance(0)?),
+                );
                 self.observe(r.t, MAG, outcome, out)?;
             }
             other => return Err(format!("unknown source `{other}`").into()),
@@ -994,11 +1034,19 @@ impl Replay {
     /// Before initialization the filter refuses measurements with
     /// [`Fusion::NotInitialized`], so aiding rows in this stretch of the log are simply
     /// recorded and dropped.
-    fn accumulate(&mut self, t: f64, imu: ImuSample) -> Result<(), Box<dyn Error>> {
+    fn accumulate(&mut self, t: f64, imu: Rates) -> Result<(), Box<dyn Error>> {
         self.first_imu.get_or_insert(t);
         let previous = self.previous_imu;
         self.probe_rate(t);
-        let sample = StaticSample {
+        let time = Timestamp::from_secs_f64(t);
+        // A sample not after the last is one `predict` would refuse as `InvalidStep`, and a
+        // window holding it is one `initialize` refuses: it describes no time, so it is left
+        // out, as the filter leaves it out once running.
+        if self.filled > 0 && self.window[self.filled - 1].time >= time {
+            return Ok(());
+        }
+        let sample = Held {
+            time,
             imu,
             mag: self.last_mag,
             baro: self.last_baro,
@@ -1014,7 +1062,7 @@ impl Replay {
         let dt = Seconds::from_secs(interval as f32);
         if self.still_since_start && self.filled <= needed {
             // Nothing has slid out yet, so the window is every sample since the log began.
-            let alignment = self.filter.alignment_of(&self.window[..self.filled], dt)?;
+            let alignment = self.filter.alignment_of(&self.window(0..self.filled, dt))?;
             if let Some(still) = self.onset_of_motion(alignment)
                 && let Some(previous) = previous
             {
@@ -1033,7 +1081,7 @@ impl Replay {
             return Ok(());
         }
         let window = self.filled - needed..self.filled;
-        let alignment = self.filter.alignment_of(&self.window[window.clone()], dt)?;
+        let alignment = self.filter.alignment_of(&self.window(window.clone(), dt))?;
         if !self.worth_committing(t, alignment) {
             return Ok(());
         }
@@ -1089,8 +1137,8 @@ impl Replay {
         dt: Seconds,
     ) -> Result<(), Box<dyn Error>> {
         self.window_samples = range.len();
-        let window = &self.window[range];
-        let alignment = self.filter.initialize(window, dt)?;
+        let window = self.window(range, dt);
+        let alignment = self.filter.initialize(&window)?;
         self.alignment = Some(alignment);
         self.initialized_at = Some(t);
         // The filter's own rule: one magnetometer sample anywhere in the window observes
@@ -1124,8 +1172,18 @@ impl Replay {
         }
     }
 
+    /// `self.window[range]` as the filter takes it, every sample standing for `dt`: the
+    /// interval the rate estimator fixed rather than each row's own step, which on a burst
+    /// log is zero as often as not.
+    fn window(&self, range: core::ops::Range<usize>, dt: Seconds) -> Vec<StaticSample> {
+        self.window[range]
+            .iter()
+            .map(|held| held.sample(dt))
+            .collect()
+    }
+
     /// Append a sample, dropping the oldest once the window is full.
-    fn push_to_window(&mut self, sample: StaticSample) {
+    fn push_to_window(&mut self, sample: Held) {
         if self.filled == WINDOW {
             self.window.copy_within(1.., 0);
             self.window[WINDOW - 1] = sample;
@@ -1191,13 +1249,17 @@ impl Replay {
         }
     }
 
-    fn propagate(&mut self, t: f64, imu: ImuSample, out: &mut Sinks) -> io::Result<()> {
-        if let Some(previous) = self.previous_imu.replace(t) {
-            // The filter decides what is too long, not the example.
+    fn propagate(&mut self, t: f64, imu: Rates, out: &mut Sinks) -> io::Result<()> {
+        if self.previous_imu.replace(t).is_some() {
+            // A rate stands for the time since the last sample the filter took, which is the
+            // step the filter measures itself, so the two cannot disagree. The filter decides
+            // what is too long, not the example.
+            let time = Timestamp::from_secs_f64(t);
+            let dt = time.since(self.filter.time().unwrap_or_default());
             let worst_before = self.filter.diagnostics().propagation.longest_gap;
             let propagated = self
                 .filter
-                .predict(imu, Seconds::from_secs((t - previous) as f32))
+                .predict(ImuSample::from_rates(time, imu.gyro, imu.accel, dt))
                 .is_propagated();
             // Timestamp the step that set a new worst, which is the one the filter kept.
             // Comparing to `dt` instead would also match a later step that merely ties it,
@@ -1660,8 +1722,9 @@ impl Replay {
             // and the last refusal rather than a tally per variant, so per source is the
             // breakdown that exists.
             println!(
-                "{} never reached the gate at all: a variance of zero or less, a NaN, or \
-                 an altitude with no reference — per source below",
+                "{} never reached the gate at all: a variance of zero or less, a NaN, \
+                 an altitude with no reference, or a time the filter cannot place — per \
+                 source below",
                 self.discarded()
             );
         }
@@ -1898,6 +1961,8 @@ struct Record<'a> {
     source: &'a str,
     values: [Option<f32>; 6],
     variances: [Option<f32>; 3],
+    /// `t_meas_s`, where the row carries one.
+    measured: Option<f64>,
 }
 
 impl<'a> Record<'a> {
@@ -1921,12 +1986,22 @@ impl<'a> Record<'a> {
                 *slot = Some(field.parse().ok()?);
             }
         }
+        let measured = match fields.next().map(str::trim) {
+            None | Some("") => None,
+            Some(field) => Some(field.parse().ok()?),
+        };
         Some(Self {
             t,
             source,
             values,
             variances,
+            measured,
         })
+    }
+
+    /// When the measurement was taken: `t_meas_s`, or the row's own time.
+    fn taken(&self) -> Timestamp {
+        Timestamp::from_secs_f64(self.measured.unwrap_or(self.t))
     }
 
     fn value(&self, i: usize) -> Result<f32, String> {
@@ -2710,6 +2785,7 @@ fn verdict(outcome: Fusion) -> &'static str {
         Fusion::NotFinite => "not_finite",
         Fusion::InvalidNoise => "invalid_noise",
         Fusion::StateInvalid => "state_invalid",
+        Fusion::OutOfHorizon { .. } => "out_of_horizon",
     }
 }
 
@@ -3018,9 +3094,19 @@ mod tests {
     }
 
     #[test]
-    fn columns_past_the_last_variance_are_ignored() {
-        let r = Record::parse("1.0,imu,0,0,0,0,0,-9.80665,,,,extra,columns").expect("parses");
+    fn columns_past_the_measurement_time_are_ignored() {
+        let r = Record::parse("1.0,imu,0,0,0,0,0,-9.80665,,,,,extra,columns").expect("parses");
         assert_eq!(r.value(5), Ok(-9.80665));
+    }
+
+    #[test]
+    fn a_measurement_is_taken_at_its_own_time_or_else_at_its_rows() {
+        let late = Record::parse("2.0,baro,1,,,,,,4,,,1.89").expect("parses");
+        assert_eq!(late.taken(), Timestamp::from_micros(1_890_000));
+        for row in ["2.0,baro,1,,,,,,4,,,", "2.0,baro,1,,,,,,4,,"] {
+            let r = Record::parse(row).expect("parses");
+            assert_eq!(r.taken(), Timestamp::from_micros(2_000_000), "{row}");
+        }
     }
 
     #[test]
@@ -3637,7 +3723,7 @@ mod tests {
         // beside it is what shows the count is the gate's and not every fix's.
         let log = still_start()
             .gnss_pos(2.0, 1.0, 2.0, -3.0)
-            .gnss_pos(2.2, 1000.0, 0.0, 0.0);
+            .gnss_pos(2.04, 1000.0, 0.0, 0.0);
         let summary = replay(&log).summary();
         assert_eq!(key(&summary, "rejected"), "1", "{summary}");
         assert_eq!(key(&replay(&still_start()).summary(), "rejected"), "0");
@@ -3726,7 +3812,7 @@ mod tests {
         // in a different order, which `RATIOS` would not have caught either.
         let log = still_start()
             .gnss_pos(2.0, 1.0, 2.0, -3.0)
-            .gnss_pos(2.2, 1000.0, 0.0, 0.0);
+            .gnss_pos(2.04, 1000.0, 0.0, 0.0);
         let summary = replay(&log).summary();
         assert_eq!(key(&summary, "rejected_gnss_pos"), "1", "{summary}");
         for source in ["gnss_vel", "baro", "mag"] {
@@ -3855,14 +3941,14 @@ mod tests {
         // no dimension to record a row against. No mutation of the predicate in `observe`
         // puts an adopted row into a population. What this is for is the reader who asks
         // #5's question and wants it answered by something that runs.
-        let one_fused = replay(&still_start().mag(2.0).mag(2.1));
+        let one_fused = replay(&still_start().mag(2.0).mag(2.02));
         let summary = one_fused.summary();
         assert_eq!(key(&summary, "resets"), "1", "{summary}");
         assert_eq!(one_fused.consistency.rows(MAG), 1, "{summary}");
 
         // The same start with one more heading. Two fusions and still one adoption, so the
         // population grows by exactly the measurement that was fused.
-        let two_fused = replay(&still_start().mag(2.0).mag(2.1).mag(2.2));
+        let two_fused = replay(&still_start().mag(2.0).mag(2.02).mag(2.04));
         assert_eq!(key(&two_fused.summary(), "resets"), "1");
         assert_eq!(two_fused.consistency.rows(MAG), 2);
     }
@@ -3877,7 +3963,7 @@ mod tests {
         let clean = still_start().gnss_pos(2.0, 1.0, 2.0, -3.0);
         let with_outlier = still_start()
             .gnss_pos(2.0, 1.0, 2.0, -3.0)
-            .gnss_pos(2.2, 1000.0, 0.0, 0.0);
+            .gnss_pos(2.04, 1000.0, 0.0, 0.0);
 
         let clean = replay(&clean);
         let with_outlier = replay(&with_outlier);
@@ -3951,9 +4037,11 @@ mod tests {
             let mut log = still_start();
             for i in 0..fixes {
                 let t = 2.0 + i as f64 * DT;
+                // Taken at the IMU sample before it, so the fix has no age and informs
+                // position alone.
                 log = log
-                    .raw(&format!("{t:.6},gnss_pos,0,0,0,,,,1e-12,1e-12,1e-12"))
-                    .imu(t, STILL);
+                    .imu(t, STILL)
+                    .raw(&format!("{t:.6},gnss_pos,0,0,0,,,,1e-12,1e-12,1e-12"));
             }
             replay(&log).summary()
         };
@@ -4143,6 +4231,11 @@ mod tests {
                 "not_finite",
             ),
             (coarse, "reset"),
+            // `t_meas_s` a second before arrival: read, and handed to the filter as the time.
+            (
+                still_start().raw("2.000000,gnss_pos,0,0,0,,,,2.25,2.25,5.625,1.000000"),
+                "out_of_horizon",
+            ),
         ] {
             let last = fusion_rows(&log).pop().expect("a fusion row");
             assert_eq!(
@@ -4195,8 +4288,8 @@ mod tests {
         // testing only refusals.
         let log = still_start()
             .gnss_pos(2.0, 1.0, 2.0, -3.0)
-            .raw("2.100000,gnss_pos,1,2,-3,,,,0,2.25,0")
-            .mag(2.2);
+            .raw("2.020000,gnss_pos,1,2,-3,,,,0,2.25,0")
+            .mag(2.04);
         let rows = fusion_rows(&log);
         let tail = &rows[rows.len() - 3..];
         for (row, verdict) in tail.iter().zip(["invalid_noise", "invalid_noise", "reset"]) {

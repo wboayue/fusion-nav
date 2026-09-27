@@ -11,8 +11,9 @@ use nalgebra::{Cholesky, Const, Matrix3, SMatrix, SVector, Vector3};
 use crate::config::Gate;
 use crate::health::Innovation;
 use crate::math::{enforce_symmetry, exp_quat, skew};
+use crate::propagate::Transition;
 use crate::state::{Covariance, CovarianceMatrix, ErrorState, Offset, STATES, State};
-use crate::units::{Acceleration, AngularRate, Attitude, Position, Velocity};
+use crate::units::{Acceleration, AngularRate, Attitude, Position, Seconds, Velocity};
 
 /// One measurement, reduced to what (23)–(27) read: `y`, `H` and `R_m` for an `M`-dimensional
 /// observation.
@@ -43,6 +44,20 @@ impl<const M: usize> Observation<M> {
     pub(crate) fn correlated(self, inflation: f32) -> Self {
         Self {
             r_gain: self.r_m * inflation,
+            ..self
+        }
+    }
+
+    /// The same observation of a state `age` in the past, expressed in today's error.
+    /// Equation (23′): `H exp(−A τ)` to second order.
+    ///
+    /// A negative `age` is a state ahead of the present, and the same series carries it back.
+    pub(crate) fn delayed(self, age: Seconds, a: &Transition) -> Self {
+        let tau = age.as_secs();
+        let ha = self.h * a;
+        let haa = ha * a;
+        Self {
+            h: self.h - ha * tau + haa * (0.5 * tau * tau),
             ..self
         }
     }
@@ -110,8 +125,8 @@ pub(crate) enum Update {
 /// exactly that. Formed here, it cost 4168 bytes more of stack on `thumbv6m` — a 1024-byte
 /// 16 × 16 for each 900-byte temporary, and a copy in and out of it.
 ///
-/// The frame is the largest in the crate: `update::<3>` is 8088 bytes on `thumbv6m-none-eabi`
-/// and 7960 on `thumbv7em-none-eabihf` at `opt-level = 3`, against 2832 for
+/// The frame is the largest in the crate: `update::<3>` is 8120 bytes on `thumbv6m-none-eabi`
+/// and 8000 on `thumbv7em-none-eabihf` at `opt-level = 3`, against 2832 for
 /// `propagate_covariance`, the largest single frame propagation reaches. Most of it is (27),
 /// whose `A_xx`, its two products and `K R Kᵀ` are each a 900-byte 15 × 15; the offset's blocks
 /// are vectors, and cost 968 bytes over the fifteen-state update. That is comfortable on the
@@ -119,7 +134,7 @@ pub(crate) enum Update {
 /// high-water on hardware, is what would say a less obvious form is worth writing.
 ///
 /// `M` is what the rest scales with, and a scalar source is cheaper rather than free:
-/// `update::<1>` takes 6368 bytes on `thumbv6m` and 6216 on `thumbv7em`, so neither scalar
+/// `update::<1>` takes 6384 bytes on `thumbv6m` and 6240 on `thumbv7em`, so neither scalar
 /// source moves the crate's high-water mark — `update::<3>` still sets it. The two scalar
 /// sources share that one monomorphization: the barometer of (30) paid for it, and the
 /// magnetic heading of (34)–(36) added 1204 bytes of `.text` linking the whole public API for

@@ -3,8 +3,8 @@
 **What happens when a sensor lies or goes quiet?** In each simulated fault below, the error
 stays inside the band of uncertainty the filter reports. During the fault the filter either
 widens that band or refuses the bad measurements, and its `Status` reports that something is
-wrong. The exception is GNSS fixes that arrive late: the filter has no model for that yet, and
-it pays in accuracy and in honesty.
+wrong. GNSS fixes that arrive late are a fault it absorbs rather than reports: each is used at
+the moment it describes.
 
 {{stamp}}
 
@@ -70,14 +70,13 @@ and what the alternatives measured, is in
 
 ## GNSS fixes 150 ms late
 
-This is the fault the filter does not handle. It uses each fix as if it described the present
-moment, so the position error follows the vehicle's speed, and the orange line leaves the band
-again and again. Position is off by {{score gnss_latency pos_h}} m RMS against
-{{score mission pos_h}} m on the baseline. For {{score gnss_latency false_valid}} moments the
-filter told the application a quantity was usable while its real error was worse than the
-configured accuracy. The [honesty page](honesty.md#overconfident-fixes-that-arrive-late) shows
-this across many flights. Whether the filter gains a model for delayed measurements, or
-documents the limit, is #52.
+Every GNSS fix describes where the vehicle was 150 ms before it arrives. Used as if it described
+the present, a fix would be wrong by the distance flown in that time. The filter is told when each
+fix was taken and compares it with where it estimated the vehicle was at that moment, so the
+delay costs nothing: position is off by {{score gnss_latency pos_h}} m RMS against
+{{score mission pos_h}} m on the baseline. The filter called a quantity usable while its real
+error was worse than the configured accuracy at {{score gnss_latency false_valid}} moments.
+The [honesty page](honesty.md#fixes-that-arrive-late) shows the same across many flights.
 
 {{figure gnss_latency error_position}}
 

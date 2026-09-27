@@ -34,9 +34,6 @@
 # gates its other blocks as usual. Each names its cause; the assertion trips when the cause is
 # removed, so the line is rewritten in the diff that fixes it rather than left passing silently.
 #
-#   gnss_latency     position and velocity: fixes 150 ms stale that `R` does not describe; #52
-#                    owns latency. anees_pos=4.06, anees_vel=1.09. (24') took it from 56.39: a
-#                    stale fix is one more error that persists from fix to fix.
 #   correlated       position only: every aiding error correlated, slower than
 #                    `Config::correlation`'s defaults, which are the corpus's medians and
 #                    understate it (`examples/simulate.rs`). (24') fuses it at too small a
@@ -55,8 +52,14 @@
 # wider prior alone, 0 and 1.54 with the correlation too. At the defaults peak_att 0.60 to 0.59
 # and single-seed `tilt` 1.117 deg to 0.828. So this line now passes for its cause, and the
 # evidence is the white run, since the line itself read the same before. `gnss_latency`'s
-# attitude still passes by the wider covariance alone (any_att=1950 fused as white); that cause
-# stands, and its line would pass whether or not it were fixed.
+# attitude passed the same way, by the wider covariance alone, until (23') removed its cause below.
+#
+# One line (23') rewrote from failing to passing, for its cause, on all three blocks.
+# `gnss_latency` fused fixes 150 ms stale as current, an error `R` does not describe:
+# anees_pos=4.06 and anees_vel=1.09, any_pos and any_vel over the bound, and its attitude passing
+# only by (24')'s wider covariance (any_att=1950 fused as white). Fused at the time each fix was
+# taken, against the state history, it reads anees_pos=0.108, anees_vel=0.101, anees_att=0.020,
+# and nothing over the bound on any epoch; fused as white too, anees_pos=0.810 and any_att=0.
 #
 # One line (22') rewrote from failing to passing, for its cause. `logging_dropout` refused its
 # 1.2 s gap at speed and was ~7 s of rejected fixes before the recovery: anees_pos=2.81,
@@ -78,7 +81,7 @@ harsh_imu        50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10
 gnss_outage      50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
 moving_start     50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
 baro_drift       50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
-gnss_latency     50  runs=50  any_pos>=1  any_vel>=1  any_att=0   over_att<=0.10
+gnss_latency     50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
 correlated       50  runs=50  any_pos>=1  any_vel=0   any_att=0   over_vel<=0.10 over_att<=0.10
 mag_disturbance  50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
 logging_dropout  50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10

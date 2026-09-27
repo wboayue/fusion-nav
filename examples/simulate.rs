@@ -575,6 +575,8 @@ const GNSS: GnssErrors = GnssErrors {
 
 /// One fix: position and velocity, each with the variance the log reports.
 struct Fix {
+    /// When the fix describes the vehicle: the row's time less the receiver's latency.
+    taken: f64,
     position: [f64; 3],
     velocity: [f64; 3],
     position_variance: [f64; 3],
@@ -684,6 +686,7 @@ impl Gnss {
 
         let was = flight.at(described);
         Some(Fix {
+            taken: described,
             position: add(was.position, position_noise),
             velocity: add(was.velocity, velocity_noise),
             position_variance: sigma.map(|sigma| sigma * sigma),
@@ -1247,7 +1250,7 @@ fn main() {
 }
 
 fn run() -> Result<(), Box<dyn Error>> {
-    let (positional, seed) = split_seed(env::args().skip(1))?;
+    let (positional, overrides) = split_options(env::args().skip(1))?;
     let mut positional = positional.into_iter();
     let wanted = positional.next().unwrap_or_else(|| "all".to_string());
     let out_dir = positional
@@ -1260,53 +1263,119 @@ fn run() -> Result<(), Box<dyn Error>> {
         let names: Vec<&str> = scenarios().iter().map(|scenario| scenario.name).collect();
         return Err(format!("unknown scenario `{wanted}`; have {}", names.join(", ")).into());
     }
-    // Every selected scenario takes the one override, so the departures from `mission` stay
+    // Every selected scenario takes the same overrides, so the departures from `mission` stay
     // paired with it at each seed of an ensemble exactly as they are at `PAIRED`.
-    if let Some(seed) = seed {
-        for scenario in &mut selected {
-            scenario.seed = seed;
-        }
+    for scenario in &mut selected {
+        overrides.apply(scenario);
     }
 
     fs::create_dir_all(&out_dir)?;
     println!("fusion-nav simulator — seeded flights with analytic truth\n");
     for scenario in &selected {
-        generate(scenario, &out_dir)?.print(scenario);
+        generate(scenario, &out_dir, &overrides)?.print(scenario);
     }
     Ok(())
 }
 
-/// The positional arguments, and the seed `--seed <n>` names in place of the table's.
-///
-/// An override rather than a column of seeds per scenario: `data/anees.sh` flies each scenario
-/// on fifty of them (#89), and the table's own seed stays the one `data/scenarios.txt` pins.
-fn split_seed(args: impl Iterator<Item = String>) -> Result<(Vec<String>, Option<u64>), String> {
-    let mut positional = Vec::new();
-    let mut seed = None;
-    let mut args = args;
-    while let Some(arg) = args.next() {
-        if arg == "--seed" {
-            let value = args.next().ok_or("--seed needs a value")?;
-            seed = Some(
-                value
-                    .parse()
-                    .map_err(|_| format!("--seed `{value}` is not an unsigned integer"))?,
-            );
-        } else {
-            positional.push(arg);
+/// What the command line changes about the table, for sweeps: none of it is a scenario of its
+/// own, which is why a run under one says so in the log's header.
+#[derive(Default)]
+struct Overrides {
+    /// `--seed <n>`, in place of the table's.
+    seed: Option<u64>,
+    /// `--speed <k>`: every translational wave scaled by `k`, so speed and acceleration scale
+    /// with it and the attitude does not. #52's "at more than one speed".
+    speed: Option<f64>,
+    /// `--latency <s>`: the receiver's latency, in place of the table's.
+    latency: Option<f64>,
+}
+
+impl Overrides {
+    fn apply(&self, scenario: &mut Scenario) {
+        if let Some(seed) = self.seed {
+            scenario.seed = seed;
+        }
+        if let Some(k) = self.speed {
+            let trajectory = &mut scenario.trajectory;
+            for wave in [
+                &mut trajectory.north,
+                &mut trajectory.east,
+                &mut trajectory.down,
+            ] {
+                wave.rate *= k;
+                wave.amplitude *= k;
+            }
+        }
+        if let Some(latency) = self.latency {
+            scenario.gnss.latency = latency;
         }
     }
-    Ok((positional, seed))
+
+    /// The header line naming the sweep overrides, if there are any. The seed is not one: every
+    /// header already names the seed.
+    fn note(&self) -> Option<String> {
+        let mut cells = Vec::new();
+        if let Some(k) = self.speed {
+            cells.push(format!("speed x{k}"));
+        }
+        if let Some(latency) = self.latency {
+            cells.push(format!("gnss latency {latency} s"));
+        }
+        (!cells.is_empty()).then(|| format!("# Overridden for a sweep: {}", cells.join(", ")))
+    }
+}
+
+/// The positional arguments, and the [`Overrides`] named in place of the table's.
+///
+/// The seed is an override rather than a column of seeds per scenario: `data/anees.sh` flies each
+/// scenario on fifty of them (#89), and the table's own seed stays the one `data/scenarios.txt`
+/// pins.
+fn split_options(args: impl Iterator<Item = String>) -> Result<(Vec<String>, Overrides), String> {
+    let mut positional = Vec::new();
+    let mut overrides = Overrides::default();
+    let mut args = args;
+    while let Some(arg) = args.next() {
+        let mut value = |what: &str| args.next().ok_or_else(|| format!("{arg} needs {what}"));
+        match arg.as_str() {
+            "--seed" => {
+                let v = value("a value")?;
+                overrides.seed = Some(
+                    v.parse()
+                        .map_err(|_| format!("--seed `{v}` is not an unsigned integer"))?,
+                );
+            }
+            "--speed" | "--latency" => {
+                let v = value("a number")?;
+                let number: f64 = v
+                    .parse()
+                    .ok()
+                    .filter(|n: &f64| n.is_finite() && *n >= 0.0)
+                    .ok_or_else(|| format!("{arg} `{v}` is not a number at least zero"))?;
+                if arg == "--speed" {
+                    overrides.speed = Some(number);
+                } else {
+                    overrides.latency = Some(number);
+                }
+            }
+            _ => positional.push(arg),
+        }
+    }
+    Ok((positional, overrides))
 }
 
 /// Write one scenario's log and truth files.
-fn generate(scenario: &Scenario, out_dir: &Path) -> Result<Report, Box<dyn Error>> {
+fn generate(
+    scenario: &Scenario,
+    out_dir: &Path,
+    overrides: &Overrides,
+) -> Result<Report, Box<dyn Error>> {
     let log_path = out_dir.join(format!("{}.csv", scenario.name));
     let truth_path = out_dir.join(format!("{}.truth.csv", scenario.name));
     let mut log = Log::new(BufWriter::new(File::create(&log_path)?));
     let mut truth = BufWriter::new(File::create(&truth_path)?);
-    write_log_header(&mut log.out, scenario)?;
-    write_truth_header(&mut truth, scenario)?;
+    let note = overrides.note();
+    write_log_header(&mut log.out, scenario, note.as_deref())?;
+    write_truth_header(&mut truth, scenario, note.as_deref())?;
 
     let dt = 1.0 / scenario.imu_rate;
     let epochs = (scenario.duration * scenario.imu_rate).round() as usize;
@@ -1332,7 +1401,7 @@ fn generate(scenario: &Scenario, out_dir: &Path) -> Result<Report, Box<dyn Error
         let [gx, gy, gz] = reading.gyro;
         let [ax, ay, az] = reading.accel;
         if logged {
-            log.row(t, "imu", &[gx, gy, gz, ax, ay, az], &[])?;
+            log.row(t, "imu", &[gx, gy, gz, ax, ay, az], &[], None)?;
         }
         write_truth_row(&mut truth, t, &state, &reading)?;
         report.epoch(t, &state, &reading);
@@ -1341,20 +1410,21 @@ fn generate(scenario: &Scenario, out_dir: &Path) -> Result<Report, Box<dyn Error
             && let Some(fix) = gnss.fix(t, &scenario.trajectory)
             && logged
         {
-            log.row(t, "gnss_pos", &fix.position, &fix.position_variance)?;
-            log.row(t, "gnss_vel", &fix.velocity, &fix.velocity_variance)?;
+            let taken = Some(fix.taken);
+            log.row(t, "gnss_pos", &fix.position, &fix.position_variance, taken)?;
+            log.row(t, "gnss_vel", &fix.velocity, &fix.velocity_variance, taken)?;
         }
         if epoch % baro_every == 0
             && let Some(altitude) = baro.sample(t, &state)
             && logged
         {
-            log.row(t, "baro", &[altitude.meters], &[altitude.variance])?;
+            log.row(t, "baro", &[altitude.meters], &[altitude.variance], None)?;
         }
         if epoch % mag_every == 0
             && let Some(field) = mag.sample(t, &state)
             && logged
         {
-            log.row(t, "mag", &field.body, &[field.heading_variance])?;
+            log.row(t, "mag", &field.body, &[field.heading_variance], None)?;
         }
     }
 
@@ -1476,9 +1546,17 @@ impl<W: Write> Log<W> {
         Self { out, rows: 0 }
     }
 
-    /// One measurement row: six value columns then three variance columns, blank where the
-    /// source does not use them.
-    fn row(&mut self, t: f64, source: &str, values: &[f64], variances: &[f64]) -> io::Result<()> {
+    /// One measurement row: six value columns, three variance columns, and when the
+    /// measurement was taken, blank where the source does not use them. A barometer and a
+    /// magnetometer read the instant they are logged, so only a fix carries a time of its own.
+    fn row(
+        &mut self,
+        t: f64,
+        source: &str,
+        values: &[f64],
+        variances: &[f64],
+        taken: Option<f64>,
+    ) -> io::Result<()> {
         write!(self.out, "{t:.4},{source}")?;
         for column in 0..6 {
             match values.get(column) {
@@ -1491,6 +1569,10 @@ impl<W: Write> Log<W> {
                 Some(variance) => write!(self.out, ",{variance:.6}")?,
                 None => write!(self.out, ",")?,
             }
+        }
+        match taken {
+            Some(taken) => write!(self.out, ",{taken:.4}")?,
+            None => write!(self.out, ",")?,
         }
         writeln!(self.out)?;
         self.rows += 1;
@@ -1518,7 +1600,11 @@ fn write_truth_row(
     writeln!(out)
 }
 
-fn write_log_header(out: &mut impl Write, scenario: &Scenario) -> io::Result<()> {
+fn write_log_header(
+    out: &mut impl Write,
+    scenario: &Scenario,
+    note: Option<&str>,
+) -> io::Result<()> {
     writeln!(
         out,
         "# fusion-nav simulated flight - scenario `{name}`, seed {seed}\n\
@@ -1535,16 +1621,24 @@ fn write_log_header(out: &mut impl Write, scenario: &Scenario) -> io::Result<()>
          #   gnss_pos  v0..v2 NED position m      var0..var2 m^2\n\
          #   gnss_vel  v0..v2 NED velocity m/s    var0..var2 m^2/s^2\n\
          #   baro      v0     altitude m (up)     var0      m^2\n\
-         #   mag       v0..v2 field, calibrated   var0      heading rad^2",
+         #   mag       v0..v2 field, calibrated   var0      heading rad^2\n\
+         #   t_meas_s  when a fix was taken, t_s less the receiver's latency",
         name = scenario.name,
         seed = scenario.seed,
         covers = scenario.covers,
         declination = DECLINATION,
     )?;
-    writeln!(out, "t_s,source,v0,v1,v2,v3,v4,v5,var0,var1,var2")
+    if let Some(note) = note {
+        writeln!(out, "{note}")?;
+    }
+    writeln!(out, "t_s,source,v0,v1,v2,v3,v4,v5,var0,var1,var2,t_meas_s")
 }
 
-fn write_truth_header(out: &mut impl Write, scenario: &Scenario) -> io::Result<()> {
+fn write_truth_header(
+    out: &mut impl Write,
+    scenario: &Scenario,
+    note: Option<&str>,
+) -> io::Result<()> {
     writeln!(
         out,
         "# fusion-nav truth for `{}.csv`, seed {}\n\
@@ -1554,6 +1648,9 @@ fn write_truth_header(out: &mut impl Write, scenario: &Scenario) -> io::Result<(
          # sample. Angles are radians, ZYX, in the NED/FRD convention the crate fixes.",
         scenario.name, scenario.seed,
     )?;
+    if let Some(note) = note {
+        writeln!(out, "{note}")?;
+    }
     writeln!(
         out,
         "t_s,pos_n,pos_e,pos_d,vel_n,vel_e,vel_d,roll,pitch,yaw,ba_x,ba_y,ba_z,bg_x,bg_y,bg_z"

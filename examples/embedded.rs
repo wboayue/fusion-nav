@@ -1,7 +1,7 @@
 //! The integration loop on a microcontroller: `no_std`, no allocator, no `println!`.
 //!
-//! What the desktop examples cannot show. The filter never reads a clock, so `dt` is the
-//! caller's timer arithmetic. Sources arrive at their own rates from their own queues. Every
+//! What the desktop examples cannot show. The filter never reads a clock, so every sample's
+//! timestamp is the caller's timer. Sources arrive at their own rates from their own queues. Every
 //! outcome is handled where it is returned, and what the application does about
 //! `Status::DeadReckoning`, or about a recovery that stepped the state, is a policy the crate
 //! leaves to it.
@@ -31,10 +31,11 @@ use fusion_nav::prelude::*;
 
 const IMU_HZ: u32 = 400;
 
-/// The window is collected at 50 Hz rather than the IMU's 400: a `StaticSample` is 64 bytes,
-/// so the default 2 s `Initialization::min_duration` is 51 KB at full rate, more RAM than a
-/// Cortex-M0 has, and 6.4 KB here. A mean over 100 samples of a still vehicle is not what
-/// limits the alignment.
+/// The window is collected at 50 Hz rather than the IMU's 400: a `StaticSample` is 80 bytes,
+/// so the default 2 s `Initialization::min_duration` is 64 KB at full rate, more RAM than a
+/// Cortex-M0 has, and 8 KB here. Each window sample sums eight IMU samples' increments, as an
+/// integrating driver would, so the window still spans the 2 s it observed. A mean over 100
+/// samples of a still vehicle is not what limits the alignment.
 const WINDOW_DECIMATION: u32 = 8;
 const WINDOW: usize = (2 * IMU_HZ / WINDOW_DECIMATION) as usize;
 
@@ -59,8 +60,12 @@ macro_rules! log {
 }
 
 /// A GNSS solution as a receiver reports it: position and velocity, each with its own
-/// accuracy, since `R` belongs to the fix rather than to the configuration.
+/// accuracy, since `R` belongs to the fix rather than to the configuration, and the time it
+/// describes.
 struct Fix {
+    /// When the solution was computed, on the IMU's clock: its arrival less the receiver's
+    /// latency, which for a u-blox at 5 Hz is on the order of PX4's 110 ms `EKF2_GPS_DELAY`.
+    time: Timestamp,
     position: Geodetic,
     position_noise: PositionNoise<Ned>,
     velocity: Velocity<Ned>,
@@ -70,16 +75,17 @@ struct Fix {
 /// The board: what an interrupt or DMA queue hands the loop, and where the loop's decisions
 /// go. `Write` is the log's transport.
 trait Board: core::fmt::Write {
-    /// The next IMU sample and the free-running microsecond counter it was taken at, if one
-    /// is queued. The time the sample was *taken*, not when the loop got to it, so the loop's
-    /// own jitter never reaches `dt`.
-    fn imu(&mut self) -> Option<(u32, ImuSample)>;
+    /// The next IMU sample, if one is queued, timed when it was *taken* rather than when the
+    /// loop got to it, so the loop's own jitter never reaches the step. `Timestamp` counts
+    /// microseconds in 64 bits: a 32-bit timer wraps every 71.6 minutes, and the HAL extends
+    /// it by counting the wraps.
+    fn imu(&mut self) -> Option<ImuSample>;
     /// The next GNSS solution, at 5 Hz.
     fn gnss(&mut self) -> Option<Fix>;
-    /// The next barometric altitude, at 20 Hz.
-    fn baro(&mut self) -> Option<Altitude>;
-    /// The next calibrated magnetometer reading, at 20 Hz.
-    fn mag(&mut self) -> Option<MagField<Body>>;
+    /// The next barometric altitude, at 20 Hz, and when it was read.
+    fn baro(&mut self) -> Option<(Timestamp, Altitude)>;
+    /// The next calibrated magnetometer reading, at 20 Hz, and when it was read.
+    fn mag(&mut self) -> Option<(Timestamp, MagField<Body>)>;
     /// The estimate stepped rather than moved: whatever holds a setpoint relative to it,
     /// a position hold for one, has to re-anchor or it chases the step.
     fn state_stepped(&mut self);
@@ -89,50 +95,47 @@ trait Board: core::fmt::Write {
 
 fn run(board: &mut impl Board) -> ! {
     let mut filter = Eskf::new(Config::default());
-    let mut last = align(&mut filter, board);
+    align(&mut filter, board);
     let mut ticks: u32 = 0;
     loop {
-        let Some((now, imu)) = board.imu() else {
+        let Some(imu) = board.imu() else {
             continue;
         };
-        // Wrapping, because a `u32` of microseconds wraps every 71.6 minutes and the
-        // difference across the wrap is still the interval. Converted after the subtraction:
-        // an absolute timestamp in an `f32` loses the microseconds within hours.
-        let dt = Seconds::from_secs(now.wrapping_sub(last) as f32 * 1e-6);
-        last = now;
-        match filter.predict(imu, dt) {
+        match filter.predict(imu) {
             Propagation::Propagated => {}
             // The state advanced across a gap on its estimated velocity, and the covariance
             // grew to say how little that is worth. Nothing to undo; worth a line in the log,
             // since a gap is the logger or the scheduler falling behind.
             coasted @ Propagation::Coasted { .. } => log!(board, "imu {}", coasted),
             // Refused, and the state is stale by that step. After a gap with `Config::coast` off
-            // (`StepTooLong`) or an overflow (`StateNotFinite`) the timers advanced, so `Status`
-            // already reports the aiding that much staler; a duplicated timestamp or a non-finite
-            // sample moved nothing. What is left is to say so.
+            // (`StepTooLong`), a sample the filter could not use (`NotFinite`,
+            // `InvalidInterval`) or an overflow (`StateNotFinite`) the timers advanced, so
+            // `Status` already reports the aiding that much staler; a duplicated timestamp
+            // moved nothing. What is left is to say so.
             refused @ (Propagation::StepTooLong { .. }
             | Propagation::InvalidStep { .. }
             | Propagation::NotFinite
+            | Propagation::InvalidInterval { .. }
             | Propagation::StateNotFinite) => log!(board, "imu {}", refused),
             // Not reachable once `align` has returned, and aligning again is the answer if it
             // were: a firmware that re-initializes in flight comes through here.
-            Propagation::NotInitialized => last = align(&mut filter, board),
+            Propagation::NotInitialized => align(&mut filter, board),
         }
 
         let mut stepped = false;
         if let Some(fix) = board.gnss() {
-            let position = filter.fuse_gnss_geodetic(fix.position, fix.position_noise);
+            let position = filter.fuse_gnss_geodetic(fix.time, fix.position, fix.position_noise);
             stepped |= report(board, "gnss position", position.horizontal);
             stepped |= report(board, "gnss height", position.height);
-            let velocity = filter.fuse_gnss_velocity(fix.velocity, fix.velocity_noise);
+            let velocity = filter.fuse_gnss_velocity(fix.time, fix.velocity, fix.velocity_noise);
             stepped |= report(board, "gnss velocity", velocity);
         }
-        if let Some(altitude) = board.baro() {
-            let outcome = filter.fuse_baro_altitude(altitude, AltitudeNoise::from_sigma(2.0));
+        if let Some((time, altitude)) = board.baro() {
+            let outcome = filter.fuse_baro_altitude(time, altitude, AltitudeNoise::from_sigma(2.0));
             stepped |= report(board, "baro", outcome);
         }
-        if let Some(field) = board.mag() {
-            let outcome = filter.fuse_mag_heading(field, HeadingNoise::from_sigma(0.05));
+        if let Some((time, field)) = board.mag() {
+            let outcome = filter.fuse_mag_heading(time, field, HeadingNoise::from_sigma(0.05));
             stepped |= report(board, "mag heading", outcome);
         }
         if stepped {
@@ -146,25 +149,24 @@ fn run(board: &mut impl Board) -> ! {
     }
 }
 
-/// Collect a still window and initialize from it, until initialization succeeds. Returns the
-/// timestamp of the last IMU sample used, which the first `dt` is measured from.
-fn align(filter: &mut Eskf, board: &mut impl Board) -> u32 {
-    let dt = Seconds::from_secs(WINDOW_DECIMATION as f32 / IMU_HZ as f32);
+/// Collect a still window and initialize from it, until initialization succeeds. The filter's
+/// clock starts at the last sample's time, which the first step is measured from.
+fn align(filter: &mut Eskf, board: &mut impl Board) {
     loop {
         let mut window = [StaticSample::default(); WINDOW];
         let (mut baro, mut mag) = (None, None);
-        let mut last = 0;
         let mut filled = 0;
+        let mut summed: Option<ImuSample> = None;
         let mut seen: u32 = 0;
         while filled < WINDOW {
             // A slower sensor's last reading is held across the samples it spans; the window
             // counts distinct readings, so holding it claims nothing.
-            baro = board.baro().or(baro);
-            mag = board.mag().or(mag);
-            let Some((now, imu)) = board.imu() else {
+            baro = board.baro().map(|(_, altitude)| altitude).or(baro);
+            mag = board.mag().map(|(_, field)| field).or(mag);
+            let Some(imu) = board.imu() else {
                 continue;
             };
-            last = now;
+            let imu = summed.map_or(imu, |sum| sum.accumulate(imu));
             seen = seen.wrapping_add(1);
             if seen.is_multiple_of(WINDOW_DECIMATION) {
                 window[filled] = StaticSample {
@@ -174,14 +176,17 @@ fn align(filter: &mut Eskf, board: &mut impl Board) -> u32 {
                     velocity: None,
                 };
                 filled += 1;
+                summed = None;
+            } else {
+                summed = Some(imu);
             }
         }
-        match filter.initialize(&window, dt) {
+        match filter.initialize(&window) {
             // A short or moving window still starts the filter, coarse: `Status::Aligning`
             // says so until the attitude converges, and the log says why.
             Ok(alignment) => {
                 log!(board, "aligned {}", alignment);
-                return last;
+                return;
             }
             Err(error) => log!(board, "initialization failed: {}", error),
         }
@@ -204,8 +209,12 @@ fn report(board: &mut impl Board, source: &str, outcome: Fusion) -> bool {
         // Expected until there is something to measure against: a barometer before the first
         // fix of a start in motion. `Diagnostics` counts them.
         Fusion::NotInitialized | Fusion::NoReference => {}
-        // A driver or a wire, not the flight: the sensor produced something no sensor can.
-        Fusion::NotFinite | Fusion::InvalidNoise | Fusion::StateInvalid => {
+        // A driver or a wire, not the flight: the sensor produced something no sensor can, or
+        // a timestamp the IMU's clock does not share.
+        Fusion::NotFinite
+        | Fusion::InvalidNoise
+        | Fusion::StateInvalid
+        | Fusion::OutOfHorizon { .. } => {
             log!(board, "{} {}", source, outcome)
         }
     }
@@ -239,16 +248,16 @@ impl core::fmt::Write for Hal {
 }
 
 impl Board for Hal {
-    fn imu(&mut self) -> Option<(u32, ImuSample)> {
+    fn imu(&mut self) -> Option<ImuSample> {
         None
     }
     fn gnss(&mut self) -> Option<Fix> {
         None
     }
-    fn baro(&mut self) -> Option<Altitude> {
+    fn baro(&mut self) -> Option<(Timestamp, Altitude)> {
         None
     }
-    fn mag(&mut self) -> Option<MagField<Body>> {
+    fn mag(&mut self) -> Option<(Timestamp, MagField<Body>)> {
         None
     }
     fn state_stepped(&mut self) {}
