@@ -47,6 +47,7 @@ fn main() -> Result<(), InitError> {
             // outcome is optional — `diagnostics()` keeps the test ratio and the counts —
             // but a refusal the health path cannot show up in is worth catching here.
             let outcome = filter.fuse_gnss_geodetic(
+                time,
                 Geodetic::from_degrees(47.397_742, 8.545_594, 488.0),
                 PositionNoise::horizontal_vertical(1.5, 3.0),
             );
@@ -58,17 +59,23 @@ fn main() -> Result<(), InitError> {
             }
 
             filter.fuse_gnss_velocity(
+                time,
                 Velocity::ned(14.0, 0.5, -0.2),
                 VelocityNoise::from_speed_accuracy(0.3),
             );
         }
 
         if tick % (IMU_HZ / BARO_HZ) == 0 {
-            filter.fuse_baro_altitude(Altitude::from_meters(60.0), AltitudeNoise::from_sigma(2.0));
+            filter.fuse_baro_altitude(
+                time,
+                Altitude::from_meters(60.0),
+                AltitudeNoise::from_sigma(2.0),
+            );
         }
 
         if tick % (IMU_HZ / MAG_HZ) == 0 {
             filter.fuse_mag_heading(
+                time,
                 MagField::body(0.21, 0.03, 0.44),
                 HeadingNoise::from_sigma(0.3),
             );

@@ -191,6 +191,17 @@ pub enum Fusion {
     /// a verdict — a rejection says the measurement disagreed with a sound estimate, and
     /// counting this as one would put a filter fault in the column that times out a sensor.
     StateInvalid,
+    /// The measurement's time is one the filter cannot place it at: older than
+    /// [`LATENCY_HORIZON`](crate::LATENCY_HORIZON), or later than the state by more than
+    /// [`Config::max_predict_dt`](crate::Config::max_predict_dt). The measurement was discarded
+    /// and no health timer moved.
+    ///
+    /// Fused anyway, an old measurement is a statement about where the vehicle was, applied to
+    /// where it is: at 20 m/s a fix a second old is 20 m of error handed to the gate as truth.
+    /// One later than the state is a clock the IMU and the sensor do not share, or a sample
+    /// the caller has not yet handed to [`predict`](crate::Eskf::predict). Either way it is the
+    /// timestamp that is wrong, which is a refusal rather than a verdict on the value.
+    OutOfHorizon,
 }
 
 impl Fusion {
@@ -217,6 +228,7 @@ impl Fusion {
             Self::NotFinite => Some(Refusal::NotFinite),
             Self::InvalidNoise => Some(Refusal::InvalidNoise),
             Self::StateInvalid => Some(Refusal::StateInvalid),
+            Self::OutOfHorizon => Some(Refusal::OutOfHorizon),
             Self::Accepted { .. } | Self::Rejected { .. } | Self::Reset => None,
         }
     }
@@ -231,7 +243,8 @@ impl Fusion {
             | Self::NoReference
             | Self::NotFinite
             | Self::InvalidNoise
-            | Self::StateInvalid => None,
+            | Self::StateInvalid
+            | Self::OutOfHorizon => None,
         }
     }
 }
@@ -250,6 +263,7 @@ impl core::fmt::Display for Fusion {
             Self::NotFinite => write!(f, "refused, {}", Refusal::NotFinite),
             Self::InvalidNoise => write!(f, "refused, {}", Refusal::InvalidNoise),
             Self::StateInvalid => write!(f, "refused, {}", Refusal::StateInvalid),
+            Self::OutOfHorizon => write!(f, "refused, {}", Refusal::OutOfHorizon),
         }
     }
 }
@@ -328,7 +342,7 @@ impl core::fmt::Display for GnssFusion {
 
 /// Why a measurement was turned away before the gate ran.
 ///
-/// The four cases [`Fusion`] reports that are not a verdict on the measurement's *value*: the
+/// The cases [`Fusion`] reports that are not a verdict on the measurement's *value*: the
 /// filter could not form an innovation to judge it against, or the numbers offered were not
 /// ones any sensor could produce. Kept on [`SourceHealth::last_refusal`] so that a count of
 /// refusals says which kind, which is the difference between a miswired sensor and a missing
@@ -350,6 +364,9 @@ pub enum Refusal {
     /// The filter's own covariance or correction could not support an update. See
     /// [`Fusion::StateInvalid`].
     StateInvalid,
+    /// The measurement's time was outside what the filter can place it at. See
+    /// [`Fusion::OutOfHorizon`].
+    OutOfHorizon,
 }
 
 impl core::fmt::Display for Refusal {
@@ -360,6 +377,7 @@ impl core::fmt::Display for Refusal {
             Self::NotFinite => "measurement or noise not finite",
             Self::InvalidNoise => "noise variance not positive",
             Self::StateInvalid => "filter state cannot support an update",
+            Self::OutOfHorizon => "measurement time outside the horizon",
         })
     }
 }

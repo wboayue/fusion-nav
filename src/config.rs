@@ -53,6 +53,18 @@ pub const ALIGNED_TILT: Radians = Radians::from_degrees(3.0);
 /// the type system cannot refuse.
 pub const ALIGNED_HEADING: Radians = Radians::from_degrees(30.0);
 
+/// How old a measurement may be and still be fused: the span of the past the filter can place
+/// a measurement in. Older than this, a `fuse_*` refuses it as
+/// [`Fusion::OutOfHorizon`](crate::Fusion::OutOfHorizon).
+///
+/// 0.3 s is what both production estimators hold. PX4 sizes its buffers to one and a half
+/// times `EKF2_DELAY_MAX`, whose default is 200 ms
+/// (`src/modules/ekf2/EKF/estimator_interface.cpp:591-592`, `src/modules/ekf2/module.yaml:26-34`
+/// at `c4e4ef98e9`), and ArduPilot caps a receiver's lag at 250 ms, "the max value the EKF has
+/// been tested for" (`libraries/AP_NavEKF3/AP_NavEKF3_core.cpp:70-71` at `368dc0c428`). The
+/// corpus's receivers are configured at 110 ms, one at 33.
+pub const LATENCY_HORIZON: Seconds = Seconds::from_secs(0.3);
+
 /// IMU noise, as the continuous-time densities of equations (16)–(21).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ImuNoise {

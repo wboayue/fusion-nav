@@ -33,8 +33,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(filter.set_magnetic_declination(Radians::from_radians(-0.06)));
 
     // A measurement before initialization is refused rather than silently dropped.
-    let early =
-        filter.fuse_baro_altitude(Altitude::from_meters(0.0), AltitudeNoise::from_sigma(2.0));
+    let early = filter.fuse_baro_altitude(
+        Timestamp::ZERO,
+        Altitude::from_meters(0.0),
+        AltitudeNoise::from_sigma(2.0),
+    );
     println!("before initialize: {early:?}");
 
     // Quasi-static initialization. A real window is captured from the IMU while the
@@ -51,9 +54,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // A glitch: one fix 50 m north of where every fix before it put the vehicle. The gate
     // turns the horizontal half down with a test ratio far above 1 and leaves the estimate
     // untouched there; the height half agrees, and is fused.
+    let now = filter.time().unwrap_or_default();
     check_gnss(
         "gnss position glitch",
         filter.fuse_gnss_position(
+            now,
             Position::ned(50.0, 0.0, 0.0),
             PositionNoise::horizontal_vertical(1.5, 3.0),
         ),
@@ -100,7 +105,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Frames are checked at compile time. Uncommenting this fails to build:
     //
-    //     filter.fuse_gnss_position(
+    //     filter.fuse_gnss_position(now,
     //         Position::enu(0.0, 0.0, 0.0),
     //         PositionNoise::horizontal_vertical(1.0, 1.0),
     //     );
@@ -154,11 +159,12 @@ fn run(filter: &mut Eskf, ticks: u32, sources: Sources) {
             let fix = Position::ned(0.0, 0.0, 0.0);
             check_gnss(
                 "gnss position",
-                filter.fuse_gnss_position(fix, PositionNoise::horizontal_vertical(1.5, 3.0)),
+                filter.fuse_gnss_position(time, fix, PositionNoise::horizontal_vertical(1.5, 3.0)),
             );
             check(
                 "gnss velocity",
                 filter.fuse_gnss_velocity(
+                    time,
                     Velocity::ned(0.0, 0.0, 0.0),
                     VelocityNoise::from_speed_accuracy(0.3),
                 ),
@@ -169,6 +175,7 @@ fn run(filter: &mut Eskf, ticks: u32, sources: Sources) {
             check(
                 "baro",
                 filter.fuse_baro_altitude(
+                    time,
                     Altitude::from_meters(60.0),
                     AltitudeNoise::from_sigma(2.0),
                 ),
@@ -179,6 +186,7 @@ fn run(filter: &mut Eskf, ticks: u32, sources: Sources) {
             check(
                 "mag",
                 filter.fuse_mag_heading(
+                    time,
                     MagField::body(0.21, 0.03, 0.44),
                     HeadingNoise::from_sigma(0.22),
                 ),

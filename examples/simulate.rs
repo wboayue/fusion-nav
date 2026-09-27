@@ -575,6 +575,8 @@ const GNSS: GnssErrors = GnssErrors {
 
 /// One fix: position and velocity, each with the variance the log reports.
 struct Fix {
+    /// When the fix describes the vehicle: the row's time less the receiver's latency.
+    taken: f64,
     position: [f64; 3],
     velocity: [f64; 3],
     position_variance: [f64; 3],
@@ -684,6 +686,7 @@ impl Gnss {
 
         let was = flight.at(described);
         Some(Fix {
+            taken: described,
             position: add(was.position, position_noise),
             velocity: add(was.velocity, velocity_noise),
             position_variance: sigma.map(|sigma| sigma * sigma),
@@ -1332,7 +1335,7 @@ fn generate(scenario: &Scenario, out_dir: &Path) -> Result<Report, Box<dyn Error
         let [gx, gy, gz] = reading.gyro;
         let [ax, ay, az] = reading.accel;
         if logged {
-            log.row(t, "imu", &[gx, gy, gz, ax, ay, az], &[])?;
+            log.row(t, "imu", &[gx, gy, gz, ax, ay, az], &[], None)?;
         }
         write_truth_row(&mut truth, t, &state, &reading)?;
         report.epoch(t, &state, &reading);
@@ -1341,20 +1344,21 @@ fn generate(scenario: &Scenario, out_dir: &Path) -> Result<Report, Box<dyn Error
             && let Some(fix) = gnss.fix(t, &scenario.trajectory)
             && logged
         {
-            log.row(t, "gnss_pos", &fix.position, &fix.position_variance)?;
-            log.row(t, "gnss_vel", &fix.velocity, &fix.velocity_variance)?;
+            let taken = Some(fix.taken);
+            log.row(t, "gnss_pos", &fix.position, &fix.position_variance, taken)?;
+            log.row(t, "gnss_vel", &fix.velocity, &fix.velocity_variance, taken)?;
         }
         if epoch % baro_every == 0
             && let Some(altitude) = baro.sample(t, &state)
             && logged
         {
-            log.row(t, "baro", &[altitude.meters], &[altitude.variance])?;
+            log.row(t, "baro", &[altitude.meters], &[altitude.variance], None)?;
         }
         if epoch % mag_every == 0
             && let Some(field) = mag.sample(t, &state)
             && logged
         {
-            log.row(t, "mag", &field.body, &[field.heading_variance])?;
+            log.row(t, "mag", &field.body, &[field.heading_variance], None)?;
         }
     }
 
@@ -1476,9 +1480,17 @@ impl<W: Write> Log<W> {
         Self { out, rows: 0 }
     }
 
-    /// One measurement row: six value columns then three variance columns, blank where the
-    /// source does not use them.
-    fn row(&mut self, t: f64, source: &str, values: &[f64], variances: &[f64]) -> io::Result<()> {
+    /// One measurement row: six value columns, three variance columns, and when the
+    /// measurement was taken, blank where the source does not use them. A barometer and a
+    /// magnetometer read the instant they are logged, so only a fix carries a time of its own.
+    fn row(
+        &mut self,
+        t: f64,
+        source: &str,
+        values: &[f64],
+        variances: &[f64],
+        taken: Option<f64>,
+    ) -> io::Result<()> {
         write!(self.out, "{t:.4},{source}")?;
         for column in 0..6 {
             match values.get(column) {
@@ -1491,6 +1503,10 @@ impl<W: Write> Log<W> {
                 Some(variance) => write!(self.out, ",{variance:.6}")?,
                 None => write!(self.out, ",")?,
             }
+        }
+        match taken {
+            Some(taken) => write!(self.out, ",{taken:.4}")?,
+            None => write!(self.out, ",")?,
         }
         writeln!(self.out)?;
         self.rows += 1;
@@ -1535,13 +1551,14 @@ fn write_log_header(out: &mut impl Write, scenario: &Scenario) -> io::Result<()>
          #   gnss_pos  v0..v2 NED position m      var0..var2 m^2\n\
          #   gnss_vel  v0..v2 NED velocity m/s    var0..var2 m^2/s^2\n\
          #   baro      v0     altitude m (up)     var0      m^2\n\
-         #   mag       v0..v2 field, calibrated   var0      heading rad^2",
+         #   mag       v0..v2 field, calibrated   var0      heading rad^2\n\
+         #   t_meas_s  when a fix was taken, t_s less the receiver's latency",
         name = scenario.name,
         seed = scenario.seed,
         covers = scenario.covers,
         declination = DECLINATION,
     )?;
-    writeln!(out, "t_s,source,v0,v1,v2,v3,v4,v5,var0,var1,var2")
+    writeln!(out, "t_s,source,v0,v1,v2,v3,v4,v5,var0,var1,var2,t_meas_s")
 }
 
 fn write_truth_header(out: &mut impl Write, scenario: &Scenario) -> io::Result<()> {

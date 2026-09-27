@@ -60,6 +60,7 @@ pub use state::{CovarianceMatrix, STATES};
 /// // filter expects is `Fusion::Rejected` instead — the gate of (37) runs on every
 /// // measurement, and a 52 m step from a vehicle that has not moved does not pass it.
 /// let outcome = filter.fuse_baro_altitude(
+///     at(802),
 ///     Altitude::from_meters(114.0),
 ///     AltitudeNoise::from_sigma(2.0),
 /// );
@@ -69,6 +70,7 @@ pub use state::{CovarianceMatrix, STATES};
 /// // variance some sensor could have. Zero or negative is refused, not fused.
 /// assert_eq!(
 ///     filter.fuse_baro_altitude(
+///         at(802),
 ///         Altitude::from_meters(114.0),
 ///         AltitudeNoise::from_variance(0.0),
 ///     ),
@@ -82,7 +84,7 @@ pub use state::{CovarianceMatrix, STATES};
 pub mod prelude {
     pub use crate::config::{
         ALIGNED_HEADING, ALIGNED_TILT, Accuracy, Coast, Config, Correlation, GRAVITY, Gate, Gates,
-        ImuNoise, Initialization, Percentile, Recovery, Timeouts,
+        ImuNoise, Initialization, LATENCY_HORIZON, Percentile, Recovery, Timeouts,
     };
     pub use crate::eskf::Eskf;
     pub use crate::frames::{Body, Enu, Ned};

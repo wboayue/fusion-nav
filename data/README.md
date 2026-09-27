@@ -232,6 +232,13 @@ $ uv run tools/ulog2replay.py data/logs/<log-id>.ulg -o data/logs/<log-id>.csv -
 $ cargo run --example replay -- data/logs/<log-id>.csv
 ```
 
+A converted log dates each measurement as the log's own EKF2 did. `t_s` is when a row was logged
+and `t_meas_s` when it was taken: `t_s` less `EKF2_GPS_DELAY` for a fix (`SENS_GPS0_DELAY` on a
+build that has it), `EKF2_BARO_DELAY` and `EKF2_MAG_DELAY` for the other two, blank where the
+delay is zero. A `# Measurement delays` header line says which parameter each figure came from.
+No corpus receiver logs a sample time of its own: `sensor_gps.timestamp_sample` is zero or equal
+to `timestamp` wherever it appears.
+
 ### Finding a candidate
 
 An entry exists because it covers something no other log does, and #86 names the gaps. A

@@ -69,6 +69,7 @@ caused it to drift. The error-state form keeps attitude as a quaternion and esti
 use fusion_nav::prelude::*;
 # let (static_window, imu) = ([StaticSample::default(); 800], ImuSample::default());
 # let (lat_e7, lon_e7, height_mm, h_acc_mm, v_acc_mm) = (473_977_420, 85_455_940, 488_000, 1_500, 3_000);
+# let arrived = Timestamp::from_micros(12_500_000);
 
 let mut filter = Eskf::new(Config::default());
 
@@ -92,7 +93,10 @@ loop {
     let (eph, epv) = (h_acc_mm as f32 * 1e-3, v_acc_mm as f32 * 1e-3);
     let (horizontal, vertical) = (SigmaBounds::new(0.5, 100.0), SigmaBounds::new(0.75, 100.0));
     let noise = PositionNoise::clamped(eph, epv, horizontal, vertical);
-    if !filter.fuse_gnss_geodetic(fix, noise).is_accepted() {
+    // The time the fix describes, on the IMU's clock: when it arrived, less the receiver's
+    // latency. PX4's EKF2_GPS_DELAY is that latency, 110 ms by default.
+    let taken = arrived.before(Seconds::from_secs(0.110));
+    if !filter.fuse_gnss_geodetic(taken, fix, noise).is_accepted() {
         /* diagnostics() has the detail */
     }
 
@@ -311,16 +315,21 @@ are integrated over their own intervals. The result is `#[must_use]`:
 
 | method | measurement |
 | ------ | ----------- |
-| `fuse_gnss_geodetic(fix, noise)` | latitude, longitude, height; converted about the filter's origin |
-| `fuse_gnss_position(position, noise)` | NED position about the filter's origin, for a caller that converts itself |
+| `fuse_gnss_geodetic(time, fix, noise)` | latitude, longitude, height; converted about the filter's origin |
+| `fuse_gnss_position(time, position, noise)` | NED position about the filter's origin, for a caller that converts itself |
 
 Both GNSS position calls return a `GnssFusion`, a `Fusion` for each half of the fix —
 `horizontal` and `height` — because the two are gated apart: a height the estimate disagrees with
 is rejected without costing the horizontal fix beside it, and `diagnostics()` carries each half
 as its own source, `gnss_position` and `gnss_height`. `is_accepted()` on it asks for both.
-| `fuse_gnss_velocity(velocity, noise)` | NED velocity |
-| `fuse_baro_altitude(altitude, noise)` | altitude, relative to `α₀` |
-| `fuse_mag_heading(field, noise)` | body-frame field, reduced to a heading and fused as one scalar |
+| `fuse_gnss_velocity(time, velocity, noise)` | NED velocity |
+| `fuse_baro_altitude(time, altitude, noise)` | altitude, relative to `α₀` |
+| `fuse_mag_heading(time, field, noise)` | body-frame field, reduced to a heading and fused as one scalar |
+
+`time` is when the measurement was taken, on the clock the IMU's samples are timed on, and it is
+an argument for the reason the noise is: a receiver's latency is a property of that receiver and
+that fix. A measurement older than `LATENCY_HORIZON` (0.3 s, what PX4 and ArduPilot buffer) or
+later than the state by more than a step is refused as `OutOfHorizon`.
 
 The noise is an argument, not configuration, because the accuracy of a fix is a property of that
 fix. Build it the way the source reports it: `PositionNoise::horizontal_vertical(eph, epv)` and
@@ -354,6 +363,7 @@ a `Reset` steps the state, and a refusal says the measurement never reached the 
 | `NoReference` | barometer altitude with no `α₀` and no established position to read one against, or a geodetic fix that cannot place an origin |
 | `NotFinite` | a NaN or infinity in the measurement or its noise; discarded |
 | `InvalidNoise` | a zero or negative variance in the noise — no sensor has one, and `S` would be singular or worse; discarded |
+| `OutOfHorizon` | `time` older than `LATENCY_HORIZON`, or ahead of the state by more than `Config::max_predict_dt`; discarded |
 | `StateInvalid` | the filter's own covariance or correction could not support an update — `S` not positive-definite, or f32 overflow; nothing committed, and the measurement is not at fault |
 | `NotInitialized` | no state to fuse against |
 
@@ -457,8 +467,9 @@ source, which the outcome does not know:
 use core::fmt::Write;
 use fusion_nav::prelude::*;
 
-fn fuse(filter: &mut Eskf, log: &mut impl Write, fix: Geodetic) -> core::fmt::Result {
-    let outcome = filter.fuse_gnss_geodetic(fix, PositionNoise::horizontal_vertical(1.5, 3.0));
+fn fuse(filter: &mut Eskf, log: &mut impl Write, at: Timestamp, fix: Geodetic) -> core::fmt::Result {
+    let noise = PositionNoise::horizontal_vertical(1.5, 3.0);
+    let outcome = filter.fuse_gnss_geodetic(at, fix, noise);
     if !outcome.is_accepted() {
         writeln!(log, "gnss position {outcome}")?; // gnss position rejected, ratio 2.70
     }

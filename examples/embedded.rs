@@ -60,8 +60,12 @@ macro_rules! log {
 }
 
 /// A GNSS solution as a receiver reports it: position and velocity, each with its own
-/// accuracy, since `R` belongs to the fix rather than to the configuration.
+/// accuracy, since `R` belongs to the fix rather than to the configuration, and the time it
+/// describes.
 struct Fix {
+    /// When the solution was computed, on the IMU's clock: its arrival less the receiver's
+    /// latency, which for a u-blox at 5 Hz is on the order of PX4's 110 ms `EKF2_GPS_DELAY`.
+    time: Timestamp,
     position: Geodetic,
     position_noise: PositionNoise<Ned>,
     velocity: Velocity<Ned>,
@@ -78,10 +82,10 @@ trait Board: core::fmt::Write {
     fn imu(&mut self) -> Option<ImuSample>;
     /// The next GNSS solution, at 5 Hz.
     fn gnss(&mut self) -> Option<Fix>;
-    /// The next barometric altitude, at 20 Hz.
-    fn baro(&mut self) -> Option<Altitude>;
-    /// The next calibrated magnetometer reading, at 20 Hz.
-    fn mag(&mut self) -> Option<MagField<Body>>;
+    /// The next barometric altitude, at 20 Hz, and when it was read.
+    fn baro(&mut self) -> Option<(Timestamp, Altitude)>;
+    /// The next calibrated magnetometer reading, at 20 Hz, and when it was read.
+    fn mag(&mut self) -> Option<(Timestamp, MagField<Body>)>;
     /// The estimate stepped rather than moved: whatever holds a setpoint relative to it,
     /// a position hold for one, has to re-anchor or it chases the step.
     fn state_stepped(&mut self);
@@ -120,18 +124,18 @@ fn run(board: &mut impl Board) -> ! {
 
         let mut stepped = false;
         if let Some(fix) = board.gnss() {
-            let position = filter.fuse_gnss_geodetic(fix.position, fix.position_noise);
+            let position = filter.fuse_gnss_geodetic(fix.time, fix.position, fix.position_noise);
             stepped |= report(board, "gnss position", position.horizontal);
             stepped |= report(board, "gnss height", position.height);
-            let velocity = filter.fuse_gnss_velocity(fix.velocity, fix.velocity_noise);
+            let velocity = filter.fuse_gnss_velocity(fix.time, fix.velocity, fix.velocity_noise);
             stepped |= report(board, "gnss velocity", velocity);
         }
-        if let Some(altitude) = board.baro() {
-            let outcome = filter.fuse_baro_altitude(altitude, AltitudeNoise::from_sigma(2.0));
+        if let Some((time, altitude)) = board.baro() {
+            let outcome = filter.fuse_baro_altitude(time, altitude, AltitudeNoise::from_sigma(2.0));
             stepped |= report(board, "baro", outcome);
         }
-        if let Some(field) = board.mag() {
-            let outcome = filter.fuse_mag_heading(field, HeadingNoise::from_sigma(0.05));
+        if let Some((time, field)) = board.mag() {
+            let outcome = filter.fuse_mag_heading(time, field, HeadingNoise::from_sigma(0.05));
             stepped |= report(board, "mag heading", outcome);
         }
         if stepped {
@@ -157,8 +161,8 @@ fn align(filter: &mut Eskf, board: &mut impl Board) {
         while filled < WINDOW {
             // A slower sensor's last reading is held across the samples it spans; the window
             // counts distinct readings, so holding it claims nothing.
-            baro = board.baro().or(baro);
-            mag = board.mag().or(mag);
+            baro = board.baro().map(|(_, altitude)| altitude).or(baro);
+            mag = board.mag().map(|(_, field)| field).or(mag);
             let Some(imu) = board.imu() else {
                 continue;
             };
@@ -226,8 +230,9 @@ fn report(board: &mut impl Board, source: &str, outcome: Fusion) -> bool {
         // Expected until there is something to measure against: a barometer before the first
         // fix of a start in motion. `Diagnostics` counts them.
         Fusion::NotInitialized | Fusion::NoReference => {}
-        // A driver or a wire, not the flight: the sensor produced something no sensor can.
-        Fusion::NotFinite | Fusion::InvalidNoise | Fusion::StateInvalid => {
+        // A driver or a wire, not the flight: the sensor produced something no sensor can, or
+        // a timestamp the IMU's clock does not share.
+        Fusion::NotFinite | Fusion::InvalidNoise | Fusion::StateInvalid | Fusion::OutOfHorizon => {
             log!(board, "{} {}", source, outcome)
         }
     }
@@ -267,10 +272,10 @@ impl Board for Hal {
     fn gnss(&mut self) -> Option<Fix> {
         None
     }
-    fn baro(&mut self) -> Option<Altitude> {
+    fn baro(&mut self) -> Option<(Timestamp, Altitude)> {
         None
     }
-    fn mag(&mut self) -> Option<MagField<Body>> {
+    fn mag(&mut self) -> Option<(Timestamp, MagField<Body>)> {
         None
     }
     fn state_stepped(&mut self) {}

@@ -33,11 +33,15 @@
 //! without one.
 //!
 //! ```text
-//! t_s,source,v0,v1,v2,v3,v4,v5,var0,var1,var2
-//! 0.0200,imu,0.0004,0.0020,0.0001,0.0054,0.0299,-9.8067,,,
-//! 2.0000,gnss_pos,0,0,0,,,,2.25,2.25,5.625
-//! 2.0000,baro,0.0273,,,,,,4,,
+//! t_s,source,v0,v1,v2,v3,v4,v5,var0,var1,var2,t_meas_s
+//! 0.0200,imu,0.0004,0.0020,0.0001,0.0054,0.0299,-9.8067,,,,
+//! 2.0000,gnss_pos,0,0,0,,,,2.25,2.25,5.625,1.8900
+//! 2.0000,baro,0.0273,,,,,,4,,,
 //! ```
+//!
+//! `t_s` is when a row arrives, which is the order the harness hands it to the filter in, and
+//! `t_meas_s` when a measurement was taken, the `time` its `fuse_*` is given: a fix computed
+//! 110 ms before it reached the autopilot. Blank, or absent from an older file, it is `t_s`.
 //!
 //! One interleaved stream rather than a file per sensor, because the interleaving is the
 //! thing worth exercising. Converting rosbag, ULog, or a dataflash log into this shape is
@@ -978,6 +982,7 @@ impl Replay {
                 // Variance comes from the log, per sample: a real GNSS reports its own
                 // accuracy, and it degrades before it drops out.
                 let outcome = self.filter.fuse_gnss_position(
+                    r.taken(),
                     Position::ned(r.value(0)?, r.value(1)?, r.value(2)?),
                     self.policy
                         .position([r.variance(0)?, r.variance(1)?, r.variance(2)?]),
@@ -992,6 +997,7 @@ impl Replay {
                 // thing in the row that a window taken in motion can still use.
                 self.pending_velocity = Some(velocity);
                 let outcome = self.filter.fuse_gnss_velocity(
+                    r.taken(),
                     velocity,
                     self.policy
                         .velocity([r.variance(0)?, r.variance(1)?, r.variance(2)?]),
@@ -1001,17 +1007,21 @@ impl Replay {
             "baro" => {
                 let altitude = Altitude::from_meters(r.value(0)?);
                 self.last_baro = Some(altitude);
-                let outcome = self
-                    .filter
-                    .fuse_baro_altitude(altitude, AltitudeNoise::from_variance(r.variance(0)?));
+                let outcome = self.filter.fuse_baro_altitude(
+                    r.taken(),
+                    altitude,
+                    AltitudeNoise::from_variance(r.variance(0)?),
+                );
                 self.observe(r.t, BARO, outcome, out)?;
             }
             "mag" => {
                 let field = MagField::body(r.value(0)?, r.value(1)?, r.value(2)?);
                 self.last_mag = Some(field);
-                let outcome = self
-                    .filter
-                    .fuse_mag_heading(field, HeadingNoise::from_variance(r.variance(0)?));
+                let outcome = self.filter.fuse_mag_heading(
+                    r.taken(),
+                    field,
+                    HeadingNoise::from_variance(r.variance(0)?),
+                );
                 self.observe(r.t, MAG, outcome, out)?;
             }
             other => return Err(format!("unknown source `{other}`").into()),
@@ -1705,8 +1715,9 @@ impl Replay {
             // and the last refusal rather than a tally per variant, so per source is the
             // breakdown that exists.
             println!(
-                "{} never reached the gate at all: a variance of zero or less, a NaN, or \
-                 an altitude with no reference — per source below",
+                "{} never reached the gate at all: a variance of zero or less, a NaN, \
+                 an altitude with no reference, or a time the filter cannot place — per \
+                 source below",
                 self.discarded()
             );
         }
@@ -1943,6 +1954,8 @@ struct Record<'a> {
     source: &'a str,
     values: [Option<f32>; 6],
     variances: [Option<f32>; 3],
+    /// `t_meas_s`, where the row carries one.
+    measured: Option<f64>,
 }
 
 impl<'a> Record<'a> {
@@ -1966,12 +1979,22 @@ impl<'a> Record<'a> {
                 *slot = Some(field.parse().ok()?);
             }
         }
+        let measured = match fields.next().map(str::trim) {
+            None | Some("") => None,
+            Some(field) => Some(field.parse().ok()?),
+        };
         Some(Self {
             t,
             source,
             values,
             variances,
+            measured,
         })
+    }
+
+    /// When the measurement was taken: `t_meas_s`, or the row's own time.
+    fn taken(&self) -> Timestamp {
+        Timestamp::from_secs_f64(self.measured.unwrap_or(self.t))
     }
 
     fn value(&self, i: usize) -> Result<f32, String> {
@@ -2755,6 +2778,7 @@ fn verdict(outcome: Fusion) -> &'static str {
         Fusion::NotFinite => "not_finite",
         Fusion::InvalidNoise => "invalid_noise",
         Fusion::StateInvalid => "state_invalid",
+        Fusion::OutOfHorizon => "out_of_horizon",
     }
 }
 
@@ -3063,9 +3087,19 @@ mod tests {
     }
 
     #[test]
-    fn columns_past_the_last_variance_are_ignored() {
-        let r = Record::parse("1.0,imu,0,0,0,0,0,-9.80665,,,,extra,columns").expect("parses");
+    fn columns_past_the_measurement_time_are_ignored() {
+        let r = Record::parse("1.0,imu,0,0,0,0,0,-9.80665,,,,,extra,columns").expect("parses");
         assert_eq!(r.value(5), Ok(-9.80665));
+    }
+
+    #[test]
+    fn a_measurement_is_taken_at_its_own_time_or_else_at_its_rows() {
+        let late = Record::parse("2.0,baro,1,,,,,,4,,,1.89").expect("parses");
+        assert_eq!(late.taken(), Timestamp::from_micros(1_890_000));
+        for row in ["2.0,baro,1,,,,,,4,,,", "2.0,baro,1,,,,,,4,,"] {
+            let r = Record::parse(row).expect("parses");
+            assert_eq!(r.taken(), Timestamp::from_micros(2_000_000), "{row}");
+        }
     }
 
     #[test]
@@ -3682,7 +3716,7 @@ mod tests {
         // beside it is what shows the count is the gate's and not every fix's.
         let log = still_start()
             .gnss_pos(2.0, 1.0, 2.0, -3.0)
-            .gnss_pos(2.2, 1000.0, 0.0, 0.0);
+            .gnss_pos(2.04, 1000.0, 0.0, 0.0);
         let summary = replay(&log).summary();
         assert_eq!(key(&summary, "rejected"), "1", "{summary}");
         assert_eq!(key(&replay(&still_start()).summary(), "rejected"), "0");
@@ -3771,7 +3805,7 @@ mod tests {
         // in a different order, which `RATIOS` would not have caught either.
         let log = still_start()
             .gnss_pos(2.0, 1.0, 2.0, -3.0)
-            .gnss_pos(2.2, 1000.0, 0.0, 0.0);
+            .gnss_pos(2.04, 1000.0, 0.0, 0.0);
         let summary = replay(&log).summary();
         assert_eq!(key(&summary, "rejected_gnss_pos"), "1", "{summary}");
         for source in ["gnss_vel", "baro", "mag"] {
@@ -3900,14 +3934,14 @@ mod tests {
         // no dimension to record a row against. No mutation of the predicate in `observe`
         // puts an adopted row into a population. What this is for is the reader who asks
         // #5's question and wants it answered by something that runs.
-        let one_fused = replay(&still_start().mag(2.0).mag(2.1));
+        let one_fused = replay(&still_start().mag(2.0).mag(2.02));
         let summary = one_fused.summary();
         assert_eq!(key(&summary, "resets"), "1", "{summary}");
         assert_eq!(one_fused.consistency.rows(MAG), 1, "{summary}");
 
         // The same start with one more heading. Two fusions and still one adoption, so the
         // population grows by exactly the measurement that was fused.
-        let two_fused = replay(&still_start().mag(2.0).mag(2.1).mag(2.2));
+        let two_fused = replay(&still_start().mag(2.0).mag(2.02).mag(2.04));
         assert_eq!(key(&two_fused.summary(), "resets"), "1");
         assert_eq!(two_fused.consistency.rows(MAG), 2);
     }
@@ -3922,7 +3956,7 @@ mod tests {
         let clean = still_start().gnss_pos(2.0, 1.0, 2.0, -3.0);
         let with_outlier = still_start()
             .gnss_pos(2.0, 1.0, 2.0, -3.0)
-            .gnss_pos(2.2, 1000.0, 0.0, 0.0);
+            .gnss_pos(2.04, 1000.0, 0.0, 0.0);
 
         let clean = replay(&clean);
         let with_outlier = replay(&with_outlier);
@@ -4188,6 +4222,11 @@ mod tests {
                 "not_finite",
             ),
             (coarse, "reset"),
+            // `t_meas_s` a second before arrival: read, and handed to the filter as the time.
+            (
+                still_start().raw("2.000000,gnss_pos,0,0,0,,,,2.25,2.25,5.625,1.000000"),
+                "out_of_horizon",
+            ),
         ] {
             let last = fusion_rows(&log).pop().expect("a fusion row");
             assert_eq!(
@@ -4240,8 +4279,8 @@ mod tests {
         // testing only refusals.
         let log = still_start()
             .gnss_pos(2.0, 1.0, 2.0, -3.0)
-            .raw("2.100000,gnss_pos,1,2,-3,,,,0,2.25,0")
-            .mag(2.2);
+            .raw("2.020000,gnss_pos,1,2,-3,,,,0,2.25,0")
+            .mag(2.04);
         let rows = fusion_rows(&log);
         let tail = &rows[rows.len() - 3..];
         for (row, verdict) in tail.iter().zip(["invalid_noise", "invalid_noise", "reset"]) {
