@@ -6037,6 +6037,20 @@ mod tests {
     }
 
     #[test]
+    fn a_magnetometer_disagreeing_with_a_gnss_heading_is_not_adopted() {
+        // The receiver measures heading outright, so the magnetometer is the one disturbed.
+        let (mut filter, turned) = disturbed_heading();
+        let north = Radians::from_radians(0.0);
+        hold(&mut filter, 20.0, 10, |filter| {
+            let _ = filter.fuse_gnss_heading(filter.now(), north, HeadingNoise::from_sigma(0.05));
+            let outcome =
+                filter.fuse_mag_heading(filter.now(), turned, HeadingNoise::from_sigma(0.05));
+            assert!(matches!(outcome, Fusion::Rejected { .. }), "{outcome:?}");
+        });
+        assert_eq!(filter.diagnostics().mag_heading.recovered, 0);
+    }
+
+    #[test]
     fn a_magnetometer_disagreeing_with_nothing_else_to_say_is_adopted() {
         let (mut filter, turned) = disturbed_heading();
         let mut recovered = false;
