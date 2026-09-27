@@ -356,10 +356,10 @@ The options, in the order they are worth doing:
    from ten seconds later; the whole log reads 6.62°, its first 5.8 s spent on a guess). The bar
    is met, and it says less than it seems: after adoption the error *is* the sideslip, which the
    simulator sets (0.02 ± 0.035 rad, 1.8° RMS) and the constraint cannot observe. The corpus's
-   fixed-wing, `093e806a`, replayed without its magnetometer, aligned 6.56 s in where without
+   fixed-wing, `093e806a`, replayed without its magnetometer, aligned 5.55 s in where without
    the course it never did, and turned down 305 measurements against 273 with its magnetometer
    and 366 with neither. The VTOL `4b473e91` shows the vehicle it is not for: its multirotor
-   phases read `nis_course` 4.40, recovered three times, and turned down 45 measurements where
+   phases read `nis_course` 4.38, recovered three times, and turned down 45 measurements where
    its magnetometer turned down none. So option 6 is not needed for the vehicles 5 serves, and a
    multirotor with neither a magnetometer nor a second antenna remains its case.
 6. **An EKF-GSF yaw estimator.** A bank of small filters over yaw hypotheses weighted by GNSS
