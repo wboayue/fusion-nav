@@ -242,17 +242,8 @@ crate no data could settle, which is why it is configuration; see differentiator
 
 ## Open design questions
 
-Two gaps the core filter left: alignment, which the options below settle one at a time, and
-measurement latency (#52).
-
-### Measurement latency
-
-GNSS measurements arrive 100–200 ms stale. PX4's delayed fusion horizon, a ring buffer of past
-states plus an output complementary filter, exists specifically for this. Fusing stale GNSS
-against the current state degrades the solution noticeably in flight.
-
-Either implement a bounded state buffer or document the assumption explicitly. Handling this
-cleanly at 15 states would itself be a differentiator.
+One gap the core filter left: alignment, which the options below settle one at a time.
+Measurement latency was the other, and is now a [decision](#measurement-latency).
 
 ### Alignment beyond the static window
 
@@ -524,7 +515,7 @@ to 69, the magnetometer rejected instead. On `093e806a`, 35 to 29.
 
 **What it did not buy.** `harsh_imu` (#149) and `gnss_latency` stopped failing on attitude
 because the covariance widened, not because the error shrank: `harsh_imu`'s tilt moved 1.19° to
-1.12° while its `nees_att` fell 0.76 to 0.21. `gnss_latency`'s cause stands. `harsh_imu`'s was
+1.12° while its `nees_att` fell 0.76 to 0.21. `gnss_latency`'s cause was the latency, which [(23′)](#measurement-latency) removed. `harsh_imu`'s was
 the start: an accelerometer bias at 1.86σ of the prior, levelled in as tilt that `P₀` called
 independent of the bias. Equation (8)'s tilt–bias correlation, at PX4's and ArduPilot's 0.2 m/s²,
 removed it: 0 epochs over the bound fused as white, against 2281, and tilt 1.12° to 0.83°.
@@ -547,6 +538,56 @@ sample were news. `baro_drift` `pos_v` goes 0.284 m to 0.917, GNSS height deweig
 barometer that does drift. On the corpus, `285ee2e7`'s barometer, at a `τ` a seventieth of GNSS
 height's, holds the height 4 m from GNSS through a back-transition until the receiver is rejected
 and adopted. A sensor characterized as white is the reason to set its source's `τ` to `None`.
+
+### Measurement latency
+
+GNSS solutions reach an autopilot 100–200 ms after the epoch they describe, and fused as though
+current, the distance flown in the delay arrives at the gate as error `R` does not describe. It
+was this crate's first open question, and the options were a bounded state buffer, documenting
+the assumption, or something cheaper in between (#52).
+
+**Decided (#52):** every `fuse_*` takes the time its measurement was taken, and the filter fuses
+it there, equation (23′): the innovation against a history of the nominal state at that time, and
+`H` carried to today's error through (16)–(19). A time older than `LATENCY_HORIZON` (0.3 s,
+what PX4 and ArduPilot buffer) or ahead of the state by more than a step is refused as
+`Fusion::OutOfHorizon`. The age is an argument rather than configuration for the reason `R` is:
+it is a property of the receiver and the fix, and PX4's `EKF2_GPS_DELAY` is one figure an
+integrator converts into it.
+
+What was measured, on `gnss_latency` (150 ms) and swept at 50, 150 and 300 ms and at half and
+twice its speed (`examples/simulate.rs --latency --speed`), against `mission`'s `pos_h` of 0.292 m:
+
+| fused | `pos_h` at 150 ms | `vel` | `nees_pos` | worst of the sweep, `pos_h` |
+| --- | --- | --- | --- | --- |
+| as current | 2.197 m | 0.459 m/s | 4.06 | 11.4 m, 300 ms at twice the speed |
+| against `p − v τ`, the issue's option 3 | 2.081 | 0.458 | 3.64 | 9.4 |
+| against a second-order extrapolation back | 0.300 | 0.142 | 0.093 | 0.381 |
+| against the state history, `H` carried back | 0.294 | 0.144 | 0.084 | 0.293 |
+
+Option 3 buys almost nothing because a stale *velocity* fix is wrong too, by `a τ`, and moving
+the position does not touch it. Extrapolating position, velocity and attitude back on the last
+IMU sample matches the history in simulation and was refused on the corpus, where one sample's
+specific force carries the airframe's vibration: `eb799954` went from 2 rejections to 917,
+`89a498ce` from 0 to 851, and `2c42096b`, which never moves, from 0 to 94. The history is what
+the simulator's clean IMU could not tell apart from it. `data/anees.sh` passes `gnss_latency` on
+all three blocks, 50 seeds, where it asserted the failure.
+
+On the corpus, fixes are dated by each log's own `EKF2_GPS_DELAY`, 110 ms. The delay can be swept
+per log, and the logs that fly fast on an honest receiver agree with that figure: `4b473e91`'s
+velocity NIS reads 0.209, 0.080, 0.039 and 0.099 at 0, 55, 110 and 165 ms, and `093e806a`
+rejects 273 fixes rather than 294 and recovers 26 times rather than 29. Two logs prefer no delay,
+and both already carry a cause latency does not touch: `a299e722`, whose velocity its own
+positions contradict, 266 rejections to 396; `7ce66f0d`, levelled wrong at hand launch, 1828 to
+1964 and aligned at 39.0 s rather than 17.7. `data/manifest.txt` has each.
+
+Why not PX4's delayed horizon. It runs the whole filter `τ_max` behind and brings the estimate
+forward with an output predictor, so a `fuse_*` could only queue a measurement: its verdict would
+arrive a horizon later, and the typed outcome every call returns, which differentiator 2's API
+rests on, would become a promise. The state it publishes would be the predictor's, which `P` does
+not describe, so `Validity` would read one state's covariance about another. Fusing at the
+measurement's time against a history keeps the verdict synchronous and the published state the
+one `P` describes, for 1.5 KB of history on `Eskf` and, per aged measurement, one `A` and two
+products of `H` with it. The stack high-water mark is still `update::<3>`.
 
 ### Local gravity as a constant, derived offline
 

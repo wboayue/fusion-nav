@@ -12,6 +12,7 @@ mod eskf;
 mod frames;
 mod geodetic;
 mod health;
+mod history;
 mod init;
 mod math;
 mod observation;

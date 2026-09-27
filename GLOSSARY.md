@@ -241,8 +241,9 @@ document, the entry points there instead of repeating it.
 * **Fusion time horizon**, **output predictor** — PX4 fuses at a *delayed* horizon and runs a
   separate fast predictor forward to the present
   (`src/modules/ekf2/EKF/output_predictor/output_predictor.h:54-59`), which is how it absorbs
-  sensor latency. This filter has neither: every measurement is fused as though current. That is
-  a stated limitation, not an omission — see the README's limitations and
+  sensor latency. This filter has neither: it runs at the present and fuses each measurement
+  against a history of the state at the time it was taken, equation (23′) of `EQUATIONS.md`,
+  so a verdict is returned by the call that offered it. See
   [measurement latency](GOALS.md#measurement-latency).
 * **Reset** — the near-miss. There, a reset is *recovery*: states are set to a measurement after an
   aiding timeout, and a counter is published so consumers can step their own state

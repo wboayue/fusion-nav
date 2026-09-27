@@ -51,10 +51,9 @@ for. Against `mission`:
 - `baro_drift` has a barometer whose zero drifts. Height suffers:
   {{score baro_drift pos_v}} m RMS against {{score mission pos_v}} m, and the filter reports it
   ([robustness](robustness.md#a-drifting-barometer)).
-- `gnss_latency` delivers every GNSS fix 150 ms late, and the filter uses each as if it were
-  current. Position suffers most: {{score gnss_latency pos_h}} m RMS against
-  {{score mission pos_h}} m. The filter has no model for delay yet (#52), and it is also
-  overconfident here ([honesty](honesty.md#overconfident-fixes-that-arrive-late)).
+- `gnss_latency` delivers every GNSS fix 150 ms late, and the filter uses each at the moment it
+  describes. Position is {{score gnss_latency pos_h}} m RMS against {{score mission pos_h}} m,
+  and the filter is honest about it ([honesty](honesty.md#fixes-that-arrive-late)).
 - `correlated` makes every sensor's errors change more slowly than the filter assumes. Heading
   suffers most, {{score correlated yaw}}° against {{score mission yaw}}°, and the filter is
   overconfident about position (#51).

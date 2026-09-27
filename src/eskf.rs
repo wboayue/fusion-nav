@@ -4,6 +4,7 @@ use crate::config::{ALIGNED_HEADING, ALIGNED_TILT, Config, LATENCY_HORIZON};
 use crate::frames::{Body, Ned};
 use crate::geodetic::{Geodetic, LocalOrigin};
 use crate::health::{Diagnostics, Fusion, GnssFusion, Propagation, SourceHealth, Status, Validity};
+use crate::history::History;
 use crate::init::{self, Alignment, Coarse, InitError, Measured, StaticSample, baro_reference};
 use crate::math::{below_floor, correlation_inflation, exp_quat, floor_diagonal, floor_offset};
 use crate::observation::{baro, gnss, mag};
@@ -128,6 +129,8 @@ pub struct Eskf {
     /// `ω` of equation (9) from the last step integrated from a sample; see
     /// [`angular_rate`](Self::angular_rate).
     angular_rate: Option<AngularRate<Body>>,
+    /// The recent past of the state, for a measurement's age; see [`History`].
+    history: History,
     unestablished: Unestablished,
     /// Whether the attitude has ever met [`ALIGNED_TILT`] and [`ALIGNED_HEADING`] since
     /// initialization. Latched, and the test behind [`Status::Aligning`]; see
@@ -137,6 +140,22 @@ pub struct Eskf {
     /// When the state is valid: the end of the last sample integrated, or of the window or
     /// seed the filter started from. Meaningless until `initialized`.
     time: Timestamp,
+}
+
+/// The state's own motion over a measurement's age; see [`Eskf::carried`].
+struct Carried {
+    position: Vector3<f32>,
+    velocity: Vector3<f32>,
+}
+
+impl Carried {
+    fn position(&self, taken: Position<Ned>) -> Position<Ned> {
+        Position::from_vector(taken.vector() + self.position)
+    }
+
+    fn velocity(&self, taken: Velocity<Ned>) -> Velocity<Ned> {
+        Velocity::from_vector(taken.vector() + self.velocity)
+    }
 }
 
 /// Quantities the start never established, which wait for the first measurement that
@@ -168,6 +187,7 @@ impl Eskf {
             origin: None,
             declination: Radians::ZERO,
             angular_rate: None,
+            history: History::default(),
             unestablished: Unestablished::default(),
             aligned: false,
             initialized: false,
@@ -423,6 +443,8 @@ impl Eskf {
         self.angular_rate = None;
         self.initialized = true;
         self.time = time;
+        self.history.clear();
+        self.history.record(time, &self.state);
         self.aligned = false;
         self.note_alignment();
         Ok(Alignment::Seeded)
@@ -511,7 +533,9 @@ impl Eskf {
             return false;
         };
         if let Some(old) = self.origin {
+            let before = self.state;
             self.state.position = new.to_ned(old.to_geodetic(self.state.position));
+            self.history.shift(&before, &self.state);
         }
         self.origin = Some(new);
         true
@@ -684,6 +708,7 @@ impl Eskf {
             return self.refuse_step(Propagation::StateNotFinite);
         }
         self.state = propagated.state;
+        self.history.record(self.time, &self.state);
         self.angular_rate = propagated.omega;
         self.commit_covariance(propagated.covariance, propagated.offset);
         self.note_alignment();
@@ -758,6 +783,7 @@ impl Eskf {
                 ratio,
                 innovation,
             } => {
+                self.history.shift(&self.state, &state);
                 self.state = state;
                 self.commit_covariance(covariance, offset);
                 // (30′): `b` is the error in `α₀`, so its estimate comes off it.
@@ -865,9 +891,10 @@ impl Eskf {
         if !self.initialized {
             return self.refuse_gnss(Fusion::NotInitialized);
         }
-        if let Err(refusal) = self.age_of(time) {
-            return self.refuse_gnss(refusal);
-        }
+        let age = match self.age_of(time) {
+            Ok(age) => age,
+            Err(refusal) => return self.refuse_gnss(refusal),
+        };
         if self.unestablished.position {
             if !position.is_finite() || !noise.is_finite() {
                 return self.refuse_gnss(Fusion::NotFinite);
@@ -875,7 +902,7 @@ impl Eskf {
             if !noise.is_positive() {
                 return self.refuse_gnss(Fusion::InvalidNoise);
             }
-            self.adopt_position(position, noise, POSITION);
+            self.adopt_position(self.carried(age).position(position), noise, POSITION);
             self.unestablished.position = false;
             self.diagnostics.gnss_position.record_adopted();
             self.diagnostics.gnss_height.record_adopted();
@@ -886,7 +913,10 @@ impl Eskf {
         let horizontal = match screen(&[z[0], z[1]], &[r[0], r[1]]) {
             Some(refusal) => refuse(&mut self.diagnostics.gnss_position, refusal),
             None => {
-                let observation = gnss::horizontal_observation(&self.state, position, noise)
+                let observation = self
+                    .observe(age, |past| {
+                        gnss::horizontal_observation(past, position, noise)
+                    })
                     .correlated(correlation_inflation(
                         self.diagnostics.gnss_position.since_measured,
                         self.config.correlation.gnss_position,
@@ -902,14 +932,18 @@ impl Eskf {
                     outcome,
                     |diagnostics| &mut diagnostics.gnss_position,
                     self.config.recovery.gnss_position,
-                    |filter| filter.adopt_position(position, noise, HORIZONTAL),
+                    |filter| {
+                        let adopted = filter.carried(age).position(position);
+                        filter.adopt_position(adopted, noise, HORIZONTAL);
+                    },
                 )
             }
         };
         let height = match screen(&[z[2]], &[r[2]]) {
             Some(refusal) => refuse(&mut self.diagnostics.gnss_height, refusal),
             None => {
-                let observation = gnss::height_observation(&self.state, position, noise)
+                let observation = self
+                    .observe(age, |past| gnss::height_observation(past, position, noise))
                     .correlated(correlation_inflation(
                         self.diagnostics.gnss_height.since_measured,
                         self.config.correlation.gnss_height,
@@ -925,7 +959,10 @@ impl Eskf {
                     outcome,
                     |diagnostics| &mut diagnostics.gnss_height,
                     self.config.recovery.gnss_height,
-                    |filter| filter.adopt_height(position, noise),
+                    |filter| {
+                        let adopted = filter.carried(age).position(position);
+                        filter.adopt_height(adopted, noise);
+                    },
                 )
             }
         };
@@ -947,6 +984,50 @@ impl Eskf {
             return Err(Fusion::OutOfHorizon);
         }
         Ok(Seconds::from_secs(age.as_secs().max(0.0)))
+    }
+
+    /// Form an observation of the state as it was `age` ago, expressed in today's error.
+    /// Equation (23′).
+    ///
+    /// `build` is the observation module's own function, handed the past state instead of the
+    /// present: the innovation of (23) is then the measurement against where the vehicle was
+    /// when it was taken, and a fix 150 ms old on a vehicle at 20 m/s is not 3 m of error
+    /// handed to the gate as truth. The past is read from the [`History`] rather than
+    /// extrapolated from the present, and its `H` is carried to today's error through (16)–(19)
+    /// at the mean rates over the age, which the same history gives.
+    fn observe<const M: usize>(
+        &self,
+        age: Seconds,
+        build: impl FnOnce(&State) -> Observation<M>,
+    ) -> Observation<M> {
+        let tau = age.as_secs();
+        if tau <= 0.0 {
+            return build(&self.state);
+        }
+        let past = self
+            .history
+            .at(self.time.before(age), self.time, &self.state);
+        let (now, then) = (self.state.attitude.quaternion(), past.attitude.quaternion());
+        // Mean rates over the age, rather than the last sample's: one sample's specific force
+        // carries the airframe's vibration, which the velocities either side of it average out.
+        let omega = (then.inverse() * now).scaled_axis() / tau;
+        let a_n = (self.state.velocity.vector() - past.velocity.vector()) / tau;
+        let a_b = now.inverse() * (a_n - propagate::gravity());
+        let a = propagate::error_dynamics(&self.state, omega, a_b);
+        build(&past).delayed(age, &a)
+    }
+
+    /// How far the state moved over the last `age`, for carrying an adopted measurement from
+    /// when it was taken to now. An adoption writes the measurement as the state, and a fix
+    /// 110 ms old on a vehicle at 30 m/s, adopted as it stands, puts the estimate 3.3 m behind.
+    fn carried(&self, age: Seconds) -> Carried {
+        let past = self
+            .history
+            .at(self.time.before(age), self.time, &self.state);
+        Carried {
+            position: self.state.position.vector() - past.position.vector(),
+            velocity: self.state.velocity.vector() - past.velocity.vector(),
+        }
     }
 
     /// Refuse both halves of a GNSS fix for one reason.
@@ -1074,9 +1155,10 @@ impl Eskf {
         if !self.initialized {
             return refuse(&mut self.diagnostics.gnss_velocity, Fusion::NotInitialized);
         }
-        if let Err(refusal) = self.age_of(time) {
-            return refuse(&mut self.diagnostics.gnss_velocity, refusal);
-        }
+        let age = match self.age_of(time) {
+            Ok(age) => age,
+            Err(refusal) => return refuse(&mut self.diagnostics.gnss_velocity, refusal),
+        };
         if !velocity.is_finite() || !noise.is_finite() {
             return refuse(&mut self.diagnostics.gnss_velocity, Fusion::NotFinite);
         }
@@ -1084,17 +1166,19 @@ impl Eskf {
             return refuse(&mut self.diagnostics.gnss_velocity, Fusion::InvalidNoise);
         }
         if self.unestablished.velocity {
-            self.adopt_velocity(velocity, noise);
+            self.adopt_velocity(self.carried(age).velocity(velocity), noise);
             self.unestablished.velocity = false;
             self.diagnostics.gnss_velocity.record_adopted();
             return Fusion::Reset;
         }
-        let observation = gnss::velocity_observation(&self.state, velocity, noise).correlated(
-            correlation_inflation(
+        let observation = self
+            .observe(age, |past| {
+                gnss::velocity_observation(past, velocity, noise)
+            })
+            .correlated(correlation_inflation(
                 self.diagnostics.gnss_velocity.since_measured,
                 self.config.correlation.gnss_velocity,
-            ),
-        );
+            ));
         let outcome = update(
             &self.state,
             &self.covariance,
@@ -1106,7 +1190,10 @@ impl Eskf {
             outcome,
             |diagnostics| &mut diagnostics.gnss_velocity,
             self.config.recovery.gnss_velocity,
-            |filter| filter.adopt_velocity(velocity, noise),
+            |filter| {
+                let adopted = filter.carried(age).velocity(velocity);
+                filter.adopt_velocity(adopted, noise);
+            },
         )
     }
 
@@ -1171,9 +1258,10 @@ impl Eskf {
         if !self.initialized {
             return refuse(&mut self.diagnostics.baro_altitude, Fusion::NotInitialized);
         }
-        if let Err(refusal) = self.age_of(time) {
-            return refuse(&mut self.diagnostics.baro_altitude, refusal);
-        }
+        let age = match self.age_of(time) {
+            Ok(age) => age,
+            Err(refusal) => return refuse(&mut self.diagnostics.baro_altitude, refusal),
+        };
         if !altitude.as_meters().is_finite() || !noise.is_finite() {
             return refuse(&mut self.diagnostics.baro_altitude, Fusion::NotFinite);
         }
@@ -1188,7 +1276,10 @@ impl Eskf {
             self.diagnostics.baro_altitude.record_accepted(0.0, None);
             return Fusion::Accepted { test_ratio: 0.0 };
         };
-        let observation = baro::altitude_observation(&self.state, altitude, reference, noise)
+        let observation = self
+            .observe(age, |past| {
+                baro::altitude_observation(past, altitude, reference, noise)
+            })
             .correlated(correlation_inflation(
                 self.diagnostics.baro_altitude.since_measured,
                 self.config.correlation.baro_altitude,
@@ -1269,26 +1360,25 @@ impl Eskf {
         if !self.initialized {
             return refuse(&mut self.diagnostics.mag_heading, Fusion::NotInitialized);
         }
-        if let Err(refusal) = self.age_of(time) {
-            return refuse(&mut self.diagnostics.mag_heading, refusal);
-        }
+        let age = match self.age_of(time) {
+            Ok(age) => age,
+            Err(refusal) => return refuse(&mut self.diagnostics.mag_heading, refusal),
+        };
         if !field.is_finite() || !noise.is_finite() {
             return refuse(&mut self.diagnostics.mag_heading, Fusion::NotFinite);
         }
         if !noise.is_positive() {
             return refuse(&mut self.diagnostics.mag_heading, Fusion::InvalidNoise);
         }
-        let observation = mag::heading_observation(
-            &self.state,
-            &self.covariance,
-            field,
-            self.declination,
-            noise,
-        )
-        .correlated(correlation_inflation(
-            self.diagnostics.mag_heading.since_measured,
-            self.config.correlation.mag_heading,
-        ));
+        let (covariance, declination) = (&self.covariance, self.declination);
+        let observation = self
+            .observe(age, |past| {
+                mag::heading_observation(past, covariance, field, declination, noise)
+            })
+            .correlated(correlation_inflation(
+                self.diagnostics.mag_heading.since_measured,
+                self.config.correlation.mag_heading,
+            ));
         if self.unestablished.heading {
             self.adopt_heading(&observation);
             self.diagnostics.mag_heading.record_adopted();
@@ -1374,7 +1464,9 @@ impl Eskf {
         let before = self.state.attitude.quaternion().to_rotation_matrix();
         let mut corrected = exp_quat(Vector3::z() * y) * self.state.attitude.quaternion();
         corrected.renormalize();
+        let unturned = self.state;
         self.state.attitude = Attitude::body_to_ned(corrected);
+        self.history.shift(&unturned, &self.state);
 
         let g_theta = corrected.to_rotation_matrix().inverse() * before;
         let g_theta = g_theta.into_inner();
@@ -1736,7 +1828,9 @@ impl Eskf {
                 *variance = *r;
             }
         }
+        let before = self.state;
         self.state.position = Position::ned(adopted[0], adopted[1], adopted[2]);
+        self.history.shift(&before, &self.state);
         self.reset_block(axes, variances);
     }
 
@@ -1760,7 +1854,9 @@ impl Eskf {
     // Out of line for the reason `adopt_position` is: +952 bytes on `fuse_gnss_velocity`.
     #[inline(never)]
     fn adopt_velocity(&mut self, velocity: Velocity<Ned>, noise: VelocityNoise<Ned>) {
+        let before = self.state;
         self.state.velocity = velocity;
+        self.history.shift(&before, &self.state);
         self.reset_block(
             [
                 ErrorState::VelocityNorth,
@@ -1837,6 +1933,8 @@ impl Eskf {
         self.angular_rate = None;
         self.initialized = true;
         self.time = time;
+        self.history.clear();
+        self.history.record(time, &self.state);
         // A fresh start is unaligned until its own covariance says otherwise, which
         // `note_alignment` reads at the end of each entry point.
         self.aligned = false;
@@ -3028,6 +3126,43 @@ mod tests {
         let mut sigmas = [0.5f32; STATES];
         sigmas[ErrorState::AttitudeZ.index()] = 1.0; // a moving start knows yaw poorly
         (state, Covariance::from_sigmas(sigmas))
+    }
+
+    /// Equation (23′): a fix 250 ms old on a vehicle at 20 m/s is where the vehicle was, 5 m
+    /// back along its track. Taken at its own time it agrees with the estimate; taken as
+    /// current it is 5 m of error the gate turns down.
+    #[test]
+    fn an_old_fix_is_judged_against_where_the_vehicle_was() {
+        let flying = || {
+            let mut filter = Eskf::new(Config::default());
+            let state = State {
+                velocity: Velocity::ned(20.0, 0.0, 0.0),
+                ..State::default()
+            };
+            let _ = filter
+                .seed(state, Covariance::from_sigmas([0.5; STATES]))
+                .expect("a sane seed");
+            for _ in 0..50 {
+                assert!(filter.step(still().imu, DT).is_propagated());
+            }
+            filter
+        };
+        let age = Seconds::from_secs(0.25);
+        let noise = PositionNoise::horizontal_vertical(0.5, 0.5);
+
+        let mut filter = flying();
+        let there = Position::ned(filter.state().position.x() - 5.0, 0.0, 0.0);
+        let taken = filter.now().before(age);
+        let aged = filter.fuse_gnss_position(taken, there, noise).horizontal;
+        assert!(
+            aged.test_ratio().is_some_and(|ratio| ratio < 1.0e-3),
+            "{aged:?}"
+        );
+
+        let mut filter = flying();
+        let now = filter.now();
+        let current = filter.fuse_gnss_position(now, there, noise).horizontal;
+        assert!(matches!(current, Fusion::Rejected { .. }), "{current:?}");
     }
 
     #[test]

@@ -154,10 +154,9 @@
 //! `ImuNoise::default()` is PX4's, an allowance for vibration, scale-factor error and coning
 //! that an analytic simulator does not produce, and it sits 17× above even `HARSH_IMU` on
 //! accelerometer noise. So a consistency key here fails in the *overconfident* direction only
-//! where something reaches the filter that its model does not describe. `gnss_latency` is the
-//! one a single seed shows: its fixes arrive late, which the filter does not model, so each is
-//! wrong by the distance flown in the delay while `R` claims otherwise. Three more need the
-//! ensemble of `data/anees.sh` to see, and `data/anees.txt` names them.
+//! where something reaches the filter that its model does not describe. No scenario shows one
+//! on a single seed: `gnss_latency`'s late fixes did, until each was fused at the time it was
+//! taken, (23′). The ensemble of `data/anees.sh` sees the rest, and `data/anees.txt` names them.
 //!
 //! Six of the scenarios are one-variable departures from `mission` on `mission`'s seed, so
 //! what attributes a fault is `score(departure) − score(mission)` rather than either alone.

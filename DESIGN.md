@@ -70,6 +70,7 @@ measurements together with their associated uncertainty.
 | `src/eskf.rs` | `Eskf`, the whole public filter: `initialize*`, `predict`, `fuse_*`, `state`, `reset_*_to` |
 | `src/init.rs` | initialization types (`StaticSample`, `Alignment`, `Coarse`, `InitError`) and the pure functions the `initialize*` methods commit |
 | `src/propagate.rs` | `ImuSample`; equations (9)–(22) land here |
+| `src/history.rs` | the recent past of the nominal state, which a measurement is fused against at the time it was taken, equation (23′) |
 | `src/math.rs` | the primitives the equations share: `skew`, `exp_quat`, `wrap_pi`, and the symmetry enforcement of (42) |
 | `src/state.rs` | `State`, `Covariance`, and `ErrorState`, whose order defines the covariance layout `[δp δv δθ δβa δβg]` |
 | `src/health.rs` | `Propagation`, `Fusion`, `Status`, `Validity`, per-source diagnostics |

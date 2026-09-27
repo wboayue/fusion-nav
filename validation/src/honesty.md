@@ -1,10 +1,10 @@
 # Honesty of the reported uncertainty
 
 **When the filter says "I'm within a metre", is it?** Yes, with room to spare, on every
-simulated scenario except `gnss_latency` and `correlated`. On the baseline flight, the fraction of checks where the
+simulated scenario except `correlated`. On the baseline flight, the fraction of checks where the
 true value sat inside the filter's ±3σ band was {{score mission in3s}}, where 1 is every check.
-In those two scenarios the filter claims more accuracy than it has: when GNSS fixes arrive late, and when
-sensor errors persist longer than it assumes. This page shows both.
+In `correlated` the filter claims more accuracy than it has, because sensor errors persist longer
+than it assumes. This page shows that, and a fault it used to fail on and no longer does.
 
 {{stamp}}
 
@@ -71,14 +71,14 @@ the upper solid line it is overconfident beyond chance.
 
 {{figure mission anees}}
 
-### Overconfident: fixes that arrive late
+### Fixes that arrive late
 
-In `gnss_latency` every GNSS fix arrives 150 ms after the moment it describes, and the filter
-uses it as if it were current. The resulting position error depends on how fast the vehicle is
-moving, and the filter's model has no way to represent that, so it reports less uncertainty than
-it has for most of the flight. Position ANEES is {{anees gnss_latency anees_pos}}, over the
-strict bound at {{anees gnss_latency any_pos}} of {{anees gnss_latency epochs}} moments.
-Whether the filter gains a model for delayed measurements, or documents the limit, is #52.
+In `gnss_latency` every GNSS fix arrives 150 ms after the moment it describes. Used as if it were
+current, a fix would carry an error that grows with speed and that the filter's uncertainty does
+not include, and the filter would claim more accuracy than it has. It is told when each fix was
+taken and compares the fix with where it estimated the vehicle was then, so the error never
+arises. Position ANEES is {{anees gnss_latency anees_pos}}, over the strict bound at
+{{anees gnss_latency any_pos}} of {{anees gnss_latency epochs}} moments.
 
 {{figure gnss_latency anees}}
 

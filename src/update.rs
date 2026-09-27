@@ -46,6 +46,22 @@ impl<const M: usize> Observation<M> {
             ..self
         }
     }
+
+    /// The same observation of a state `age` in the past, expressed in today's error:
+    /// `H exp(−A τ)` to second order.
+    pub(crate) fn delayed(
+        self,
+        age: crate::units::Seconds,
+        a: &crate::propagate::Transition,
+    ) -> Self {
+        let tau = age.as_secs();
+        let ha = self.h * a;
+        let haa = ha * a;
+        Self {
+            h: self.h - ha * tau + haa * (0.5 * tau * tau),
+            ..self
+        }
+    }
 }
 
 /// What one update produced, before anything is committed.

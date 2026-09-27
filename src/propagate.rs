@@ -387,6 +387,31 @@ fn transition_matrix(state: &State, imu: Corrected) -> Transition {
     f
 }
 
+/// `A`, the continuous error dynamics (16)–(19) as a matrix: `δẋ = A δx` with the noise left
+/// out. What (20) discretizes, taken here at the rates `ω` and `a_b` rather than a sample.
+pub(crate) fn error_dynamics(state: &State, omega: Vector3<f32>, a_b: Vector3<f32>) -> Transition {
+    let rotation = state.attitude.quaternion().to_rotation_matrix();
+    let r = rotation.matrix();
+    let mut a = Transition::zeros();
+    let (p, v, theta, beta_a, beta_g) = (
+        ErrorState::PositionNorth.index(),
+        ErrorState::VelocityNorth.index(),
+        ErrorState::AttitudeX.index(),
+        ErrorState::AccelBiasX.index(),
+        ErrorState::GyroBiasX.index(),
+    );
+    a.fixed_view_mut::<3, 3>(p, v)
+        .copy_from(&Matrix3::identity());
+    a.fixed_view_mut::<3, 3>(v, theta)
+        .copy_from(&(-r * skew(a_b)));
+    a.fixed_view_mut::<3, 3>(v, beta_a).copy_from(&(-r));
+    a.fixed_view_mut::<3, 3>(theta, theta)
+        .copy_from(&(-skew(omega)));
+    a.fixed_view_mut::<3, 3>(theta, beta_g)
+        .copy_from(&(-Matrix3::identity()));
+    a
+}
+
 /// `Q`, the discrete process noise of equation (21), as its diagonal, over the intervals the
 /// sample integrated: the accelerometer's densities over `Δt_v`, the gyroscope's over `Δt_θ`.
 ///
@@ -756,7 +781,7 @@ fn unaccelerated_sample(state: &State, dt: Seconds) -> Corrected {
 /// would change a propagation constant mid-flight, which is the self-retuning
 /// differentiator 7's boundary forbids. `GOALS.md` records the decision (#66); the
 /// derivation belongs to the offline tool that prints a `Config` (#51).
-fn gravity() -> Vector3<f32> {
+pub(crate) fn gravity() -> Vector3<f32> {
     Vector3::new(0.0, 0.0, GRAVITY)
 }
 

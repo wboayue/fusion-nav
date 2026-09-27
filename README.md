@@ -555,9 +555,12 @@ The crate is also `#![forbid(unsafe_code)]`, `no_std`, and allocation-free.
 
 Known, and stated here rather than discovered in flight. Some are deliberate; the rest link the issue that removes them.
 
-* **Measurement latency is not modelled.** GNSS solutions arrive typically 100–200 ms stale and
-  are fused as though current; the error grows with speed. PX4 fuses at a delayed horizon and
-  propagates forward from it (`src/modules/ekf2/EKF/output_predictor/output_predictor.cpp`). See
+* **A measurement's latency is the caller's to know.** Each is fused at the time it is given,
+  against the state as it was then, so a late fix costs nothing, but the filter cannot measure how
+  late a receiver is: PX4 takes a parameter and ArduPilot the driver's figure. A wrong one is an error
+  that grows with speed, and a receiver with none that fits is worse than fused as current: one
+  corpus log rejects 396 fixes at PX4's 110 ms and 266 at none. Anything older than
+  `LATENCY_HORIZON`, 0.3 s, is refused. See
   [measurement latency](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#measurement-latency).
 * **Barometer drift costs height where there is none.** The reference is estimated and allowed to
   walk, at PX4's rate by default, so GNSS height carries the low frequencies and a barometer
