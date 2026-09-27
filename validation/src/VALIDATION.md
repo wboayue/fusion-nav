@@ -2,7 +2,7 @@
 
 **Should you trust this filter, and where can you check?** On simulated flights, where the true
 answer is known, it holds horizontal position to {{score mission pos_h}} m RMS, and its
-covariance errs on the pessimistic side, except in the two cases the pages below name. On real
+covariance errs on the pessimistic side, except where the pages below name it overconfident. On real
 PX4 flights, where nothing is known exactly, it agrees with EKF2 wherever both filters are fed
 the same trust in the receiver, and each disagreement is shown with its cause, or marked as open.
 
@@ -18,7 +18,7 @@ The questions need different evidence, so they get a page each (`GOALS.md`,
 
 ## [Accuracy](validation/accuracy.md): how close, when the truth is known
 
-Eleven simulated scenarios scored against analytic truth. On the baseline circuit: position
+{{count @scenarios}} simulated scenarios scored against analytic truth. On the baseline circuit: position
 {{score mission pos_h}} m RMS horizontal and {{score mission pos_v}} m vertical, velocity
 {{score mission vel}} m/s, tilt {{score mission tilt}}° and heading {{score mission yaw}}°.
 
@@ -26,8 +26,8 @@ Eleven simulated scenarios scored against analytic truth. On the baseline circui
 
 ## [Honesty](validation/honesty.md): when it says "within a metre", is it
 
-The covariance tested against truth over 50 flights per scenario. It is pessimistic everywhere
-except two scenarios, where it is overconfident: GNSS fixes arriving late (position ANEES
+The covariance tested against truth over {{anees mission runs}} flights per scenario. It is pessimistic everywhere
+except where it is overconfident: GNSS fixes arriving late (position ANEES
 {{anees gnss_latency anees_pos}}, #52) and aiding errors slower than it assumes
 ({{anees correlated anees_pos}}, #51).
 
@@ -43,7 +43,7 @@ does not yet handle.
 
 ## [Agreement with EKF2](validation/ekf2.md): on real flights, beside what PX4 flies
 
-Twelve PX4 logs, each replayed twice: once with the receiver's reported noise, and once at
+{{count @corpus/raw}} PX4 logs, each replayed twice: once with the receiver's reported noise, and once at
 EKF2's own floors. EKF2 is not truth, so this page measures agreement, not accuracy. On the RTK
 baseline, velocity agrees to {{agreement 89a498ce/raw vel_n_rms}} m/s RMS north and tilt to
 {{agreement 89a498ce/raw tilt_diff_rms}}°. The largest disagreement is a hand launch this

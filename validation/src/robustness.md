@@ -50,7 +50,7 @@ and nothing had to be recovered (`recovered=` {{summary logging_dropout recovere
 
 ## A drifting barometer
 
-The barometer's reference drifts 2 cm/s away from the one fixed at startup, 3.7 m over the
+The barometer's reference drifts 2 cm/s away from the one fixed at startup, for the whole
 flight. The filter estimates that offset as it flies, equation (30′), and hands the low
 frequencies of height to GNSS. So height is off by {{score baro_drift pos_v}} m RMS where the
 baseline reads {{score mission pos_v}}, and the covariance stays honest about it

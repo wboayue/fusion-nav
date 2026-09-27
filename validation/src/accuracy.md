@@ -28,17 +28,25 @@ down, the way `Validity` states its claims.
 RMS error over every scored epoch, except `pos_h_max`, the single worst horizontal error.
 Positions in metres, velocity in m/s, attitude in degrees.
 
-{{table score static,mission,harsh_imu,gnss_outage,moving_start,baro_drift,gnss_latency,correlated,mag_disturbance,logging_dropout,flight pos_h,pos_h_max,pos_v,vel,tilt,yaw}}
+{{table score @scenarios pos_h,pos_h_max,pos_v,vel,tilt,yaw}}
 
 `static` is 60 s on the ground; `mission` is a 180 s circuit with turns and climbs after 5 s of
 standing still, and every scenario from `harsh_imu` to `logging_dropout` is that circuit with
 one thing changed. `flight` is 14 s at 50 Hz, the file CI replays.
 
-Three rows lose to the baseline, and each loss is its scenario's point:
+Every departure from the baseline costs something, and what it costs is the scenario's point.
+Each is set against `mission`, the circuit it departs from:
 
+- `harsh_imu` flies a badly isolated IMU. Attitude pays: {{score harsh_imu tilt}}° of tilt
+  against {{score mission tilt}}°, while position barely moves.
 - `gnss_outage` drifts to {{score gnss_outage pos_h_max}} m during 20 s without GNSS. That is
   dead reckoning, and [robustness](robustness.md) shows the error staying inside the band the
   filter claimed while it grew.
+- `moving_start` has no still window to level from, which costs tilt and heading at the start;
+  the section below shows it converging.
+- `baro_drift` walks the barometer's reference away. Height pays:
+  {{score baro_drift pos_v}} m RMS against {{score mission pos_v}} m, honestly reported
+  ([robustness](robustness.md#a-drifting-barometer)).
 - `gnss_latency` fuses fixes 150 ms stale as if they were current, and pays
   {{score gnss_latency pos_h}} m RMS for it against the baseline's {{score mission pos_h}}. The
   filter has no measurement-delay model yet (#52), and the [honesty page](honesty.md) shows it
@@ -46,6 +54,11 @@ Three rows lose to the baseline, and each loss is its scenario's point:
 - `correlated` makes every aiding error slower than the filter assumes. Its heading is off by
   {{score correlated yaw}}° RMS against the baseline's {{score mission yaw}}°, and its position covariance is
   overconfident (#51).
+- `mag_disturbance` costs a little heading, {{score mag_disturbance yaw}}° against
+  {{score mission yaw}}°, because the gate refuses the disturbed readings.
+- `logging_dropout` loses 1.2 s of the log; its worst horizontal error,
+  {{score logging_dropout pos_h_max}} m against {{score mission pos_h_max}} m, is the first fix
+  after the gap.
 
 ## The baseline, over time
 
@@ -60,9 +73,8 @@ one the filter admitted to.
 {{figure mission error_attitude}}
 
 The band is wide next to the error, and that is a finding rather than a margin to celebrate:
-the simulator's IMU is one to two orders quieter than `ImuNoise::default()`, on purpose, so the
-filter is pessimistic about every flight here. The [honesty page](honesty.md) measures by how
-much.
+the filter is pessimistic about these flights, and the
+[honesty page](honesty.md#pessimistic-by-design-of-the-test) says why and by how much.
 
 ## A start in motion
 

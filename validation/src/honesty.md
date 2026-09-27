@@ -1,8 +1,8 @@
 # Honesty of the covariance
 
-**When the filter says "I'm within a metre", is it?** On nine of the eleven simulated scenarios
-yes, and by a wide margin: on the baseline the share of axis-epochs where the truth sits inside
-the filter's ±3σ is {{score mission in3s}}. It is overconfident on two, fixes that arrive late
+**When the filter says "I'm within a metre", is it?** On every simulated scenario but
+`gnss_latency` and `correlated`, yes, and by a wide margin: on the baseline the share of axis-epochs where the truth sits inside
+the filter's ±3σ is {{score mission in3s}}. It is overconfident on those two, fixes that arrive late
 (`gnss_latency`) and aiding errors that persist longer than it assumes (`correlated`), and this
 page shows both.
 
@@ -17,21 +17,21 @@ more accurate and more overconfident at once.
 
 Two measures, both against truth from the simulator:
 
-- **Within 3σ** (`in3s`): the fraction of epochs, over all 15 states, where the error on an axis
+- **Within 3σ** (`in3s`): the fraction of axis-epochs, over all 15 states, where the error on an axis
   is inside three standard deviations of that axis. Axis by axis, so it reads the diagonal only.
 - **NEES**: `δxᵀ P⁻¹ δx` for the position, velocity and attitude blocks, divided by the three
   degrees of freedom. It reads the correlations as well. A covariance that describes its error
   exactly averages 1; below 1 it is pessimistic, above it overconfident.
 
-One flight can be unlucky, so the test that decides is over **50 flights** of each scenario, on
-seeds 1 to 50: `data/anees.sh` averages NEES across them at every epoch (ANEES) and gates it in
+One flight can be unlucky, so the test that decides is over **{{anees mission runs}} flights**
+of each scenario, on seeds 1 to {{anees mission runs}}: `data/anees.sh` averages NEES across them at every epoch (ANEES) and gates it in
 CI against the chi-square bound an honest filter stays under 95 % of the time.
 
 ## One flight each
 
 The pinned run of each scenario, the one the [accuracy page](accuracy.md) tabulates.
 
-{{table score static,mission,harsh_imu,gnss_outage,moving_start,baro_drift,gnss_latency,correlated,mag_disturbance,logging_dropout,flight in3s,nees_pos,nees_vel,nees_att,false_valid}}
+{{table score @scenarios in3s,nees_pos,nees_vel,nees_att,false_valid}}
 
 `false_valid` counts quantity-epochs where `Validity` said a quantity was usable and the truth
 error was outside `Config::accuracy`: the lie, counted where an integrator would act on it.
@@ -43,7 +43,7 @@ epochs where the ensemble average crosses the bound made family-wise over the wh
 baseline, {{anees mission bound_any}}), which an honest filter crosses anywhere with probability
 at most 5 %.
 
-{{table anees static,mission,harsh_imu,gnss_outage,moving_start,baro_drift,gnss_latency,correlated,mag_disturbance,logging_dropout,flight anees_pos,anees_vel,anees_att,any_pos,any_vel,any_att}}
+{{table anees @anees anees_pos,anees_vel,anees_att,any_pos,any_vel,any_att}}
 
 ### Pessimistic, by design of the test
 

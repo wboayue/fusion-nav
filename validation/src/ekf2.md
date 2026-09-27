@@ -42,11 +42,11 @@ each one. In short:
 
 Fused `raw`:
 
-{{table agreement 89a498ce/raw,093e806a/raw,2c42096b/raw,4b473e91/raw,285ee2e7/raw,7ce66f0d/raw,cd7e0001/raw,eb799954/raw,a299e722/raw,f16771dd/raw,7592c9b2/raw,3949f175/raw pos_n_rms,pos_e_rms,pos_d_rms,vel_n_rms,tilt_diff_rms,heading_diff_med,rej_s_gnss_pos,rej_s_gnss_pos_ekf2}}
+{{table agreement @corpus/raw pos_n_rms,pos_e_rms,pos_d_rms,vel_n_rms,tilt_diff_rms,heading_diff_med,rej_s_gnss_pos,rej_s_gnss_pos_ekf2}}
 
 Fused at EKF2's floors (`px4`):
 
-{{table agreement 89a498ce/px4,093e806a/px4,2c42096b/px4,4b473e91/px4,285ee2e7/px4,7ce66f0d/px4,cd7e0001/px4,eb799954/px4,a299e722/px4,f16771dd/px4,7592c9b2/px4,3949f175/px4 pos_n_rms,pos_e_rms,pos_d_rms,vel_n_rms,tilt_diff_rms,heading_diff_med,rej_s_gnss_pos,rej_s_gnss_pos_ekf2}}
+{{table agreement @corpus/px4 pos_n_rms,pos_e_rms,pos_d_rms,vel_n_rms,tilt_diff_rms,heading_diff_med,rej_s_gnss_pos,rej_s_gnss_pos_ekf2}}
 
 Four rows have a cause in the log rather than in either filter:
 
@@ -110,7 +110,8 @@ to {{agreement 2c42096b/raw pos_n_rms}} m RMS north.
 
 A standard VTOL that hovers, transitions and cruises
 {{summary 4b473e91/raw extent}} m out at up to {{summary 4b473e91/raw speed_max}} m/s. The
-logger drops the IMU {{summary 4b473e91/raw coasted}} times, each for a second or more. This filter coasts
+logger drops the IMU {{summary 4b473e91/raw coasted}} times, each longer than one step can
+integrate. This filter coasts
 each gap on its estimated velocity and accepts the next fix. With EKF2's origin moved onto this
 filter's, the two tracks stay together through the cruise
 ({{agreement 4b473e91/raw pos_e_rms}} m RMS east).
