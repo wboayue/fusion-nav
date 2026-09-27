@@ -182,6 +182,7 @@ mod channel {
     pub const GNSS_VELOCITY: u64 = 6;
     pub const BARO: u64 = 7;
     pub const MAG: u64 = 8;
+    pub const GNSS_HEADING: u64 = 9;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -202,6 +203,12 @@ impl Window {
     /// The whole log.
     const ALWAYS: Self = Self {
         start: 0.0,
+        end: f64::INFINITY,
+    };
+
+    /// Never: a sensor the vehicle does not carry.
+    const NEVER: Self = Self {
+        start: f64::INFINITY,
         end: f64::INFINITY,
     };
 
@@ -261,6 +268,10 @@ struct Trajectory {
     roll: Wave,
     pitch: Wave,
     yaw: Wave,
+    /// A vehicle that points where it goes: yaw is the course of the north and east waves plus
+    /// this sideslip, and `yaw` above is ignored. `None` for one whose nose and track are
+    /// unrelated, as a multirotor's are.
+    sideslip: Option<Wave>,
 }
 
 /// The state a perfect estimator would report, and what every sensor below is computed from.
@@ -290,7 +301,23 @@ impl Trajectory {
         let (pos_d, vel_d, acc_d) = axis(&self.down);
         let (roll, roll_rate, _) = axis(&self.roll);
         let (pitch, pitch_rate, _) = axis(&self.pitch);
-        let (yaw, yaw_rate, _) = axis(&self.yaw);
+        let (yaw, yaw_rate) = match &self.sideslip {
+            None => {
+                let (yaw, yaw_rate, _) = axis(&self.yaw);
+                (yaw, yaw_rate)
+            }
+            Some(sideslip) => {
+                // The course of the unwarped waves: velocity is `g′(τ) τ′` on every axis, and
+                // `τ′ ≥ 0` is shared, so the direction is `g′`'s and is defined through the hold,
+                // where the vehicle sits pointing along the track it is about to fly.
+                let (_, n1, n2) = self.north.motion(tau);
+                let (_, e1, e2) = self.east.motion(tau);
+                let course = e1.atan2(n1);
+                let course_rate = (n1 * e2 - e1 * n2) / (n1 * n1 + e1 * e1) * dtau;
+                let (beta, beta_rate, _) = axis(sideslip);
+                (course + beta, course_rate + beta_rate)
+            }
+        };
 
         Truth {
             position: [pos_n, pos_e, pos_d],
@@ -553,6 +580,9 @@ struct GnssErrors {
     available: Window,
     /// A stretch inside that with no fixes: the receiver is there and reporting nothing.
     outage: Option<Window>,
+    /// rad: a dual-antenna heading's σ, reported with every fix, or `None` for a receiver with
+    /// one antenna.
+    sigma_heading: Option<f64>,
 }
 
 /// A good 5 Hz receiver under open sky.
@@ -571,6 +601,7 @@ const GNSS: GnssErrors = GnssErrors {
     latency: 0.0,
     available: Window::ALWAYS,
     outage: None,
+    sigma_heading: None,
 };
 
 /// One fix: position and velocity, each with the variance the log reports.
@@ -581,6 +612,8 @@ struct Fix {
     velocity: [f64; 3],
     position_variance: [f64; 3],
     velocity_variance: [f64; 3],
+    /// A dual-antenna heading and its variance, where the receiver has two antennas.
+    heading: Option<(f64, f64)>,
 }
 
 /// A first-order Gauss-Markov error: `e_k = φ e_{k−1} + √(1 − φ²) w_k`, `φ = exp(−T / τ)`, per
@@ -629,6 +662,7 @@ struct Gnss {
     velocity: Noise,
     position_error: GaussMarkov<3>,
     velocity_error: GaussMarkov<3>,
+    heading: Noise,
 }
 
 impl Gnss {
@@ -646,6 +680,7 @@ impl Gnss {
                 ],
             ),
             velocity_error: GaussMarkov::new(errors.period, [errors.tau_velocity; 3]),
+            heading: Noise::new(seed, channel::GNSS_HEADING),
         }
     }
 
@@ -670,6 +705,11 @@ impl Gnss {
         let velocity_noise = self
             .velocity_error
             .next(self.velocity.vector(self.errors.sigma_velocity));
+        // Its own stream, so a receiver with a second antenna draws the first one's numbers.
+        let heading_noise = self
+            .errors
+            .sigma_heading
+            .map(|sigma| (self.heading.vector(sigma)[0], sigma));
 
         if !self.errors.available.contains(t) {
             return None;
@@ -691,6 +731,10 @@ impl Gnss {
             velocity: add(was.velocity, velocity_noise),
             position_variance: sigma.map(|sigma| sigma * sigma),
             velocity_variance: [self.errors.sigma_velocity.powi(2); 3],
+            heading: heading_noise.map(|(noise, sigma)| {
+                let heading = was.euler[2] + noise;
+                (heading.sin().atan2(heading.cos()), sigma * sigma)
+            }),
         })
     }
 }
@@ -865,6 +909,9 @@ struct Scenario {
     /// A stretch the logger lost: every row in it is drawn and then not written, IMU and aiding
     /// alike, so the streams stay paired with a scenario that has none.
     dropout: Option<Window>,
+    /// rad: the sideslip σ the harness fuses the course constraint at, written as the log's
+    /// `# Course sideslip` line, or `None` for a vehicle that does not point where it goes.
+    course: Option<f64>,
 }
 
 /// Sitting on the ground, pointing somewhere unremarkable.
@@ -884,6 +931,7 @@ fn at_rest() -> Trajectory {
             offset: 0.6,
             ..STILL
         },
+        sideslip: None,
     }
 }
 
@@ -929,6 +977,7 @@ fn circuit() -> Trajectory {
             period: 60.0,
             ..STILL
         },
+        sideslip: None,
     }
 }
 
@@ -971,6 +1020,7 @@ fn banked_turn() -> Trajectory {
             rate: 0.4,
             ..STILL
         },
+        sideslip: None,
     }
 }
 
@@ -1014,20 +1064,75 @@ fn short_hop() -> Trajectory {
             period: 20.0,
             ..STILL
         },
+        sideslip: None,
+    }
+}
+
+/// A fixed-wing's orbit: on the ground pointing along its track, then a 150 m circle at 18 m/s,
+/// climbing gently, with the nose a few degrees off the track as a crosswind would put it.
+///
+/// Yaw is the course plus the sideslip wave, so heading is observable from the velocity alone
+/// and from nothing else: this is the vehicle `Eskf::fuse_course` is for. The start angle is
+/// 0.6 rad, for the reason [`at_rest`] gives. Roll and pitch are not the turn's — the specific
+/// force is computed from the acceleration and the attitude whatever they are, as on `circuit`.
+fn orbit() -> Trajectory {
+    const RADIUS: f64 = 150.0;
+    const PERIOD: f64 = TAU * RADIUS / 18.0;
+    const START: f64 = 0.6;
+    Trajectory {
+        hold: 5.0,
+        ramp: 4.0,
+        north: Wave {
+            offset: -RADIUS * 0.564_642_473, // sin 0.6
+            amplitude: RADIUS,
+            period: PERIOD,
+            phase: START,
+            ..STILL
+        },
+        east: Wave {
+            offset: RADIUS * 0.825_335_615, // cos 0.6
+            amplitude: -RADIUS,
+            period: PERIOD,
+            phase: START + FRAC_PI_2,
+            ..STILL
+        },
+        down: Wave {
+            amplitude: -15.0,
+            period: 90.0,
+            ..STILL
+        },
+        roll: Wave {
+            amplitude: 0.1,
+            period: 30.0,
+            ..STILL
+        },
+        pitch: Wave {
+            amplitude: 0.05,
+            period: 20.0,
+            ..STILL
+        },
+        yaw: STILL,
+        sideslip: Some(Wave {
+            offset: 0.02,
+            amplitude: 0.035,
+            period: 25.0,
+            ..STILL
+        }),
     }
 }
 
 /// The scenario table.
 ///
-/// Six of them — `harsh_imu`, `gnss_outage`, `baro_drift`, `gnss_latency`, `correlated`,
-/// `mag_disturbance` — are one-variable departures from `mission`, and the pairing is by
+/// Eight of them — `harsh_imu`, `gnss_outage`, `baro_drift`, `gnss_latency`, `correlated`,
+/// `mag_disturbance`, `gnss_heading`, `logging_dropout` — are one-variable departures from
+/// `mission`, and the pairing is by
 /// construction rather than by assertion: same trajectory, same duration, and **the same seed**.
 /// Streams are split per sensor, so a departure that leaves a sensor alone reproduces the
 /// baseline's draws for it bit for bit, and `diff mission.csv <departure>.csv` shows the fault and
 /// nothing else. Differing seeds would have left every sensor differing everywhere, which is the
 /// attribution this whole arrangement exists to buy.
 ///
-/// The three that are not departures — `static`, `moving_start`, `flight` — carry their own
+/// The four that are not departures — `static`, `moving_start`, `no_mag`, `flight` — carry their own
 /// seeds, so a statistic aggregated across the set still has independent draws to work with.
 fn scenarios() -> Vec<Scenario> {
     /// The seed the baseline and its departures share. See above: this is the pairing.
@@ -1047,6 +1152,7 @@ fn scenarios() -> Vec<Scenario> {
         baro: BARO,
         mag: MAG,
         dropout: None,
+        course: None,
     };
 
     vec![
@@ -1175,6 +1281,37 @@ fn scenarios() -> Vec<Scenario> {
                 }),
                 ..MAG
             },
+            ..base
+        },
+        // A second heading source beside the magnetometer, as `a299e722` flies one: a moving-
+        // baseline receiver reporting heading with every fix, at 0.01 rad. One variable, on
+        // `mission`'s seed: the heading draws come from their own stream, so every other row is
+        // `mission`'s.
+        Scenario {
+            name: "gnss_heading",
+            covers: "the baseline with a dual-antenna GNSS heading beside the magnetometer: \
+                     fuse_gnss_heading, and two heading sources gated against one estimate",
+            gnss: GnssErrors {
+                sigma_heading: Some(0.01),
+                ..GNSS
+            },
+            ..base
+        },
+        // A fixed-wing with no magnetometer, the vehicle #53 is for: nothing observes yaw until
+        // it moves, and then only the course does. The sideslip the harness allows, 0.05 rad, is
+        // wider than the truth's, 0.02 ± 0.035, as a caller who knows the airframe would state it.
+        Scenario {
+            name: "no_mag",
+            covers: "a fixed-wing with no magnetometer, still and then orbiting: heading from \
+                     fuse_course alone, refused until the vehicle moves",
+            seed: 3,
+            duration: 120.0,
+            trajectory: orbit(),
+            mag: MagErrors {
+                available: Window::NEVER,
+                ..MAG
+            },
+            course: Some(0.05),
             ..base
         },
         // An IMU gap at speed, and the one scenario that reaches (22′). The logger loses 1.2 s at
@@ -1413,6 +1550,9 @@ fn generate(
             let taken = Some(fix.taken);
             log.row(t, "gnss_pos", &fix.position, &fix.position_variance, taken)?;
             log.row(t, "gnss_vel", &fix.velocity, &fix.velocity_variance, taken)?;
+            if let Some((heading, variance)) = fix.heading {
+                log.row(t, "gnss_yaw", &[heading], &[variance], taken)?;
+            }
         }
         if epoch % baro_every == 0
             && let Some(altitude) = baro.sample(t, &state)
@@ -1611,6 +1751,7 @@ fn write_log_header(
          # {covers}\n\
          #\n\
          # Magnetic declination {declination:.6} rad\n\
+{course}\
          #\n\
          # Generated by `cargo run --example simulate -- {name} <dir>`; truth in\n\
          # `{name}.truth.csv`. Do not edit, regenerate. Six decimals throughout, three orders\n\
@@ -1622,11 +1763,15 @@ fn write_log_header(
          #   gnss_vel  v0..v2 NED velocity m/s    var0..var2 m^2/s^2\n\
          #   baro      v0     altitude m (up)     var0      m^2\n\
          #   mag       v0..v2 field, calibrated   var0      heading rad^2\n\
+         #   gnss_yaw  v0     dual-antenna heading rad  var0  rad^2\n\
          #   t_meas_s  when a fix was taken, t_s less the receiver's latency",
         name = scenario.name,
         seed = scenario.seed,
         covers = scenario.covers,
         declination = DECLINATION,
+        course = scenario.course.map_or_else(String::new, |sigma| format!(
+            "# Course sideslip {sigma:.6} rad\n"
+        )),
     )?;
     if let Some(note) = note {
         writeln!(out, "{note}")?;
