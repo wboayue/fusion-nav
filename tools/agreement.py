@@ -300,6 +300,19 @@ def compare(ours, ekf2, rejected, offset, height_reference):
     }
 
 
+def to_replay_frame(name, values, offset):
+    """EKF2's `values` of `name` in this filter's frame: its local position plus
+    its origin's offset from ours (`offset`, `(n, e, d)` from the reference
+    header). Velocity, and anything else, is frame-free and returned as it is.
+
+    The one place the shift is made, so the statistics and the figures the
+    report draws beside them put EKF2 in the same place.
+    """
+    if name.startswith("pos_") and offset is not None:
+        return values + offset["ned".index(name[-1])]
+    return values
+
+
 def position_velocity(ours, local, states, offset):
     """`pos_*`/`vel_*` `_rms`, `_max` and `_nd2` per NED axis. Position needs an
     origin; velocity does not."""
@@ -317,15 +330,16 @@ def position_velocity(ours, local, states, offset):
         good = here >= 0
     for kind in ("pos", "vel"):
         usable = local is not None and (kind == "vel" or offset is not None)
-        for i, axis in enumerate("ned"):
+        for axis in "ned":
             name = f"{kind}_{axis}"
-            shift = offset[i] if kind == "pos" and usable else 0.0
             rms = peak = nd2 = None
             if usable:
-                rms, peak, _ = distance(our[name][pick], ref[name][keep] + shift)
+                rms, peak, _ = distance(our[name][pick],
+                                        to_replay_frame(name, ref[name][keep], offset))
                 if states is not None:
                     _, _, nd2 = distance(our[name][pick_s[good]],
-                                         ref[name][here[good]] + shift,
+                                         to_replay_frame(name, ref[name][here[good]],
+                                                         offset),
                                          our[f"sigma_{name}"][pick_s[good]],
                                          st[f"sigma_{name}"][keep_s][good])
             out[f"{name}_rms"], out[f"{name}_max"], out[f"{name}_nd2"] = rms, peak, nd2

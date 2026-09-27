@@ -1103,6 +1103,14 @@ def error_figure(unit, scale, components, errors, backdrop):
                 plot.plot(error[0], scale * error[1], "-", color="#c05a2f",
                           linewidth=0.9, label="truth - estimate")
             plot.axhline(0.0, color="#1b1b1b", linewidth=0.5)
+            # Scaled to the error and the band's typical width rather than its widest:
+            # 20 s without GNSS grows a +/-250 m band around a 10 m error, and an
+            # axis sized to the band draws the error as a flat line.
+            reach = [np.nanmax(np.abs(scale * error[1]))] if error is not None else []
+            if sigma is not None:
+                reach.append(np.nanmedian(3.0 * scale * sigma[1]))
+            if reach and max(reach) > 0:
+                plot.set_ylim(-1.5 * max(reach), 1.5 * max(reach))
             plot.set_ylabel(f"{name} ({unit})", fontsize=8)
             plot.grid(alpha=0.25)
             if row == 0:
@@ -1456,6 +1464,11 @@ def build_report(args):
         reference_notes, local = read_series(
             args.reference, ["pos_n", "pos_e", "pos_d", "vel_n", "vel_e", "vel_d"],
             args.points, source="ekf2_local")
+        # Drawn where the statistics put it: at this filter's origin where the
+        # header gives EKF2's, and at its own where it gives none.
+        offset = reference_offset(reference_notes)
+        local = {name: (t, agreement.to_replay_frame(name, y, offset))
+                 for name, (t, y) in local.items()}
         # Every remaining reference column is read here, which is what makes a
         # wrong entry in EKF2_LAYOUTS visible: the bias *states* sit at the same
         # index in both eras, so only these sigmas exercise the era-specific map.
@@ -1564,12 +1577,17 @@ def build_report(args):
         if args.reference:
             reference_track = read_path(args.reference, "pos_n", "pos_e",
                                         args.points, source="ekf2_local")
+            if reference_track is not None:
+                offset = reference_offset(reference_notes)
+                reference_track = (agreement.to_replay_frame("pos_n", reference_track[0], offset),
+                                   agreement.to_replay_frame("pos_e", reference_track[1], offset))
         page.figure("track",
             track_figure(ours_track, reference_track, fixes),
             "Estimate, EKF2's own solution where the log carries one, and the raw "
-            "GNSS fixes the filter was offered. EKF2's track is relative to its "
-            "own origin, which is not this filter's: two corpus logs report no "
-            "origin at all. Every track here is sampled at a uniform stride, so "
+            "GNSS fixes the filter was offered. EKF2's track is moved to this "
+            "filter's origin by the offset its header reports, the shift the "
+            "agreement statistics make; two corpus logs report no origin, and "
+            "there it stays at its own. Every track here is sampled at a uniform stride, so "
             "each point is a position that was actually held &mdash; the "
             "min/max envelope the time series use pairs two columns from "
             "different epochs and draws a path nobody travelled.",
@@ -1628,7 +1646,9 @@ def build_report(args):
                         "inside the filter's own +/-3 sigma on the same axis. Both "
                         "come from one row of <code>" + html.escape(error_path(
                             args.replay).name) + "</code>, the error vector every "
-                        "<code>score</code> key reads. " + shading,
+                        "<code>score</code> key reads. The vertical range is set by the "
+                        "error and the band's typical width, so where the band leaves the "
+                        "frame it is wider than drawn. " + shading,
                         height=5.4)
 
     if anees is not None:
