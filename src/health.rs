@@ -367,16 +367,29 @@ impl core::fmt::Display for Refusal {
 /// The outcome of one propagation step.
 ///
 /// Returned by [`Eskf::predict`](crate::Eskf::predict), which refuses a step it cannot
-/// take — a `dt` longer than [`Config::max_predict_dt`](crate::Config::max_predict_dt),
-/// or a sample that is not a number — rather than attempting it.
+/// take — a sample that is not a number, or a `dt` longer than
+/// [`Config::max_predict_dt`](crate::Config::max_predict_dt) with [`Config::coast`](crate::Config::coast)
+/// off — rather than attempting it.
 #[must_use = "a refused propagation leaves the state stale unless the outcome is inspected"]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Propagation {
     /// The state and covariance advanced over the full `dt`.
     Propagated,
-    /// `dt` exceeded [`Config::max_predict_dt`](crate::Config::max_predict_dt). The state
-    /// and covariance are unchanged.
+    /// `dt` exceeded [`Config::max_predict_dt`](crate::Config::max_predict_dt), so the sample
+    /// was not integrated and the filter coasted across the gap instead. Equation (22′).
+    ///
+    /// The state and covariance advanced, but on an assumption rather than a measurement:
+    /// position moved on the estimated velocity and nothing else did, while the covariance
+    /// grew by what [`Coast`](crate::Coast) allows an unmeasured interval. So
+    /// [`is_propagated`](Self::is_propagated) reads false, and a caller logging gaps sees this
+    /// one. Counted in [`PropagationHealth::coasted`], not as a refusal.
+    Coasted {
+        /// The gap coasted across.
+        dt: Seconds,
+    },
+    /// `dt` exceeded [`Config::max_predict_dt`](crate::Config::max_predict_dt) and
+    /// [`Config::coast`](crate::Config::coast) is off. The state and covariance are unchanged.
     ///
     /// The per-source timers still advanced: the time really did pass, so the aiding
     /// really is that much staler, and [`Status`] must not claim otherwise.
@@ -448,7 +461,8 @@ pub enum Propagation {
 }
 
 impl Propagation {
-    /// Whether the state advanced.
+    /// Whether the sample was integrated. A [`Coasted`](Self::Coasted) step advanced the state
+    /// without it, and reads false.
     pub const fn is_propagated(self) -> bool {
         matches!(self, Self::Propagated)
     }
@@ -458,6 +472,7 @@ impl core::fmt::Display for Propagation {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match *self {
             Self::Propagated => f.write_str("propagated"),
+            Self::Coasted { dt } => write!(f, "gap of {} s coasted", seconds(dt)),
             Self::StepTooLong { dt, limit } => write!(
                 f,
                 "step of {} s over the {} s limit, not propagated",
@@ -788,7 +803,7 @@ impl SourceHealth {
     }
 }
 
-/// What propagation refused, and the worst of it.
+/// What propagation refused or coasted across, and the longest gap.
 ///
 /// Not per source — [`Eskf::predict`](crate::Eskf::predict) is the one path that is not a
 /// sensor — and the only record that a step was ever turned away. The state stops advancing
@@ -800,8 +815,12 @@ impl SourceHealth {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[non_exhaustive]
 pub struct PropagationHealth {
+    /// Gaps longer than [`Config::max_predict_dt`](crate::Config::max_predict_dt) coasted
+    /// across, [`Propagation::Coasted`].
+    pub coasted: u32,
     /// Steps refused as longer than
-    /// [`Config::max_predict_dt`](crate::Config::max_predict_dt).
+    /// [`Config::max_predict_dt`](crate::Config::max_predict_dt), with
+    /// [`Config::coast`](crate::Config::coast) off.
     pub refused_too_long: u32,
     /// Steps refused as zero, negative, or not a number.
     pub refused_invalid: u32,
@@ -822,24 +841,27 @@ pub struct PropagationHealth {
     /// overflowing on values it accepted, which is a magnitude problem rather than a
     /// validity one and is read at a different place in a bring-up.
     pub refused_state_not_finite: u32,
-    /// The longest `dt` refused as too long, or `None` if none has been.
+    /// The longest `dt` past [`Config::max_predict_dt`](crate::Config::max_predict_dt),
+    /// coasted or refused, or `None` if there has been none.
     ///
     /// How far past the limit the worst gap ran, which separates a scheduler that overran by a
     /// millisecond from a logger that dropped a second of data. The filter reads no clock, so
     /// it holds the size of the gap and not when it happened; a caller that needs the moment
-    /// timestamps it from [`Propagation::StepTooLong`].
-    pub longest_refused: Option<Seconds>,
+    /// timestamps it from [`Propagation::Coasted`] or [`Propagation::StepTooLong`].
+    pub longest_gap: Option<Seconds>,
 }
 
 impl PropagationHealth {
-    /// Record what one step did, if it was refused.
+    /// Record what one step did, if it was coasted or refused.
     pub(crate) fn record(&mut self, outcome: Propagation) {
         match outcome {
+            Propagation::Coasted { dt } => {
+                self.coasted = self.coasted.saturating_add(1);
+                self.note_gap(dt);
+            }
             Propagation::StepTooLong { dt, .. } => {
                 self.refused_too_long = self.refused_too_long.saturating_add(1);
-                if self.longest_refused.is_none_or(|worst| dt > worst) {
-                    self.longest_refused = Some(dt);
-                }
+                self.note_gap(dt);
             }
             Propagation::InvalidStep { .. } => {
                 self.refused_invalid = self.refused_invalid.saturating_add(1);
@@ -851,6 +873,12 @@ impl PropagationHealth {
                 self.refused_state_not_finite = self.refused_state_not_finite.saturating_add(1);
             }
             Propagation::Propagated | Propagation::NotInitialized => {}
+        }
+    }
+
+    fn note_gap(&mut self, dt: Seconds) {
+        if self.longest_gap.is_none_or(|worst| dt > worst) {
+            self.longest_gap = Some(dt);
         }
     }
 }
@@ -961,6 +989,10 @@ mod tests {
                 }
             ),
             "step of 0.150 s over the 0.100 s limit, not propagated"
+        );
+        assert_eq!(
+            format!("{}", Propagation::Coasted { dt: secs(1.2) }),
+            "gap of 1.200 s coasted"
         );
     }
 

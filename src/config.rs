@@ -517,6 +517,59 @@ impl Default for Recovery {
     }
 }
 
+/// What the filter assumes across an IMU gap it coasts over. Equation (22′).
+///
+/// A gap longer than [`Config::max_predict_dt`] has no measurement describing it, so the
+/// filter coasts: position advances on the estimated velocity, nothing else moves, and the
+/// covariance grows by (22) plus an acceleration nobody measured. Refusing the step instead
+/// leaves a moving vehicle's state stale by `v Δt` under a covariance that did not grow, and
+/// every fix after the gap is then tens of σ away and turned down until
+/// [`Config::recovery`] adopts one — the lockout coasting exists to prevent.
+///
+/// On by default, per [rejection
+/// handling](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#rejection-handling-recover-by-default-opt-out-per-source):
+/// a correction the filter can make honestly is made, and `Config::coast = None` is the
+/// opt-out for an application that owns the gap itself.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Coast {
+    /// Density of the acceleration the vehicle may have pulled during the gap, m s⁻² / √Hz,
+    /// added to the velocity block of (21) for the gap's duration: `σ_v = a √Δt`, 3.5 m/s over
+    /// a 3.1 s gap at the default.
+    pub acceleration: f32,
+    /// Density of the rotation the vehicle may have made during the gap, rad s⁻¹ / √Hz,
+    /// added to the attitude block of (21) for the gap's duration: 10° over a 3.1 s gap at
+    /// the default. All three axes, because a vehicle that turns also banks.
+    pub rotation: f32,
+}
+
+impl Default for Coast {
+    /// Measured on the two sources with gaps at speed, and set at twice the smallest value
+    /// either needed. Both are properties of an airframe's manoeuvres, so a vehicle more
+    /// agile than these is the reason to raise them.
+    ///
+    /// `4b473e91`, a VTOL at 30 m/s with eight logging dropouts of 1.0–3.1 s, is what sets
+    /// both, since in the simulator any value passes. Refused, its gaps cost 12 recoveries,
+    /// 39 rejected positions and 28 velocities. Coasted with `rotation` at zero, the first
+    /// fix after every gap is accepted at any `acceleration`, and what follows it is not: the
+    /// course turns 44° across the 3.1 s gap at 954 s, the heading innovation afterwards sits
+    /// at −0.60 rad under an `S` that did not grow, and the stale heading steers velocity off
+    /// until the gate turns it down (7 recoveries at `acceleration` 1.0). With `rotation` at
+    /// 0.02 or more and `acceleration` at 2.0 no gap causes a rejection or a recovery; the
+    /// two positions and two velocities still rejected are fixes timestamped inside a gap,
+    /// fused before the IMU sample that ends it. `acceleration` at 1.0 still needs `rotation`
+    /// at 0.1, and at 0.5 leaves 7 recoveries at any `rotation`.
+    ///
+    /// `logging_dropout` (1.2 s at 20 m/s in a turn) passes at `acceleration` 0.5 or more
+    /// whatever the rotation, and reads the same across the whole range: `pos_h_max` 23.25 m
+    /// refused, 2.74 m coasted, `false_valid` 1946 → 0.
+    fn default() -> Self {
+        Self {
+            acceleration: 2.0,
+            rotation: 0.1,
+        }
+    }
+}
+
 /// Quasi-static initialization, equations (5)–(8).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Initialization {
@@ -712,13 +765,13 @@ pub struct Config {
     pub init: Initialization,
     /// How good an estimate must be to count as valid.
     pub accuracy: Accuracy,
-    /// Largest `dt` [`Eskf::predict`](crate::Eskf::predict) will propagate over.
+    /// Largest `dt` [`Eskf::predict`](crate::Eskf::predict) will integrate one IMU sample
+    /// over.
     ///
-    /// Beyond this the step is refused and the state left alone, because the
-    /// discretization of equations (9)–(22) is a first-order approximation over a short
-    /// interval and one IMU sample cannot describe a long one. The filter reports and
-    /// stops there, leaving position where it was. A gate that then turns GNSS down is
-    /// what [`Config::recovery`] adopts its way out of; coasting across the gap is #144.
+    /// Beyond this the sample is not integrated, because the discretization of equations
+    /// (9)–(22) is a first-order approximation over a short interval and one sample cannot
+    /// describe a long one. The filter coasts across the gap instead, by [`Config::coast`], or
+    /// with that off refuses the step and leaves the state where it was.
     ///
     /// Gaps come from logging dropouts, a scheduler overrun, or a sensor that genuinely
     /// stopped, and the filter cannot tell which. The default passes normal operation on
@@ -727,6 +780,10 @@ pub struct Config {
     /// while catching real SD-card dropouts of 0.34 s and up. The margin at that worst
     /// case is 10 ms, so a slower log than any in the corpus would need this raised.
     pub max_predict_dt: Seconds,
+    /// Coasting across a step longer than [`max_predict_dt`](Self::max_predict_dt), equation
+    /// (22′). `None` refuses the step instead, as
+    /// [`Propagation::StepTooLong`](crate::Propagation::StepTooLong).
+    pub coast: Option<Coast>,
     /// Magnetic declination at the operating site, added to magnetic heading to give
     /// true heading. Equation (6).
     pub magnetic_declination: Radians,
@@ -785,6 +842,7 @@ impl Default for Config {
             init: Initialization::default(),
             accuracy: Accuracy::default(),
             max_predict_dt: Seconds::from_secs(0.1),
+            coast: Some(Coast::default()),
             magnetic_declination: Radians::ZERO,
             baro_offset_walk: 0.13,
             baro_reference_from_estimate: true,

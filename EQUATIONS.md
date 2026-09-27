@@ -446,6 +446,38 @@ Covariance propagation:
 P \leftarrow F P F^\mathsf{T} + Q
 ```
 
+### Coasting across a gap
+
+A step longer than `Config::max_predict_dt` has no sample describing it: one IMU reading cannot
+stand for seconds of flight, so (9)–(22) are not run on it. What the filter can say about the
+gap is what it assumes, and the uncertainty of the assumption. It assumes the vehicle was
+unaccelerated and not rotating, which is the input
+$`\omega = 0`$, $`a_b = -R(\hat{q})^\mathsf{T} g`$: through (13)–(15) that moves position by
+$`\hat{v}\Delta t`$ and nothing else, and through (20) it gives the $`F`$ of the same
+assumption. What the assumption leaves out enters as two white densities, an acceleration
+$`\sigma_c`$ and a rotation $`\sigma_r`$ (`Config::coast`):
+
+**(22′)**
+
+```math
+P \leftarrow F^n P (F^n)^\mathsf{T} + \sum_{k<n} F^k (Q + Q_r) (F^k)^\mathsf{T} + \sigma_c^2 \begin{bmatrix} \tfrac{T^3}{3} I & \tfrac{T^2}{2} I \\ \tfrac{T^2}{2} I & T I \end{bmatrix}_{pv},
+\qquad Q_r = \mathrm{diag}(0,\ 0,\ \sigma_r^2 \Delta t\, I,\ 0,\ 0)
+```
+
+that is, (22) run $`n`$ times at $`\Delta t = T / n`$ with $`Q_r`$ added to (21), then the
+acceleration's white-noise integral added once to the position–velocity block. The steps are
+$`n = \lceil T / 0.1\,\mathrm{s} \rceil`$, at most 64, as `project` takes them, because a single
+first-order step of (20) understates what reaches position. The acceleration term needs no steps:
+it reaches nothing but position, through the $`I\Delta t`$ block that is exact at any
+$`\Delta t`$, so its integral is exact in closed form. The rotation reaches velocity through
+(17)'s gravity term, which only the steps integrate.
+
+Refusing the step instead, as `Propagation::StepTooLong` does with `Config::coast` off, leaves a
+moving vehicle stale by $`\hat{v}\Delta t`$ under a $`P`$ that did not grow, so every fix after
+the gap is tens of $`\sigma`$ away and the gate locks the filter out
+([gate lockout](#gate-lockout)). PX4 clamps an overlong step (`estimator_interface.cpp:102-108`
+at `c4e4ef98e9`) and does the same.
+
 ## Measurement update
 
 For an observation $`z`$ with model $`h(x)`$, Jacobian $`H`$, and noise covariance $`R_m`$:
@@ -1031,6 +1063,7 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | (20) | state transition matrix | `propagate.rs` | `transition_matrix` |
 | (21) | discrete process noise | `propagate.rs` | `process_noise` |
 | (22) | covariance propagation | `propagate.rs` | `propagate_covariance`, called with (9)–(15) by `propagate` |
+| (22′) | coasting across an IMU gap | `propagate.rs`, `eskf.rs` | `coast`, with `unaccelerated_sample` and `repeat_covariance`; chosen by `Eskf::predict` |
 | (23)–(27) | generic update, Joseph form | `update.rs` | `update` |
 | (24′) | correlated measurements | `math.rs`, `update.rs`, `health.rs`, `eskf.rs` | `correlation_inflation`; `Observation::correlated` and `r_gain`; `SourceHealth::since_measured` for `Δt`; each `fuse_*` |
 | (28) | GNSS position, as a horizontal and a height half | `observation/gnss.rs` | `horizontal_jacobian`, `horizontal_observation`, `height_jacobian`, `height_observation` |

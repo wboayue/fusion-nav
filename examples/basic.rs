@@ -39,8 +39,8 @@ fn main() -> Result<(), InitError> {
 
     for tick in 0..(5 * IMU_HZ) {
         // Hot path: one propagation per IMU sample, `dt` supplied by the caller. The
-        // outcome is `#[must_use]`: a step the filter refuses as too long leaves the
-        // state stale, and a caller that ignores it would never know.
+        // outcome is `#[must_use]`: a step the filter cannot integrate is coasted or
+        // refused, and a caller that ignores it would never know there was a gap.
         assert!(filter.predict(imu_sample(), dt).is_propagated());
 
         if tick % (IMU_HZ / GNSS_HZ) == 0 {
