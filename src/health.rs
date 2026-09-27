@@ -848,9 +848,14 @@ impl SourceHealth {
     }
 
     /// How long this source may go unaccepted before it counts as timed out: two and a half
-    /// of its own [`period`](Self::period)s, and never longer than
-    /// [`Timeouts::dead_reckoning_after`], which is also the answer until a period has been
-    /// measured.
+    /// of its own [`period`](Self::period)s, or [`Timeouts::dead_reckoning_after`] until a
+    /// period has been measured.
+    ///
+    /// Not capped by `dead_reckoning_after` once one has: that is the mission's limit on
+    /// horizontal dead reckoning, and a mission that sets it to 2 s would otherwise time a
+    /// jittery 1 Hz receiver out below its own 2.5 periods, the regime that flapped
+    /// `2c42096b`. A source slower than that limit allows is reported by `DeadReckoning`,
+    /// which outranks `Degraded`, whenever it matters.
     ///
     /// Two and a half, because that is where the corpus stops flapping. `eb799954`'s
     /// magnetometer, which bursts, changes status 2826 times over two periods and twice over
@@ -864,11 +869,10 @@ impl SourceHealth {
     /// `src/modules/ekf2/EKF/common.h:516` at `c4e4ef98e9`; `hgtRetryTime*_ms`,
     /// `libraries/AP_NavEKF3/AP_NavEKF3.h:493-497` at `368dc0c428`).
     pub fn timeout(&self, timeouts: &Timeouts) -> Seconds {
-        let cap = timeouts.dead_reckoning_after.as_secs();
-        let timeout = self
-            .period()
-            .map_or(cap, |period| (MISSED_UPDATES * period.as_secs()).min(cap));
-        Seconds::from_secs(timeout)
+        self.period()
+            .map_or(timeouts.dead_reckoning_after, |period| {
+                Seconds::from_secs(MISSED_UPDATES * period.as_secs())
+            })
     }
 
     /// Whether this source was accepted within its own [`timeout`](Self::timeout): aiding
@@ -971,8 +975,8 @@ const CADENCE: u16 = 15;
 /// It adapts, and what that costs is bounded by the weight. A source that slows from 5 Hz to
 /// 1 Hz times out on each of its first few slower intervals, until the mean has moved to
 /// 0.4 s; an outage enters the mean as one long interval, so a 30 s gap on a 1 Hz receiver
-/// holds its timeout at the cap for about ten fixes after. Both err toward reporting the
-/// source, and discarding long intervals instead would leave a source that really slowed timed
+/// raises its timeout to 7.3 s, and ten fixes later the excess has halved. Both err toward
+/// reporting the source, and discarding long intervals instead would leave a source that really slowed timed
 /// out for good.
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -1171,6 +1175,12 @@ impl Diagnostics {
             .map(|(_, health)| health)
     }
 
+    /// The sources that hold horizontal position, which is what
+    /// [`DeadReckoning`](Status::DeadReckoning) reads: GNSS position and GNSS velocity.
+    pub(crate) fn horizontal(&self) -> impl Iterator<Item = &SourceHealth> {
+        [&self.gnss_position, &self.gnss_velocity].into_iter()
+    }
+
     /// Advance every source's fusion clock. The one list besides [`sources`](Self::sources),
     /// which lends no `&mut`; a test holds the two to the same sources.
     pub(crate) fn advance(&mut self, dt: Seconds) {
@@ -1215,9 +1225,9 @@ mod tests {
         let times: [u64; 15] = core::array::from_fn(|i| 200 * i as u64);
         assert_eq!(arrived(&times).period(), None);
 
-        // A source that bursts: pairs 2 ms apart, a pair every 400 ms. It delivers every
-        // 200 ms on average, where the median interval, 2 ms or 398 ms depending on where the
-        // window falls, is neither.
+        // A source that bursts: pairs 2 ms apart, a pair every 400 ms, so it delivers every
+        // 200 ms and the median interval, 2 ms or 398 ms depending on where the window falls,
+        // is neither. Fifteen intervals are eight short and seven long: 186.7 ms.
         let times: [u64; 16] = core::array::from_fn(|i| 400 * (i as u64 / 2) + 2 * (i as u64 % 2));
         let period = arrived(&times).period().expect("fifteen intervals");
         assert!((period.as_secs() - 0.1867).abs() < 1e-3, "{period:?}");
@@ -1257,12 +1267,11 @@ mod tests {
     }
 
     #[test]
-    fn a_timeout_is_two_and_a_half_periods_capped_at_dead_reckoning() {
+    fn a_timeout_is_two_and_a_half_periods_or_dead_reckoning_before_one() {
         let timeouts = Timeouts::default();
-        let cap = timeouts.dead_reckoning_after;
         assert_eq!(
             SourceHealth::default().timeout(&timeouts),
-            cap,
+            timeouts.dead_reckoning_after,
             "no period yet"
         );
 
@@ -1270,8 +1279,10 @@ mod tests {
         let timeout = arrived(&times).timeout(&timeouts).as_secs();
         assert!((timeout - 0.5).abs() < 1e-6, "{timeout}");
 
+        // Past `dead_reckoning_after`, and not capped by it.
         let times: [u64; 16] = core::array::from_fn(|i| 3000 * i as u64);
-        assert_eq!(arrived(&times).timeout(&timeouts), cap, "7.5 s, capped");
+        let timeout = arrived(&times).timeout(&timeouts).as_secs();
+        assert!((timeout - 7.5).abs() < 1e-5, "{timeout}");
     }
 
     #[test]

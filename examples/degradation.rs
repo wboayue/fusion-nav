@@ -239,9 +239,8 @@ fn check_gnss(source: &str, outcome: GnssFusion) {
 fn report(label: &str, filter: &Eskf) {
     println!("after {label}: {:?}", filter.state().status);
     for (name, health) in filter.diagnostics().sources() {
-        // A source's own timeout, off its measured period, is what `Status` reads. `main`
-        // leaves `Config::timeouts` at its default, which caps it.
-        let timeout = health.timeout(&Timeouts::default()).as_secs();
+        // A source's own timeout, off its measured period, is what `Status` reads.
+        let timeout = health.timeout(&filter.config().timeouts).as_secs();
         match health.time_since_accepted {
             Some(elapsed) => println!(
                 "  {name:<14} last accepted {:>5.2} s ago, times out after {timeout:.3} s, \

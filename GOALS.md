@@ -184,7 +184,7 @@ reads and commits.
 | barometer measurement noise | sample variance over the static window | `initialize` |
 | `max_predict_dt` | observed IMU interval | offline |
 | gate thresholds | chi-square quantile for a chosen percentile and dimension | a constructor, not a number |
-| a source's timeout | its mean interval between measurements, published as `SourceHealth::period`; it tunes no noise, reaches the estimate only through the recovery guards that ask whether a source is arriving, and is a function of the measurement times alone, so a replay reproduces it | the filter, per arrival |
+| a source's timeout | its mean interval between measurements, published as `SourceHealth::period`; it tunes no noise, reaches the estimate only through the recovery guards that ask whether a source is arriving and through the course, which is refused along a velocity no fresh GNSS velocity holds, and is a function of the measurement times alone, so a replay reproduces it | the filter, per arrival |
 | GNSS `R` | the receiver; bounding it is the caller's (`PositionNoise::clamped`), and the replay harness fuses it raw (`r_policy=`), or at the log's own EKF2 floors to compare with EKF2 (`--r-policy px4`) | per measurement |
 | `correlation`, how long each source's error persists | `τ = −T / ln ρ` from a replay log's `acf1_` per source, read with every measurement fused as white | offline (#51); the corpus's medians until then |
 | `baro_offset_walk`, the barometric offset's drift | a barometer's drift against GNSS height over a replay log | offline (#51); PX4's 0.13 until then |
@@ -231,7 +231,7 @@ fused, which stillness never supplies.
 `Timeouts::dead_reckoning_after`, as PX4's `inertial_dead_reckoning` and ArduPilot's
 `dead_reckoning` are, since a barometer that keeps arriving holds height and position drifts all
 the same. And a source times out against its own rate rather than one threshold sized for the
-slowest: two and a half of its measured mean intervals, capped at `dead_reckoning_after`. Measured
+slowest: two and a half of its measured mean intervals, not capped by `dead_reckoning_after`, which is the mission's limit and not a source's. Measured
 rather than configured, per differentiator 7, and a mean rather than a median, because a median
 of a bursting magnetometer (`eb799954`) read its burst spacing as the rate and flapped the status
 14025 times. Both production estimators fix their timeouts as constants instead.

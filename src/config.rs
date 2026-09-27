@@ -348,13 +348,12 @@ impl Default for Gates {
 ///
 /// What the status *says*; what the filter *does* about a source it keeps rejecting is
 /// [`Recovery`]'s. When a single source counts as timed out is not configured: each source's
-/// own measured period sets it, [`SourceHealth::timeout`](crate::SourceHealth::timeout), capped
-/// here.
+/// own measured period sets it, [`SourceHealth::timeout`](crate::SourceHealth::timeout).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Timeouts {
     /// Beyond this with neither GNSS position nor GNSS velocity accepted, the status becomes
     /// [`DeadReckoning`](crate::Status::DeadReckoning), whatever else is still arriving. Also
-    /// the longest any source's [`timeout`](crate::SourceHealth::timeout) runs.
+    /// a source's [`timeout`](crate::SourceHealth::timeout) until its period is measured.
     ///
     /// Horizontal, because that is the error nothing else bounds: a barometer holds height and
     /// a magnetometer heading, and position still drifts. PX4's `inertial_dead_reckoning` is
@@ -510,16 +509,16 @@ pub struct Recovery {
     pub baro_altitude: Option<Seconds>,
     /// Magnetic heading: adopted as the first heading is, with the `R` of (36′) — but only
     /// while neither GNSS position nor velocity is fresh
-    /// ([`SourceHealth::is_fresh`](crate::SourceHealth::is_fresh)), since with those arriving a magnetometer that disagrees
-    /// for this long is more likely disturbed than right. Nor while a GNSS heading is
+    /// ([`SourceHealth::is_fresh`](crate::SourceHealth::is_fresh)), since with those arriving
+    /// a magnetometer that disagrees for this long is more likely disturbed than right. Nor while a GNSS heading is
     /// accepted, for the same reason.
     pub mag_heading: Option<Seconds>,
     /// Dual-antenna GNSS heading: adopted as the first heading is, with the caller's `R`. No
     /// guard: it is the absolute heading reference when the vehicle carries one.
     pub gnss_heading: Option<Seconds>,
     /// Course constraint: adopted as the first heading is — but only while neither magnetic
-    /// nor GNSS heading is fresh, since with either
-    /// arriving a course that disagrees this long is sideslip the caller did not allow for,
+    /// nor GNSS heading is fresh, since with either arriving a course that disagrees this long
+    /// is sideslip the caller did not allow for,
     /// a crosswind or a multirotor crabbing, rather than a wrong heading.
     pub course: Option<Seconds>,
 }
@@ -787,7 +786,8 @@ impl Default for Accuracy {
     /// [`Status`](crate::Status) is already answering on the aiding timers by then — an unaided
     /// filter reports [`DeadReckoning`](crate::Status::DeadReckoning) from
     /// [`Timeouts::dead_reckoning_after`] without horizontal aiding, or from its first step if
-    /// none was ever accepted — and [`Aligning`](crate::Status::Aligning) reads the alignment bars rather than these.
+    /// none was ever accepted — and [`Aligning`](crate::Status::Aligning) reads the alignment
+    /// bars rather than these.
     /// So these are a claim about which outputs a controller may still use, which is the
     /// question [`Accuracy`] exists to answer. Supply your own numbers.
     ///

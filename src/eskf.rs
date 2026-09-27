@@ -1502,10 +1502,10 @@ impl Eskf {
     /// and heading together. So `time` is when the constraint is claimed to hold, and a caller
     /// fusing one per GNSS velocity passes that fix's time.
     ///
-    /// Refused as [`Fusion::Unobservable`] where the estimated velocity names no direction: not
-    /// yet established, not held by a fresh GNSS velocity
-    /// ([`SourceHealth::is_fresh`](crate::SourceHealth::is_fresh)), or too slow against its
-    /// own uncertainty, which is ArduPilot's 15° bar
+    /// Refused as [`Fusion::NoReference`] where no fresh GNSS velocity holds the estimated one
+    /// ([`SourceHealth::is_fresh`](crate::SourceHealth::is_fresh)), which also covers one never
+    /// established, and as [`Fusion::Unobservable`] where it names no direction: too slow
+    /// against its own uncertainty, which is ArduPilot's 15° bar
     /// on the course read from `P` — see `observation/heading.rs` — and so a speed threshold
     /// the velocity's accuracy sets rather than a parameter. Refused the same way with body x
     /// within 30° of vertical. ArduPilot's plane realigns yaw from course above 5 m/s
@@ -2214,8 +2214,8 @@ impl Eskf {
     /// live [`Validity`], which is the one thing here that is not derived on read.
     fn derive_status(&self) -> Status {
         let d = &self.diagnostics;
-        let horizontal = [&d.gnss_position, &d.gnss_velocity]
-            .into_iter()
+        let horizontal = d
+            .horizontal()
             .any(|source| source.accepted_within(self.config.timeouts.dead_reckoning_after));
         if !horizontal {
             // Position is unusable whatever the attitude is doing, so this outranks
