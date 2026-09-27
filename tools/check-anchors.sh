@@ -398,7 +398,9 @@ case "${1:-}" in
         # `git ls-files` rather than a list here, so a document added to the repository is
         # checked without this script being edited -- and an empty answer is a refusal for
         # the same reason the missing prefix above is.
-        documents=$(cd "$repo_root" && git ls-files '*.md')
+        # Less validation/src/: a template's links are written for the path its page is
+        # published to (tools/validation.py), so the rendered page is the one that resolves.
+        documents=$(cd "$repo_root" && git ls-files '*.md' ':!validation/src/*')
         if [ -z "$documents" ]; then
             echo "check-anchors.sh: no tracked Markdown files to check" >&2
             exit 2

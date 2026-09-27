@@ -1067,12 +1067,173 @@ PAGE = """<!doctype html>
 """
 
 
+# Truth error figures, as (slug, title, unit, scale, components). The components
+# are `<out>.error.csv`'s, each written beside its own sigma on the same axis, so
+# the band is never joined from another file (examples/replay.rs, `ERRORS`).
+ERROR_GROUPS = [
+    ("error_position", "Position", "m", 1.0, ["pos_n", "pos_e", "pos_d"]),
+    ("error_velocity", "Velocity", "m/s", 1.0, ["vel_n", "vel_e", "vel_d"]),
+    ("error_attitude", "Attitude", "deg", math.degrees(1.0),
+     ["tilt_n", "tilt_e", "heading"]),
+]
+
+
+ERROR_COLUMNS = [f"{kind}_{name}" for _s, _t, _u, _x, names in ERROR_GROUPS
+                 for name in names for kind in ("err", "sigma")]
+ANEES_COLUMNS = ["anees_pos", "anees_vel", "anees_att"]
+
+
+def absent(wanted, series, path):
+    """A problem naming each of `wanted` that `series` does not carry, or none.
+
+    A figure reads its columns by name and draws nothing for one it cannot find,
+    so a column renamed on the harness side would publish an empty panel and
+    exit 0. Refused instead, like every other mismatch between the files.
+    """
+    missing = [name for name in wanted if name not in series]
+    return [f"{Path(path).name} has no {', '.join(missing)}"] if missing else []
+
+
+def error_path(replay):
+    """`<out>.error.csv`, the way the harness names it beside `<out>`."""
+    return Path(replay).with_suffix(".error.csv")
+
+
+def error_figure(unit, scale, components, errors, backdrop):
+    """Truth minus estimate per axis, inside the filter's own +/-3 sigma on that axis.
+
+    `scale` converts for display only (radians to degrees); the error and its
+    sigma are scaled together, so the band still means what the harness wrote.
+    """
+    def build(fig):
+        axes = fig.subplots(len(components), 1, sharex=True)
+        for row, name in enumerate(components):
+            plot = axes[row]
+            backdrop.draw(plot)
+            sigma, error = errors.get(f"sigma_{name}"), errors.get(f"err_{name}")
+            if sigma is not None:
+                band = 3.0 * scale * sigma[1]
+                plot.fill_between(sigma[0], -band, band, color="#1b1b1b", alpha=0.12,
+                                  linewidth=0, label="+/-3 sigma")
+            if error is not None:
+                plot.plot(error[0], scale * error[1], "-", color="#c05a2f",
+                          linewidth=0.9, label="truth - estimate")
+            plot.axhline(0.0, color="#1b1b1b", linewidth=0.5)
+            # Scaled to the error and the band's typical width rather than its widest:
+            # 20 s without GNSS grows a +/-250 m band around a 10 m error, and an
+            # axis sized to the band draws the error as a flat line.
+            reach = [np.nanmax(np.abs(scale * error[1]))] if error is not None else []
+            if sigma is not None:
+                reach.append(np.nanmedian(3.0 * scale * sigma[1]))
+            if reach and max(reach) > 0:
+                plot.set_ylim(-1.5 * max(reach), 1.5 * max(reach))
+            plot.set_ylabel(f"{name} ({unit})", fontsize=8)
+            plot.grid(alpha=0.25)
+            if row == 0:
+                plot.legend(loc="upper right", fontsize=7, ncol=2)
+        axes[-1].set_xlabel("t (s)")
+    return build
+
+
+def anees_bounds(notes):
+    """`(runs, bound, bound_any)` from a `tools/anees.py --series` header, or None."""
+    for note in notes:
+        found = re.search(r"runs (\d+), bound ([0-9.]+), bound_any ([0-9.]+)", note)
+        if found:
+            return int(found.group(1)), float(found.group(2)), float(found.group(3))
+    return None
+
+
+def anees_figure(series, bounds):
+    """Ensemble NEES per degree of freedom at every epoch, against both bounds.
+
+    The series and the bounds are tools/anees.py's, read and drawn: the dashed
+    line is the per-epoch 95 % bound `over_` counts against, the solid one the
+    family-wise bound `any_` counts against.
+    """
+    runs, limit, limit_any = bounds
+
+    def build(fig):
+        axes = fig.subplots(3, 1, sharex=True)
+        for plot, block, label in zip(axes, ("pos", "vel", "att"),
+                                      ("position", "velocity", "attitude")):
+            data = series.get(f"anees_{block}")
+            if data is not None:
+                plot.plot(data[0], data[1], "-", color="#1b1b1b", linewidth=0.8,
+                          label=f"mean over {runs} seeds")
+            plot.axhline(1.0, color="#3a7ca5", linewidth=0.6, label="consistent")
+            plot.axhline(limit, color="#c05a2f", linewidth=0.8, linestyle="--",
+                         label="95 % per epoch")
+            plot.axhline(limit_any, color="#c05a2f", linewidth=0.8,
+                         label="95 % over the log")
+            plot.set_yscale("log")
+            # The first scored epoch sits at the prior, with a NEES near zero that
+            # a log axis would draw decades down; below 1e-3 says nothing more.
+            # Headroom over the larger of the series and the bound, a factor of three
+            # on the log axis, so a crossing is not drawn against the frame.
+            peak = max(limit_any, np.nanmax(data[1]) if data is not None else limit_any)
+            plot.set_ylim(1e-3, 3.0 * peak)
+            plot.set_ylabel(f"{label} NEES / dof", fontsize=8)
+            plot.grid(alpha=0.25)
+        # Above the panels rather than on one: an overconfident series sits at the
+        # top of the position panel, exactly where a legend inside it would go.
+        handles, labels = axes[0].get_legend_handles_labels()
+        fig.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, 1.0),
+                   fontsize=7, ncol=4)
+        axes[-1].set_xlabel("t (s)")
+    return build
+
+
 def png_block(png, caption):
     encoded = base64.b64encode(png).decode("ascii")
     return (
         f'<img src="data:image/png;base64,{encoded}" alt="">\n'
         f'<p class="caption">{caption}</p>'
     )
+
+
+def slug_of(title):
+    """A figure's file name from its section title: `Accelerometer bias` is
+    `accelerometer_bias`."""
+    return re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_")
+
+
+class Page:
+    """Where a report's figures go.
+
+    Inlined into one HTML page by default. With `--figures DIR` each is written
+    as `DIR/<slug>.png` beside `DIR/<slug>.md`, its caption, for
+    tools/validation.py to place on a Markdown page; a caption is an argument
+    (AGENTS.md), so it travels with the figure rather than being rewritten there.
+    `only` limits which figures are drawn at all, so a page that shows two
+    figures of a 2 h log does not render the other twenty, and `finish` refuses
+    a slug that was asked for and never drawn, which is what a page citing a
+    figure its run did not produce would otherwise publish as a broken image.
+    """
+
+    def __init__(self, directory=None, only=None):
+        self.directory = Path(directory) if directory else None
+        self.only = set(only) if only else None
+        self.blocks = []
+        self.written = set()
+
+    def figure(self, slug, build, caption, **size):
+        if self.only is not None and slug not in self.only:
+            return
+        png, caption = figure(build, caption, **size)
+        self.written.add(slug)
+        if self.directory is None:
+            self.blocks.append(png_block(png, caption))
+            return
+        self.directory.mkdir(parents=True, exist_ok=True)
+        (self.directory / f"{slug}.png").write_bytes(png)
+        (self.directory / f"{slug}.md").write_text(caption + "\n")
+
+    def finish(self):
+        missing = sorted((self.only or set()) - self.written)
+        if missing:
+            raise ReportError("asked for figures this run does not draw: "
+                              + ", ".join(missing))
 
 
 def key_table(keys):
@@ -1326,6 +1487,11 @@ def build_report(args):
         reference_notes, local = read_series(
             args.reference, ["pos_n", "pos_e", "pos_d", "vel_n", "vel_e", "vel_d"],
             args.points, source="ekf2_local")
+        # Drawn where the statistics put it: at this filter's origin where the
+        # header gives EKF2's, and at its own where it gives none.
+        offset = reference_offset(reference_notes)
+        local = {name: (t, agreement.to_replay_frame(name, y, offset))
+                 for name, (t, y) in local.items()}
         # Every remaining reference column is read here, which is what makes a
         # wrong entry in EKF2_LAYOUTS visible: the bias *states* sit at the same
         # index in both eras, so only these sigmas exercise the era-specific map.
@@ -1360,6 +1526,31 @@ def build_report(args):
     keys = read_summary(args.summary) if args.summary else {}
     if keys:
         problems += check_provenance(keys, epoch_rows, sources, reference_notes)
+
+    # The harness writes `<out>.error.csv` beside every scored replay, one row per
+    # epoch: a row count that differs, or another scenario's header, is a file left
+    # from another run.
+    errors = {}
+    if args.truth and error_path(args.replay).exists():
+        path = error_path(args.replay)
+        error_notes, errors = read_series(path, ERROR_COLUMNS, args.points)
+        problems += absent(ERROR_COLUMNS, errors, path)
+        rows = count_rows(path)
+        if rows != epoch_rows:
+            problems.append(f"{path.name} has {rows} rows, the replay {epoch_rows} epochs")
+        if scenario_of(error_notes) != scenario_of(truth_notes):
+            problems.append(f"{path.name} is for {scenario_of(error_notes)}, the "
+                            f"truth for {scenario_of(truth_notes)}")
+    anees, anees_notes = None, []
+    if args.anees:
+        anees_notes, anees = read_series(args.anees, ANEES_COLUMNS, args.points)
+        problems += absent(ANEES_COLUMNS, anees, args.anees)
+        if anees_bounds(anees_notes) is None:
+            problems.append(f"{args.anees.name} has no `tools/anees.py --series` header")
+        ensemble, run = scenario_of(anees_notes), scenario_of(read_notes(args.input))
+        if not ensemble or not run or ensemble[0] != run[0]:
+            problems.append(f"{args.anees.name} is an ensemble of "
+                            f"{ensemble and ensemble[0]}, the replay {run and run[0]}")
     if problems:
         raise ReportError(
             "these files do not describe the same run:\n  - " + "\n  - ".join(problems)
@@ -1376,7 +1567,8 @@ def build_report(args):
     fixes = read_path(args.input, "v0", "v1", args.points, source="gnss_pos")
     gaps = read_times(args.input, "gnss_pos") if fixes is not None else None
 
-    blocks = []
+    page = Page(args.figures, args.only)
+    blocks = page.blocks
 
     origin = reference_origin(reference_notes)
     period = reference_period(reference_notes)
@@ -1407,17 +1599,21 @@ def build_report(args):
         if args.reference:
             reference_track = read_path(args.reference, "pos_n", "pos_e",
                                         args.points, source="ekf2_local")
-        png, caption = figure(
+            if reference_track is not None:
+                offset = reference_offset(reference_notes)
+                reference_track = (agreement.to_replay_frame("pos_n", reference_track[0], offset),
+                                   agreement.to_replay_frame("pos_e", reference_track[1], offset))
+        page.figure("track",
             track_figure(ours_track, reference_track, fixes),
             "Estimate, EKF2's own solution where the log carries one, and the raw "
-            "GNSS fixes the filter was offered. EKF2's track is relative to its "
-            "own origin, which is not this filter's: two corpus logs report no "
-            "origin at all. Every track here is sampled at a uniform stride, so "
+            "GNSS fixes the filter was offered. EKF2's track is moved to this "
+            "filter's origin by the offset its header reports, the shift the "
+            "agreement statistics make; two corpus logs report no origin, and "
+            "there it stays at its own. Every track here is sampled at a uniform stride, so "
             "each point is a position that was actually held &mdash; the "
             "min/max envelope the time series use pairs two columns from "
             "different epochs and draws a path nobody travelled.",
             width=7.5, height=7.0)
-        blocks.append(png_block(png, caption))
 
     shading = ("Background shading is <code>Status</code>: amber Aligning, "
                "yellow Degraded, red DeadReckoning.")
@@ -1440,7 +1636,7 @@ def build_report(args):
         if columns is None:
             if ours_q is None:
                 continue
-            png, caption = figure(
+            page.figure("attitude",
                 attitude_figure(attitude_series(ours_q, args.points),
                                 attitude_series(reference_q, args.points),
                                 attitude_series(truth_q, args.points), backdrop, resets),
@@ -1454,20 +1650,44 @@ def build_report(args):
                 "body-axis, and only near level do they pass for tilt and "
                 "heading (#131). " + shading + resets_note,
                 height=4.6)
-            blocks.append(png_block(png, caption))
             continue
         if columns[0] not in epochs:
             continue
-        png, caption = figure(
+        page.figure("states_" + slug_of(title),
             state_figure(group, epochs, reference, truth, backdrop),
             f"{html.escape(title)}, with the filter's own +/-3 sigma band. "
             + shading,
             height=6.2)
-        blocks.append(png_block(png, caption))
+
+    if errors:
+        blocks.append("<h2>Error against truth</h2>")
+        for slug, title, unit, scale, components in ERROR_GROUPS:
+            page.figure(slug,
+                        error_figure(unit, scale, components, errors, backdrop),
+                        f"{title} error, truth minus estimate, on navigation axes, "
+                        "inside the filter's own +/-3 sigma on the same axis. Both "
+                        "come from one row of <code>" + html.escape(error_path(
+                            args.replay).name) + "</code>, the error vector every "
+                        "<code>score</code> key reads. The vertical range is set by the "
+                        "error and the band's typical width, so where the band leaves the "
+                        "frame it is wider than drawn. " + shading,
+                        height=5.4)
+
+    if anees is not None:
+        blocks.append("<h2>Ensemble NEES</h2>")
+        page.figure("anees", anees_figure(anees, anees_bounds(anees_notes)),
+                    "NEES per degree of freedom at each epoch, averaged over "
+                    f"{anees_bounds(anees_notes)[0]} seeds of this scenario by "
+                    "<code>tools/anees.py</code>, against the chi-square bounds "
+                    "<code>data/anees.sh</code> gates: the dashed line is the per-epoch "
+                    "95 % bound <code>over_</code> counts, the solid one the family-wise "
+                    "bound <code>any_</code> counts. Log scale; 1 is a covariance that "
+                    "describes its error exactly, and below it is underconfident.",
+                    height=6.2)
 
     if difference is not None:
         blocks.append("<h2>Attitude relative to EKF2</h2>")
-        png, caption = figure(
+        page.figure("attitude_difference",
             difference_figure(difference, epochs, backdrop, resets),
             "This filter's attitude relative to EKF2's, as the rotation vector "
             "of <code>q<sub>EKF2</sub><sup>-1</sup> q&#770;</code> in body axes, "
@@ -1481,12 +1701,11 @@ def build_report(args):
             "and what it cannot\", sets out. "
             + shading + resets_note,
             height=6.2)
-        blocks.append(png_block(png, caption))
 
     blocks.append("<h2>Covariance over time</h2>")
     floor = gap_threshold(gaps) if gaps else None
     outages = find_gaps(gaps, floor)
-    png, caption = figure(
+    page.figure("sigma",
         sigma_figure(epochs, reference, outages, backdrop),
         "Every published standard deviation, one panel per state group, with "
         "EKF2's own dashed where the two are the same quantity &mdash; attitude "
@@ -1501,13 +1720,12 @@ def build_report(args):
            "sigmas should grow and then collapse on the fix that ends the gap."
            if floor else " This log carries no GNSS, so there is no outage to "
            "shade."))
-    blocks.append(png_block(png, caption))
 
     blocks.append("<h2>Innovations</h2>")
     for source, entry in sorted(sources.items()):
         if not any(any(cell for cell in row) for row in entry["nu"]):
             continue
-        png, caption = figure(
+        page.figure(f"innovation_{source}",
             innovation_figure(source, entry, gates.get(source), backdrop),
             f"Per-axis normalized innovation for <code>{html.escape(source)}</code>, "
             "&nu;<sub>i</sub>&nbsp;/&nbsp;&radic;S<sub>ii</sub>. Red verticals are "
@@ -1516,11 +1734,10 @@ def build_report(args):
             "units, metres or radians, so the printed value and this cloud are "
             "different quantities and will not match.",
             height=2.0 + 1.5 * innovation_axes(entry))
-        blocks.append(png_block(png, caption))
 
     if any(r in epochs or r in reference for r in RATIOS):
         blocks.append("<h2>Test ratios</h2>")
-        png, caption = figure(
+        page.figure("ratios",
             ratio_figure(epochs, reference),
             "Gate test ratios, this filter against EKF2's aggregate ones. Both "
             "publish <code>r = &epsilon; / &gamma;</code>, so the red line at 1 "
@@ -1530,10 +1747,9 @@ def build_report(args):
             "underneath: EKF2's are aggregates over its own aiding, and its "
             "height ratio includes a barometer this filter may not be fusing.",
             height=8.0)
-        blocks.append(png_block(png, caption))
 
     blocks.append("<h2>Innovation distribution</h2>")
-    png, caption = figure(
+    page.figure("nis",
         nis_figure(sources, gates, keys),
         "NIS recovered as <code>&epsilon; = ratio &times; gamma</code>, against "
         "the chi-square it would follow if the filter's own covariance were "
@@ -1551,9 +1767,10 @@ def build_report(args):
         "constant</b>, so their distribution tests those constants; only GNSS "
         "tests a receiver's own reported accuracy, unfloored.",
         height=7.0)
-    blocks.append(png_block(png, caption))
 
-    if args.reference:
+    # Not under --figures, which publishes no table: on the 2 h log this is 2 s of
+    # a run that only wanted one figure.
+    if args.reference and not args.figures:
         values = agreement_of(ours_table, args.reference, sources)
         line = dict(token.split("=", 1) for token in agreement_line(values, keys).split())
         blocks.append("<h2>Agreement with EKF2</h2>")
@@ -1568,6 +1785,9 @@ def build_report(args):
             "<code>score</code> lines, never recomputed here. The harness is the "
             "only thing in the repository that computes a statistic.</p>")
 
+    page.finish()
+    if args.figures:
+        return None
     meta = f"{html.escape(Path(args.replay).name)} &middot; {epoch_rows} epochs"
     if keys.get("status"):
         meta += f" &middot; final status {html.escape(keys['status'])}"
@@ -1660,6 +1880,30 @@ def self_test():
          "resets": "1"}),
         "r_policy=px4 pos_n_rms=0.3100 climb=none nis_mag=0.1 resets=1")
 
+    same("absent", absent(["err_pos_n", "sigma_pos_n"], {"sigma_pos_n": None}, "x/e.csv"),
+         ["e.csv has no err_pos_n"])
+    same("none absent", absent(["a"], {"a": None}, "e.csv"), [])
+    same("slug", slug_of("Accelerometer bias"), "accelerometer_bias")
+    same("slug of NED", slug_of("Position NED"), "position_ned")
+    same("anees bounds", anees_bounds([
+        "# fusion-nav anees for `mission`, runs 50, bound 1.1972, bound_any 1.6376"]),
+        (50, 1.1972, 1.6376))
+    same("no anees bounds", anees_bounds(["# fusion-nav nees for `mission`, seed 2"]), None)
+    # A page asked for a figure its run never drew is refused, not published with a
+    # broken image; one that drew everything asked for passes.
+    asked = Page(only=["error_position", "track"])
+    asked.written.add("error_position")
+    try:
+        asked.finish()
+        failures.append("Page.finish accepted a figure that was never drawn")
+    except ReportError:
+        pass
+    asked.written.add("track")
+    try:
+        asked.finish()
+    except ReportError as e:
+        failures.append(f"Page.finish refused a complete page: {e}")
+
     for failure in failures:
         print(f"FAIL {failure}", file=sys.stderr)
     print(f"replay_report self-test: {'FAIL' if failures else 'ok'}", file=sys.stderr)
@@ -1685,6 +1929,13 @@ def main():
     parser.add_argument("--corpus", type=Path, help="a directory `data/fetch.sh "
                         "--compare` wrote: one agreement table for every run in it, "
                         "and one `agreement` line per run on stdout")
+    parser.add_argument("--anees", type=Path, help="this scenario's ensemble series "
+                        "from `tools/anees.py --series`, drawn against its bounds")
+    parser.add_argument("--figures", type=Path, help="write each figure as "
+                        "DIR/<slug>.png beside DIR/<slug>.md, its caption, instead of "
+                        "one HTML page")
+    parser.add_argument("--only", type=lambda text: text.split(","), help="comma-"
+                        "separated figure slugs to draw; refused if any is not drawn")
     parser.add_argument("--self-test", action="store_true",
                         help="run the attitude fixtures no corpus log can check, and exit")
     args = parser.parse_args()
@@ -1704,14 +1955,19 @@ def main():
         args.out.write_text(page)
         print(f"{args.out} ({len(page) / 1e6:.2f} MB)", file=sys.stderr)
         return 0
-    if args.input is None or args.replay is None or args.out is None:
-        parser.error("input, replay and -o/--out are required")
+    if args.input is None or args.replay is None or (args.out is None) == (
+            args.figures is None):
+        parser.error("input, replay and one of -o/--out or --figures are required")
 
     try:
         page = build_report(args)
     except ReportError as e:
         print(f"replay_report: {e}", file=sys.stderr)
         return 1
+    if args.figures:
+        print(f"{args.figures}: {', '.join(sorted(p.stem for p in args.figures.glob('*.png')))}",
+              file=sys.stderr)
+        return 0
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(page)
     print(f"{args.out} ({len(page) / 1e6:.1f} MB)", file=sys.stderr)

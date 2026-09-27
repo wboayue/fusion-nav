@@ -301,6 +301,9 @@ case "$cmd" in
     [ "$failed" = 0 ] || die "one or more logs did not replay"
     lines=$(cd "$root" && uv run --quiet tools/replay_report.py --corpus "$out" \
         -o "$out/agreement.html") || die "tools/replay_report.py --corpus failed"
+    # Kept beside the table for tools/validation.sh, which publishes these lines rather than
+    # recomputing them.
+    printf '%s\n' "$lines" > "$out/agreement.txt"
     while read -r _ line; do
         # By key, not by position, so the line's order is the writer's to choose.
         log=$(pair_value "$line" log) || die "an agreement line with no log=: $line"

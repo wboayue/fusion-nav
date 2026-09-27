@@ -1,0 +1,89 @@
+# Robustness to faults
+
+**What happens when a sensor lies or goes quiet?** In each simulated fault below, the error
+stays inside the band of uncertainty the filter reports. During the fault the filter either
+widens that band or refuses the bad measurements, and its `Status` reports that something is
+wrong. The exception is GNSS fixes that arrive late: the filter has no model for that yet, and
+it pays in accuracy and in honesty.
+
+{{stamp}}
+
+## How to read these figures
+
+Each scenario is the baseline `mission` circuit with one fault added. The orange line is the
+error, true value minus estimate; the grey band is ±3σ of the uncertainty the filter reported.
+While the line stays inside the band, the filter knew how wrong it might be. The background
+shows the filter's `Status`, its one-word summary of its own health: yellow for `Degraded`,
+amber while it is still aligning at the start, red for `DeadReckoning`. The whole-flight numbers
+for every scenario are on the [accuracy page](accuracy.md#every-scenario).
+
+## GNSS outage
+
+GNSS disappears from 60 s to 80 s. With nothing to correct it, the filter estimates position by
+integrating acceleration twice, so the error grows: to {{score gnss_outage pos_h_max}} m at
+worst, against {{score mission pos_h_max}} m on the baseline. The band grows faster than the
+error, and when GNSS returns the first fix is accepted, not rejected, because the filter's
+reported uncertainty covered where it had drifted.
+
+`Status` reads `Degraded` through the gap, not `DeadReckoning`, because the barometer and
+magnetometer are still working and any working sensor counts as aiding. The filter's per-quantity
+`Validity` flags are what report that horizontal position is no longer usable. Whether `Status`
+should weigh sensors differently is #56.
+
+{{figure gnss_outage error_position}}
+
+## A magnetic disturbance
+
+From 60 s to 70 s the magnetometer reads a heading 30° wrong, as it might next to steel or a
+power line. The filter refuses {{summary mag_disturbance rejected_mag}} of those readings, so
+heading over the whole flight is off by {{score mag_disturbance yaw}}° RMS, against
+{{score mission yaw}}° on the baseline. While readings are refused, the gyroscopes hold the
+heading and the band widens a little, until the magnetometer agrees again.
+
+{{figure mag_disturbance error_attitude}}
+
+## A gap in the log at speed
+
+1.2 s of IMU data is lost from 60 s, in the middle of a turn, as when a flight controller's SD
+card stalls. The filter cannot integrate a step that long from a single sample, so it assumes
+the vehicle kept its velocity through the gap and widens its uncertainty to allow for turning
+and accelerating it could not see. The first GNSS fix after the gap falls inside that wider band
+and is accepted. The worst horizontal error is {{score logging_dropout pos_h_max}} m, and the
+number of times the filter had to reset itself to a fix is
+{{summary logging_dropout recovered}}.
+
+{{figure logging_dropout error_position}}
+
+## A drifting barometer
+
+The barometer's zero drifts by 2 cm/s for the whole flight, as it does with temperature or
+weather. The filter estimates that drift as it flies, and relies on GNSS for the slow changes in
+height. Height is off by {{score baro_drift pos_v}} m RMS where the baseline reads
+{{score mission pos_v}} m, and the filter's reported uncertainty covers it (position NEES
+{{score baro_drift nees_pos}}, where under 1 means not overconfident; see the
+[honesty page](honesty.md)). A filter
+that trusts the barometer's zero does much worse on both counts. Why the drift is estimated,
+and what the alternatives measured, is in
+[GOALS.md, "Barometric reference as an estimated offset"](../GOALS.md#barometric-reference-as-an-estimated-offset).
+
+{{figure baro_drift error_position}}
+
+## GNSS fixes 150 ms late
+
+This is the fault the filter does not handle. It uses each fix as if it described the present
+moment, so the position error follows the vehicle's speed, and the orange line leaves the band
+again and again. Position is off by {{score gnss_latency pos_h}} m RMS against
+{{score mission pos_h}} m on the baseline. For {{score gnss_latency false_valid}} moments the
+filter told the application a quantity was usable while its real error was worse than the
+configured accuracy. The [honesty page](honesty.md#overconfident-fixes-that-arrive-late) shows
+this across many flights. Whether the filter gains a model for delayed measurements, or
+documents the limit, is #52.
+
+{{figure gnss_latency error_position}}
+
+## What this page cannot say
+
+Every fault here is simulated, one at a time, on one flight each. Real hostile conditions, such
+as GNSS reflections in a city, will be scored against truth when the UrbanNav dataset (#60)
+lands. The real PX4 logs contain faults too, including a logging gap at 30 m/s, but have no
+truth; they are on the [EKF2 page](ekf2.md), where the question is agreement.

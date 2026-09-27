@@ -15,7 +15,7 @@ categories = ["embedded", "no-std", "algorithms", "science"]
 # `data/flight.truth.csv` is 31 KB of the packaged crate and nothing on the published side reads
 # it: scoring a replay against truth happens in this repository, never in a dependent's build.
 # `data/flight.csv` stays, because `cargo run --example replay` is the first thing a reader runs.
-exclude = ["AGENTS.md", "data/flight.truth.csv"]
+exclude = ["AGENTS.md", "VALIDATION.md", "data/flight.truth.csv", "validation/"]
 
 # `panic-check` builds a bare-metal binary that links the whole public API, so CI can prove
 # nothing in it reaches `core::panicking`. It is a workspace member for one reason: a second

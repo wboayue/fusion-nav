@@ -20,7 +20,8 @@
 //! `--r-policy`, anywhere on the line, picks what GNSS rows are fused with: `raw`, the
 //! default, or `px4`; see [`RPolicy`].
 //! It also writes `<out>.nees.csv`, `ε` per block per epoch, which `data/anees.sh` averages
-//! across seeds (#89).
+//! across seeds (#89), and `<out>.error.csv`, the truth error on navigation axes beside its σ,
+//! which `tools/replay_report.py` draws.
 //!
 //! # Input
 //!
@@ -459,6 +460,9 @@ fn run() -> Result<(), Box<dyn Error>> {
         let mut nees_out = BufWriter::new(File::create(output.with_extension("nees.csv"))?);
         scoring.write_nees(&mut nees_out)?;
         nees_out.flush()?;
+        let mut error_out = BufWriter::new(File::create(output.with_extension("error.csv"))?);
+        scoring.write_error(&mut error_out)?;
+        error_out.flush()?;
     }
 
     replay.report(&input, &output, &fusions);
@@ -1219,6 +1223,7 @@ impl Replay {
                 t,
                 &state,
                 self.filter.covariance(),
+                self.filter.attitude_variance(),
                 &self.filter.config().accuracy,
             );
         }
@@ -2267,7 +2272,43 @@ impl Component {
             Self::Heading => attitude_ned.z,
         }
     }
+
+    /// The filter's variance on the same axis, so an error and the σ it is banded with are
+    /// read in one frame: the covariance diagonal for position and velocity, which the error
+    /// state carries on navigation axes already, and `Eskf::attitude_variance` for tilt and
+    /// heading, which the body-axis diagonal is not.
+    fn variance(self, covariance: &Covariance, attitude: AttitudeVariance) -> f32 {
+        match self {
+            Self::State(state) => covariance.variance(state),
+            Self::TiltNorth => attitude.tilt_north,
+            Self::TiltEast => attitude.tilt_east,
+            Self::Heading => attitude.heading,
+        }
+    }
 }
+
+/// The components `<out>.error.csv` writes, each beside its σ, and the column names they are
+/// written under.
+///
+/// Navigation axes throughout, the way [`Validity`] states its claims, so a panel can draw the
+/// error inside its own ±3σ band. The band travels in the same row as the error rather than
+/// being joined from the epoch file afterwards: a reader pairing two files it decimates
+/// separately draws an error against a σ from another epoch, which is how
+/// `tools/replay_report.py`'s first track figure came to plot positions the vehicle never held.
+const ERRORS: [(Component, &str); 9] = [
+    (Component::State(ErrorState::PositionNorth), "pos_n"),
+    (Component::State(ErrorState::PositionEast), "pos_e"),
+    (Component::State(ErrorState::PositionDown), "pos_d"),
+    (Component::State(ErrorState::VelocityNorth), "vel_n"),
+    (Component::State(ErrorState::VelocityEast), "vel_e"),
+    (Component::State(ErrorState::VelocityDown), "vel_d"),
+    (Component::TiltNorth, "tilt_n"),
+    (Component::TiltEast, "tilt_e"),
+    (Component::Heading, "heading"),
+];
+
+/// One component of [`ERRORS`] at one epoch: the truth error and the filter's σ on that axis.
+type Deviation = [(f32, f32); ERRORS.len()];
 
 /// The six quantities, in the order [`Score::false_valid`] counts them.
 const QUANTITIES: [Quantity; 6] = [
@@ -2354,7 +2395,7 @@ impl Score {
         covariance: &Covariance,
         truth: &TruthRow,
         accuracy: &Accuracy,
-    ) -> Epsilon {
+    ) -> (Epsilon, [f32; ERRORS.len()]) {
         use ErrorState::*;
         let error = error_state(state, truth);
         let attitude_ned = attitude_error_ned(state, truth);
@@ -2405,7 +2446,10 @@ impl Score {
                 *count += 1;
             }
         }
-        epsilon
+        (
+            epsilon,
+            ERRORS.map(|(component, _)| component.of(&error, &attitude_ned)),
+        )
     }
 
     /// Root mean square of one accumulated sum of squares.
@@ -2502,9 +2546,10 @@ struct Scoring {
     scenario: Option<(String, u64)>,
     truth: Truth,
     score: Score,
-    /// `ε` per epoch, kept rather than written as it arrives: [`Replay`] is cloned and
-    /// rewound while it waits for a static window, and a buffer inside it rewinds with it.
-    epochs: Vec<(f64, Epsilon)>,
+    /// `ε` and the error per epoch, kept rather than written as they arrive: [`Replay`] is
+    /// cloned and rewound while it waits for a static window, and a buffer inside it rewinds
+    /// with it. The error is `None` where the truth file had no row.
+    epochs: Vec<(f64, Epsilon, Option<Deviation>)>,
 }
 
 impl Scoring {
@@ -2542,15 +2587,25 @@ impl Scoring {
     }
 
     /// Score one epoch, or record that this file had no truth for it.
-    fn epoch(&mut self, t: f64, state: &State, covariance: &Covariance, accuracy: &Accuracy) {
-        let epsilon = match self.truth.at(t) {
-            Some(truth) => self.score.epoch(state, covariance, &truth, accuracy),
-            None => {
-                self.score.unmatched += 1;
-                [None; 3]
-            }
+    fn epoch(
+        &mut self,
+        t: f64,
+        state: &State,
+        covariance: &Covariance,
+        attitude: AttitudeVariance,
+        accuracy: &Accuracy,
+    ) {
+        let Some(truth) = self.truth.at(t) else {
+            self.score.unmatched += 1;
+            self.epochs.push((t, [None; 3], None));
+            return;
         };
-        self.epochs.push((t, epsilon));
+        let (epsilon, error) = self.score.epoch(state, covariance, &truth, accuracy);
+        let mut deviation = [(0.0, 0.0); ERRORS.len()];
+        for ((slot, value), (component, _)) in deviation.iter_mut().zip(error).zip(ERRORS) {
+            *slot = (value, component.variance(covariance, attitude).sqrt());
+        }
+        self.epochs.push((t, epsilon, Some(deviation)));
     }
 
     /// `<out>.nees.csv`: `ε` per block per epoch, the input `tools/anees.py` averages across
@@ -2572,7 +2627,7 @@ impl Scoring {
         )?;
         writeln!(out, "t_s,nees_pos,nees_vel,nees_att")?;
         let field = |value: Option<f64>| value.map_or_else(String::new, |v| format!("{v:.6}"));
-        for (t, [pos, vel, att]) in &self.epochs {
+        for (t, [pos, vel, att], _) in &self.epochs {
             writeln!(
                 out,
                 "{t:.4},{},{},{}",
@@ -2580,6 +2635,42 @@ impl Scoring {
                 field(*vel),
                 field(*att)
             )?;
+        }
+        Ok(())
+    }
+
+    /// `<out>.error.csv`: the truth error on navigation axes per epoch, each beside the σ the
+    /// filter claimed on that axis, which `tools/replay_report.py` draws as error inside ±3σ.
+    ///
+    /// The same error vector every `score` key reads, so a figure and the RMSE printed under
+    /// it cannot describe two different errors. One row per epoch, like `<out>.nees.csv`, and
+    /// empty where the truth file had no row rather than dropped.
+    fn write_error(&self, out: &mut dyn Write) -> io::Result<()> {
+        match &self.scenario {
+            Some((name, seed)) => writeln!(out, "# fusion-nav error for `{name}`, seed {seed}")?,
+            None => writeln!(out, "# fusion-nav error, no scenario named")?,
+        }
+        writeln!(
+            out,
+            "# err_ = truth - estimate on navigation axes (attitude: rotation vector of q * q^-1, \
+             rad), sigma_ the filter's on the same axis; empty where unscored"
+        )?;
+        write!(out, "t_s")?;
+        for (_, name) in ERRORS {
+            write!(out, ",err_{name},sigma_{name}")?;
+        }
+        writeln!(out)?;
+        for (t, _, deviation) in &self.epochs {
+            write!(out, "{t:.4}")?;
+            match deviation {
+                Some(deviation) => {
+                    for (error, sigma) in deviation {
+                        write!(out, ",{error:.6},{sigma:.6}")?;
+                    }
+                }
+                None => write!(out, "{}", ",,".repeat(ERRORS.len()))?,
+            }
+            writeln!(out)?;
         }
         Ok(())
     }
@@ -4549,7 +4640,13 @@ mod tests {
         let state = state_at(0.0, 0.0, 0.0);
         let covariance = Covariance::from_sigmas([0.5; STATES]);
         for epoch in 0..5 {
-            scoring.epoch(epoch as f64 * DT, &state, &covariance, &Accuracy::default());
+            scoring.epoch(
+                epoch as f64 * DT,
+                &state,
+                &covariance,
+                AttitudeVariance::default(),
+                &Accuracy::default(),
+            );
         }
         assert_eq!(scoring.score.scored, 3);
         assert_eq!(scoring.score.unmatched, 2);
@@ -4565,7 +4662,13 @@ mod tests {
         let state = state_at(0.0, 0.0, 0.0);
         let covariance = Covariance::from_sigmas([0.5; STATES]);
         for epoch in 0..3 {
-            scoring.epoch(epoch as f64 * DT, &state, &covariance, &Accuracy::default());
+            scoring.epoch(
+                epoch as f64 * DT,
+                &state,
+                &covariance,
+                AttitudeVariance::default(),
+                &Accuracy::default(),
+            );
         }
         let mut out = Vec::new();
         scoring.write_nees(&mut out).expect("written");
@@ -4577,6 +4680,57 @@ mod tests {
         assert_eq!(lines[3], "0.0000,0.000000,0.000000,0.000000");
         assert_eq!(lines[5], "0.0400,,,");
         assert_eq!(lines.len(), 6);
+    }
+
+    #[test]
+    fn the_error_file_bands_each_error_with_the_sigma_on_its_own_axis() {
+        // Truth 1.5 m north and 0.25 rad of heading away from a level estimate at the origin.
+        // The body-axis attitude sigmas (0.7, 0.8, 0.9 rad) differ from the navigation-axis
+        // ones handed in (0.1, 0.2, 0.3), so a band read off the covariance diagonal for
+        // tilt or heading fails here rather than drawing a plausible-looking figure.
+        let mut values = [0.0f32; STATES];
+        values[0] = 1.5;
+        values[8] = 0.25;
+        let mut scoring = TruthLog::new().row(0.0, values).scoring();
+        scoring.scenario = Some(("fixture".to_string(), 7));
+        let state = state_at(0.0, 0.0, 0.0);
+        let covariance = Covariance::from_sigmas([
+            0.5, 0.6, 0.7, 0.1, 0.2, 0.3, 0.7, 0.8, 0.9, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5,
+        ]);
+        let attitude = AttitudeVariance {
+            tilt_north: 0.01,
+            tilt_east: 0.04,
+            heading: 0.09,
+        };
+        for epoch in 0..2 {
+            scoring.epoch(
+                epoch as f64 * DT,
+                &state,
+                &covariance,
+                attitude,
+                &Accuracy::default(),
+            );
+        }
+        let mut out = Vec::new();
+        scoring.write_error(&mut out).expect("written");
+        let text = String::from_utf8(out).expect("utf-8");
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "# fusion-nav error for `fixture`, seed 7");
+        assert_eq!(
+            lines[2],
+            "t_s,err_pos_n,sigma_pos_n,err_pos_e,sigma_pos_e,err_pos_d,sigma_pos_d,\
+             err_vel_n,sigma_vel_n,err_vel_e,sigma_vel_e,err_vel_d,sigma_vel_d,\
+             err_tilt_n,sigma_tilt_n,err_tilt_e,sigma_tilt_e,err_heading,sigma_heading"
+        );
+        assert_eq!(
+            lines[3],
+            "0.0000,1.500000,0.500000,0.000000,0.600000,0.000000,0.700000,\
+             0.000000,0.100000,0.000000,0.200000,0.000000,0.300000,\
+             0.000000,0.100000,0.000000,0.200000,0.250000,0.300000"
+        );
+        // No truth for the second epoch: written, empty, so rows stay one per epoch.
+        assert_eq!(lines[4], format!("0.0200{}", ",".repeat(18)));
+        assert_eq!(lines.len(), 5);
     }
 
     #[test]
