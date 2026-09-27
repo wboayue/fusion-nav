@@ -5351,7 +5351,7 @@ mod tests {
         // it is believed, so a source turning out NaN is still timed against its own rate.
         let mut filter = initialized();
         let nan = f32::NAN;
-        hold(&mut filter, 2.0, 20, |filter| {
+        hold(&mut filter, 4.0, 20, |filter| {
             let now = filter.now();
             let noise = PositionNoise::horizontal_vertical(1.5, 1.5);
             let _ = filter.fuse_gnss_position(now, Position::ned(nan, nan, nan), noise);
@@ -6360,7 +6360,7 @@ mod tests {
         // twice its own timeout: a course along it would read as aiding while it drifts.
         let velocity = Velocity::ned(0.0, 15.0, 0.0);
         let mut filter = cruising(velocity);
-        hold(&mut filter, 1.0, 10, |filter| {
+        hold(&mut filter, 2.0, 10, |filter| {
             hold_velocity(filter, velocity)
         });
         hold(&mut filter, 0.5, 100, |_| {});

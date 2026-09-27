@@ -813,15 +813,15 @@ pub struct SourceHealth {
     /// measurement, rather than read as a difference of `since_initialized`, because an `f32`
     /// clock counting hours loses the digits a 0.2 s interval needs.
     pub(crate) since_measured: Option<Seconds>,
-    /// This source's update period as measured: the median of the intervals between its last
-    /// measurements, or `None` until enough have arrived to take one.
+    /// This source's update period as measured: the mean interval between its recent
+    /// measurements, or `None` until fifteen have arrived.
     ///
     /// Measured rather than configured, because the caller would be asked for a number the
     /// filter can read off the stream (GOALS.md differentiator 7). Every measurement placed in
     /// time counts, whether the gate then accepts, rejects or refuses it: this is how often
     /// the sensor speaks, which [`timeout`](Self::timeout) reads, not how often it is believed.
     pub period: Option<Seconds>,
-    /// The intervals [`period`](Self::period) is the median of.
+    /// The running mean [`period`](Self::period) reads.
     pub(crate) cadence: Cadence,
 }
 
@@ -843,12 +843,11 @@ impl SourceHealth {
     /// [`Timeouts::dead_reckoning_after`], which is also the answer until a period has been
     /// measured.
     ///
-    /// Two and a half missed updates, from the one receiver whose jitter was measured: on
-    /// `2c42096b`, a 1 Hz GNSS whose median interval is 1.003 s, 3289 of 4615 fix intervals
-    /// exceed 1.0 s and a threshold there flaps the status 7992 times in two hours; at 2.5 s
-    /// it is 888, two per interval longer than that, so what remains is the receiver's real
-    /// outages. Every other source on the corpus stays under 2.5 periods except across a
-    /// logging dropout.
+    /// Two and a half, because that is where the corpus stops flapping. `eb799954`'s
+    /// magnetometer, which bursts, changes status 2826 times over two periods and twice over
+    /// two and a half; `2c42096b`'s jittery 1 Hz receiver 330 times against 48. What is left
+    /// is real: on `a299e722`, 10 Hz GNSS velocity rejected for a second at a time, which a
+    /// threshold sized for a 1 Hz receiver never showed.
     ///
     /// Per source, because one threshold has to clear the slowest source: sized for a 1 Hz
     /// GNSS, a 5 Hz barometer that stops is invisible for twelve missed readings. PX4 and
@@ -947,47 +946,47 @@ impl SourceHealth {
 /// Missed updates before a source counts as timed out; see [`SourceHealth::timeout`].
 const MISSED_UPDATES: f32 = 2.5;
 
-/// Intervals whose median is a source's period. Odd, so the median is one of them; long
-/// enough that a stretch of a jittery receiver's doubled intervals does not read as its rate.
-const CADENCE: usize = 9;
+/// Intervals a source's period averages over, and how many it waits for before stating one.
+const CADENCE: u16 = 15;
 
-/// The last [`CADENCE`] intervals between a source's measurements.
+/// A source's mean interval between measurements: a running mean over the first [`CADENCE`],
+/// exponential with weight `1/CADENCE` after.
 ///
-/// Kept apart from the rest of [`SourceHealth`] and summarized once per arrival, since
-/// [`Status`] reads the period on every [`Eskf::state`](crate::Eskf::state) and a median taken
-/// there would sort seven of these per IMU sample.
+/// A mean rather than a median, because a sensor that delivers in bursts is common and its
+/// intervals are bimodal. `eb799954`'s magnetometer arrives 125 ms apart at the median with a
+/// tenth of its intervals under 4 ms, and a median of nine lands on the burst often enough to
+/// read a 3 ms period and time the source out between its own bursts: 14025 status
+/// transitions against 2. A mean reads the rate the source actually delivers, and a gap
+/// raises it by only its share of the window. Fifteen is where the corpus stopped moving:
+/// `2c42096b`'s jittery receiver flaps 76 times averaged over 9, 54 over 15 and 53 over 30.
+///
+/// Summarized per arrival rather than per read, since [`Status`] reads the period on every
+/// [`Eskf::state`](crate::Eskf::state).
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct Cadence {
     last: Option<Timestamp>,
-    intervals: [f32; CADENCE],
-    /// Where the next interval goes.
-    next: usize,
-    full: bool,
+    mean: f32,
+    count: u16,
 }
 
 impl Cadence {
-    /// Record a measurement at `time`, and return the median interval once [`CADENCE`] of
-    /// them have arrived. Not before: two intervals of a receiver that bursts are no rate.
+    /// Record a measurement at `time`, and return the mean interval once [`CADENCE`] of them
+    /// have arrived. Not before: two intervals of a source that bursts are no rate.
     fn note(&mut self, time: Timestamp) -> Option<Seconds> {
-        let last = self.last.replace(time);
-        let interval = match last {
+        let interval = match self.last {
             Some(last) if time > last => time.since(last).as_secs(),
-            Some(last) => {
-                self.last = Some(last);
+            Some(_) => return None,
+            None => {
+                self.last = Some(time);
                 return None;
             }
-            None => return None,
         };
-        self.intervals[self.next % CADENCE] = interval;
-        self.next = (self.next + 1) % CADENCE;
-        self.full |= self.next == 0;
-        if !self.full {
-            return None;
-        }
-        let mut sorted = self.intervals;
-        sorted.sort_unstable_by(f32::total_cmp);
-        Some(Seconds::from_secs(sorted[CADENCE / 2]))
+        self.last = Some(time);
+        self.count = self.count.saturating_add(1);
+        let weight = 1.0 / f32::from(self.count.min(CADENCE));
+        self.mean += weight * (interval - self.mean);
+        (self.count >= CADENCE).then(|| Seconds::from_secs(self.mean))
     }
 }
 
@@ -1196,32 +1195,34 @@ mod tests {
     }
 
     #[test]
-    fn a_period_is_the_median_interval_once_the_window_has_filled() {
-        // Eight intervals are not yet a rate.
-        let times: [u64; 9] = core::array::from_fn(|i| 200 * i as u64);
+    fn a_period_is_the_mean_interval_once_fifteen_have_arrived() {
+        // Fourteen intervals are not yet a rate.
+        let times: [u64; 15] = core::array::from_fn(|i| 200 * i as u64);
         assert_eq!(arrived(&times).period, None);
 
-        // Nine are. One doubled and one halved interval among them move the median nowhere,
-        // where a mean would read 0.211 s.
-        let mut times: [u64; 10] = core::array::from_fn(|i| 200 * i as u64);
-        times[4] -= 100;
-        times[9] += 200;
-        let period = arrived(&times).period.expect("nine intervals");
-        assert!((period.as_secs() - 0.2).abs() < 1e-6, "{period:?}");
+        // A source that bursts: pairs 2 ms apart, a pair every 400 ms. It delivers every
+        // 200 ms on average, where the median interval, 2 ms or 398 ms depending on where the
+        // window falls, is neither.
+        let times: [u64; 16] = core::array::from_fn(|i| 400 * (i as u64 / 2) + 2 * (i as u64 % 2));
+        let period = arrived(&times).period.expect("fifteen intervals");
+        assert!((period.as_secs() - 0.1867).abs() < 1e-3, "{period:?}");
     }
 
     #[test]
     fn a_time_not_after_the_last_is_not_an_interval() {
         // Every arrival offered twice, as a geodetic fix is on its way through to position:
-        // zero intervals would make the period 0 and the timeout 0.
-        let times: [u64; 20] = core::array::from_fn(|i| 1000 * (i as u64 / 2));
-        let period = arrived(&times).period.expect("nine intervals");
+        // zero intervals would halve the period.
+        let times: [u64; 32] = core::array::from_fn(|i| 1000 * (i as u64 / 2));
+        let period = arrived(&times).period.expect("fifteen intervals");
         assert!((period.as_secs() - 1.0).abs() < 1e-6, "{period:?}");
 
         // And one out of order is dropped without losing the latest time.
-        let mut source = arrived(&[0, 1000, 500]);
-        source.note_arrival(at(2000));
-        assert_eq!(source.cadence.intervals[..2], [1.0, 1.0]);
+        let mut times: [u64; 17] = core::array::from_fn(|i| 1000 * i as u64);
+        times[16] = 500;
+        let mut source = arrived(&times);
+        source.note_arrival(at(16_000));
+        let period = source.period.expect("sixteen intervals");
+        assert!((period.as_secs() - 1.0).abs() < 1e-6, "{period:?}");
     }
 
     #[test]
@@ -1234,11 +1235,11 @@ mod tests {
             "no period yet"
         );
 
-        let times: [u64; 10] = core::array::from_fn(|i| 200 * i as u64);
+        let times: [u64; 16] = core::array::from_fn(|i| 200 * i as u64);
         let timeout = arrived(&times).timeout(&timeouts).as_secs();
         assert!((timeout - 0.5).abs() < 1e-6, "{timeout}");
 
-        let times: [u64; 10] = core::array::from_fn(|i| 3000 * i as u64);
+        let times: [u64; 16] = core::array::from_fn(|i| 3000 * i as u64);
         assert_eq!(arrived(&times).timeout(&timeouts), cap, "7.5 s, capped");
     }
 
