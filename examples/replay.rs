@@ -824,7 +824,7 @@ struct Replay {
     /// Rows written to the fusion file: every verdict the log met, whatever it was — one per
     /// `fuse_*` call, two per GNSS fix.
     fusions: u32,
-    /// When the worst refused step happened. The count and the size of the gap come from
+    /// When the longest gap, coasted or refused, happened. The count and the size come from
     /// `diagnostics()`; the filter reads no clock, so the log timestamp is the harness's to
     /// keep.
     longest_step_at: Option<f64>,
@@ -1178,7 +1178,7 @@ impl Replay {
     fn propagate(&mut self, t: f64, imu: ImuSample, out: &mut Sinks) -> io::Result<()> {
         if let Some(previous) = self.previous_imu.replace(t) {
             // The filter decides what is too long, not the example.
-            let worst_before = self.filter.diagnostics().propagation.longest_refused;
+            let worst_before = self.filter.diagnostics().propagation.longest_gap;
             let propagated = self
                 .filter
                 .predict(imu, Seconds::from_secs((t - previous) as f32))
@@ -1186,8 +1186,7 @@ impl Replay {
             // Timestamp the step that set a new worst, which is the one the filter kept.
             // Comparing to `dt` instead would also match a later step that merely ties it,
             // and move the report's timestamp off the gap the size belongs to.
-            if !propagated && self.filter.diagnostics().propagation.longest_refused != worst_before
-            {
+            if !propagated && self.filter.diagnostics().propagation.longest_gap != worst_before {
                 self.longest_step_at = Some(t);
             }
         }
@@ -1199,8 +1198,8 @@ impl Replay {
             self.transitions.push((t, state.status));
         }
         self.epochs += 1;
-        // Scored from the same `state` the row is written from, and after a refused step as
-        // well as an accepted one: the stale state is what the filter published. Both reads
+        // Scored from the same `state` the row is written from, and after a coasted or refused
+        // step as well as a propagated one: that state is what the filter published. Both reads
         // sit inside the `if let` so a replay with no truth file — which is every CI run and
         // every corpus log — does no work for a feature it is not using.
         if let Some(scoring) = &mut self.scoring {
@@ -1679,12 +1678,13 @@ impl Replay {
                 propagation.refused_not_finite
             );
         }
-        if let Some(worst) = propagation.longest_refused {
+        if let Some(worst) = propagation.longest_gap {
             let at = self.longest_step_at.unwrap_or(f64::NAN);
             println!(
-                "{} propagation steps refused as longer than {} s, worst {:.3} s at \
-                 {at:.2} s\n  a gap is usually the logger missing messages, not the IMU \
+                "{} propagation steps coasted and {} refused as longer than {} s, worst {:.3} s \
+                 at {at:.2} s\n  a gap is usually the logger missing messages, not the IMU \
                  stopping",
+                propagation.coasted,
                 propagation.refused_too_long,
                 self.filter.config().max_predict_dt.as_secs(),
                 worst.as_secs(),
@@ -1725,7 +1725,7 @@ impl Replay {
         format!(
             "summary rate={:.0} window={} {} align={} an={} alpha0={} heading={} \
              roll0={roll0:.2} pitch0={pitch0:.2} yaw0={yaw0:.2} declination={:.2} resets={} \
-             recovered={} aligned_at={} attitude_lost={} r_policy={} rejected={}{} discarded={} refused={} \
+             recovered={} aligned_at={} attitude_lost={} r_policy={} rejected={}{} discarded={} coasted={} refused={} \
              invalid={} floored={} epochs={}{} \
              transitions={} status={:?}",
             self.interval.map_or(0.0, |interval| 1.0 / interval),
@@ -1801,6 +1801,8 @@ impl Replay {
             self.rejections_by_source(),
             // Everything that never reached the gate. See `Replay::discarded`.
             self.discarded(),
+            // Gaps past `max_predict_dt`: coasted by (22′), or refused with coasting off.
+            self.filter.diagnostics().propagation.coasted,
             self.filter.diagnostics().propagation.refused_too_long,
             self.filter.diagnostics().propagation.refused_invalid,
             // Equation (42′)'s diagonal floor, pinned at zero on every log because that is
@@ -3880,17 +3882,23 @@ mod tests {
         let summary = replay(&log).summary();
         assert_eq!(key(&summary, "invalid"), "1");
         assert_eq!(key(&summary, "refused"), "0", "nothing here was too long");
+        assert_eq!(key(&summary, "coasted"), "0", "nothing here was too long");
         assert_eq!(key(&summary, "epochs"), "1");
     }
 
     #[test]
-    fn a_gap_longer_than_the_limit_is_refused_and_timestamped() {
+    fn a_gap_longer_than_the_limit_is_coasted_and_timestamped() {
         // 0.5 s against a `max_predict_dt` of 0.1 s: a logging dropout, which the filter
-        // refuses while the timers run on.
+        // coasts across while the timers run on.
         let gap_at = 99.0 * DT + 0.5;
         let log = still_start().imu(gap_at, STILL);
         let replay = replay(&log);
-        assert_eq!(key(&replay.summary(), "refused"), "1");
+        assert_eq!(key(&replay.summary(), "coasted"), "1");
+        assert_eq!(
+            key(&replay.summary(), "refused"),
+            "0",
+            "a coast is not a refusal"
+        );
         assert_eq!(
             replay.longest_step_at,
             Some(gap_at),
@@ -3900,8 +3908,8 @@ mod tests {
             .filter
             .diagnostics()
             .propagation
-            .longest_refused
-            .expect("a refused step");
+            .longest_gap
+            .expect("a coasted step");
         assert!(
             (worst.as_secs() - 0.5).abs() < 1e-3,
             "{} s",
@@ -3937,8 +3945,9 @@ mod tests {
         // A still start, then a receiver 100 m from where the window put the vehicle, once a
         // second: every fix is rejected until none has been accepted for
         // `Recovery::gnss_position`, then one is adopted and the rest fuse. Its height agrees,
-        // so only the horizontal half recovers.
-        let mut log = still_start();
+        // so only the horizontal half recovers. The IMU runs on without a break: a gap would be
+        // coasted, and a covariance grown across it accepts the receiver instead.
+        let mut log = still_start().run(2.0, 50, DT, STILL);
         for second in 3..16 {
             let t = f64::from(second);
             log = log.gnss_pos(t, 100.0, 0.0, 0.0).run(t, 50, DT, STILL);

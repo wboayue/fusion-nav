@@ -7,7 +7,7 @@ use crate::health::{Diagnostics, Fusion, GnssFusion, Propagation, SourceHealth, 
 use crate::init::{self, Alignment, Coarse, InitError, Measured, StaticSample, baro_reference};
 use crate::math::{below_floor, correlation_inflation, exp_quat, floor_diagonal, floor_offset};
 use crate::observation::{baro, gnss, mag};
-use crate::propagate::{ImuSample, project, propagate};
+use crate::propagate::{self, ImuSample, Propagated, project, propagate};
 use crate::state::{AttitudeVariance, Covariance, ErrorState, Offset, State};
 use crate::units::{
     Altitude, AltitudeNoise, Attitude, HeadingNoise, MagField, Position, PositionNoise, Radians,
@@ -500,10 +500,15 @@ impl Eskf {
     ///
     /// The hot path, called at IMU rate. `dt` is explicit; the filter never reads a clock.
     ///
-    /// A `dt` longer than [`Config::max_predict_dt`](crate::Config::max_predict_dt) is
-    /// refused: one IMU sample cannot describe a long interval, and propagating it anyway
-    /// would put a number in the state that looks like an estimate and is not. The timers
-    /// still advance, so [`Status`] degrades on schedule.
+    /// A `dt` longer than [`Config::max_predict_dt`](crate::Config::max_predict_dt) is not
+    /// integrated: one IMU sample cannot describe a long interval, and propagating it anyway
+    /// would put a number in the state that looks like an estimate and is not. The filter
+    /// coasts across it instead, equation (22′), as [`Propagation::Coasted`]: position moves
+    /// on the estimated velocity and the covariance grows by what
+    /// [`Config::coast`](crate::Config::coast) allows, so the first fix after the gap is
+    /// judged against an uncertainty that grew with it. With coasting off the step is refused,
+    /// as [`Propagation::StepTooLong`]. Either way the timers advance, so [`Status`] degrades
+    /// on schedule.
     ///
     /// A `dt` that is zero, negative, or NaN is refused before the timers move at all.
     ///
@@ -540,20 +545,31 @@ impl Eskf {
 
         let limit = self.config.max_predict_dt;
         if dt > limit {
-            return self.refuse_step(Propagation::StepTooLong { dt, limit });
+            // Noted here, whatever becomes of the step: nothing else records how far the
+            // interval ran, and a coast discarded as non-finite is a gap all the same.
+            self.diagnostics.propagation.note_gap(dt);
+            let Some(coast) = self.config.coast else {
+                return self.refuse_step(Propagation::StepTooLong { dt, limit });
+            };
+            // The sample is not read, so a non-finite one does not stop a coast.
+            let coasted = propagate::coast(
+                self.state,
+                self.covariance,
+                self.offset,
+                dt,
+                &self.config.imu,
+                self.config.baro_offset_walk,
+                &coast,
+            );
+            return self.commit_step(coasted, Propagation::Coasted { dt });
         }
 
-        // Tested after the gap rather than before it, so that the gap is still measured:
-        // `longest_refused` is the only record of how far the interval ran, and it
-        // describes the timing whatever the sample holds. A sensor producing NaN produces
-        // it again on the next step, where the count picks it up.
+        // Tested after the gap rather than before it, so that a gap is still measured
+        // whatever the sample holds. A sensor producing NaN produces it again on the next
+        // step, where the count picks it up.
         if !imu.is_finite() {
             return self.refuse_step(Propagation::NotFinite);
         }
-
-        // Propagated into a local first: (11)–(14) and (22) can both overflow f32 on a
-        // finite sample, and a state written before it is checked is one the filter has
-        // already published.
         let propagated = propagate(
             self.state,
             self.covariance,
@@ -563,13 +579,27 @@ impl Eskf {
             &self.config.imu,
             self.config.baro_offset_walk,
         );
+        self.commit_step(propagated, Propagation::Propagated)
+    }
+
+    /// Commit a propagated or coasted step, or discard it whole if it came out non-finite, and
+    /// record the outcome.
+    ///
+    /// Propagated into a local first, a coast as much as a step: (11)–(14) and (22) can both
+    /// overflow f32 on finite input, and a state written before it is checked is one the
+    /// filter has already published. One tail for both, so neither can commit a state without
+    /// its covariance or skip [`note_alignment`](Self::note_alignment). Taken by each branch
+    /// rather than after them: carrying the step out of a branch as a value measured a
+    /// 960-byte copy of `P` in `predict`'s frame.
+    fn commit_step(&mut self, propagated: Propagated, outcome: Propagation) -> Propagation {
         if !propagated.is_finite() {
             return self.refuse_step(Propagation::StateNotFinite);
         }
         self.state = propagated.state;
         self.commit_covariance(propagated.covariance, propagated.offset);
         self.note_alignment();
-        Propagation::Propagated
+        self.diagnostics.propagation.record(outcome);
+        outcome
     }
 
     /// Store a covariance, applying the diagonal floor of equation (42′) and counting what it
@@ -1696,7 +1726,7 @@ fn refuse(source: &mut SourceHealth, outcome: Fusion) -> Fusion {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Accuracy, Correlation, GRAVITY, Recovery};
+    use crate::config::{Accuracy, Coast, Correlation, GRAVITY, Recovery};
     use crate::geodetic::LocalOrigin;
     use crate::health::Refusal;
     use crate::init::tests::{gravity_at, still, turning};
@@ -1745,7 +1775,12 @@ mod tests {
     /// Timers only run for a source that has been accepted, so fuse one first. Baro
     /// fusion needs a reference, so the window carries one.
     fn aided() -> Eskf {
-        let mut filter = Eskf::new(Config::default());
+        aided_with(Config::default())
+    }
+
+    /// [`aided`] under another configuration.
+    fn aided_with(config: Config) -> Eskf {
+        let mut filter = Eskf::new(config);
         let _ = filter
             .initialize(&window_at(100.0), Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
@@ -2012,20 +2047,201 @@ mod tests {
         }
     }
 
+    /// Coasting off, so a long step is refused.
+    fn not_coasting() -> Config {
+        Config {
+            coast: None,
+            ..Config::default()
+        }
+    }
+
     #[test]
-    fn a_step_over_the_limit_is_refused_but_the_time_still_passes() {
-        let mut filter = aided();
+    fn a_step_over_the_limit_is_refused_with_coasting_off_but_the_time_still_passes() {
+        let mut filter = aided_with(not_coasting());
+        let before = filter.state();
         // The worst SD-card dropout in the bundled corpus.
         let dt = Seconds::from_secs(1.304);
         assert!(matches!(
             filter.predict(ImuSample::default(), dt),
             Propagation::StepTooLong { .. }
         ));
+        assert_eq!(filter.state(), before, "a refused step moves nothing");
         assert_eq!(
             elapsed(&filter),
             1.304,
             "a refused step still happened in real time"
         );
+    }
+
+    /// An aided filter flying north at 20 m/s, as `logging_dropout` does into its gap.
+    fn flying(config: Config) -> Eskf {
+        let mut filter = aided_with(config);
+        assert!(filter.reset_position_to(
+            Position::ned(0.0, 0.0, -100.0),
+            PositionNoise::horizontal_vertical(0.5, 0.5)
+        ));
+        assert!(filter.reset_velocity_to(
+            Velocity::ned(20.0, 0.0, 0.0),
+            VelocityNoise::from_speed_accuracy(0.1)
+        ));
+        filter
+    }
+
+    #[test]
+    fn a_gap_is_coasted_on_the_estimated_velocity_and_the_time_still_passes() {
+        let mut filter = flying(Config::default());
+        let before = filter.state();
+        let gap = Seconds::from_secs(1.2);
+        assert_eq!(
+            filter.predict(still().imu, gap),
+            Propagation::Coasted { dt: gap }
+        );
+
+        let after = filter.state();
+        let moved = after.position.vector() - before.position.vector();
+        assert!((moved.x - 24.0).abs() < 1e-3, "north {} m", moved.x);
+        assert!(moved.y.abs() < 1e-6 && moved.z.abs() < 1e-6, "{moved:?}");
+        assert_eq!(
+            after.velocity, before.velocity,
+            "nothing measured it change"
+        );
+        assert_eq!(after.attitude, before.attitude, "nothing measured it turn");
+        assert_eq!(elapsed(&filter), 1.2, "the gap happened in real time");
+
+        let propagation = filter.diagnostics().propagation;
+        assert_eq!(propagation.coasted, 1);
+        assert_eq!(propagation.refused_too_long, 0, "a coast is not a refusal");
+        assert_eq!(propagation.longest_gap, Some(gap));
+    }
+
+    #[test]
+    fn a_coast_discarded_as_non_finite_still_measures_the_gap() {
+        let mut filter = flying(Config {
+            coast: Some(Coast {
+                acceleration: f32::INFINITY,
+                rotation: 0.1,
+            }),
+            ..Config::default()
+        });
+        let before = filter.state();
+        let gap = Seconds::from_secs(1.2);
+        assert_eq!(
+            filter.predict(still().imu, gap),
+            Propagation::StateNotFinite
+        );
+        assert_eq!(filter.state(), before, "a discarded coast commits nothing");
+        let propagation = filter.diagnostics().propagation;
+        assert_eq!(propagation.longest_gap, Some(gap));
+        assert_eq!(propagation.coasted, 0);
+        assert_eq!(propagation.refused_state_not_finite, 1);
+    }
+
+    #[test]
+    fn a_coast_grows_velocity_by_the_unmeasured_acceleration() {
+        let acceleration = 3.0;
+        let gap = Seconds::from_secs(1.2);
+        let variances = |acceleration| {
+            let mut filter = flying(Config {
+                coast: Some(Coast {
+                    acceleration,
+                    rotation: 0.0,
+                }),
+                ..Config::default()
+            });
+            let _ = filter.predict(still().imu, gap);
+            let p = *filter.covariance().as_matrix();
+            (
+                p[(
+                    ErrorState::VelocityNorth.index(),
+                    ErrorState::VelocityNorth.index(),
+                )],
+                p[(
+                    ErrorState::PositionNorth.index(),
+                    ErrorState::PositionNorth.index(),
+                )],
+            )
+        };
+        let (velocity, position) = variances(acceleration);
+        let (velocity_q, position_q) = variances(0.0);
+        // Exactly the white-noise integral over the gap: `a² Δt` on velocity, `a² Δt³ / 3`
+        // on position, whatever the step count.
+        let expected = acceleration * acceleration * gap.as_secs();
+        assert!(
+            ((velocity - velocity_q) - expected).abs() < 1e-3 * expected,
+            "velocity grew {} over (22) alone, expected {expected}",
+            velocity - velocity_q
+        );
+        let integrated = expected * gap.as_secs() * gap.as_secs() / 3.0;
+        let grown = position - position_q;
+        assert!(
+            (grown - integrated).abs() < 1e-3 * integrated,
+            "position grew {grown}, expected {integrated}"
+        );
+    }
+
+    #[test]
+    fn a_coast_grows_attitude_by_the_unmeasured_rotation() {
+        let rotation = 0.1;
+        let gap = Seconds::from_secs(1.2);
+        let variance = |rotation| {
+            let mut filter = flying(Config {
+                coast: Some(Coast {
+                    acceleration: 0.0,
+                    rotation,
+                }),
+                ..Config::default()
+            });
+            let _ = filter.predict(still().imu, gap);
+            let p = *filter.covariance().as_matrix();
+            p[(ErrorState::AttitudeZ.index(), ErrorState::AttitudeZ.index())]
+        };
+        // The attitude block of `F` is the identity at `ω = 0`, so the density lands whole.
+        let grown = variance(rotation) - variance(0.0);
+        let expected = rotation * rotation * gap.as_secs();
+        assert!(
+            (grown - expected).abs() < 1e-3 * expected,
+            "attitude grew {grown} over (22) alone, expected {expected}"
+        );
+    }
+
+    #[test]
+    fn a_coast_walks_the_barometric_offset_across_the_gap() {
+        // (30′)'s offset drifts whether or not the IMU was logged.
+        let mut filter = flying(Config::default());
+        let before = filter.offset.variance;
+        let gap = Seconds::from_secs(1.2);
+        let _ = filter.predict(still().imu, gap);
+        let walk = filter.config.baro_offset_walk;
+        let expected = walk * walk * gap.as_secs();
+        let grown = filter.offset.variance - before;
+        assert!(
+            (grown - expected).abs() < 1e-3 * expected,
+            "offset variance grew {grown}, expected {expected}"
+        );
+    }
+
+    #[test]
+    fn the_first_fix_after_a_coasted_gap_is_accepted_where_a_refused_one_is_rejected() {
+        // Where the vehicle is after 1.2 s at 20 m/s north.
+        let fix = Position::ned(24.0, 0.0, -100.0);
+        let noise = PositionNoise::horizontal_vertical(1.0, 1.0);
+        let gap = Seconds::from_secs(1.2);
+
+        let mut coasting = flying(Config::default());
+        let _ = coasting.predict(still().imu, gap);
+        assert!(
+            coasting
+                .fuse_gnss_position(fix, noise)
+                .horizontal
+                .is_accepted()
+        );
+
+        let mut refusing = flying(not_coasting());
+        let _ = refusing.predict(still().imu, gap);
+        assert!(matches!(
+            refusing.fuse_gnss_position(fix, noise).horizontal,
+            Fusion::Rejected { .. }
+        ));
     }
 
     #[test]
@@ -2076,19 +2292,29 @@ mod tests {
     fn a_long_step_carrying_a_non_finite_sample_still_measures_the_gap() {
         // Both refusals apply; the gap is reported because nothing else records how far
         // the interval ran, while the sensor fault recurs on the next step.
-        let mut filter = aided();
+        // A coast reads no sample, so the NaN does not stop it either.
         let dt = Seconds::from_secs(1.304);
         let imu = ImuSample {
             gyro: AngularRate::body(f32::NAN, 0.0, 0.0),
             accel: Acceleration::body(0.0, 0.0, -GRAVITY),
         };
-        assert!(matches!(
-            filter.predict(imu, dt),
-            Propagation::StepTooLong { .. }
-        ));
-        let propagation = filter.diagnostics().propagation;
-        assert_eq!(propagation.longest_refused, Some(dt));
-        assert_eq!(propagation.refused_not_finite, 0);
+        for (config, coasted) in [(Config::default(), true), (not_coasting(), false)] {
+            let mut filter = aided_with(config);
+            let outcome = filter.predict(imu, dt);
+            assert_eq!(matches!(outcome, Propagation::Coasted { .. }), coasted);
+            assert_eq!(matches!(outcome, Propagation::StepTooLong { .. }), !coasted);
+            assert!(
+                filter
+                    .state()
+                    .position
+                    .vector()
+                    .iter()
+                    .all(|x| x.is_finite())
+            );
+            let propagation = filter.diagnostics().propagation;
+            assert_eq!(propagation.longest_gap, Some(dt));
+            assert_eq!(propagation.refused_not_finite, 0);
+        }
     }
 
     #[test]
@@ -2166,7 +2392,7 @@ mod tests {
 
     #[test]
     fn propagation_refusals_are_counted_and_the_worst_gap_kept() {
-        let mut filter = aided();
+        let mut filter = aided_with(not_coasting());
         for bad in [0.0, f32::NAN] {
             assert!(
                 !filter
@@ -2186,7 +2412,7 @@ mod tests {
         assert_eq!(propagation.refused_invalid, 2);
         assert_eq!(propagation.refused_too_long, 3);
         assert_eq!(
-            propagation.longest_refused.map(Seconds::as_secs),
+            propagation.longest_gap.map(Seconds::as_secs),
             Some(1.304),
             "the worst gap, not the last"
         );

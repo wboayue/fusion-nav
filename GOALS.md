@@ -595,7 +595,8 @@ could be argued back:
   own `eph` at 3936 of 4604 fixes when #117 was opened. `4b473e91` then showed the whole sequence
   on real data: a 1.18 s logging dropout, a refused step, a state 25 m stale under a 7.6 m σ, and
   881 of the next 1154 fixes turned down until the log ended. With recovery it read 31 and ended
-  `Healthy` (#143).
+  `Healthy` (#143). Coasting the gap by equation (22′) (#144) then removed the lockout itself:
+  no recovery, and no fix after any of its eight gaps turned down.
 - **Report-and-stop handed every integrator the same loop.** The filter holds the timers, the
   rejected measurement, its `R` and the adoption path. An application wanting a working estimate,
   which is most of them, would write PX4's timeout-and-reset again and get it subtly wrong. A

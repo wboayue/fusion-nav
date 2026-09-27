@@ -8,7 +8,7 @@
 
 use nalgebra::{Matrix3, SMatrix, Vector3};
 
-use crate::config::{GRAVITY, ImuNoise};
+use crate::config::{Coast, GRAVITY, ImuNoise};
 use crate::frames::Body;
 use crate::math::{enforce_symmetry, exp_quat, skew};
 use crate::state::{Covariance, ErrorState, Offset, STATES, State};
@@ -378,10 +378,15 @@ const MAX_PROJECTION_STEPS: usize = 64;
 /// at the current attitude. That is what makes the tilt-to-velocity coupling of (17) the
 /// gravity leak it is in flight, rather than zero.
 ///
-/// The nominal state is untouched and no timer moves. A projection is not time passing.
+/// So a projection grows `P` as a [`coast`] allowing no unmeasured acceleration or rotation
+/// would, since `F` does not read velocity and an unaccelerated vehicle and one standing still
+/// grow it alike. It does not call [`coast`], which carries a state and an offset the query
+/// discards: through it the arming query's chain measured 9 KB of stack on
+/// `thumbv6m-none-eabi`, over `update::<3>`. The nominal state is untouched and no timer
+/// moves. A projection is not time passing.
 ///
 /// What it costs, and why that is acceptable on a query and would not be on the hot path:
-/// one `F` and one `Q`, built once because a stationary vehicle does not rotate, then one
+/// one `F` and one `Q`, built once because an unaccelerated vehicle does not rotate, then one
 /// [`propagate_covariance`] per step — ten of them at the default 1 s horizon, up to
 /// [`MAX_PROJECTION_STEPS`]. So an arming check is ten times the arithmetic of an IMU epoch.
 /// The stack is a frame of 1920 bytes on `thumbv6m-none-eabi` and 1936 on
@@ -407,14 +412,122 @@ pub(crate) fn project(
 
     let steps = projection_steps(horizon);
     let dt = Seconds::from_secs(seconds / steps as f32);
-    let transition = transition_matrix(state, stationary_sample(state), dt);
-    let q = process_noise(noise, dt);
+    let transition = transition_matrix(state, unaccelerated_sample(state), dt);
+    repeat_covariance(covariance, &transition, process_noise(noise, dt), steps)
+}
 
+/// `steps` runs of (22) under one `F` and one `Q`, the growth [`project`] and [`coast`] share.
+fn repeat_covariance(
+    covariance: Covariance,
+    transition: &Transition,
+    q: [f32; STATES],
+    steps: usize,
+) -> Covariance {
     let mut covariance = covariance;
     for _ in 0..steps {
-        covariance = propagate_covariance(covariance, &transition, q);
+        covariance = propagate_covariance(covariance, transition, q);
     }
     covariance
+}
+
+/// Advance the state and its covariance across a gap no IMU sample describes. Equation (22′).
+///
+/// The input assumed is [`unaccelerated_sample`]'s: no rotation, and the specific force that
+/// cancels gravity. Run through (13)–(15) it moves position by `v̂ Δt` and nothing else, and
+/// run through (20) it builds the `F` of the same assumption, so the state and the covariance
+/// describe one hypothesis. What the hypothesis leaves out, the vehicle's actual acceleration
+/// and rotation, enters as the white densities of [`Coast`] on the velocity and attitude
+/// blocks, beside (21)'s own noise.
+///
+/// One nominal step, because an unaccelerated vehicle's (13) is exact over any interval. The
+/// covariance under (22) takes the steps [`project`] does, at [`PROJECTION_STEP`] and no more than
+/// [`MAX_PROJECTION_STEPS`] of them: a single long step of first-order (20) never reaches
+/// position with the velocity growth it integrates, and the table at [`PROJECTION_STEP`] is
+/// the shortfall that remains. `F` is built once, since it reads attitude and the corrected
+/// sample and neither moves.
+///
+/// What it costs is up to [`MAX_PROJECTION_STEPS`] runs of (22) in one call, 64 IMU epochs'
+/// arithmetic landing on the step after the loop has already overrun. Worst case, not
+/// typical: a 1.2 s gap is 12 runs. The stack is a frame of 2136 bytes on
+/// `thumbv6m-none-eabi` and 2120 on `thumbv7em-none-eabihf`, which with
+/// [`Eskf::predict`](crate::Eskf::predict)'s 2160 above it and [`propagate_covariance`]'s 2832
+/// below comes to 7128, under `update::<3>`. The exact `F` of an unaccelerated vehicle is a
+/// four-term polynomial in `Δt`, since `ω = 0` makes the error dynamics nilpotent, and is the
+/// lever if #41 finds the spike too costly; until then the steps are (22) as it reads.
+///
+/// A gap that is not a positive duration coasts nothing, for [`project`]'s reason: a negative
+/// `Δt` subtracts `Q`. [`Eskf::predict`](crate::Eskf::predict) coasts only past a positive
+/// limit, so the guard holds a bound no caller in the crate crosses.
+pub(crate) fn coast(
+    state: State,
+    covariance: Covariance,
+    offset: Offset,
+    gap: Seconds,
+    noise: &ImuNoise,
+    offset_walk: f32,
+    unmeasured: &Coast,
+) -> Propagated {
+    let seconds = gap.as_secs();
+    if seconds.is_nan() || seconds <= 0.0 {
+        return Propagated {
+            state,
+            covariance,
+            offset,
+        };
+    }
+
+    let unaccelerated = unaccelerated_sample(&state);
+    let steps = projection_steps(gap);
+    let dt = Seconds::from_secs(seconds / steps as f32);
+    let transition = transition_matrix(&state, unaccelerated, dt);
+    // The unmeasured rotation goes through (22) with the rest of `Q`: it reaches velocity
+    // through (17)'s gravity leak, a coupling the steps integrate and no closed form here does.
+    let mut q = process_noise(noise, dt);
+    let turned = unmeasured.rotation * unmeasured.rotation * dt.as_secs();
+    for axis in [
+        ErrorState::AttitudeX,
+        ErrorState::AttitudeY,
+        ErrorState::AttitudeZ,
+    ] {
+        // `get_mut` rather than indexing: an index the compiler cannot prove in range is a
+        // panic path, and nothing in `src/` may carry one.
+        if let Some(variance) = q.get_mut(axis.index()) {
+            *variance += turned;
+        }
+    }
+
+    let covariance = repeat_covariance(covariance, &transition, q, steps);
+    let mut offset = offset;
+    for _ in 0..steps {
+        offset = propagate_offset(offset, &transition, offset_walk, dt);
+    }
+
+    // The unmeasured acceleration, added whole rather than per step. It reaches nothing but
+    // position, through a block of `F` that is exact at any `Δt`, so the white-noise integral
+    // is exact in closed form: `a² [Δt³/3, Δt²/2; Δt²/2, Δt]` on each axis. Per step, the
+    // first-order discretization would reach position with `(1 − 1/n)(1 − 1/2n)` of it, 12 %
+    // short over a 1.2 s gap.
+    let density = unmeasured.acceleration * unmeasured.acceleration;
+    let (p, v) = (
+        ErrorState::PositionNorth.index(),
+        ErrorState::VelocityNorth.index(),
+    );
+    let mut matrix = *covariance.as_matrix();
+    let identity = Matrix3::<f32>::identity();
+    let mut position = matrix.fixed_view_mut::<3, 3>(p, p);
+    position += identity * (density * seconds * seconds * seconds / 3.0);
+    let mut cross = matrix.fixed_view_mut::<3, 3>(p, v);
+    cross += identity * (density * seconds * seconds / 2.0);
+    let mut cross = matrix.fixed_view_mut::<3, 3>(v, p);
+    cross += identity * (density * seconds * seconds / 2.0);
+    let mut velocity = matrix.fixed_view_mut::<3, 3>(v, v);
+    velocity += identity * (density * seconds);
+
+    Propagated {
+        state: propagate_nominal(state, unaccelerated, gap),
+        covariance: Covariance::from_matrix(matrix),
+        offset,
+    }
 }
 
 /// How many steps a horizon is worth: one per [`PROJECTION_STEP`], at least one and at most
@@ -449,14 +562,14 @@ fn projection_steps(horizon: Seconds) -> usize {
     }
 }
 
-/// What the IMU of a vehicle sitting still at `state`'s attitude reads: no rotation, and
-/// the specific force `−R(q̂)ᵀ g` that holds it up.
+/// What the IMU of an unaccelerated vehicle at `state`'s attitude reads: no rotation, and
+/// the specific force `−R(q̂)ᵀ g` that holds it up. At rest or at constant velocity alike.
 ///
 /// The inverse of the test (11) is written against — a level vehicle at rest reads
-/// `(0, 0, −γ)` — evaluated at an attitude that need not be level. Named because [`project`]
-/// and the measurement behind [`PROJECTION_STEP`] have to use the same one for the
+/// `(0, 0, −γ)` — evaluated at an attitude that need not be level. Named because [`coast`],
+/// [`project`] and the measurement behind [`PROJECTION_STEP`] have to use the same one for the
 /// comparison between them to mean anything.
-fn stationary_sample(state: &State) -> Corrected {
+fn unaccelerated_sample(state: &State) -> Corrected {
     let rotation = state.attitude.quaternion().to_rotation_matrix();
     Corrected {
         omega: AngularRate::from_vector(Vector3::zeros()),
@@ -1062,7 +1175,7 @@ mod projection_steps {
     /// over it and what [`PROJECTION_STEP`] is chosen against.
     fn at_100_hz(state: &State, from: Covariance, noise: &ImuNoise, seconds: f32) -> Covariance {
         let dt = Seconds::from_secs(0.01);
-        let f = transition_matrix(state, stationary_sample(state), dt);
+        let f = transition_matrix(state, unaccelerated_sample(state), dt);
         let q = process_noise(noise, dt);
         let mut p = from;
         for _ in 0..(seconds / 0.01) as usize {

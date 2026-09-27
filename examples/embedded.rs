@@ -102,10 +102,14 @@ fn run(board: &mut impl Board) -> ! {
         last = now;
         match filter.predict(imu, dt) {
             Propagation::Propagated => {}
-            // Refused, and the state is stale by that step. After a gap (`StepTooLong`) or an
-            // overflow (`StateNotFinite`) the timers advanced, so `Status` already reports the
-            // aiding that much staler; a duplicated timestamp or a non-finite sample moved
-            // nothing. What is left is to say so.
+            // The state advanced across a gap on its estimated velocity, and the covariance
+            // grew to say how little that is worth. Nothing to undo; worth a line in the log,
+            // since a gap is the logger or the scheduler falling behind.
+            coasted @ Propagation::Coasted { .. } => log!(board, "imu {}", coasted),
+            // Refused, and the state is stale by that step. After a gap with `Config::coast` off
+            // (`StepTooLong`) or an overflow (`StateNotFinite`) the timers advanced, so `Status`
+            // already reports the aiding that much staler; a duplicated timestamp or a non-finite
+            // sample moved nothing. What is left is to say so.
             refused @ (Propagation::StepTooLong { .. }
             | Propagation::InvalidStep { .. }
             | Propagation::NotFinite

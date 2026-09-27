@@ -78,8 +78,8 @@ if let Alignment::Coarse(_) = filter.initialize(&static_window, dt)? {
 }
 
 loop {
-    // High-rate propagation on every IMU sample. The outcome is #[must_use]: a refused
-    // step leaves the state where it was.
+    // High-rate propagation on every IMU sample. The outcome is #[must_use]: a step too long
+    // to integrate is coasted on an assumption, or refused with `Config::coast` off.
     if !filter.predict(imu, dt).is_propagated() { /* log the gap */ }
 
     // Measurement updates whenever a sensor delivers, each with its own noise. Bound a
@@ -289,7 +289,8 @@ Call `predict(imu, dt)` on every IMU sample. The result is `#[must_use]`:
 | `Propagation` | meaning |
 | ------------- | ------- |
 | `Propagated` | state advanced over the full `dt` |
-| `StepTooLong { dt, limit }` | `dt` exceeded `Config::max_predict_dt`; state unchanged, but health timers advanced because the time really passed |
+| `Coasted { dt }` | `dt` exceeded `Config::max_predict_dt`, so the sample was not integrated: position advanced on the estimated velocity and the covariance grew by what `Config::coast` allows ([equation (22′)](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#coasting-across-a-gap)) |
+| `StepTooLong { dt, limit }` | the same, with `Config::coast` off; state unchanged, but health timers advanced because the time really passed |
 | `InvalidStep { dt }` | `dt` zero, negative, or NaN; nothing moved |
 | `NotFinite` | the **sample** carried a NaN or an infinity; state unchanged, health timers advanced as above |
 | `StateNotFinite` | the propagated **state** did, so it was discarded; a finite sample can still overflow f32 through (11)–(14) |
@@ -553,10 +554,11 @@ Known, and stated here rather than discovered in flight. Some are deliberate; th
   error persists longer than its `τ` still shrinks the covariance below what it supports, and one
   reporting a σ too small is gated on that σ and weighted less besides. See
   [correlated measurement error](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#correlated-measurement-error-as-equivalent-white-noise).
-* **An IMU gap freezes the state.** A step longer than `Config::max_predict_dt` is refused
-  (`Propagation::StepTooLong`), and across it position neither advances nor grows its
-  covariance. On a fast vehicle the gate then turns GNSS down until `Config::recovery` adopts a
-  fix, 7 s later by default. See [#144](https://github.com/wboayue/fusion-nav/issues/144).
+* **An IMU gap is coasted on an assumption.** Across a step longer than `Config::max_predict_dt`
+  the filter assumes the vehicle neither accelerated nor turned, and prices what it may have done
+  with `Config::coast`'s two densities, set from one VTOL log's gaps at 30 m/s. A vehicle that
+  manoeuvres harder than that inside a gap can still be turned down by the gate afterwards,
+  until `Config::recovery` adopts a fix.
 * **No lever arms.** GNSS position and velocity are taken as the IMU's, so an antenna offset `r`
   reads rotation as velocity (`ω × r`), and the filter believes it. See [#25](https://github.com/wboayue/fusion-nav/issues/25).
 * **One set of timeouts for every source.** `Config::timeouts` applies one threshold to every

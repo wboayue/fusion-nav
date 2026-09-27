@@ -161,7 +161,7 @@ baro_drift       2  pos_h<=0.296 pos_v<=0.927 vel<=0.141 pos_h_max<=0.780  tilt<
 gnss_latency     2  pos_h<=2.219 pos_v<=0.168 vel<=0.464 pos_h_max<=3.603  tilt<=0.753 yaw<=0.639 ba<=0.05303 bg<=0.001008 in3s>=0.9555 nees_pos<=4.0986  nees_vel<=1.1249 nees_att<=0.0834 false_valid<=283 false_valid_att<=0  scored>=36600  recovered=0
 correlated       2  pos_h<=1.164 pos_v<=1.154 vel<=0.233 pos_h_max<=2.414  tilt<=0.765 yaw<=2.379 ba<=0.05530 bg<=0.001568 in3s>=0.9882 nees_pos<=1.7330  nees_vel<=0.2910 nees_att<=0.2718 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
 mag_disturbance  2  pos_h<=0.296 pos_v<=0.172 vel<=0.140 pos_h_max<=0.780  tilt<=0.422 yaw<=0.385 ba<=0.05520 bg<=0.000366 in3s>=0.9900 nees_pos<=0.0907   nees_vel<=0.1054 nees_att<=0.0292 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
-logging_dropout  2  pos_h<=3.091 pos_v<=0.238 vel<=0.582 pos_h_max<=23.487 tilt<=0.652 yaw<=0.673 ba<=0.04939 bg<=0.000843 in3s>=0.9846 nees_pos<=3.0347  nees_vel<=0.4441 nees_att<=0.0784 false_valid<=1966 false_valid_att<=364 scored>=36360  recovered=1
+logging_dropout  2  pos_h<=0.296 pos_v<=0.152 vel<=0.143 pos_h_max<=2.763  tilt<=0.486 yaw<=0.429 ba<=0.05640 bg<=0.000398 in3s>=0.9900 nees_pos<=0.0855   nees_vel<=0.1059 nees_att<=0.0309 false_valid<=0   false_valid_att<=0   scored>=36360  recovered=0
 flight           8  pos_h<=1.987 pos_v<=0.303 vel<=0.618 pos_h_max<=5.109  tilt<=0.832 yaw<=8.117 ba<=0.07228 bg<=0.001901 in3s>=0.9900 nees_pos<=0.1248   nees_vel<=0.0922 nees_att<=0.1206 false_valid<=0   false_valid_att<=0   scored>=600  recovered=0
 
 # (34)-(36) are what `yaw` reads now, and what it buys depends entirely on what the start knew.
@@ -316,3 +316,11 @@ flight           8  pos_h<=1.987 pos_v<=0.303 vel<=0.618 pos_h_max<=5.109  tilt<
 # to 1.252 and `pos_h_max` 17.99 to 8.30, the heading held through the gap. `gnss_latency`
 # `nees_pos` 56.96 to 4.06, a stale fix being one more error that persists, and
 # `logging_dropout` 11.36 to 3.00 with its recovery intact.
+#
+# (22') coasts the 1.2 s gap `logging_dropout` loses at 20 m/s, where the filter refused it and
+# held a stale state under a covariance that did not grow. The first fix after the gap is
+# accepted and nothing is recovered: `pos_h` 3.060 m to 0.293, `pos_h_max` 23.25 to 2.735,
+# `vel` 0.576 to 0.141, `nees_pos` 3.00 to 0.0846, `false_valid` 1946 to 0, `recovered` 1 to 0.
+# The line now reads like `mission`'s. `ba` is the one key that loosens, 0.0489 to 0.0558: the
+# first corrections after the gap are larger than a stale state's adoption, and reach the
+# accelerometer bias through the correlations the coast builds.
