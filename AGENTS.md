@@ -339,6 +339,9 @@ uv run tools/agreement.py --self-test    # agreement with EKF2; replay_report's 
 tools/validation.sh               # regenerate VALIDATION.md, validation/*.md and their figures; local
 tools/validation.sh --check       # fail if a committed page is not what a fresh run renders
 python3 tools/validation.py --self-test   # the page renderer's fixtures
+# Regenerate on a clean tree: the stamp is `git describe --dirty` taken at the start. So commit
+# first, run it, and commit the result. That diff should be the stamp lines alone, since the PNGs
+# are byte-identical on one machine; any other line that moved is a number that moved.
 ```
 
 ## Replay corpus
@@ -546,6 +549,21 @@ had not happened, since a caption is an argument; and an attitude σ panel label
 while plotting radians. None of it errored. A wrong plot renders, sizes and times exactly like a
 right one, so **the only detector is opening it** — one figure per section, on a log that
 exercises that section, before the work is called done.
+
+Opening them for #123 found three more, and all three were ways a figure can disagree with a
+number printed beside it:
+- **A figure must draw in the frame its statistic compares in.** The `4b473e91` track drew EKF2 at
+  its own origin, so it looked 60 m from this filter while `pos_e_rms` read 2.7 m. The shift now
+  lives once, in `agreement.to_replay_frame`, and both the statistic and the figure call it.
+- **An axis sized to the widest band hides the error.** `gnss_outage`'s ±250 m band drew a 10 m
+  error as a flat line.
+- **Prose written before the figure is opened is a guess.** The robustness page said the outage
+  reached `DeadReckoning`; the shading showed `Degraded`, because any accepted source counts as
+  aiding (#56).
+
+Write the sentence about a figure while looking at it, and check a surprising pixel against the
+rows before claiming it. `gnss_outage`'s error looked outside its band after the gap; the CSV put
+it at −2.37 m inside a 3σ of 2.63.
 
 **An issue's "what the data must say" was written before the data.** Meet it, then measure the
 alternatives it did not propose, on the corpus as well as the simulator. #119 asked for a consider
