@@ -1078,6 +1078,22 @@ ERROR_GROUPS = [
 ]
 
 
+ERROR_COLUMNS = [f"{kind}_{name}" for _s, _t, _u, _x, names in ERROR_GROUPS
+                 for name in names for kind in ("err", "sigma")]
+ANEES_COLUMNS = ["anees_pos", "anees_vel", "anees_att"]
+
+
+def absent(wanted, series, path):
+    """A problem naming each of `wanted` that `series` does not carry, or none.
+
+    A figure reads its columns by name and draws nothing for one it cannot find,
+    so a column renamed on the harness side would publish an empty panel and
+    exit 0. Refused instead, like every other mismatch between the files.
+    """
+    missing = [name for name in wanted if name not in series]
+    return [f"{Path(path).name} has no {', '.join(missing)}"] if missing else []
+
+
 def error_path(replay):
     """`<out>.error.csv`, the way the harness names it beside `<out>`."""
     return Path(replay).with_suffix(".error.csv")
@@ -1153,10 +1169,17 @@ def anees_figure(series, bounds):
             plot.set_yscale("log")
             # The first scored epoch sits at the prior, with a NEES near zero that
             # a log axis would draw decades down; below 1e-3 says nothing more.
-            plot.set_ylim(bottom=1e-3)
+            # Headroom over the larger of the series and the bound, a factor of three
+            # on the log axis, so a crossing is not drawn against the frame.
+            peak = max(limit_any, np.nanmax(data[1]) if data is not None else limit_any)
+            plot.set_ylim(1e-3, 3.0 * peak)
             plot.set_ylabel(f"{label} NEES / dof", fontsize=8)
             plot.grid(alpha=0.25)
-        axes[0].legend(loc="upper right", fontsize=7, ncol=4)
+        # Above the panels rather than on one: an overconfident series sits at the
+        # top of the position panel, exactly where a legend inside it would go.
+        handles, labels = axes[0].get_legend_handles_labels()
+        fig.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, 1.0),
+                   fontsize=7, ncol=4)
         axes[-1].set_xlabel("t (s)")
     return build
 
@@ -1510,19 +1533,18 @@ def build_report(args):
     errors = {}
     if args.truth and error_path(args.replay).exists():
         path = error_path(args.replay)
-        error_notes, errors = read_series(
-            path, [f"{kind}_{name}" for _s, _t, _u, _x, names in ERROR_GROUPS
-                   for name in names for kind in ("err", "sigma")], args.points)
-        if count_rows(path) != epoch_rows:
-            problems.append(f"{path.name} has {count_rows(path)} rows, the replay "
-                            f"{epoch_rows} epochs")
+        error_notes, errors = read_series(path, ERROR_COLUMNS, args.points)
+        problems += absent(ERROR_COLUMNS, errors, path)
+        rows = count_rows(path)
+        if rows != epoch_rows:
+            problems.append(f"{path.name} has {rows} rows, the replay {epoch_rows} epochs")
         if scenario_of(error_notes) != scenario_of(truth_notes):
             problems.append(f"{path.name} is for {scenario_of(error_notes)}, the "
                             f"truth for {scenario_of(truth_notes)}")
     anees, anees_notes = None, []
     if args.anees:
-        anees_notes, anees = read_series(
-            args.anees, ["anees_pos", "anees_vel", "anees_att"], args.points)
+        anees_notes, anees = read_series(args.anees, ANEES_COLUMNS, args.points)
+        problems += absent(ANEES_COLUMNS, anees, args.anees)
         if anees_bounds(anees_notes) is None:
             problems.append(f"{args.anees.name} has no `tools/anees.py --series` header")
         ensemble, run = scenario_of(anees_notes), scenario_of(read_notes(args.input))
@@ -1746,7 +1768,9 @@ def build_report(args):
         "tests a receiver's own reported accuracy, unfloored.",
         height=7.0)
 
-    if args.reference:
+    # Not under --figures, which publishes no table: on the 2 h log this is 2 s of
+    # a run that only wanted one figure.
+    if args.reference and not args.figures:
         values = agreement_of(ours_table, args.reference, sources)
         line = dict(token.split("=", 1) for token in agreement_line(values, keys).split())
         blocks.append("<h2>Agreement with EKF2</h2>")
@@ -1856,6 +1880,9 @@ def self_test():
          "resets": "1"}),
         "r_policy=px4 pos_n_rms=0.3100 climb=none nis_mag=0.1 resets=1")
 
+    same("absent", absent(["err_pos_n", "sigma_pos_n"], {"sigma_pos_n": None}, "x/e.csv"),
+         ["e.csv has no err_pos_n"])
+    same("none absent", absent(["a"], {"a": None}, "e.csv"), [])
     same("slug", slug_of("Accelerometer bias"), "accelerometer_bias")
     same("slug of NED", slug_of("Position NED"), "position_ned")
     same("anees bounds", anees_bounds([
