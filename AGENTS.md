@@ -19,7 +19,7 @@ defaults) is #51's per-sensor τ to remove, and #117 is closed on that basis. Ov
 lockout precondition, and #116 (#143) recovers from lockout by default: per-source
 `Config::recovery` at PX4's timeouts, `Recovery::OFF` byte-identical to the filter that only
 reported, `recovered=` pinned on every scenario and log so a recovery masking #117 is a diff.
-`093e806a` (29) and `7ce66f0d` (69) recover from causes recovery does not remove, and their
+`093e806a` (29) and `7ce66f0d` (28) recover from causes recovery does not remove, and their
 entries say so. #144 (#158) removed the lockout recovery was covering on `4b473e91`: a step past
 `max_predict_dt` is coasted by equation (22′), position on `v̂ Δt` and `P` grown by
 `Config::coast`'s acceleration and rotation densities, so the first fix after a gap is accepted
@@ -58,9 +58,14 @@ two boundary notes. No corpus or scenario output moved.
 #89 landed (#151): `data/anees.sh` gates per-epoch ensemble NEES on 50 seeds against χ² in CI,
 and asserts failures by cause: `gnss_latency` on position and `correlated` (#117's residual);
 `logging_dropout`'s assertion tripped when #144 coasted its gap, and it now passes all three. Of the two it found that no single seed showed, #150
-(`moving_start`'s first 0.2 s) was fixed by (24′); #149 (`harsh_imu` attitude) now passes only
-by a wider covariance, its cause standing, and a line that passes either way is no evidence for
-closing it. Order: #149, then #123, which now has everything it reads.
+(`moving_start`'s first 0.2 s) was fixed by (24′), and #149 (`harsh_imu` attitude) by #160.
+#160 made (8) correlate tilt with accelerometer bias, since (5) levels a biased accelerometer
+(`P_θβa = −(σ_βa²/γ)[d̂]×`), raised `sigma_accel_bias` 0.1 → 0.2 (PX4's and ArduPilot's), and
+floors the tilt the bias does not explain at the window's own scatter across gravity, without
+which the defaults' `P₀` was singular. The evidence is the run that could fail, `harsh_imu`
+fused white on 50 seeds: `any_att` 2281 → 0 (214 at the prior alone). Tilt tightened on every
+scenario (`mission` 0.414° → 0.330); `7ce66f0d` recovers 28 times rather than 69. Order: #123,
+which has everything it reads.
 #48 and #49 landed (#154): `Display` on every outcome, an optional `defmt` feature, and
 `examples/embedded.rs`, built for both thumb targets in CI. `Display` prints numbers through
 `src/display.rs`'s `Fixed`, because core's `f32` formatting reaches `core::panicking` (the
@@ -154,7 +159,7 @@ the twelve corpus logs, 1.4 M epochs on the 2 h one, and 21 on `cd7e0001`, whose
 And `predicted_validity` stopped meaning *aiding is arriving*: `P` is projected
 `Accuracy::horizon` forward with nothing fusing and each quantity tested at the far end, **or**
 counted because a constraining source is being accepted. Tilt is what it bought — a static start
-holds tilt 3.85 s, so a 1 s horizon arms and a 6 s one does not, where before it predicted its own
+holds tilt 3.83 s, so a 1 s horizon arms and a 6 s one does not, where before it predicted its own
 current value. `Accuracy::horizon` is the one knob no data could settle.
 
 Also real: the health bookkeeping (timers,
@@ -792,7 +797,7 @@ off-by-default feature of the same name.
   or a constraining source is being accepted. Both exist because PX4 and ArduPilot answer
   per-quantity validity and a single ladder cannot.
 - **An unaided filter loses its outputs on a schedule the defaults set**, and the schedule is
-  measured: at `ImuNoise`'s defaults a static start holds tilt for 3.85 s and heading for 37.8 s.
+  measured: at `ImuNoise`'s defaults a static start holds tilt for 3.83 s and heading for 37.8 s.
   Those two figures are cited by `Accuracy`'s doc comment and pinned by a test; the gyroscope-bias
   prior entering attitude through (20)'s `−I Δt` is what sets them, not the white-noise density,
   which alone would give 10.4 s and 674 s. They move `Validity` only — `Status` is answering on
