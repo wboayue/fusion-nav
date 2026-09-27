@@ -336,6 +336,9 @@ data/expect.sh --self-test        # the comparator both bench.sh and the manifes
 data/anees.sh                     # every scenario on 50 seeds against data/anees.txt; a CI gate
 python3 tools/anees.py --self-test   # the ensemble aggregator's fixtures (stdlib, no uv)
 uv run tools/agreement.py --self-test    # agreement with EKF2; replay_report's self-test runs it too
+tools/validation.sh               # regenerate VALIDATION.md, validation/*.md and their figures; local
+tools/validation.sh --check       # fail if a committed page is not what a fresh run renders
+python3 tools/validation.py --self-test   # the page renderer's fixtures
 ```
 
 ## Replay corpus
@@ -609,7 +612,11 @@ EKF2's reference beside it, and nothing else in the repository draws corpus figu
 page that bins or averages the replay CSVs is a second implementation of statistics the harness
 owns. Comparing *runs* (before and after a change on one log) is what it does not do. Until it
 does, render one report per run and set them side by side; a cross-run mode belongs in the tool,
-not in a page.
+not in a page. The published pages follow the same rule: `VALIDATION.md` and `validation/*.md`
+are rendered from `validation/src/` by `tools/validation.py`, every number through a placeholder
+naming the line it is copied from and every figure drawn by `replay_report.py --figures`. A
+number typed into a template is the one `--check` cannot re-derive, so it is the one that rots;
+state a scenario's parameters in prose, never a result.
 
 **Say which file a published number came from.** A score is a claim about a specific run, and
 `examples/replay.rs` refuses a truth file whose `#` header names a different scenario or seed than

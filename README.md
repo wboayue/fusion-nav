@@ -16,8 +16,10 @@ Embedded-first inertial navigation using a 15-state Error-State Kalman Filter (E
 > them. Where no aiding arrives, the uncertainty grows without bound and `Validity` says so:
 > each flag goes false as its own variance passes `Config::accuracy`, 3.83 s in for tilt at
 > the default noise on an unaided start. Accuracy is measured rather than asserted — see
-> [data/README.md](https://github.com/wboayue/fusion-nav/blob/main/data/README.md). The API is
-> not yet frozen.
+> [VALIDATION.md](https://github.com/wboayue/fusion-nav/blob/main/VALIDATION.md) for the
+> figures, against simulated truth and beside PX4's EKF2 on real flights, and
+> [data/README.md](https://github.com/wboayue/fusion-nav/blob/main/data/README.md) for the
+> harness. The API is not yet frozen.
 
 `fusion-nav` estimates 3D attitude, velocity, and position by fusing IMU measurements with GNSS,
 barometric altitude, and magnetometer observations. It is `no_std`, allocation-free, and aimed at
