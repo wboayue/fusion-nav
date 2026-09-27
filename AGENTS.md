@@ -19,9 +19,14 @@ defaults) is #51's per-sensor τ to remove, and #117 is closed on that basis. Ov
 lockout precondition, and #116 (#143) recovers from lockout by default: per-source
 `Config::recovery` at PX4's timeouts, `Recovery::OFF` byte-identical to the filter that only
 reported, `recovered=` pinned on every scenario and log so a recovery masking #117 is a diff.
-`4b473e91` 881 → 39 rejected positions and Healthy; `093e806a` (29) and `7ce66f0d` (69) recover
-from causes recovery does not remove, and their entries say so. #144 would coast a refused IMU
-step rather than freeze, removing `4b473e91`'s recoveries at the gate. #118 gated GNSS height apart from horizontal
+`093e806a` (29) and `7ce66f0d` (69) recover from causes recovery does not remove, and their
+entries say so. #144 (#158) removed the lockout recovery was covering on `4b473e91`: a step past
+`max_predict_dt` is coasted by equation (22′), position on `v̂ Δt` and `P` grown by
+`Config::coast`'s acceleration and rotation densities, so the first fix after a gap is accepted
+(`4b473e91` recovered 12 → 0, rejected 67 → 4; `logging_dropout` `pos_h_max` 23.25 → 2.74 m).
+The rotation term is the corpus's finding, not the simulator's: the course turns 44° across
+`4b473e91`'s 3.1 s gap, and without it 7 recoveries remain. Its 4 rejections left are fixes
+timestamped inside a gap, fused before the IMU row that coasts it. #118 gated GNSS height apart from horizontal
 position, which removed the lockout fusing that barometer caused. #119 (#122) estimates the
 barometric offset beside the 15-state covariance, equation (30′), walking at
 `Config::baro_offset_walk` (PX4's 0.13); GOALS' "Barometric reference as an estimated offset"
@@ -45,11 +50,11 @@ both on one datum. The `R` policy is most of the rejection disagreement (`093e80
 median 3.6 m north of its own receiver's fixes (`pos_n_rms` 4.73). #157 owns giving `clamped` the
 per-axis floors `RPolicy` had to build without it.
 #89 landed (#151): `data/anees.sh` gates per-epoch ensemble NEES on 50 seeds against χ² in CI,
-and asserts failures by cause: `gnss_latency` and `logging_dropout` on position, and
-`correlated` (#117's residual). Of the two it found that no single seed showed, #150
+and asserts failures by cause: `gnss_latency` on position and `correlated` (#117's residual);
+`logging_dropout`'s assertion tripped when #144 coasted its gap, and it now passes all three. Of the two it found that no single seed showed, #150
 (`moving_start`'s first 0.2 s) was fixed by (24′); #149 (`harsh_imu` attitude) now passes only
 by a wider covariance, its cause standing, and a line that passes either way is no evidence for
-closing it. Order: #144 and #149, then #123, which now has everything it reads.
+closing it. Order: #149, then #123, which now has everything it reads.
 #48 and #49 landed (#154): `Display` on every outcome, an optional `defmt` feature, and
 `examples/embedded.rs`, built for both thumb targets in CI. `Display` prints numbers through
 `src/display.rs`'s `Fixed`, because core's `f32` formatting reaches `core::panicking` (the
@@ -286,7 +291,7 @@ per question answered, never per importance.
 ```bash
 cargo test --all-targets          # unit tests: inline `mod tests` across src/, and in examples/replay.rs
 cargo test --doc                  # README.md (included by lib.rs), plus the item doctests
-cargo test --lib eskf::tests::a_step_over_the_limit_is_refused_but_the_time_still_passes  # one test
+cargo test --lib eskf::tests::a_gap_is_coasted_on_the_estimated_velocity_and_the_time_still_passes  # one test
 cargo fmt --all -- --check
 cargo clippy --all-targets --no-deps   # CI runs with RUSTFLAGS=-D warnings
 cargo build --lib --target thumbv7em-none-eabihf   # also thumbv6m-none-eabi; both gate CI
@@ -406,7 +411,7 @@ swap them for a platform libm, which is free to differ in the last bit on `sin` 
 the property is gone.
 
 Each manifest entry exists because it covers something nothing else does (SD-card dropouts
-driving `StepTooLong`, burst logging that forced a median rate estimator, a 2 h log guarding the
+driving a coast, burst logging that forced a median rate estimator, a 2 h log guarding the
 f64 timestamp parse, old field spellings). Adding or dropping a log means saying which behavior
 it uniquely covers — and invalidates every sentence that quantifies the corpus. "Four of the five
 logs", "the worst ordinary interval is 65 ms", "rates from 50 Hz to 400 Hz": these sit in doc
@@ -748,9 +753,11 @@ off-by-default feature of the same name.
   and the `prelude` doctest all had to be given real scatter.
 - **The filter never reads a clock.** `dt` is a parameter everywhere, including `initialize`,
   which measures the static window in seconds rather than samples.
-- **`predict` refuses rather than fakes.** Zero/negative/NaN `dt` → `InvalidStep`, before the
-  timers move. `dt > Config::max_predict_dt` → `StepTooLong`, but *after* `Diagnostics::advance`,
-  because the time really passed and `Status` must not claim otherwise.
+- **`predict` refuses or coasts, never fakes.** Zero/negative/NaN `dt` → `InvalidStep`, before
+  the timers move. `dt > Config::max_predict_dt` is never integrated from the one sample: it is
+  `Coasted` by (22′), an assumption the covariance prices, or `StepTooLong` with `Config::coast`
+  off. Both come *after* `Diagnostics::advance`, because the time really passed and `Status` must
+  not claim otherwise, and both note the gap in `longest_gap` whatever becomes of the step.
 - **`Status` is derived on read**, not cached, so mutating methods have no invariant to keep.
   Only sources that have ever been accepted count toward it.
 - **Initialization does not refuse a usable window.** A short or moving one gives
