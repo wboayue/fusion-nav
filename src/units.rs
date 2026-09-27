@@ -977,8 +977,8 @@ impl HeadingNoise {
     /// # use fusion_nav::prelude::*;
     /// let accuracy = 0.005; // a receiver claiming 0.3°
     ///
-    /// // PX4 floors at a hard-coded 0.1 rad, and an accuracy of zero or NaN reads as the
-    /// // floor rather than being refused.
+    /// // PX4 floors at a hard-coded 0.1 rad, and reads an accuracy of zero, or a NaN one,
+    /// // as the floor. Here a NaN is refused; pass PX4's zero to have it floored.
     /// let px4 = HeadingNoise::clamped(accuracy, SigmaBounds::at_least(0.1));
     /// assert_eq!(px4, HeadingNoise::from_sigma(0.1));
     ///

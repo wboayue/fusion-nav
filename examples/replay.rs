@@ -407,6 +407,11 @@ const AXES: [&[&str]; 7] = [
     &["yaw"],
 ];
 
+/// The row sources `--without` can drop: every aiding row an input carries. Not `SOURCES`,
+/// which names verdicts, two of which (`gnss_hgt`, `course`) no row carries, and a name that
+/// dropped nothing would still print on the `summary` line as if it had.
+const DROPPABLE: [&str; 5] = ["gnss_pos", "gnss_vel", "baro", "mag", "gnss_yaw"];
+
 /// Last test ratio per source, in `Diagnostics` order.
 const RATIOS: [&str; 7] = [
     "r_gnss_pos",
@@ -448,7 +453,13 @@ fn run() -> Result<(), Box<dyn Error>> {
                 .ok_or("--course wants a sideslip sigma in degrees")?;
             course = Some(Radians::from_degrees(degrees));
         } else if arg == "--without" {
-            without = Some(args.next().ok_or("--without wants an input source name")?);
+            let name = args.next().ok_or("--without wants an input source name")?;
+            if !DROPPABLE.contains(&name.as_str()) {
+                return Err(
+                    format!("--without `{name}`: want one of {}", DROPPABLE.join(", ")).into(),
+                );
+            }
+            without = Some(name);
         } else {
             positional.push(arg);
         }
@@ -3341,6 +3352,22 @@ mod tests {
             gnss_noise_of("t_s\n# GNSS noise parameters: EKF2_GPS_P_NOISE 1\n"),
             None
         );
+    }
+
+    #[test]
+    fn px4_floors_a_gnss_heading_at_ekf2_s_0_1_rad() {
+        let px4 = RPolicy::Px4(GnssNoiseParameters {
+            position: 0.5,
+            velocity: 0.3,
+            no_aid: 10.0,
+        });
+        // `a299e722` logs no accuracy, which the converter writes as the floor already; a
+        // receiver claiming zero is floored here as PX4 floors it, and raw passes it through to
+        // be refused.
+        assert_eq!(px4.heading(0.0), HeadingNoise::from_sigma(0.1));
+        assert_eq!(px4.heading(0.25), HeadingNoise::from_variance(0.25));
+        assert_eq!(RPolicy::Raw.heading(0.0), HeadingNoise::from_variance(0.0));
+        assert!(!px4.heading(f32::NAN).variance().is_finite());
     }
 
     #[test]

@@ -182,15 +182,15 @@ mod tests {
 
     #[test]
     fn a_gnss_heading_innovates_by_the_yaw_error_at_any_tilt() {
-        // Roll and pitch are what make this a test of the forward axis rather than of the
-        // Euler yaw, which the forward axis's heading equals only while level.
+        // For ZYX Euler angles the forward axis's heading is the Euler yaw at any roll and
+        // pitch, `R e₁ = (cθ cψ, cθ sψ, −sθ)`, so the innovation is the yaw difference exactly.
+        // The tilt is what makes this a test of the rotation into navigation axes rather than
+        // of a heading read off body axes.
         let estimate = state(0.3, -0.2, 1.1, [0.0; 3]);
         let truth = state(0.3, -0.2, 1.25, [0.0; 3]);
         let measured = Radians::from_radians(forward_heading(&truth));
         let y = gnss_observation(&estimate, measured, HeadingNoise::from_sigma(0.1)).y[0];
-        // A yaw of 0.15 rad about the Euler z axis is not quite 0.15 about navigation down
-        // once pitched; the adoption's left rotation is, and the next test pins that.
-        assert!((y - 0.15).abs() < 0.01, "y {y}");
+        assert!((y - 0.15).abs() < 1e-5, "y {y}");
     }
 
     #[test]
