@@ -16,10 +16,9 @@ const BARO_HZ: u32 = 20;
 const MAG_HZ: u32 = 50;
 
 fn main() -> Result<(), InitError> {
-    let mut filter = Eskf::new(Config {
-        magnetic_declination: Radians::from_radians(-0.06),
-        ..Config::default()
-    });
+    let mut filter = Eskf::new(Config::default());
+    // The site's declination, before initializing: the window's heading reads it.
+    assert!(filter.set_magnetic_declination(Radians::from_radians(-0.06)));
 
     let dt = Seconds::from_secs(1.0 / IMU_HZ as f32);
 

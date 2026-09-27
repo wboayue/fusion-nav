@@ -10,8 +10,8 @@ use crate::observation::{baro, gnss, mag};
 use crate::propagate::{self, ImuSample, Propagated, project, propagate};
 use crate::state::{AttitudeVariance, Covariance, ErrorState, Offset, State};
 use crate::units::{
-    Altitude, AltitudeNoise, Attitude, HeadingNoise, MagField, Position, PositionNoise, Radians,
-    Seconds, Velocity, VelocityNoise,
+    Altitude, AltitudeNoise, AngularRate, Attitude, HeadingNoise, MagField, Position,
+    PositionNoise, Radians, Seconds, Velocity, VelocityNoise,
 };
 use crate::update::{self, Observation, Update, update};
 use nalgebra::Vector3;
@@ -64,7 +64,12 @@ use nalgebra::Vector3;
 /// // `clamped` bounds the receiver's own `eph` and `epv` the way both autopilots do.
 /// let outcome = filter.fuse_gnss_geodetic(
 ///     Geodetic::from_degrees(47.397_742, 8.545_594, 488.0),
-///     PositionNoise::clamped(1.5, 3.0, 0.5, 100.0),
+///     PositionNoise::clamped(
+///         1.5,
+///         3.0,
+///         SigmaBounds::new(0.5, 100.0),
+///         SigmaBounds::new(0.75, 100.0),
+///     ),
 /// );
 /// assert!(outcome.is_accepted());
 /// assert!(filter.origin().is_some());
@@ -104,6 +109,12 @@ pub struct Eskf {
     /// reference; [`establish_reference`](Self::establish_reference) keeps the two together.
     offset: Offset,
     origin: Option<LocalOrigin>,
+    /// `D_m` of equations (6) and (35); see
+    /// [`set_magnetic_declination`](Self::set_magnetic_declination).
+    declination: Radians,
+    /// `ω` of equation (9) from the last step integrated from a sample; see
+    /// [`angular_rate`](Self::angular_rate).
+    angular_rate: Option<AngularRate<Body>>,
     unestablished: Unestablished,
     /// Whether the attitude has ever met [`ALIGNED_TILT`] and [`ALIGNED_HEADING`] since
     /// initialization. Latched, and the test behind [`Status::Aligning`]; see
@@ -139,6 +150,8 @@ impl Eskf {
             baro_reference: None,
             offset: Offset::default(),
             origin: None,
+            declination: Radians::ZERO,
+            angular_rate: None,
             unestablished: Unestablished::default(),
             aligned: false,
             initialized: false,
@@ -218,7 +231,7 @@ impl Eskf {
         // Measured from the window rather than read off `alignment`, because a window too
         // short to align an attitude from can still be a window of a parked vehicle.
         let at_rest = init::at_rest(&measured, &self.config.init);
-        let state = init::nominal_state(&measured, self.config.magnetic_declination, at_rest);
+        let state = init::nominal_state(&measured, self.declination, at_rest);
         self.apply_alignment(alignment, state, &measured, at_rest);
         if at_rest {
             self.establish_reference(
@@ -296,7 +309,7 @@ impl Eskf {
         // stationary gyroscope is a noisier bias than a window's average but a better
         // one than zero.
         let at_rest = init::at_rest(&measured, &self.config.init);
-        let state = init::nominal_state(&measured, self.config.magnetic_declination, at_rest);
+        let state = init::nominal_state(&measured, self.declination, at_rest);
         // That reading establishes nothing, which is why it is not passed on as one. A
         // window shows rest by holding still over a span of time and this one spans none:
         // an accelerometer reading `γ` for an instant is a hover as readily as a vehicle
@@ -379,6 +392,7 @@ impl Eskf {
         // Nothing a seed carries is unestablished: the caller vouched for every quantity,
         // heading included, so no first measurement overwrites one.
         self.unestablished = Unestablished::default();
+        self.angular_rate = None;
         self.initialized = true;
         self.aligned = false;
         self.note_alignment();
@@ -484,6 +498,40 @@ impl Eskf {
     /// estimate.
     pub const fn origin(&self) -> Option<LocalOrigin> {
         self.origin
+    }
+
+    /// Set the magnetic declination at the operating site: `D_m` of equations (6) and (35),
+    /// east-positive, the angle that turns a magnetic heading into a true one. Zero until set.
+    ///
+    /// Held by the filter rather than [`Config`] because it is a property of where the vehicle
+    /// is, like the [`origin`](Self::origin) and `α₀`, and a vehicle that powers on before a
+    /// GNSS fix learns its site only once a fix arrives. PX4 tracks it at runtime from the last
+    /// valid GNSS position (`EKF/estimator_interface.h:485` at `c4e4ef98`).
+    ///
+    /// Read wherever a magnetic heading becomes a true one: the heading a static window
+    /// commits by (6), every [`fuse_mag_heading`](Self::fuse_mag_heading) by (35), and the
+    /// heading adoption and recovery. So set it before [`initialize`](Self::initialize) when
+    /// the site is known. It moves no state. A change once heading is established arrives as
+    /// an innovation of exactly the change on the next heading; a large one against the
+    /// heading's σ is [`Fusion::Rejected`] until
+    /// [`Config::recovery`](crate::Config::recovery) adopts a heading at the new value.
+    ///
+    /// Returns `false`, changing nothing, for a value that is not a finite number: it enters
+    /// every heading innovation for the rest of the flight, so a NaN here ends magnetic
+    /// aiding rather than spoiling one update.
+    #[must_use = "a refused declination leaves the previous one in every heading"]
+    pub fn set_magnetic_declination(&mut self, declination: Radians) -> bool {
+        if !declination.as_radians().is_finite() {
+            return false;
+        }
+        self.declination = declination;
+        true
+    }
+
+    /// The magnetic declination in use; see
+    /// [`set_magnetic_declination`](Self::set_magnetic_declination).
+    pub const fn magnetic_declination(&self) -> Radians {
+        self.declination
     }
 
     /// The position estimate as latitude, longitude and height, once the filter is
@@ -596,6 +644,7 @@ impl Eskf {
             return self.refuse_step(Propagation::StateNotFinite);
         }
         self.state = propagated.state;
+        self.angular_rate = propagated.omega;
         self.commit_covariance(propagated.covariance, propagated.offset);
         self.note_alignment();
         self.diagnostics.propagation.record(outcome);
@@ -727,7 +776,7 @@ impl Eskf {
     ///
     /// `noise` is the receiver's own accuracy where it reports one, bounded before it
     /// arrives: [`PositionNoise::clamped`](crate::PositionNoise::clamped) takes `eph` and
-    /// `epv` and holds each between a floor and a cap, for the reasons recorded there. A
+    /// `epv` and holds each within its own floor and cap, for the reasons recorded there. A
     /// two-dimensional fix instead goes through
     /// [`PositionNoise::horizontal_vertical`](crate::PositionNoise::horizontal_vertical),
     /// which leaves the vertical σ where the caller put it: `clamped` caps both axes, so
@@ -735,7 +784,12 @@ impl Eskf {
     ///
     /// The filter applies no bound of its own, because `R` describes the measurement and
     /// belongs with it rather than in [`Config`]. A caller handing over a raw `eph` is
-    /// therefore trusting the receiver further than either production autopilot does. What
+    /// therefore trusting the receiver further than either production autopilot does.
+    /// Nor does it smooth one: ArduPilot runs each accuracy through a decaying envelope with a
+    /// 5 s time constant before bounding it (`AP_NavEKF3_Measurements.cpp:609-633` at
+    /// `368dc0c4`), so a spike in `eph` deweights the fixes after it for seconds there and
+    /// only its own fix here. The replay harness takes the same stance, for the reasons
+    /// `data/README.md` gives under `r_policy=` (#105). What
     /// the filter does add is the receiver's rather than the fix's: a fix's error persists
     /// into the next one, and the update is computed at the variance that leaves, equation
     /// (24′), with the gate still reading `noise` itself. See
@@ -1114,7 +1168,7 @@ impl Eskf {
             &self.state,
             &self.covariance,
             field,
-            self.config.magnetic_declination,
+            self.declination,
             noise,
         )
         .correlated(correlation_inflation(
@@ -1233,6 +1287,59 @@ impl Eskf {
         state.status = self.derive_status();
         state.validity = validity;
         state
+    }
+
+    /// The body angular rate with the estimated gyroscope bias removed, `ω` of equation (9),
+    /// from the last step [`predict`](Self::predict) integrated from a sample.
+    ///
+    /// For correcting a measurement taken away from the IMU, which this filter does not do:
+    /// an antenna at `r` in body axes reads the IMU's position plus `R r` and its velocity
+    /// plus `R (ω × r)`. The caller holds `r` and the raw rate; the filter holds the bias, and
+    /// this is where the two meet. PX4 applies the same correction itself, with the same
+    /// bias-corrected rate (`EKF/aid_sources/gnss/gps_control.cpp:313-318` and `:351-354` at
+    /// `c4e4ef98`).
+    ///
+    /// ```
+    /// use fusion_nav::prelude::*;
+    /// # let mut filter = Eskf::new(Config::default());
+    /// # let dt = Seconds::from_secs(0.0025);
+    /// # let still = StaticSample {
+    /// #     imu: ImuSample {
+    /// #         gyro: AngularRate::zero(),
+    /// #         accel: Acceleration::body(0.0, 0.0, -GRAVITY),
+    /// #     },
+    /// #     ..StaticSample::default()
+    /// # };
+    /// # filter.initialize(&[still; 800], dt)?;
+    /// # let imu = ImuSample { gyro: AngularRate::body(0.0, 0.0, 0.5), ..still.imu };
+    /// # assert!(filter.predict(imu, dt).is_propagated());
+    /// # let antenna = Position::ned(0.0, 0.0, -0.4);
+    /// # let antenna_velocity = Velocity::ned(0.1, 0.0, 0.0);
+    /// # let position_noise = PositionNoise::horizontal_vertical(1.0, 1.5);
+    /// # let velocity_noise = VelocityNoise::from_speed_accuracy(0.3);
+    /// // The antenna's offset from the IMU, forward, right and down: measured on the airframe.
+    /// let r = nalgebra::Vector3::new(0.0, 0.0, -0.4);
+    ///
+    /// // None before the first step and across a gap, where no sample says how fast the
+    /// // vehicle turned: fuse the fix uncorrected, or not at all, as the offset warrants.
+    /// if let Some(omega) = filter.angular_rate() {
+    ///     let rotation = filter.state().attitude.quaternion();
+    ///     let position = Position::<Ned>::from_vector(antenna.vector() - rotation * r);
+    ///     let swept = rotation * omega.vector().cross(&r);
+    ///     let velocity = Velocity::<Ned>::from_vector(antenna_velocity.vector() - swept);
+    ///     let _ = filter.fuse_gnss_position(position, position_noise);
+    ///     let _ = filter.fuse_gnss_velocity(velocity, velocity_noise);
+    /// }
+    /// # Ok::<(), InitError>(())
+    /// ```
+    ///
+    /// Committed with the state, and only with it. `None` until a step is integrated, after
+    /// any initialization, and after a gap coasted past
+    /// [`Config::max_predict_dt`](crate::Config::max_predict_dt), until the next sample: a
+    /// coast reads no sample, and the rate before the gap is not the rate after it. A refused
+    /// step leaves the last rate in place, as it leaves the state.
+    pub const fn angular_rate(&self) -> Option<AngularRate<Body>> {
+        self.angular_rate
     }
 
     /// Per-source health. Off the hot path.
@@ -1607,6 +1714,7 @@ impl Eskf {
         if settled {
             self.origin = None;
         }
+        self.angular_rate = None;
         self.initialized = true;
         // A fresh start is unaligned until its own covariance says otherwise, which
         // `note_alignment` reads at the end of each entry point.
@@ -3153,20 +3261,146 @@ mod tests {
     }
 
     #[test]
-    fn the_configured_declination_reaches_the_heading_it_commits() {
+    fn a_declination_set_before_initializing_reaches_the_heading_it_commits() {
         // The wiring no test in `init` can see. A level vehicle reading a field with no
         // east component is pointing at magnetic north, so its true heading is the
         // declination and nothing else.
-        let mut filter = Eskf::new(Config {
-            magnetic_declination: Radians::from_radians(-0.06),
-            ..Config::default()
-        });
+        let mut filter = Eskf::new(Config::default());
+        assert!(filter.set_magnetic_declination(Radians::from_radians(-0.06)));
         let _ = filter
             .initialize(&window_with_mag(), Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
 
         let (_, _, yaw) = filter.state().attitude.euler_angles();
         assert!((yaw + 0.06).abs() < 1e-6, "heading committed as {yaw}");
+    }
+
+    /// [`seed`] at `attitude`, with gyroscope bias `bias`.
+    fn seeded(attitude: Attitude, bias: AngularRate<Body>) -> Eskf {
+        let mut filter = Eskf::new(Config::default());
+        let (state, covariance) = seed();
+        let state = State {
+            attitude,
+            gyro_bias: bias,
+            ..state
+        };
+        let _ = filter
+            .initialize_from(state, covariance)
+            .expect("a sane seed");
+        filter
+    }
+
+    #[test]
+    fn the_angular_rate_is_the_last_integrated_sample_less_the_bias() {
+        let bias = AngularRate::body(0.01, -0.02, 0.005);
+        let mut filter = seeded(Attitude::level(), bias);
+        assert_eq!(filter.angular_rate(), None, "no step integrated yet");
+
+        let imu = ImuSample {
+            gyro: AngularRate::body(0.3, 0.1, -0.2),
+            accel: Acceleration::body(0.0, 0.0, -GRAVITY),
+        };
+        assert!(filter.predict(imu, DT).is_propagated());
+        let omega = filter.angular_rate().expect("a step was integrated");
+        assert_eq!(omega.vector(), imu.gyro.vector() - bias.vector());
+
+        // A refused sample leaves the last rate, as it leaves the state.
+        let broken = ImuSample {
+            gyro: AngularRate::body(f32::NAN, 0.0, 0.0),
+            ..imu
+        };
+        assert_eq!(filter.predict(broken, DT), Propagation::NotFinite);
+        assert_eq!(filter.angular_rate(), Some(omega));
+
+        // A gap is coasted on no sample, so there is no rate until the next one.
+        let gap = Seconds::from_secs(1.0);
+        assert_eq!(filter.predict(imu, gap), Propagation::Coasted { dt: gap });
+        assert_eq!(filter.angular_rate(), None);
+        assert!(filter.predict(imu, DT).is_propagated());
+        assert!(filter.angular_rate().is_some());
+
+        // A fresh start forgets a rate measured against the last one's bias.
+        let _ = filter
+            .initialize(&[still(); 8], Seconds::from_secs(0.25))
+            .expect("a 2 s window of stillness");
+        assert_eq!(filter.angular_rate(), None);
+    }
+
+    #[test]
+    fn the_angular_rate_corrects_a_lever_arm_on_a_rolled_vehicle() {
+        // Nose east and rolled right a quarter turn, so the right wing points down. Worked by
+        // hand rather than through the rotation, so a transposed R cannot agree with itself:
+        // an antenna 1 m forward sits 1 m east of the IMU; a rate about body right is a rate
+        // about down, which turns east toward south, so that antenna moves south.
+        use core::f32::consts::FRAC_PI_2;
+        let mut filter = seeded(attitude_of(FRAC_PI_2, 0.0, FRAC_PI_2), AngularRate::zero());
+        let imu = ImuSample {
+            gyro: AngularRate::body(0.0, 0.5, 0.0),
+            accel: Acceleration::body(0.0, -GRAVITY, 0.0),
+        };
+        assert!(filter.predict(imu, DT).is_propagated());
+
+        let r = Vector3::new(1.0, 0.0, 0.0);
+        let rotation = filter.state().attitude.quaternion();
+        let omega = filter.angular_rate().expect("a step was integrated");
+        // To within the 5 mrad the one step turned it.
+        let arm = rotation * r;
+        assert!((arm - Vector3::new(0.0, 1.0, 0.0)).norm() < 1e-2, "{arm}");
+        let lever = rotation * omega.vector().cross(&r);
+        assert!(
+            (lever - Vector3::new(-0.5, 0.0, 0.0)).norm() < 1e-2,
+            "{lever}"
+        );
+    }
+
+    #[test]
+    fn a_declination_that_is_not_a_number_is_refused_and_changes_nothing() {
+        let mut filter = initialized();
+        assert!(filter.set_magnetic_declination(Radians::from_radians(0.1)));
+        assert!(!filter.set_magnetic_declination(Radians::from_radians(f32::NAN)));
+        assert!(!filter.set_magnetic_declination(Radians::from_radians(f32::INFINITY)));
+        assert_eq!(filter.magnetic_declination(), Radians::from_radians(0.1));
+    }
+
+    #[test]
+    fn a_declination_change_moves_the_next_heading_innovation_by_exactly_itself() {
+        // Established heading, so both headings fuse rather than adopt, from the same state:
+        // the declination is the only difference between the two filters.
+        let mut charted = Eskf::new(Config::default());
+        let _ = charted
+            .initialize(&window_with_mag(), Seconds::from_secs(0.25))
+            .expect("a 2 s window of stillness");
+        let mut shifted = charted.clone();
+        assert!(shifted.set_magnetic_declination(Radians::from_radians(0.02)));
+
+        let field = MagField::body(0.22, 0.01, 0.44);
+        let noise = HeadingNoise::from_sigma(0.05);
+        let nu = |filter: &mut Eskf| {
+            assert!(filter.fuse_mag_heading(field, noise).is_accepted());
+            let innovation = filter.diagnostics().mag_heading.innovation;
+            innovation
+                .expect("an accepted heading publishes its ν")
+                .values()[0]
+        };
+        let moved = nu(&mut shifted) - nu(&mut charted);
+        assert!((moved - 0.02).abs() < 1e-6, "ν moved by {moved}");
+    }
+
+    #[test]
+    fn a_heading_adopted_after_a_declination_change_is_true_heading_at_the_new_value() {
+        // No magnetometer in the window, so the first heading is adopted. A field reading
+        // magnetic north on the heading the filter holds is, at declination d, true heading
+        // d: the adoption steps yaw onto exactly that.
+        let mut filter = initialized();
+        assert!(filter.set_magnetic_declination(Radians::from_radians(0.3)));
+        let field = measured(filter.state().attitude, 0.0);
+        assert!(
+            filter
+                .fuse_mag_heading(field, HeadingNoise::from_sigma(0.05))
+                .is_reset()
+        );
+        let (_, _, yaw) = filter.state().attitude.euler_angles();
+        assert!((yaw - 0.3).abs() < 1e-5, "adopted yaw {yaw}");
     }
 
     #[test]
@@ -4552,7 +4786,7 @@ mod tests {
             &filter.state,
             &filter.covariance,
             field,
-            filter.config.magnetic_declination,
+            filter.declination,
             noise,
         )
         .r_m[0];

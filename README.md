@@ -87,7 +87,8 @@ loop {
     // the first one places the navigation origin. The names are a u-blox PVT's.
     let fix = Geodetic::from_degrees_e7(lat_e7, lon_e7, height_mm);
     let (eph, epv) = (h_acc_mm as f32 * 1e-3, v_acc_mm as f32 * 1e-3);
-    let noise = PositionNoise::clamped(eph, epv, 0.5, 100.0);
+    let (horizontal, vertical) = (SigmaBounds::new(0.5, 100.0), SigmaBounds::new(0.75, 100.0));
+    let noise = PositionNoise::clamped(eph, epv, horizontal, vertical);
     if !filter.fuse_gnss_geodetic(fix, noise).is_accepted() {
         /* diagnostics() has the detail */
     }
@@ -315,15 +316,19 @@ The noise is an argument, not configuration, because the accuracy of a fix is a 
 fix. Build it the way the source reports it: `PositionNoise::horizontal_vertical(eph, epv)` and
 `VelocityNoise::from_speed_accuracy(sacc)` take a receiver's standard deviations, `from_variance`
 takes a covariance diagonal as ROS carries it. Bound a receiver's figures first —
-`PositionNoise::clamped(eph, epv, 0.5, 100.0)` and `VelocityNoise::clamped(sacc, sacc, 0.5, 50.0)` —
-since neither production autopilot fuses one raw. Both floor it, against a receiver whose accuracy
+`PositionNoise::clamped` and `VelocityNoise::clamped` take a `SigmaBounds` per axis, and their
+documentation writes PX4's and ArduPilot's rules as one call each, since neither production
+autopilot fuses a receiver's figures raw. Both floor it, against a receiver whose accuracy
 stays small under multipath while the fix is metres wrong; ArduPilot also caps, and PX4 caps
 horizontal position only while GNSS is its sole horizontal aid. Where an axis was not measured at
 all — a two-dimensional fix, a solution with no vertical velocity — `horizontal_vertical` is the
 constructor instead, since it leaves that axis' σ alone where `clamped` would cap it back into a
 measurement. The magnetometer must already be calibrated for hard and soft iron: `noise` is on
 the heading rather than on the field, and the filter widens it by the tilt it levelled with —
-equation (36′) — but nothing in it can find a hard-iron offset.
+equation (36′) — but nothing in it can find a hard-iron offset. Heading is true only once
+`set_magnetic_declination` names the site's declination, zero until then; set it before
+initializing, since the window's heading reads it, and again when a first fix says where the
+vehicle is.
 
 Every measurement passes through an innovation gate first. The result carries the test ratio, so
 a rejection is diagnosable. Reading it is optional: `diagnostics()` keeps the ratio, the counts
@@ -559,8 +564,10 @@ Known, and stated here rather than discovered in flight. Some are deliberate; th
   with `Config::coast`'s two densities, set from one VTOL log's gaps at 30 m/s. A vehicle that
   manoeuvres harder than that inside a gap can still be turned down by the gate afterwards,
   until `Config::recovery` adopts a fix.
-* **No lever arms.** GNSS position and velocity are taken as the IMU's, so an antenna offset `r`
-  reads rotation as velocity (`ω × r`), and the filter believes it. See [#25](https://github.com/wboayue/fusion-nav/issues/25).
+* **No lever arms.** GNSS position and velocity are taken as the IMU's, so an uncorrected antenna
+  offset `r` reads rotation as velocity (`ω × r`), and the filter believes it. The caller corrects
+  it with `angular_rate()`, the bias-corrected `ω`, whose documentation writes the correction out;
+  PX4 applies it inside the filter. See [#25](https://github.com/wboayue/fusion-nav/issues/25).
 * **One set of timeouts for every source.** `Config::timeouts` applies one threshold to every
   source, and any accepted source counts as aiding. See [#56](https://github.com/wboayue/fusion-nav/issues/56).
 * **Local tangent plane.** Position is Cartesian NED about a fixed origin. The geodetic

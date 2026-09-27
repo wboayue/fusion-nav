@@ -102,6 +102,6 @@ pub mod prelude {
     pub use crate::units::{
         Acceleration, Altitude, AltitudeNoise, AngularRate, Attitude, HeadingNoise, MagField,
         Meters, MetersPerSecond, MetersPerSecond2, Position, PositionNoise, Radians,
-        RadiansPerSecond, Seconds, Velocity, VelocityNoise,
+        RadiansPerSecond, Seconds, SigmaBounds, Velocity, VelocityNoise,
     };
 }

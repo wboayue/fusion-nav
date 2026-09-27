@@ -106,7 +106,8 @@ pub(crate) fn propagate_nominal(state: State, imu: Corrected, dt: Seconds) -> St
 /// `F` of equation (20): 15 x 15, the same shape as the covariance it propagates.
 pub(crate) type Transition = SMatrix<f32, STATES, STATES>;
 
-/// The nominal state and the covariance after one step, before either is committed.
+/// The nominal state and the covariance after one step, before either is committed, with the
+/// rate the step integrated.
 ///
 /// A pair rather than two return values because the commit is atomic: (11)–(14) and (22) can
 /// both overflow f32 from finite inputs, and a state written beside a covariance that was
@@ -119,12 +120,18 @@ pub(crate) struct Propagated {
     pub(crate) covariance: Covariance,
     /// The barometric offset's share of it, (30′).
     pub(crate) offset: Offset,
+    /// `ω` of (9), what [`Eskf::angular_rate`](crate::Eskf::angular_rate) reports: `None`
+    /// from a coast, which reads no sample.
+    pub(crate) omega: Option<AngularRate<Body>>,
 }
 
 impl Propagated {
     /// Whether every number in the step is finite.
     pub(crate) fn is_finite(&self) -> bool {
-        self.state.is_finite() && self.covariance.is_finite() && self.offset.is_finite()
+        self.state.is_finite()
+            && self.covariance.is_finite()
+            && self.offset.is_finite()
+            && self.omega.is_none_or(|omega| omega.is_finite())
     }
 }
 
@@ -152,6 +159,7 @@ pub(crate) fn propagate(
         state: propagate_nominal(state, corrected, dt),
         covariance: propagate_covariance(covariance, &transition, process_noise(noise, dt)),
         offset: propagate_offset(offset, &transition, offset_walk, dt),
+        omega: Some(corrected.omega),
     }
 }
 
@@ -450,8 +458,8 @@ fn repeat_covariance(
 /// arithmetic landing on the step after the loop has already overrun. Worst case, not
 /// typical: a 1.2 s gap is 12 runs. The stack is a frame of 2136 bytes on
 /// `thumbv6m-none-eabi` and 2120 on `thumbv7em-none-eabihf`, which with
-/// [`Eskf::predict`](crate::Eskf::predict)'s 2160 above it and [`propagate_covariance`]'s 2832
-/// below comes to 7128, under `update::<3>`. The exact `F` of an unaccelerated vehicle is a
+/// [`Eskf::predict`](crate::Eskf::predict)'s 2168 above it and [`propagate_covariance`]'s 2832
+/// below comes to 7136, under `update::<3>`. The exact `F` of an unaccelerated vehicle is a
 /// four-term polynomial in `Δt`, since `ω = 0` makes the error dynamics nilpotent, and is the
 /// lever if #41 finds the spike too costly; until then the steps are (22) as it reads.
 ///
@@ -473,6 +481,7 @@ pub(crate) fn coast(
             state,
             covariance,
             offset,
+            omega: None,
         };
     }
 
@@ -527,6 +536,7 @@ pub(crate) fn coast(
         state: propagate_nominal(state, unaccelerated, gap),
         covariance: Covariance::from_matrix(matrix),
         offset,
+        omega: None,
     }
 }
 

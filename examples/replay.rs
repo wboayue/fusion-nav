@@ -26,7 +26,7 @@
 //!
 //! One row per measurement, sorted by time. `#` comments and the header are skipped, and
 //! blank cells are those not applicable to that source. One comment is read: a leading
-//! `# Magnetic declination <rad> rad` line sets `Config::magnetic_declination`, since the site
+//! `# Magnetic declination <rad> rad` line sets `Eskf::set_magnetic_declination`, since the site
 //! and not the harness decides it, and a log without one is replayed at zero. A
 //! `# GNSS noise parameters` line is read only under `--r-policy px4`, which refuses a log
 //! without one.
@@ -210,7 +210,8 @@ const PATIENCE: f64 = 10.0;
 /// `PositionNoise::clamped` and `VelocityNoise::clamped`, and `data/README.md` carries why
 /// this harness applies neither by default.
 ///
-/// `Px4` applies EKF2's own rule, with the parameters the log's EKF2 flew, so a comparison
+/// `Px4` applies EKF2's own rule through those same constructors, with the parameters the
+/// log's EKF2 flew, so a comparison
 /// against its solution (#8) has one `R` policy in it rather than two. A published figure is a
 /// claim about an `R` policy as much as about the filter, and nothing else on the `summary`
 /// line would distinguish a raw run from a floored one — `rejected=`, `transitions=` and
@@ -243,17 +244,17 @@ impl RPolicy {
 
     /// A GNSS position row's `R`, from the variances it carries.
     ///
-    /// Under `Px4`, horizontal is `min(max(σ_h, p), noaid)`, floored at 0.01 m, and vertical
-    /// `min(max(σ_v, 1.5 p), noaid)` (`EKF/aid_sources/gnss/gps_control.cpp:358-368` and
-    /// `gnss_height_control.cpp:62-76` at c4e4ef98). Not `PositionNoise::clamped`, whose one
-    /// floor serves both axes. PX4 caps horizontal only while GNSS is the sole horizontal
-    /// aiding, which it always is here, and vertical only while it is *not* the sole vertical
-    /// source; the cap is applied to both, and it binds only where a receiver claims worse
-    /// than 10 m.
+    /// Under `Px4`, EKF2's rule as `PositionNoise::clamped`'s doc writes it: horizontal held
+    /// within `p..=noaid`, vertical within `1.5 p..=noaid`. PX4 caps horizontal only while GNSS
+    /// is the sole horizontal aiding, which it always is here, and vertical only while it is
+    /// *not* the sole vertical source; the cap is applied to both, and it binds only where a
+    /// receiver claims worse than 10 m. PX4's second horizontal floor, 0.01 m on the variance's
+    /// root, is folded into the first: `max(p, 0.01)` then the cap reads the same as PX4's
+    /// cap then 0.01 whenever `noaid` ≥ 0.01.
     ///
     /// A variance that is not a finite non-negative number passes through untouched, so the
-    /// filter refuses the row as it would under `Raw`: `f32::max` ignores a NaN, and flooring
-    /// one would turn a corrupt row into a confident fix.
+    /// filter refuses the row as it would under `Raw`: the square root of a negative one is a
+    /// NaN, and the row's own number is the one worth printing.
     fn position(self, var: [f32; 3]) -> PositionNoise<Ned> {
         let RPolicy::Px4(p) = self else {
             return PositionNoise::from_variance(var[0], var[1], var[2]);
@@ -261,17 +262,20 @@ impl RPolicy {
         if !var.iter().all(|v| v.is_finite() && *v >= 0.0) {
             return PositionNoise::from_variance(var[0], var[1], var[2]);
         }
-        let horizontal = var[0].sqrt().max(p.position).min(p.no_aid).max(0.01);
-        let vertical = var[2].sqrt().max(1.5 * p.position).min(p.no_aid);
-        PositionNoise::from_sigma(horizontal, horizontal, vertical)
+        PositionNoise::clamped(
+            var[0].sqrt(),
+            var[2].sqrt(),
+            SigmaBounds::new(p.position.max(0.01), p.no_aid),
+            SigmaBounds::new(1.5 * p.position, p.no_aid),
+        )
     }
 
     /// A GNSS velocity row's `R`.
     ///
-    /// Under `Px4`, `max(sacc, v, 0.01)` on every axis and vertical then widened by 1.5, after
-    /// the floor (`EKF/aid_sources/gnss/gps_control.cpp:320-321` at c4e4ef98) — which is why
-    /// this is not `VelocityNoise::clamped(s, 1.5 s, …)`, which floors after widening. The
-    /// row's first variance is `sacc²`, as the converter writes it to all three.
+    /// Under `Px4`, EKF2's rule as `VelocityNoise::clamped`'s doc writes it: `sacc` floored at
+    /// `max(v, 0.01)` and vertical widened by 1.5 after the floor, which is the vertical σ
+    /// `1.5 sacc` floored at `1.5 max(v, 0.01)`. The row's first variance is `sacc²`, as the
+    /// converter writes it to all three.
     fn velocity(self, var: [f32; 3]) -> VelocityNoise<Ned> {
         let RPolicy::Px4(p) = self else {
             return VelocityNoise::from_variance(var[0], var[1], var[2]);
@@ -279,8 +283,13 @@ impl RPolicy {
         if !var.iter().all(|v| v.is_finite() && *v >= 0.0) {
             return VelocityNoise::from_variance(var[0], var[1], var[2]);
         }
-        let sigma = var[0].sqrt().max(p.velocity).max(0.01);
-        VelocityNoise::from_sigma(sigma, sigma, 1.5 * sigma)
+        let (sacc, floor) = (var[0].sqrt(), p.velocity.max(0.01));
+        VelocityNoise::clamped(
+            sacc,
+            1.5 * sacc,
+            SigmaBounds::at_least(floor),
+            SigmaBounds::at_least(1.5 * floor),
+        )
     }
 }
 
@@ -401,10 +410,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let truth = args.next();
 
     let text = fs::read_to_string(&input).map_err(|e| format!("{}: {e}", input.display()))?;
-    let config = Config {
-        magnetic_declination: declination_of(&text),
-        ..Config::default()
-    };
+    let config = Config::default();
     let policy = match policy.as_deref() {
         None | Some("raw") => RPolicy::Raw,
         Some("px4") => RPolicy::Px4(gnss_noise_of(&text).ok_or(
@@ -429,6 +435,12 @@ fn run() -> Result<(), Box<dyn Error>> {
     write_fusion_header(&mut fusion_out, config.gates)?;
 
     let mut replay = Replay::new(config, policy, scoring);
+    if !replay
+        .filter
+        .set_magnetic_declination(declination_of(&text))
+    {
+        return Err("the `# Magnetic declination` header is not a finite number".into());
+    }
     {
         let mut out = Sinks {
             epochs: &mut epoch_out,
@@ -1773,11 +1785,7 @@ impl Replay {
             },
             // Degrees, from the log's header (`declination_of`): a log converted before the
             // converter wrote one reads 0.00, which is a site nobody named.
-            self.filter
-                .config()
-                .magnetic_declination
-                .as_radians()
-                .to_degrees(),
+            self.filter.magnetic_declination().as_radians().to_degrees(),
             self.resets(),
             self.recoveries(),
             // When the filter first called its own attitude usable. It is what settled
@@ -2765,7 +2773,6 @@ mod tests {
         drive_with(
             log,
             Config {
-                magnetic_declination: Radians::from_radians(-0.06),
                 accuracy,
                 ..Config::default()
             },
@@ -2791,6 +2798,11 @@ mod tests {
         scoring: Option<Scoring>,
     ) -> Result<(Replay, String), String> {
         let mut replay = Replay::new(config, policy, scoring);
+        assert!(
+            replay
+                .filter
+                .set_magnetic_declination(Radians::from_radians(-0.06))
+        );
         let mut fusions = Vec::new();
         {
             let mut out = Sinks {
@@ -3050,7 +3062,7 @@ mod tests {
         });
         let sigmas = |noise: [f32; 3]| noise.map(|v| (v.sqrt() * 1000.0).round() / 1000.0);
         // A 5 cm RTK fix: horizontal floored at p, vertical at 1.5 p — not at p, which is
-        // what `PositionNoise::clamped` with one floor would give.
+        // what one floor for both axes would give.
         let fix = px4.position([0.0025, 0.0025, 0.0025]).variance();
         assert_eq!(sigmas([fix.x, fix.y, fix.z]), [0.5, 0.5, 0.75]);
         // A 40 m claim is capped at `no_aid` on both axes.
@@ -3574,16 +3586,8 @@ mod tests {
             velocity: 0.5,
             no_aid: 10.0,
         });
-        let (replay, _) = drive_under(
-            &moving("0.0001"),
-            Config {
-                magnetic_declination: Radians::from_radians(-0.06),
-                ..Config::default()
-            },
-            px4,
-            None,
-        )
-        .expect("fixture replays");
+        let (replay, _) =
+            drive_under(&moving("0.0001"), Config::default(), px4, None).expect("fixture replays");
         let px4 = replay.summary();
         assert_eq!(key(&px4, "rejected"), "0", "{px4}");
         assert_ne!(key(&px4, "nis_gnss_vel"), "none", "{px4}");
@@ -3737,7 +3741,6 @@ mod tests {
             .gnss_pos(2.4, 0.9, 1.9, -2.9);
         let at = |percentile| {
             let config = Config {
-                magnetic_declination: Radians::from_radians(-0.06),
                 gates: Gates::at(percentile),
                 ..Config::default()
             };
