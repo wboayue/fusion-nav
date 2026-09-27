@@ -96,6 +96,23 @@ dated before a start not at rest is refused, which no corpus log or scenario rea
 `ImuSample::accumulate` sums a driver's batch, coning left out and cited against PX4's
 `ImuDownSampler`. `Eskf::commit_state` is the one writer that keeps the history in step, and a
 test fails without it.
+#24 and #53 landed together (#163): heading without a magnetometer, and the source set is 7.
+`fuse_gnss_heading` is (35′), a dual-antenna true heading on (36)'s row with no (36′);
+`fuse_course` is (35″), a *constraint* on the estimated velocity rather than a GNSS velocity
+handed in, which would count the fix's cross-track error twice. Both run through one private
+`Eskf::fuse_heading` with the magnetometer (`src/observation/heading.rs` holds (35′), (35″) and
+the shared (36)), both adopt a first heading, and `Fusion::Unobservable` refuses body x within 30°
+of vertical and a course under ArduPilot's 15° bar on `σ_χ`, so the speed threshold is the
+velocity's own accuracy. A course with no GNSS velocity accepted within `degraded_after` is
+`NoReference`, and `Status` does not count the course (`Diagnostics::aiding()`). `a299e722` turned
+out to be a real dual-antenna log (`EKF2_AID_MASK` bit 7, 0.010 rad from EKF2's yaw at rest): the
+converter writes `gnss_yaw` rows only where the log's own EKF2 enables GNSS yaw, and fusing them
+took its heading gap to EKF2 4.86° → 1.03° and `nu_mag_yaw` −0.127 → −0.002 rad, while px4
+`pos_e_rms` went 0.33 → 0.66 m, open under #25 (a 0.30 m antenna lever arm, unverified). #53's bar
+was met on the simulator's `no_mag` (heading 0.8 s after takeoff, 1.82° against 1.83), which
+measures the simulated sideslip as much as the filter; `093e806a --without mag --course 3` aligns
+where it never did, and the VTOL `4b473e91` shows the multirotor case it is not for. GOALS records
+option 6 (GSF) as not needed for option 5's vehicles.
 #48 and #49 landed (#154): `Display` on every outcome, an optional `defmt` feature, and
 `examples/embedded.rs`, built for both thumb targets in CI. `Display` prints numbers through
 `src/display.rs`'s `Fixed`, because core's `f32` formatting reaches `core::panicking` (the
@@ -747,9 +764,9 @@ off-by-default feature of the same name.
 - `src/eskf.rs` — `Eskf`, the whole public filter: `initialize`, `initialize_from`, `predict`,
   `fuse_*`, `state`, `reset_*_to`. `initialize_from` is stage 1
   of GOALS.md's "Alignment beyond the static window": the static window stays the preferred path,
-  a moving or short window starts coarse under `Status::Aligning`, and in-motion levelling (5′)
-  and yaw from course (#59, #53) are the options still unbuilt — read that section before
-  touching initialization.
+  a moving or short window starts coarse under `Status::Aligning`, yaw from course is
+  `fuse_course` (#53), and in-motion levelling (5′, #59) is the option still unbuilt — read that
+  section before touching initialization.
 - `src/init.rs` — initialization's types (`StaticSample`, `Alignment`, `Coarse`, `InitError`)
   and pure functions (`level_from_accel`, `heading_from_mag`, `nominal_state`, `classify`,
   `attitude_sigmas`, `initial_covariance`, `baro_reference`, `inertial_acceleration`).
@@ -773,8 +790,9 @@ off-by-default feature of the same name.
   enters (27) in blocks rather than as a 16 × 16 (+4168 bytes measured); the figure
   and the #41 that would revisit it are in the doc comments.
 - `src/observation/` — one module per sensor, each forming `y`, `H` and diagonal `R_m` and
-  nothing else. `gnss.rs` holds (28) and (29), `baro.rs` holds (30), and `mag.rs` holds (34)–(36)
-  and the levelling variance (36′); (31)–(33), the three-axis magnetometer, are deliberately unbuilt.
+  nothing else. `gnss.rs` holds (28) and (29), `baro.rs` holds (30), `mag.rs` holds (34), (35)
+  and the levelling variance (36′), and `heading.rs` holds (36), which every heading source
+  shares, with (35′) and (35″); (31)–(33), the three-axis magnetometer, are deliberately unbuilt.
 - `src/math.rs` — the primitives the equations share: `skew`, `exp_quat`, `wrap_pi`,
   `enforce_symmetry` (42). Pure, stateless, and unit-tested against their definitions. All four
   have callers as of (16)–(22), so none carries a dead-code allowance any more. Neither does
@@ -869,7 +887,8 @@ off-by-default feature of the same name.
   mutating. `is_aligned` reads the covariance against `ALIGNED_TILT` and `ALIGNED_HEADING` —
   constants, never `Config::accuracy`, which is the mission's and moves only `Validity` — so
   promotion is measured rather than timed — except heading, which no covariance can promote because
-  stillness never observes yaw; that one waits for the first `fuse_mag_heading`. Promotion only: the flag
+  stillness never observes yaw; that one waits for the first heading from `fuse_mag_heading`,
+  `fuse_gnss_heading` or `fuse_course`. Promotion only: the flag
   **latches**, so `Status::Aligning` reports a start that has not been resolved and never
   returns, while `Validity::tilt` stays live and does fall back. Read live the bar was crossed
   703 times on `2c42096b` while it started coarse, its tilt σ over `ALIGNED_TILT` for 79 % of the log, and
@@ -947,8 +966,10 @@ Every source touches the same ten places, and three of them are public:
   `carried_position`/`carried_velocity`. This is the cheap part, and the only one the compiler checks:
   a `Gate<M>` of the wrong dimension does not build.
 - `Diagnostics` gains a field and `sources()`'s return type changes length
-  (`src/health.rs:954-997`) — `#[non_exhaustive]` covers the new field, but not the array length,
-  so settle the source set before publishing.
+  (`src/health.rs:1030`) — `#[non_exhaustive]` covers the new field, but not the array length,
+  so settle the source set before publishing. `aiding()` beside it derives the sources `Status`
+  counts from that list, so a source that aids nothing a sensor does not (the course) is excluded
+  there by name, and `advance()` is a third list to extend.
 - `Gates` gains a field, a `Gate<DOF>` at the observation's dimension — the type states the degrees
   of freedom, and `Gates::at` needs a line for the new field.
 - A source is a verdict, not a sensor: a GNSS fix is two, `gnss_position` and `gnss_height`, gated
