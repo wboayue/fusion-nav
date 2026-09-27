@@ -429,9 +429,9 @@ struct ImuErrors {
 /// simulating PX4's modelling allowance rather than an IMU. The consequence for scoring is worth
 /// stating plainly: against this table the filter's white noise is two orders of magnitude
 /// conservative and its bias walks one, so every scenario should come out *under*-confident,
-/// and a consistency statistic that does not is a finding rather than a pass. [`HARSH_IMU`] is
-/// the exception on attitude: its accelerometer bias is 1.86 times `Initialization`'s prior on
-/// one axis, which reads as tilt, and `data/anees.txt` asserts the overconfidence that buys.
+/// and a consistency statistic that does not is a finding rather than a pass. [`HARSH_IMU`]
+/// comes closest on attitude: its accelerometer bias is 0.93 of `Initialization`'s prior on y,
+/// which (5) levels in as tilt and (8) carries as the tilt's correlation with the bias.
 const IMU: ImuErrors = ImuErrors {
     gyro_white: 2.6e-4,
     accel_white: 2.0e-3,

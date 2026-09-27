@@ -1491,12 +1491,12 @@ impl Eskf {
     /// Tilt is where the projection earns its place, because nothing aids it: a static
     /// window brings it in and (20)'s gyroscope-bias term takes it back out, on a schedule
     /// the covariance knows and no acceptance timer does. At [`ImuNoise`](crate::ImuNoise)'s
-    /// defaults an unaided start holds tilt for 3.85 s, so a horizon under that arms and one
+    /// defaults an unaided start holds tilt for 3.83 s, so a horizon under that arms and one
     /// over it does not — an answer, where before there was only the current value repeated.
     ///
     /// The projection reads slightly optimistic and the amount is measured: a first-order
     /// step understates growth, and `propagate.rs`'s `PROJECTION_STEP` holds that within
-    /// 2.5 % of the sigma out to a 5 s horizon. It costs one `F` and up to 64 covariance
+    /// 3.2 % of the sigma out to a 5 s horizon. It costs one `F` and up to 64 covariance
     /// propagations, which is an arming-rate query and not something to poll at IMU rate.
     pub fn predicted_validity(&self) -> Validity {
         if !self.initialized {
@@ -1704,8 +1704,13 @@ impl Eskf {
         // time as motion the window could not vouch for; see `init::coarse_sigmas`.
         let (sigma_tilt, sigma_yaw) =
             init::attitude_sigmas(&self.config.init, alignment, measured, state.gyro_bias);
-        let covariance =
-            init::initial_covariance(&self.config.init, &state.attitude, sigma_tilt, sigma_yaw);
+        let covariance = init::initial_covariance(
+            &self.config.init,
+            &state.attitude,
+            sigma_tilt,
+            sigma_yaw,
+            measured.level_variance,
+        );
         self.state = state;
         // Before the commit, which counts into them; see `initialize_from`.
         self.diagnostics = Diagnostics::default();
@@ -1944,7 +1949,7 @@ mod tests {
     }
 
     /// The margin [`Accuracy`]'s defaults were chosen for, measured rather than derived: a
-    /// static start with a magnetometer in the window holds its tilt for 3.85 s of unaided
+    /// static start with a magnetometer in the window holds its tilt for 3.83 s of unaided
     /// propagation and its heading for 37.8 s, at [`ImuNoise`](crate::ImuNoise)'s defaults.
     ///
     /// Not the `σ_g² t` the white-noise density alone would give — that is 10.4 s and 674 s.
@@ -1982,7 +1987,7 @@ mod tests {
 
         let tilt = tilt_held.expect("tilt leaves the bar inside 40 s");
         let heading = heading_held.expect("heading leaves the bar inside 40 s");
-        assert!((tilt - 3.85).abs() < 0.05, "tilt held {tilt} s");
+        assert!((tilt - 3.83).abs() < 0.05, "tilt held {tilt} s");
         assert!((heading - 37.8).abs() < 0.2, "heading held {heading} s");
     }
 
@@ -3732,7 +3737,7 @@ mod tests {
         assert!(filter.is_aligned());
         assert!(filter.validity().tilt);
 
-        // Past the 3.85 s the default bars buy, with the barometer still arriving at 2 Hz so
+        // Past the 3.83 s the default bars buy, with the barometer still arriving at 2 Hz so
         // that aiding is never stale: otherwise `degraded_after` expires on the way and
         // `Degraded` would be what the status assertion below saw.
         for step in 1..=800 {
@@ -4256,7 +4261,7 @@ mod tests {
     #[test]
     fn the_horizon_is_what_separates_predicted_validity_from_the_current_one() {
         // The projection's whole point, on the quantity nothing aids. A static start levels
-        // tilt and holds it for 3.85 s unaided
+        // tilt and holds it for 3.83 s unaided
         // (`an_unaided_start_holds_its_attitude_for_the_margin_the_defaults_buy`), so a
         // horizon inside that arms and one outside it does not -- while `validity` says the
         // same thing at both, because it is answering about now.
@@ -4275,7 +4280,7 @@ mod tests {
             (filter.validity().tilt, filter.predicted_validity().tilt)
         };
 
-        assert_eq!(ask(1.0), (true, true), "a second is inside the 3.85 s hold");
+        assert_eq!(ask(1.0), (true, true), "a second is inside the 3.83 s hold");
         assert_eq!(ask(6.0), (true, false), "six seconds is outside it");
     }
 
@@ -4755,11 +4760,16 @@ mod tests {
     #[test]
     fn on_its_tail_the_window_puts_the_yaw_prior_on_heading() {
         // Equation (8)'s prior is about navigation axes, so on a vehicle standing on its
-        // tail it lands on body x, not z.
+        // tail it lands on body x, not z. Tilt is the wider of the configured figure and
+        // what the accelerometer-bias prior levels in.
         let filter = on_its_tail();
         let init = Config::default().init;
         let variance = filter.attitude_variance();
-        let (tilt, yaw) = (init.sigma_tilt.as_radians(), init.sigma_yaw.as_radians());
+        let tilt = init
+            .sigma_tilt
+            .as_radians()
+            .max(init.sigma_accel_bias.as_m_per_s2() / GRAVITY);
+        let yaw = init.sigma_yaw.as_radians();
         assert!((variance.heading - yaw * yaw).abs() < 1e-6, "{variance:?}");
         assert!(
             (variance.tilt_north - tilt * tilt).abs() < 1e-7,

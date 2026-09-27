@@ -313,7 +313,7 @@ The options, in the order they are worth doing:
 
    **And tilt can be left to the ordinary gate, which is what the data says.** The corpus
    answers half of it, and `data/manifest.txt` carries the counts: the gate turns down two
-   headings on `eb799954`, two consecutive samples 1.1 rad out, and 1419 on `7ce66f0d`, a hand
+   headings on `eb799954`, two consecutive samples 1.1 rad out, and 1545 on `7ce66f0d`, a hand
    launch levelled 12° wrong whose heading was never established, where the failure is the
    levelling and not the gate. The tailsitter
    `285ee2e7` fuses every heading through 125° of tilt, so nothing is locked out at any tilt
@@ -522,7 +522,10 @@ to 69, the magnetometer rejected instead. On `093e806a`, 35 to 29.
 
 **What it did not buy.** `harsh_imu` (#149) and `gnss_latency` stopped failing on attitude
 because the covariance widened, not because the error shrank: `harsh_imu`'s tilt moved 1.19° to
-1.12° while its `nees_att` fell 0.76 to 0.21. Their causes stand.
+1.12° while its `nees_att` fell 0.76 to 0.21. `gnss_latency`'s cause stands. `harsh_imu`'s was
+the start: an accelerometer bias at 1.86σ of the prior, levelled in as tilt that `P₀` called
+independent of the bias. Equation (8)'s tilt–bias correlation, at PX4's and ArduPilot's 0.2 m/s²,
+removed it: 0 epochs over the bound fused as white, against 2281, and tilt 1.12° to 0.83°.
 
 **What was measured against it**, on GNSS position alone. A floor on `P` at each fix's variance,
 the invariant that the filter may not know a quantity better than the only source constraining

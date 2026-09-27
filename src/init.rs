@@ -5,12 +5,12 @@
 //! `initialize_coarse`, `initialize_from`, and `alignment_of` — which call into the pure
 //! functions here and then commit the result to the filter.
 
-use nalgebra::{ComplexField, RealField, Rotation3, UnitQuaternion, Vector3};
+use nalgebra::{ComplexField, Matrix3, RealField, Rotation3, UnitQuaternion, Vector3};
 
 use crate::config::{GRAVITY, Initialization};
 use crate::display::{Decimals, Fixed};
 use crate::frames::{Body, Ned};
-use crate::math::wrap_pi;
+use crate::math::{skew, wrap_pi};
 use crate::propagate::ImuSample;
 use crate::state::{AttitudeVariance, Covariance, State};
 use crate::units::{
@@ -117,6 +117,12 @@ pub(crate) struct Measured {
     /// The same averages over each half of the window, for [`window_drift`]. `None` for
     /// a window of one, which has no halves to disagree.
     pub halves: Option<Halves>,
+    /// How well `f̄` itself is known across gravity, as tilt: the variance, rad² per
+    /// horizontal axis, of the mean of the samples' specific force, over `γ²`. The part
+    /// of (5)'s level error that is not the accelerometer bias, measured by the window's
+    /// own scatter; see [`initial_covariance`]. `None` for a window of one, or one whose
+    /// average is zero, which measure no scatter.
+    pub level_variance: Option<f32>,
 }
 
 /// The averages of equations (5)–(6) taken over each half of the window separately, so
@@ -153,11 +159,14 @@ impl Measured {
         let mut field = [Vector3::<f64>::zeros(); 2];
         let mut samples = [0u32; 2];
         let mut fields = [0u32; 2];
+        // `Σ f fᵀ`, for the window's scatter about `f̄`; see `level_variance`.
+        let mut outer = Matrix3::<f64>::zeros();
         let split = window.len() / 2;
         for (index, sample) in window.iter().enumerate() {
             let half = usize::from(index >= split);
             let (accel, gyro) = (sample.imu.accel.vector(), sample.imu.gyro.vector());
             force[half] += widen(accel);
+            outer += widen(accel) * widen(accel).transpose();
             samples[half] += 1;
             rate += widen(gyro);
             if let Some(measurement) = sample.mag {
@@ -177,6 +186,7 @@ impl Measured {
             peak_gyro: RadiansPerSecond::from_rad_per_s(peak_gyro),
             peak_deviation: MetersPerSecond2::from_m_per_s2(peak_deviation),
             span: Seconds::from_secs(window.len() as f32 * dt.as_secs()),
+            level_variance: level_variance(outer, force[0] + force[1], total),
             halves: (samples[0] > 0 && samples[1] > 0).then(|| Halves {
                 force: [
                     Acceleration::from_vector(mean(force[0], samples[0])),
@@ -205,6 +215,28 @@ impl Measured {
             .try_normalize(f32::MIN_POSITIVE)
             .map(|f| -f)
     }
+}
+
+/// [`Measured::level_variance`], from the window's `Σ f` and `Σ f fᵀ`.
+///
+/// The scatter across `f̄` over the sample count is how far the average could sit from the
+/// window's true mean force: vibration, a vehicle rocking on its gear, sensor noise. Divided
+/// by `γ²` it is a tilt, and it is what `P₀` keeps independent of the bias. It assumes the
+/// samples independent, so vibration slower than the sample rate is undercounted, and it is
+/// a floor rather than the whole independent share for that reason.
+fn level_variance(outer: Matrix3<f64>, sum: Vector3<f64>, count: u32) -> Option<f32> {
+    if count < 2 {
+        return None;
+    }
+    let n = f64::from(count);
+    let mean = sum / n;
+    let down = mean.try_normalize(f64::MIN_POSITIVE)?;
+    // Sums near `γ²` per sample, differenced down to a scatter many orders smaller: the
+    // subtraction that needs f64.
+    let scatter = (outer - mean * mean.transpose() * n) / (n - 1.0);
+    let across = scatter.trace() - down.dot(&(scatter * down));
+    let gravity = f64::from(GRAVITY);
+    Some(((across / 2.0).max(0.0) / n / (gravity * gravity)) as f32)
 }
 
 /// Widen a measurement for accumulation; see [`Measured::over`].
@@ -771,15 +803,41 @@ fn coarse_sigmas(
 /// alignment's own. Diagonal only at level: on a vehicle standing on its tail, body x points
 /// up and the yaw prior belongs on `δθ_x`.
 ///
-/// Writing the block after construction costs a copy of `P`: on `thumbv6m` this frame is
-/// 1056 bytes where a diagonal-only `P₀` inlined to 80, and `Eskf::apply_alignment` grows by
-/// the same 960. The initialization chain then reaches about 3.3 KB, well under the 10 KB of
-/// `fuse_gnss_position` into `update::<3>`, so the crate's peak does not move.
+/// The tilt and the accelerometer bias are **one error**, not two. (5) levels the window's
+/// average specific force, which reads a horizontal accelerometer bias as gravity leaning, so
+/// the committed attitude is wrong by `δθ = −[d̂]× δβa / γ` with `d̂` navigation down in body
+/// axes (EQUATIONS.md, (8)). A block-diagonal `P₀` says the two are independent: when
+/// velocity fusion then learns the bias, nothing tells the tilt it caused to follow, and the
+/// attitude is overconfident by exactly the share of it the bias explains. Measured on
+/// `harsh_imu`, 50 seeds with every source fused white (`Correlation::WHITE`, where the
+/// inflation of (24′) cannot hide it): 2281 epochs over the family-wise bound with the
+/// block diagonal, 214 at the wider [`Initialization::sigma_accel_bias`] alone, none with
+/// the correlation as well.
+///
+/// So the tilt prior is the bias's share, `σ_βa² / γ²`, carried as correlation, plus an
+/// independent share of `max(σ_tilt² − σ_βa² / γ², level)`: `sigma_tilt` is the whole tilt
+/// uncertainty where it covers the bias, and a bias prior wider than it raises it rather than
+/// being claimed away. Adding all of `σ_tilt²` instead counts the bias's share twice, and it
+/// costs: `f16771dd` lost its unaided tilt at 3.41 s against 3.84, and `tilt` rose on ten of
+/// the eleven scenarios (`harsh_imu` 1.022° against 0.828).
+///
+/// `level` is the window's own [`Measured::level_variance`], and it is what keeps the
+/// independent share from reaching zero. At the defaults the bias's share, 0.0204 rad, is
+/// over `sigma_tilt`'s 0.02, so without it `P₀` would claim every tilt error is the bias and
+/// be singular across the two tilt directions: once velocity fusion knew the bias, nothing
+/// would be left for the vibration or noise the average levelled through. A window of one
+/// measures no scatter, and keeps the whole of `σ_tilt²` independent instead.
+///
+/// Writing the blocks after construction costs a copy of `P`: on `thumbv6m` this frame is
+/// 1120 bytes where a diagonal-only `P₀` inlined to 80, with `Eskf::apply_alignment` at 960
+/// above it. The initialization chain stays well under the 10 KB of `fuse_gnss_position` into
+/// `update::<3>`, so the crate's peak does not move.
 pub(crate) fn initial_covariance(
     init: &Initialization,
     attitude: &Attitude,
     sigma_tilt: Radians,
     sigma_yaw: Radians,
+    level_variance: Option<f32>,
 ) -> Covariance {
     let position = init.sigma_position.as_meters();
     let velocity = init.sigma_velocity.as_m_per_s();
@@ -795,15 +853,27 @@ pub(crate) fn initial_covariance(
         accel_bias, accel_bias, accel_bias,
         gyro_bias,  gyro_bias,  gyro_bias,
     ];
+    let explained = accel_bias / GRAVITY;
+    let independent = level_variance.map_or(tilt * tilt, |level| {
+        (tilt * tilt - explained * explained).max(level)
+    });
+    let tilt_variance = explained * explained + independent;
     let mut covariance = Covariance::from_sigmas(sigmas);
     covariance.set_attitude_block(
         AttitudeVariance {
-            tilt_north: tilt * tilt,
-            tilt_east: tilt * tilt,
+            tilt_north: tilt_variance,
+            tilt_east: tilt_variance,
             heading: yaw * yaw,
         }
         .in_body(attitude),
     );
+    // `P_θβa = E[δθ δβaᵀ] = −[d̂]× σ_βa² / γ`, from `δθ = −[d̂]× δβa / γ` and `δβa` of
+    // variance `σ_βa² I`. Horizontal only: `[d̂]×` has no component along `d̂`, and a bias
+    // along gravity moves `‖f̄‖`, not the direction (5) levels to.
+    let down = attitude
+        .quaternion()
+        .inverse_transform_vector(&Vector3::z());
+    covariance.set_attitude_accel_bias_block(skew(down) * (-accel_bias * explained));
     covariance
 }
 
@@ -917,6 +987,7 @@ pub(crate) mod tests {
     use std::format;
 
     use super::*;
+    use crate::state::ErrorState;
 
     #[test]
     fn a_coarse_start_reads_as_what_was_measured() {
@@ -1066,6 +1137,108 @@ pub(crate) mod tests {
             mag: Some(field_at(roll, pitch, yaw, declination)),
             ..still()
         }; 8]
+    }
+
+    #[test]
+    fn the_tilt_prior_predicts_the_level_error_a_biased_accelerometer_causes() {
+        // What (8)'s cross-covariance claims, checked against what (5) actually commits:
+        // told the bias, `P₀` must predict the tilt error, `E[δθ | δβa] = P_θβa P_βaβa⁻¹ δβa`.
+        // Flipping the sign of `P_θβa` fails every case here; so does leaving it out.
+        let init = Initialization::default();
+        let variance = init.sigma_accel_bias.as_m_per_s2().powi(2);
+        let bias = Vector3::new(0.15, -0.1, 0.05);
+        for (roll, pitch) in TILTS {
+            let truth = attitude_of(roll, pitch, 0.7);
+            let window = [StaticSample {
+                imu: ImuSample {
+                    accel: Acceleration::from_vector(gravity_at(roll, pitch, 0.7).vector() + bias),
+                    ..still().imu
+                },
+                mag: Some(field_at(roll, pitch, 0.7, 0.0)),
+                ..still()
+            }; 8];
+            let state = nominal(&window, Radians::ZERO, true);
+            let committed = state.attitude.quaternion();
+            // `q = q̂ ⊗ δq`, the local error of equation (2).
+            let error =
+                (committed.inverse() * UnitQuaternion::from_rotation_matrix(&truth)).scaled_axis();
+
+            let measured = measure(&window, DT).expect("a usable window");
+            let p = initial_covariance(
+                &init,
+                &state.attitude,
+                init.sigma_tilt,
+                init.sigma_yaw,
+                measured.level_variance,
+            );
+            let theta = ErrorState::AttitudeX.index();
+            let beta = ErrorState::AccelBiasX.index();
+            let predicted = p.as_matrix().fixed_view::<3, 3>(theta, beta) * bias / variance;
+
+            // (5) observes no heading, so only the error across gravity is predictable.
+            let down = committed.inverse_transform_vector(&Vector3::z());
+            let across = |v: Vector3<f32>| v - down * v.dot(&down);
+            assert!(
+                (across(error) - across(predicted)).norm() < 2e-4,
+                "roll {roll} pitch {pitch}: levelled {:?}, predicted {:?}",
+                across(error),
+                across(predicted)
+            );
+        }
+    }
+
+    #[test]
+    fn the_level_variance_is_the_scatter_across_gravity_over_the_count() {
+        // ±0.5 m/s² on body x, alternating, so the mean is gravity and the sample variance
+        // across it is 0.25 · 8/7. Half of it per horizontal axis, over 8 samples, over γ².
+        // Scatter along gravity is not a tilt: the same shake on z adds nothing.
+        let mut window = [still(); 8];
+        for (index, sample) in window.iter_mut().enumerate() {
+            let shake = if index % 2 == 0 { 0.5 } else { -0.5 };
+            sample.imu.accel = Acceleration::body(shake, 0.0, -GRAVITY + shake);
+        }
+        let level = measure(&window, DT)
+            .expect("a usable window")
+            .level_variance
+            .expect("eight samples scatter");
+        let expected = 0.25 * 8.0 / 7.0 / 2.0 / 8.0 / (GRAVITY * GRAVITY);
+        assert!(
+            (level - expected).abs() < 1e-3 * expected,
+            "expected {expected}, got {level}"
+        );
+        assert_eq!(
+            measure(&[still()], DT).expect("one sample").level_variance,
+            None
+        );
+    }
+
+    #[test]
+    fn a_scattered_window_keeps_tilt_uncertain_once_the_bias_is_known() {
+        // At the defaults the bias explains all of `sigma_tilt`, so the tilt variance left
+        // once the bias is known is the window's own scatter and nothing else. Zero there is
+        // the singular `P₀` that claims every level error is the bias.
+        let init = Initialization::default();
+        let level = 4e-6;
+        let p = initial_covariance(
+            &init,
+            &Attitude::default(),
+            init.sigma_tilt,
+            init.sigma_yaw,
+            Some(level),
+        );
+        let m = p.as_matrix();
+        let (theta, beta) = (
+            ErrorState::AttitudeX.index(),
+            ErrorState::AccelBiasX.index(),
+        );
+        let p_tb = m.fixed_view::<3, 3>(theta, beta);
+        let p_bb = m.fixed_view::<3, 3>(beta, beta);
+        let given_bias = m.fixed_view::<3, 3>(theta, theta)
+            - p_tb * p_bb.try_inverse().expect("a bias prior") * p_tb.transpose();
+        for axis in 0..2 {
+            let left = given_bias[(axis, axis)];
+            assert!((left - level).abs() < 1e-7, "axis {axis}: {left}");
+        }
     }
 
     /// The roll, pitch and yaw equation (7) committed, in radians.

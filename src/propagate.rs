@@ -342,15 +342,15 @@ fn propagate_covariance(p: Covariance, f: &Transition, q: [f32; STATES]) -> Cova
 ///
 /// ```text
 ///  horizon    0.2 s step   0.1 s step   0.05 s step
-///    1 s        0.985        0.993        0.997
-///    2 s        0.937        0.969        0.986
-///    5 s        0.891        0.947        0.976
+///    1 s        0.989        0.994        0.997
+///    2 s        0.953        0.977        0.989
+///    5 s        0.873        0.938        0.953
 /// ```
 ///
-/// 0.1 s is where that stops buying much per step: it holds the projection within 5 % of the
-/// variance, 2.5 % of the sigma, out to a 5 s horizon, against an
+/// 0.1 s is where that stops buying much per step: it holds the projection within 6.5 % of
+/// the variance, 3.2 % of the sigma, out to a 5 s horizon, against an
 /// [`Accuracy`](crate::Accuracy) bar that is a mission's choice and carries far more than
-/// 2.5 % of latitude itself. What the shortfall is not is symmetric — a first-order step
+/// 3.2 % of latitude itself. What the shortfall is not is symmetric — a first-order step
 /// always understates, so the projection reads slightly *optimistic*, and
 /// [`Eskf::predicted_validity`](crate::Eskf::predicted_validity) says so.
 const PROJECTION_STEP: Seconds = Seconds::from_secs(0.1);
@@ -952,6 +952,7 @@ mod tests {
             &state.attitude,
             Radians::from_radians(0.02),
             Radians::from_radians(0.35),
+            Some(0.0),
         );
 
         for _ in 0..12_000 {
@@ -1176,6 +1177,7 @@ mod projection_steps {
                 &State::default().attitude,
                 Radians::from_radians(0.02),
                 Radians::from_radians(0.35),
+                Some(0.0),
             ),
             ImuNoise::default(),
         )
@@ -1198,11 +1200,11 @@ mod projection_steps {
     /// chosen against a measurement should fail when the measurement moves.
     ///
     /// Variance rather than sigma: `sqrt` is `libm`'s here and the claim is the same either
-    /// way — 0.947 of the variance is 0.973 of the sigma.
+    /// way — 0.938 of the variance is 0.968 of the sigma.
     #[test]
     fn a_tenth_of_a_second_step_holds_the_projection_within_five_percent_out_to_five_seconds() {
         let (state, from, noise) = start();
-        for (seconds, floor) in [(1.0f32, 0.99f32), (2.0, 0.96), (5.0, 0.94)] {
+        for (seconds, floor) in [(1.0f32, 0.99f32), (2.0, 0.97), (5.0, 0.93)] {
             let truth = at_100_hz(&state, from, &noise, seconds);
             let projected = project(&state, from, Seconds::from_secs(seconds), &noise);
             let ratio = projected.variance(ErrorState::PositionNorth)
