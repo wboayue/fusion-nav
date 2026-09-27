@@ -103,7 +103,7 @@ handed in, which would count the fix's cross-track error twice. Both run through
 `Eskf::fuse_heading` with the magnetometer (`src/observation/heading.rs` holds (35′), (35″) and
 the shared (36)), both adopt a first heading, and `Fusion::Unobservable` refuses body x within 30°
 of vertical and a course under ArduPilot's 15° bar on `σ_χ`, so the speed threshold is the
-velocity's own accuracy. A course with no GNSS velocity accepted within `degraded_after` is
+velocity's own accuracy. A course with no fresh GNSS velocity is
 `NoReference`, and `Status` does not count the course (`Diagnostics::aiding()`). `a299e722` turned
 out to be a real dual-antenna log (`EKF2_AID_MASK` bit 7, 0.010 rad from EKF2's yaw at rest): the
 converter writes `gnss_yaw` rows only where the log's own EKF2 enables GNSS yaw, and fusing them
@@ -113,6 +113,19 @@ was met on the simulator's `no_mag` (heading 0.8 s after takeoff, 1.82° against
 measures the simulated sideslip as much as the filter; `093e806a --without mag --course 3` aligns
 where it never did, and the VTOL `4b473e91` shows the multirotor case it is not for. GOALS records
 option 6 (GSF) as not needed for option 5's vehicles.
+#56 landed (#164): `Status` times each source against its own rate, and `DeadReckoning` is
+horizontal. A source's timeout is 2.5 × `SourceHealth::period()`, a running mean of its arrival
+intervals (15, then weight 1/15), or `dead_reckoning_after` before it has one, and uncapped after;
+`degraded_after` is gone. `DeadReckoning` reads GNSS position and velocity alone
+(`Diagnostics::horizontal()`), as PX4's `inertial_dead_reckoning` and ArduPilot's
+`dead_reckoning` do, so a vehicle awaiting its first fix reads `DeadReckoning`, not `Aligning`.
+A median was the plan and lost on the corpus: `eb799954`'s magnetometer bursts, and a median of
+nine read its burst spacing as its rate (14025 transitions against 2). A neutral replay (2.5 s
+fixed, the old any-source rule) reproduced every summary, and only `transitions=`/`status=` moved,
+on six logs, each noted; `2c42096b` 888 → 48, since its mean interval is 1.54 s. The period
+reaches the estimate through the recovery guards and the course's `NoReference`, which GOALS'
+derived-configuration row records. `diagnostics()` and `sources()` return references
+(`Eskf::state`'s frame 688 → 56 bytes on `thumbv6m`).
 #48 and #49 landed (#154): `Display` on every outcome, an optional `defmt` feature, and
 `examples/embedded.rs`, built for both thumb targets in CI. `Display` prints numbers through
 `src/display.rs`'s `Fixed`, because core's `f32` formatting reaches `core::panicking` (the
@@ -326,7 +339,8 @@ per question answered, never per importance.
   this and not the obvious alternative* (`Fusion::Reset` takes the zero-information limit exactly
   rather than approaching it with an invented variance), *what breaks otherwise* (`InvalidNoise`:
   a negative variance written into `P` reads back as an excellent estimate), *where the number
-  came from* (`degraded_after`: 7992 status flaps at 1.0 s on `2c42096b`, 888 at 2.5 s). A
+  came from* (`SourceHealth::timeout`: 2826 status flaps at two periods on `eb799954`, 2 at
+  two and a half). A
   paragraph that is none of the three, or that the signature already answers, is cut.
 - **Cite instead of restating.** An equation number, a `file:line` at a pinned PX4/ArduPilot
   revision, a GOALS.md differentiator by number, a measured figure. A citation is what lets a
@@ -607,8 +621,8 @@ number printed beside it:
 - **An axis sized to the widest band hides the error.** `gnss_outage`'s ±250 m band drew a 10 m
   error as a flat line.
 - **Prose written before the figure is opened is a guess.** The robustness page said the outage
-  reached `DeadReckoning`; the shading showed `Degraded`, because any accepted source counts as
-  aiding (#56).
+  reached `DeadReckoning`; the shading showed `Degraded`, because any accepted source then counted as
+  aiding. #56 changed that, and the page was rewritten looking at the new shading.
 
 Write the sentence about a figure while looking at it, and check a surprising pixel against the
 rows before claiming it. `gnss_outage`'s error looked outside its band after the gap; the CSV put
@@ -673,7 +687,7 @@ vibrating vehicle under a poor sky view for two hours, not a flight. Its numbers
 (what the filter does when two height sources disagree), and tuning toward them would be fitting
 a bench test. Check peak speed and extent from the CSV before a log's figures argue for a change,
 and say what the log is in its manifest note, as that entry now does. Check first whether it is
-real. `3949f175` was the corpus's "baseline" and the evidence for `degraded_after` until
+real. `3949f175` was the corpus's "baseline" and the evidence for a status timeout until
 `ver_hw=PX4_SITL` showed it was a simulation. Its receiver reports `eph` 0.90 and 10 satellites on
 every message, so its fix jitter was the scheduler's. Flight Review hosts SITL logs beside real
 ones, and a SITL log is synthetic data without the simulator's truth.
@@ -719,7 +733,8 @@ check.
 ## How defaults get decided
 
 Three defaults are no longer placeholders, and each records its evidence in its doc comment:
-`Timeouts::degraded_after` (replay showed 7992 status flaps at 1.0 s on `2c42096b`), `ImuNoise`
+`SourceHealth::timeout`'s 2.5 periods (replay showed `eb799954`'s bursting magnetometer flapping
+2826 times at 2.0, and a median period flapping it 14025), `ImuNoise`
 (ArduPilot's bias walks converted from per-step σ to density, which took `2c42096b`'s tilt
 peak from 5.2° to 2.5°; white noise at ten times PX4's density, which vibration, a raw `R` and
 GNSS latency were each measured spending), and `Initialization`'s
@@ -974,8 +989,10 @@ Every source touches the same ten places, and three of them are public:
   of freedom, and `Gates::at` needs a line for the new field.
 - A source is a verdict, not a sensor: a GNSS fix is two, `gnss_position` and `gnss_height`, gated
   apart (#118), so a sensor whose components fail independently wants a source per component.
-- `Timeouts` is **global**, not per-source: there is no per-source entry to add, and giving a
-  source its own threshold is a design change. See #56. `Recovery` *is* per source, like `Gates`,
+- A `fuse_*` calls `note_arrival` on its source once `admit` passes, which is what gives it a
+  `period()` and so its own timeout; `every_source_measures_its_period_from_what_it_offers`
+  fails for a source that does not. `Timeouts` has nothing per source to add. `Recovery` *is*
+  per source, like `Gates`,
   so it gains a field and a decision about what adopting the source resets. So does
   `Correlation`: a `τ` for (24′), from the source's `acf1_` on the corpus read as white, and the
   source's `fuse_*` calls `.correlated(...)` on its observation.
