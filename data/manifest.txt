@@ -585,8 +585,27 @@ b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-
 # 378 at 55 ms, 396 at 110 and 338 at 165, its position NIS 0.25, 2.40, 2.43,
 # 2.52. A receiver whose velocity its own positions contradict has no one
 # latency both agree on, and the one EKF2 was configured with is not it.
+#
+# GNSS heading (#24) moved it an eighth time, 396 to 384, and transitions= 8
+# to 6. This is the corpus's one dual-antenna log: EKF2_AID_MASK 385 carries
+# USE_GPS_YAW, EKF2 reports cs_gps_yaw on every sample, and sensor_gps.heading
+# sits a median 0.010 rad from EKF2's yaw below 0.5 m/s, where no course could
+# explain it (a one-off check, not a pinned statistic: sensor_gps.heading
+# against the yaw of vehicle_attitude's quaternion interpolated to each fix,
+# 374 fixes under 0.5 m/s). No heading_accuracy is logged, so the converter
+# writes PX4's 0.1 rad floor, and nis_gnss_yaw reads that as about three times
+# too loose in sigma, eleven in variance.
+# The median heading difference to EKF2 went 4.86 deg to 1.03 (raw) and 6.93
+# to 0.91 (px4), and the magnetometer's standing innovation nu_mag_yaw -0.127
+# rad to -0.002: the 7 deg it carried was this filter's heading, not the
+# field. Fused white the heading sat nearer EKF2 still, 0.55 and 0.56 deg; the
+# 0.25 s of Correlation::gnss_heading is this log's own acf1 read that way, and
+# EKF2 fuses every heading as white. The horizontal distance to EKF2 grew (px4
+# pos_e_rms 0.33 m to 0.66, raw pos_n_rms 2.07 to 4.76). Not yet explained;
+# the antenna sits 0.30 m left of the IMU, which EKF2 corrects
+# (EKF2_GPS_POS_Y) and this filter does not (#25).
 # Source: PX4 Flight Review (CC BY 4.0).
-1c0ea42d6e22cef5cb8730e71a7740b4f5a35988e88e677a72351835cd42990a  a299e722-a7f0-4e2e-bcdf-ce487d556ac1.ulg  https://cdn.logs.px4.io/a299e722-a7f0-4e2e-bcdf-ce487d556ac1.ulg  rate=50 window=101 extent=111.4..113.8 speed_max=9.1..9.3 tilt_max=40.5..41.5 align=static an=none alpha0=window heading=valid roll0=1.19 pitch0=-2.93 yaw0=175.89 declination=-11.13 resets=2 recovered=2 aligned_at=0.00 attitude_lost=21.72 r_policy=raw rejected=396 rejected_gnss_pos=70 rejected_gnss_hgt=0 rejected_gnss_vel=326 rejected_baro=0 rejected_mag=0 discarded=0 coasted=0 refused=0 invalid=0 floored=0 nis_gnss_pos=2.4076..2.4564 nis_gnss_hgt=0.2307..0.2355 nis_gnss_vel=7.4472..7.5978 nis_baro=0.4458..0.4550 nis_mag=0.4605..0.4699 nis_over95_gnss_pos=0.1431..0.1461 nis_over95_gnss_hgt=0.0000 nis_over95_gnss_vel=0.6734..0.6872 nis_over95_baro=0.0033..0.0035 nis_over95_mag=0.0000 nu_gnss_pos_n=0.559136..0.570432 nu_gnss_pos_e=-5.583692..-5.473122 nu_gnss_hgt_d=-0.685389..-0.671815 nu_gnss_vel_n=0.203118..0.207222 nu_gnss_vel_e=-0.993105..-0.973439 nu_gnss_vel_d=-0.098797..-0.096839 nu_baro_d=-0.423319..-0.414935 nu_mag_yaw=-0.127672..-0.125142 acf1_gnss_pos=0.9795..0.9993 acf1_gnss_hgt=0.9825..1.0025 acf1_gnss_vel=0.8273..0.8441 acf1_baro=0.8929..0.9111 acf1_mag=0.9216..0.9404 transitions=8 status=Healthy
+1c0ea42d6e22cef5cb8730e71a7740b4f5a35988e88e677a72351835cd42990a  a299e722-a7f0-4e2e-bcdf-ce487d556ac1.ulg  https://cdn.logs.px4.io/a299e722-a7f0-4e2e-bcdf-ce487d556ac1.ulg  rate=50 window=101 extent=111.4..113.8 speed_max=9.1..9.3 tilt_max=42.1..43.1 align=static an=none alpha0=window heading=valid roll0=1.19 pitch0=-2.93 yaw0=175.89 declination=-11.13 resets=2 recovered=2 aligned_at=0.00 attitude_lost=21.66 r_policy=raw course=off without=none rejected=384 rejected_gnss_pos=70 rejected_gnss_hgt=0 rejected_gnss_vel=314 rejected_baro=0 rejected_mag=0 rejected_gnss_yaw=0 rejected_course=0 discarded=0 coasted=0 refused=0 invalid=0 floored=0 nis_gnss_pos=3.0637..3.1257 nis_gnss_hgt=0.2096..0.2140 nis_gnss_vel=7.6394..7.7938 nis_baro=0.4052..0.4134 nis_mag=0.2580..0.2634 nis_gnss_yaw=0.0897..0.0917 nis_course=none nis_over95_gnss_pos=0.1330..0.1358 nis_over95_gnss_hgt=0.0000 nis_over95_gnss_vel=0.6617..0.6751 nis_over95_baro=0.0000 nis_over95_mag=0.0000 nis_over95_gnss_yaw=0.0000 nis_over95_course=none nu_gnss_pos_n=-0.358741..-0.351637 nu_gnss_pos_e=-6.882890..-6.746594 nu_gnss_hgt_d=-0.605971..-0.593971 nu_gnss_vel_n=-0.027141..-0.026603 nu_gnss_vel_e=-1.343090..-1.316494 nu_gnss_vel_d=-0.059465..-0.058287 nu_baro_d=-0.340366..-0.333626 nu_mag_yaw=-0.002332..-0.002284 nu_gnss_yaw_yaw=0.003051..0.003113 nu_course_yaw=none acf1_gnss_pos=0.9796..0.9994 acf1_gnss_hgt=0.9820..1.0020 acf1_gnss_vel=0.8158..0.8324 acf1_baro=0.8887..0.9067 acf1_mag=0.9214..0.9402 acf1_gnss_yaw=0.8168..0.8334 acf1_course=none transitions=6 status=Healthy
 
 # 68 s quadrotor on AUAV_X21, genuinely old firmware, LPE estimator.
 # The only log where the barometer and magnetometer are fields of

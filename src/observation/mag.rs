@@ -1,12 +1,13 @@
 //! Magnetometer observation models. Equations (34)–(36), and the levelling variance
 //! (36′) that the heading's own noise does not cover.
 
-use nalgebra::{ComplexField, RealField, SMatrix, SVector, Vector3};
+use nalgebra::{ComplexField, RealField, SVector, Vector3};
 
 use crate::frames::Body;
 use crate::init;
 use crate::math::wrap_pi;
-use crate::state::{Covariance, ErrorState, STATES, State};
+use crate::observation::heading::heading_jacobian;
+use crate::state::{Covariance, ErrorState, State};
 use crate::units::{HeadingNoise, MagField, Radians};
 use crate::update::Observation;
 
@@ -42,28 +43,6 @@ pub(crate) fn heading_innovation(
     let m_n = state.attitude.quaternion().to_rotation_matrix() * field.vector();
     // (35).
     -wrap_pi(RealField::atan2(m_n.y, m_n.x) - declination.as_radians())
-}
-
-/// `H = [0 0 e₃ᵀ R(q̂) 0 0]`, the Jacobian of a magnetic heading. Equation (36).
-///
-/// The error state of (2) is a local, body-frame rotation vector, so the navigation-frame
-/// rotation it stands for is `R(q̂) δθ`; yaw is rotation about navigation down, which
-/// makes the third row of `R(q̂)` the row that reads yaw out of the error state.
-///
-/// Yaw as the down component of a rotation vector is exact at zero tilt and degrades as
-/// `1/cos θ`. What it buys is the singularity: reading yaw as an Euler angle instead is
-/// undefined at 90° of pitch, and a filter that stops having a heading Jacobian when the
-/// vehicle points at the sky is worse than one whose Jacobian is a few percent small.
-///
-/// The row is what a *heading source* shares rather than what a magnetometer does: #24's
-/// dual-antenna GNSS and #53's course over ground both arrive as an angle, form their own
-/// innovation as a difference of two, and reuse (36) unchanged.
-pub(crate) fn heading_jacobian(state: &State) -> SMatrix<f32, 1, STATES> {
-    let rotation = state.attitude.quaternion().to_rotation_matrix();
-    let mut h = SMatrix::<f32, 1, STATES>::zeros();
-    h.fixed_view_mut::<1, 3>(0, ErrorState::AttitudeX.index())
-        .copy_from(&rotation.matrix().row(2));
-    h
 }
 
 /// A magnetic heading as the update reads it: `y` from (35), `H` from (36), and the
@@ -175,7 +154,7 @@ fn levelling_variance(covariance: &Covariance, field: MagField<Body>, down: Vect
 pub(crate) mod tests {
     use super::*;
     use crate::init::heading_from_mag;
-    use crate::state::AttitudeVariance;
+    use crate::state::{AttitudeVariance, STATES};
     use crate::units::Attitude;
     use core::f32::consts::PI;
     use nalgebra::{UnitQuaternion, Vector3};

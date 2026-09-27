@@ -284,6 +284,10 @@ pub struct Gates {
     pub baro_altitude: Gate<1>,
     /// Magnetic heading.
     pub mag_heading: Gate<1>,
+    /// Dual-antenna GNSS heading.
+    pub gnss_heading: Gate<1>,
+    /// Course constraint.
+    pub course: Gate<1>,
 }
 
 impl Gates {
@@ -295,6 +299,8 @@ impl Gates {
             gnss_velocity: Gate::<3>::at(percentile),
             baro_altitude: Gate::<1>::at(percentile),
             mag_heading: Gate::<1>::at(percentile),
+            gnss_heading: Gate::<1>::at(percentile),
+            course: Gate::<1>::at(percentile),
         }
     }
 }
@@ -407,6 +413,11 @@ pub struct Correlation {
     pub baro_altitude: Option<Seconds>,
     /// Magnetic heading, with the levelling variance of (36′) it carries.
     pub mag_heading: Option<Seconds>,
+    /// Dual-antenna GNSS heading.
+    pub gnss_heading: Option<Seconds>,
+    /// Course constraint: the sideslip the constraint allows, which persists as long as the
+    /// wind and the vehicle's trim do.
+    pub course: Option<Seconds>,
 }
 
 impl Correlation {
@@ -417,6 +428,8 @@ impl Correlation {
         gnss_velocity: None,
         baro_altitude: None,
         mag_heading: None,
+        gnss_heading: None,
+        course: None,
     };
 }
 
@@ -433,9 +446,19 @@ impl Default for Correlation {
     /// | GNSS velocity | 5 | 0.31–2.2 | 0.50 |
     /// | barometer | 10 | 0.006–4.2 | 0.20 |
     /// | magnetometer | 10 | 0.006–14.6 | 1.2 |
+    /// | dual-antenna GNSS heading | 1 | 0.25 | 0.25 |
+    /// | course constraint | 1 | 1.37 | 1.37 |
     ///
     /// Three receivers' velocity innovations and one magnetometer's alternate in sign, which no
     /// `τ` describes, and are left out rather than read as white.
+    ///
+    /// GNSS heading rests on one log, `a299e722`, the only one whose EKF2 fused a dual-antenna
+    /// yaw: `acf1_gnss_yaw` 0.6696 at 10 Hz. The course constraint rests on one too,
+    /// `093e806a`, the fixed-wing, replayed as a vehicle without a magnetometer
+    /// (`--without mag --course 3`): `acf1_course` 0.4818 at 1 Hz, `τ` 1.37 s, and 0.4965 with
+    /// its magnetometer, 1.43 s. What persists there is the sideslip, which the constraint cannot observe, and fused
+    /// white the simulator's `no_mag` read a heading NEES of 2.7 on a sideslip it averaged as
+    /// noise.
     fn default() -> Self {
         Self {
             gnss_position: Some(Seconds::from_secs(4.2)),
@@ -443,6 +466,8 @@ impl Default for Correlation {
             gnss_velocity: Some(Seconds::from_secs(0.5)),
             baro_altitude: Some(Seconds::from_secs(0.2)),
             mag_heading: Some(Seconds::from_secs(1.2)),
+            gnss_heading: Some(Seconds::from_secs(0.25)),
+            course: Some(Seconds::from_secs(1.4)),
         }
     }
 }
@@ -488,8 +513,17 @@ pub struct Recovery {
     /// Magnetic heading: adopted as the first heading is, with the `R` of (36′) — but only
     /// while no GNSS position or velocity has been accepted within
     /// [`Timeouts::degraded_after`], since with those arriving a magnetometer that disagrees
-    /// for this long is more likely disturbed than right.
+    /// for this long is more likely disturbed than right. Nor while a GNSS heading is
+    /// accepted, for the same reason.
     pub mag_heading: Option<Seconds>,
+    /// Dual-antenna GNSS heading: adopted as the first heading is, with the caller's `R`. No
+    /// guard: it is the absolute heading reference when the vehicle carries one.
+    pub gnss_heading: Option<Seconds>,
+    /// Course constraint: adopted as the first heading is — but only while no magnetic or
+    /// GNSS heading has been accepted within [`Timeouts::degraded_after`], since with either
+    /// arriving a course that disagrees this long is sideslip the caller did not allow for,
+    /// a crosswind or a multirotor crabbing, rather than a wrong heading.
+    pub course: Option<Seconds>,
 }
 
 impl Recovery {
@@ -500,6 +534,8 @@ impl Recovery {
         gnss_velocity: None,
         baro_altitude: None,
         mag_heading: None,
+        gnss_heading: None,
+        course: None,
     };
 }
 
@@ -517,6 +553,14 @@ impl Default for Recovery {
     /// equation (30′), so a GNSS height rejected for 5 s is adopted even while the barometer
     /// is accepted, and a barometer rejected for 5 s has its reference read again: the
     /// absolute wins either way.
+    ///
+    /// The two heading sources PX4 either lacks or does not recover take the same 7 s, by the
+    /// rule recovery follows everywhere here rather than by a measurement. PX4 stops fusing a
+    /// GNSS yaw that has failed for `reset_timeout_max` and resets nothing
+    /// (`aid_sources/gnss/gnss_yaw_control.cpp:78-81`); ArduPilot realigns it on the ground
+    /// after 10 s (`AP_NavEKF3_MagFusion.cpp:433-435` at `368dc0c4`). PX4 has no course
+    /// constraint at all; ArduPilot's in-flight course realignment is itself a reset
+    /// (`realignYawGPS`, `AP_NavEKF3_MagFusion.cpp:145-218`).
     fn default() -> Self {
         Self {
             gnss_position: Some(Seconds::from_secs(7.0)),
@@ -524,6 +568,8 @@ impl Default for Recovery {
             gnss_velocity: Some(Seconds::from_secs(7.0)),
             baro_altitude: Some(Seconds::from_secs(5.0)),
             mag_heading: Some(Seconds::from_secs(7.0)),
+            gnss_heading: Some(Seconds::from_secs(7.0)),
+            course: Some(Seconds::from_secs(7.0)),
         }
     }
 }

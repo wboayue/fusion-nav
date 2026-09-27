@@ -399,8 +399,9 @@ noise!(
 );
 
 noise!(
-    /// Noise on a magnetic heading, `R` of equation (36). On the heading, not on the
-    /// field components.
+    /// Noise on a heading, `R` of equations (36), (35′) and (35″): a magnetic heading, a
+    /// dual-antenna GNSS heading, or the sideslip a course constraint allows. On the heading,
+    /// not on the field components a magnetometer reports.
     HeadingNoise,
     sigma = "radians",
     variance = "radians squared"
@@ -964,6 +965,42 @@ impl VelocityNoise<Ned> {
     }
 }
 
+impl HeadingNoise {
+    /// From a receiver's heading accuracy, one standard deviation in radians, held within
+    /// [`SigmaBounds`] in radians.
+    ///
+    /// Bounded for the reason [`PositionNoise::clamped`] is: a moving-baseline receiver's
+    /// accuracy is its view of its own carrier-phase solution, and both production
+    /// estimators floor it before fusing.
+    ///
+    /// ```
+    /// # use fusion_nav::prelude::*;
+    /// let accuracy = 0.005; // a receiver claiming 0.3°
+    ///
+    /// // PX4 floors at a hard-coded 0.1 rad, and reads an accuracy of zero, or a NaN one,
+    /// // as the floor. Here a NaN is refused; pass PX4's zero to have it floored.
+    /// let px4 = HeadingNoise::clamped(accuracy, SigmaBounds::at_least(0.1));
+    /// assert_eq!(px4, HeadingNoise::from_sigma(0.1));
+    ///
+    /// // ArduPilot floors at 5°, "GPS modules are rather too optimistic about their accuracy".
+    /// let ardupilot = HeadingNoise::clamped(accuracy, SigmaBounds::at_least(5f32.to_radians()));
+    /// assert_eq!(ardupilot, HeadingNoise::from_sigma(5f32.to_radians()));
+    /// ```
+    ///
+    /// PX4: `R_YAW = sq(fmaxf(yaw_acc, _params.gnss_heading_noise))` at
+    /// `EKF/aid_sources/gnss/gnss_yaw_control.cpp:138-139`, `gnss_heading_noise{0.1f}` at
+    /// `EKF/common.h:390`, with a NaN `yaw_acc` read as zero first. ArduPilot:
+    /// `AP_NavEKF3_Measurements.cpp:749-750`, and a receiver reporting no accuracy is given
+    /// 10° upstream (`AP_GPS/AP_GPS.cpp:2025-2030`). A NaN stays NaN here and is refused as
+    /// [`Fusion::NotFinite`](crate::Fusion::NotFinite): substituting a number for a missing
+    /// one is the caller's decision, and PX4's is `clamped(0.0, ..)`.
+    ///
+    /// Read at PX4-Autopilot `c4e4ef98` (v1.18.0-beta1) and ardupilot `368dc0c4`.
+    pub fn clamped(sigma: f32, bounds: SigmaBounds) -> Self {
+        Self::from_sigma(bounds.apply(sigma))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use nalgebra::{Matrix3, Rotation3};
@@ -1195,6 +1232,15 @@ mod tests {
             VelocityNoise::clamped(80.0, 80.0, within(0.3, 50.0), within(0.5, 60.0)),
             VelocityNoise::horizontal_vertical(50.0, 60.0)
         );
+        assert_eq!(
+            HeadingNoise::clamped(0.0, SigmaBounds::at_least(0.1)),
+            HeadingNoise::from_sigma(0.1)
+        );
+        assert_eq!(
+            HeadingNoise::clamped(2.0, within(0.1, 1.0)),
+            HeadingNoise::from_sigma(1.0)
+        );
+        assert!(!HeadingNoise::clamped(f32::NAN, within(0.1, 1.0)).is_finite());
     }
 
     #[test]

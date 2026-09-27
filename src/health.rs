@@ -23,7 +23,8 @@ use crate::units::Seconds;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Status {
     /// Every source that has ever been fused is still being accepted, and attitude has
-    /// converged.
+    /// converged. The course constraint is not counted: it reads the filter's own velocity
+    /// rather than a sensor; see [`Eskf::fuse_course`](crate::Eskf::fuse_course).
     Healthy,
     /// At least one source has timed out, but the estimate is still aided.
     Degraded,
@@ -40,9 +41,11 @@ pub enum Status {
     /// — fixed bars, not [`Config::accuracy`](crate::Config::accuracy), which is the
     /// mission's and moves only [`Validity`](crate::Validity). A heading nothing has observed
     /// needs a measurement instead: stillness never supplies yaw, so a filter that
-    /// started without a magnetometer stays here however small the covariance is, until
-    /// [`Eskf::fuse_mag_heading`](crate::Eskf::fuse_mag_heading) accepts one. A vehicle
-    /// carrying no magnetometer at all therefore never leaves, and — since this hides
+    /// started without a magnetometer stays here however small the covariance is, until a
+    /// heading source — [`Eskf::fuse_mag_heading`](crate::Eskf::fuse_mag_heading),
+    /// [`fuse_gnss_heading`](crate::Eskf::fuse_gnss_heading) or
+    /// [`fuse_course`](crate::Eskf::fuse_course) — accepts one. A vehicle with none of the
+    /// three therefore never leaves, and — since this hides
     /// [`Degraded`](Self::Degraded) — its source timeouts stop showing in `Status` and
     /// have to be read from [`Diagnostics`].
     ///
@@ -113,9 +116,11 @@ pub enum Fusion {
     ///
     /// Heading is the third, and it is not a coarse start's alone: stillness observes
     /// tilt and never yaw, so a static window carrying no magnetometer leaves yaw a
-    /// prior nothing measured, and the first
-    /// [`fuse_mag_heading`](crate::Eskf::fuse_mag_heading) is adopted there too. Only a
-    /// seed escapes, having vouched for every quantity.
+    /// prior nothing measured, and the first heading from
+    /// [`fuse_mag_heading`](crate::Eskf::fuse_mag_heading),
+    /// [`fuse_gnss_heading`](crate::Eskf::fuse_gnss_heading) or
+    /// [`fuse_course`](crate::Eskf::fuse_course) is adopted there too. Only a seed escapes,
+    /// having vouched for every quantity.
     ///
     /// The state becomes the measurement and its covariance block becomes the
     /// measurement's, which is what fusing against an infinitely uncertain prior
@@ -146,7 +151,29 @@ pub enum Fusion {
     /// Geodetic GNSS: no navigation origin is held and this fix cannot place one, because
     /// its latitude is beyond ±90°. The next usable fix will. See
     /// [`Eskf::fuse_gnss_geodetic`](crate::Eskf::fuse_gnss_geodetic).
+    ///
+    /// Course: no GNSS velocity has been accepted within
+    /// [`Timeouts::degraded_after`](crate::Timeouts::degraded_after), so the velocity the
+    /// course would be taken along is dead-reckoned or was never established. Usually a call
+    /// made before the first [`Eskf::fuse_gnss_velocity`](crate::Eskf::fuse_gnss_velocity), or
+    /// after the receiver stopped; see [`Eskf::fuse_course`](crate::Eskf::fuse_course).
     NoReference,
+    /// The geometry says nothing about the quantity measured. The measurement was discarded
+    /// and no health timer moved.
+    ///
+    /// A heading from [`Eskf::fuse_gnss_heading`](crate::Eskf::fuse_gnss_heading) or
+    /// [`Eskf::fuse_course`](crate::Eskf::fuse_course), in two ways. The vehicle's forward axis
+    /// is within 30° of vertical, where the heading of that axis is undefined, and a tailsitter
+    /// hovering is the case: PX4 refuses a GNSS yaw reset on the same bar
+    /// (`EKF/aid_sources/gnss/gnss_yaw_control.cpp:221` at `c4e4ef98`). Or, for the course, the
+    /// vehicle is not moving fast enough for the direction of its estimated velocity to mean
+    /// anything: a cross-track uncertainty over 15° of course, which is a hover or a slow taxi.
+    /// Fusing either would hand the gate an angle drawn from noise.
+    ///
+    /// Not the magnetometer's: (34) levels the field rather than reading the heading of body
+    /// x, and (36′) prices the levelling at any tilt, so a magnetic heading is fused through
+    /// 125° of tilt on `285ee2e7`.
+    Unobservable,
     /// A number in the measurement or its noise is NaN or infinite. The measurement was
     /// discarded and no health timer moved.
     ///
@@ -234,6 +261,7 @@ impl Fusion {
         match self {
             Self::NotInitialized => Some(Refusal::NotInitialized),
             Self::NoReference => Some(Refusal::NoReference),
+            Self::Unobservable => Some(Refusal::Unobservable),
             Self::NotFinite => Some(Refusal::NotFinite),
             Self::InvalidNoise => Some(Refusal::InvalidNoise),
             Self::StateInvalid => Some(Refusal::StateInvalid),
@@ -250,6 +278,7 @@ impl Fusion {
             Self::Reset
             | Self::NotInitialized
             | Self::NoReference
+            | Self::Unobservable
             | Self::NotFinite
             | Self::InvalidNoise
             | Self::StateInvalid
@@ -269,6 +298,7 @@ impl core::fmt::Display for Fusion {
             Self::Rejected { test_ratio } => write!(f, "rejected, ratio {}", ratio(test_ratio)),
             Self::NotInitialized => write!(f, "refused, {}", Refusal::NotInitialized),
             Self::NoReference => write!(f, "refused, {}", Refusal::NoReference),
+            Self::Unobservable => write!(f, "refused, {}", Refusal::Unobservable),
             Self::NotFinite => write!(f, "refused, {}", Refusal::NotFinite),
             Self::InvalidNoise => write!(f, "refused, {}", Refusal::InvalidNoise),
             Self::StateInvalid => write!(f, "refused, {}", Refusal::StateInvalid),
@@ -366,9 +396,13 @@ impl core::fmt::Display for GnssFusion {
 pub enum Refusal {
     /// The filter had not been initialized. See [`Fusion::NotInitialized`].
     NotInitialized,
-    /// Nothing to measure against: no barometric reference, or no origin the fix could place.
+    /// Nothing to measure against: no barometric reference, no origin the fix could place, or
+    /// no held velocity for a course.
     /// See [`Fusion::NoReference`].
     NoReference,
+    /// The geometry observed nothing: a forward axis near vertical, or too little speed for a
+    /// course. See [`Fusion::Unobservable`].
+    Unobservable,
     /// A number in the measurement or its noise was NaN or infinite. See
     /// [`Fusion::NotFinite`].
     NotFinite,
@@ -388,6 +422,7 @@ impl core::fmt::Display for Refusal {
         f.write_str(match self {
             Self::NotInitialized => "filter not initialized",
             Self::NoReference => "no reference to measure against",
+            Self::Unobservable => "geometry observes nothing",
             Self::NotFinite => "measurement or noise not finite",
             Self::InvalidNoise => "noise variance not positive",
             Self::StateInvalid => "filter state cannot support an update",
@@ -556,7 +591,7 @@ fn seconds(value: Seconds) -> Fixed {
 /// Every flag is derived from the covariance against
 /// [`Config::accuracy`](crate::Config::accuracy), plus the requirement that the quantity
 /// was ever established at all — a coarse start has no position until a fix arrives, a
-/// window with no magnetometer has no heading until one is fused, and a tight prior on a
+/// window with no magnetometer has no heading until a heading source is fused, and a tight prior on a
 /// number nobody set is not validity.
 ///
 /// Horizontal and vertical are separate because sources are: a vehicle with a barometer
@@ -573,7 +608,9 @@ pub struct Validity {
     pub tilt: bool,
     /// Heading. False until something observes the rotation about gravity: a
     /// magnetometer in the initialization window, or an accepted
-    /// [`Eskf::fuse_mag_heading`](crate::Eskf::fuse_mag_heading). Stillness does not
+    /// [`Eskf::fuse_mag_heading`](crate::Eskf::fuse_mag_heading),
+    /// [`fuse_gnss_heading`](crate::Eskf::fuse_gnss_heading) or
+    /// [`fuse_course`](crate::Eskf::fuse_course). Stillness does not
     /// observe it, so a perfect static alignment on a vehicle with no magnetometer
     /// reports `tilt` and not this.
     pub heading: bool,
@@ -962,6 +999,10 @@ pub struct Diagnostics {
     pub baro_altitude: SourceHealth,
     /// Magnetic heading updates.
     pub mag_heading: SourceHealth,
+    /// Dual-antenna GNSS heading updates.
+    pub gnss_heading: SourceHealth,
+    /// Course constraint updates: heading along the estimated velocity.
+    pub course: SourceHealth,
     /// What [`Eskf::predict`](crate::Eskf::predict) refused. Not a source, so not in
     /// [`sources`](Self::sources).
     pub propagation: PropagationHealth,
@@ -986,14 +1027,29 @@ pub struct Diagnostics {
 
 impl Diagnostics {
     /// Every source, for iteration.
-    pub const fn sources(&self) -> [(&'static str, SourceHealth); 5] {
+    pub const fn sources(&self) -> [(&'static str, SourceHealth); 7] {
         [
             ("gnss_position", self.gnss_position),
             ("gnss_height", self.gnss_height),
             ("gnss_velocity", self.gnss_velocity),
             ("baro_altitude", self.baro_altitude),
             ("mag_heading", self.mag_heading),
+            ("gnss_heading", self.gnss_heading),
+            ("course", self.course),
         ]
+    }
+
+    /// The sources [`Status`] counts: every one but the course constraint, which reads the
+    /// filter's own velocity rather than a sensor. See
+    /// [`Eskf::fuse_course`](crate::Eskf::fuse_course).
+    ///
+    /// Taken from [`sources`](Self::sources) rather than listed again, so a source added there
+    /// counts toward `Status` unless it is excluded here by name.
+    pub(crate) fn aiding(&self) -> impl Iterator<Item = SourceHealth> {
+        self.sources()
+            .into_iter()
+            .filter(|&(name, _)| name != "course")
+            .map(|(_, health)| health)
     }
 
     /// Advance every source's fusion clock.
@@ -1005,6 +1061,8 @@ impl Diagnostics {
         self.gnss_velocity.advance(dt);
         self.baro_altitude.advance(dt);
         self.mag_heading.advance(dt);
+        self.gnss_heading.advance(dt);
+        self.course.advance(dt);
     }
 }
 
@@ -1035,6 +1093,10 @@ mod tests {
             "refused, no reference to measure against"
         );
         assert_eq!(
+            format!("{}", Fusion::Unobservable),
+            "refused, geometry observes nothing"
+        );
+        assert_eq!(
             format!(
                 "{}",
                 Propagation::StepTooLong {
@@ -1047,6 +1109,22 @@ mod tests {
         assert_eq!(
             format!("{}", Propagation::Coasted { dt: secs(1.2) }),
             "gap of 1.200 s coasted"
+        );
+    }
+
+    #[test]
+    fn status_counts_every_source_but_the_course() {
+        // `aiding` excludes the course by name, so a misspelling would count it silently.
+        let diagnostics = Diagnostics::default();
+        assert_eq!(
+            diagnostics.aiding().count(),
+            diagnostics.sources().len() - 1
+        );
+        assert!(
+            diagnostics
+                .sources()
+                .iter()
+                .any(|&(name, _)| name == "course")
         );
     }
 
