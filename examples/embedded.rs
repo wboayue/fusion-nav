@@ -166,7 +166,7 @@ fn align(filter: &mut Eskf, board: &mut impl Board) {
             let Some(imu) = board.imu() else {
                 continue;
             };
-            let imu = summed.map_or(imu, |sum| accumulate(sum, imu));
+            let imu = summed.map_or(imu, |sum| sum.accumulate(imu));
             seen = seen.wrapping_add(1);
             if seen.is_multiple_of(WINDOW_DECIMATION) {
                 window[filled] = StaticSample {
@@ -190,27 +190,6 @@ fn align(filter: &mut Eskf, board: &mut impl Board) {
             }
             Err(error) => log!(board, "initialization failed: {}", error),
         }
-    }
-}
-
-/// `earlier` and `later` as one sample: the increments and intervals summed, timed at the
-/// later one's end. What an integrating driver does between reads, less the coning correction
-/// it would apply for a vehicle that is turning, which a still one is not.
-fn accumulate(earlier: ImuSample, later: ImuSample) -> ImuSample {
-    ImuSample {
-        time: later.time,
-        delta_angle: DeltaAngle::from_vector(
-            earlier.delta_angle.vector() + later.delta_angle.vector(),
-        ),
-        angle_interval: Seconds::from_secs(
-            earlier.angle_interval.as_secs() + later.angle_interval.as_secs(),
-        ),
-        delta_velocity: DeltaVelocity::from_vector(
-            earlier.delta_velocity.vector() + later.delta_velocity.vector(),
-        ),
-        velocity_interval: Seconds::from_secs(
-            earlier.velocity_interval.as_secs() + later.velocity_interval.as_secs(),
-        ),
     }
 }
 

@@ -156,7 +156,8 @@ Components come out as plain numbers: `.x()`, `.to_array()`, or `.vector()` for 
 
 The filter never reads a clock. Every `ImuSample` carries a `Timestamp` on the caller's clock and
 the intervals its increments were integrated over; the step between samples is differenced from
-the timestamps, in integer microseconds, and a seed names its time too.
+the timestamps, in integer microseconds, and a seed names its time too. A driver that reads its
+IMU in batches hands them over one at a time or summed, `earlier.accumulate(later)`.
 
 ## Initialization
 

@@ -61,6 +61,7 @@ fn drive() {
         Acceleration::body(black_box(0.1), black_box(-0.2), black_box(-GRAVITY)),
         dt,
     );
+    let _ = black_box(black_box(rates).accumulate(black_box(rates)));
     let sample = StaticSample {
         // Built field by field as well, so an interval the sample carries is as opaque as
         // the increments.

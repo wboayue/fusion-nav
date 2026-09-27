@@ -80,6 +80,36 @@ impl ImuSample {
         }
     }
 
+    /// `self` and the `later` sample after it as one sample: increments and intervals summed,
+    /// timed at `later`'s end. What a driver reading a FIFO in batches, or running the filter
+    /// slower than its IMU, hands over.
+    ///
+    /// Summed rather than composed, which is exact for a vehicle that does not rotate across
+    /// the pair and first order for one that does. PX4's `ImuDownSampler` composes the
+    /// rotations as quaternions and rotates the velocity increment into the frame the batch
+    /// ends in (`src/modules/ekf2/EKF/imu_down_sampler/imu_down_sampler.cpp:25-37` at
+    /// `c4e4ef98e9`); summing leaves out `½ Δθ₁ × Δθ₂`, the coning term, and its sculling
+    /// counterpart in velocity. It is nonzero only while the rotation axis moves, and at most
+    /// 3e-6 rad at 1 rad/s across two 2.5 ms samples; an integrating driver that already
+    /// corrects for it should hand its own sum over instead.
+    ///
+    /// The times are not checked: [`Eskf::predict`](crate::Eskf::predict) refuses a sample
+    /// that is not after the last, and a pair out of order is that sample.
+    pub fn accumulate(self, later: ImuSample) -> ImuSample {
+        let sum = |a: Seconds, b: Seconds| Seconds::from_secs(a.as_secs() + b.as_secs());
+        ImuSample {
+            time: later.time,
+            delta_angle: DeltaAngle::from_vector(
+                self.delta_angle.vector() + later.delta_angle.vector(),
+            ),
+            angle_interval: sum(self.angle_interval, later.angle_interval),
+            delta_velocity: DeltaVelocity::from_vector(
+                self.delta_velocity.vector() + later.delta_velocity.vector(),
+            ),
+            velocity_interval: sum(self.velocity_interval, later.velocity_interval),
+        }
+    }
+
     /// The average angular rate over the sample, `Δθ / Δt`: what initialization's
     /// stationarity test and gyroscope bias read, both statements about a rate.
     pub(crate) fn angular_rate(self) -> AngularRate<Body> {
@@ -1044,6 +1074,26 @@ mod tests {
     /// differences another `~2e-4` at this `δ`. 2e-3 clears all three and is still five times
     /// smaller than the smallest entry `F` carries here, `Δt = 0.01`, so a dropped or
     /// sign-flipped coupling cannot pass.
+    /// Two samples accumulated are one over both intervals, timed at the second's end: a
+    /// rate read over the sum is the rates' interval-weighted mean.
+    #[test]
+    fn two_samples_accumulate_into_one_over_both_intervals() {
+        let first = manoeuvring().timed(Timestamp::from_micros(2_500), Seconds::from_secs(0.0025));
+        let second = ImuSample::reading(
+            AngularRate::body(0.0, 0.0, 1.0),
+            Acceleration::body(0.0, 0.0, -9.8),
+        )
+        .timed(Timestamp::from_micros(10_000), Seconds::from_secs(0.0075));
+        let both = first.accumulate(second);
+        assert_eq!(both.time, second.time);
+        assert!((both.angle_interval.as_secs() - 0.01).abs() < 1e-7);
+        assert!((both.velocity_interval.as_secs() - 0.01).abs() < 1e-7);
+        let expected = (0.31 * 0.0025 + 1.0 * 0.0075) / 0.01;
+        assert!((both.angular_rate().vector().z - expected).abs() < 1e-5);
+        let expected = (-9.2 * 0.0025 - 9.8 * 0.0075) / 0.01;
+        assert!((both.specific_force().vector().z - expected).abs() < 1e-4);
+    }
+
     /// `A` is written out beside `F` rather than derived from it, so the two are held together
     /// here: `F = I + A Δt` to first order, at the rates the same corrected sample carries. At
     /// 1 ms the second-order remainder is `|ω|² Δt² / 2`, under 1e-7 at this manoeuvre, so a
