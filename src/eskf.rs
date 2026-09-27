@@ -1562,9 +1562,10 @@ impl Eskf {
     /// too and whose adopted heading is only as good as the velocity it was taken along.
     ///
     /// Out of line for the reason [`observe`](Self::observe) is. On `thumbv6m-none-eabi` it is
-    /// 1216 bytes over `update::<1>`'s 6384, and `fuse_mag_heading` above it 120, so the heading
-    /// path peaks at 7720 against 7624 when `fuse_mag_heading` did all of this in its own
-    /// 1240-byte frame, and under `fuse_gnss_velocity`'s 9520.
+    /// 1224 bytes over `update::<1>`'s 6384, and the deepest caller above it, `fuse_course`, 264
+    /// with its screening on the past state: 7872 at the peak, against 7624 when
+    /// `fuse_mag_heading` did all of this in its own 1240-byte frame, and under
+    /// `fuse_gnss_velocity`'s 9520.
     #[inline(never)]
     fn fuse_heading(
         &mut self,
