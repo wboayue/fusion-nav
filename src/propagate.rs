@@ -34,7 +34,11 @@ use crate::units::{
 /// the sample ends, and the step [`Eskf::predict`](crate::Eskf::predict) takes is the time
 /// since the previous sample's, which is neither interval: a logger that drops samples
 /// leaves an increment integrated over 2.5 ms arriving a second after the one before it, and
-/// only the timestamps see the second.
+/// only the timestamps see the second. Such a sample integrates what it measured and the rest
+/// of the step goes unintegrated: a gap longer than
+/// [`Config::max_predict_dt`](crate::Config::max_predict_dt) is coasted whole, and a shorter
+/// one is not priced, so a driver that drops samples should hand over the integral across the
+/// drop, as an integrating one does.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ImuSample {
     /// When both integration intervals end, on the clock every measurement is timed on.
@@ -96,10 +100,21 @@ impl ImuSample {
             && self.velocity_interval.as_secs().is_finite()
     }
 
-    /// Whether both intervals are forward spans of time. A zero one divides into a rate,
-    /// and a negative one subtracts (21)'s process noise.
+    /// Whether both intervals are forward spans of time of at least a microsecond, the
+    /// resolution a [`Timestamp`] keeps. A zero one divides into a rate, a negative one
+    /// subtracts (21)'s process noise, and one of 1e-40 s divides an increment into an infinity.
     pub(crate) fn has_usable_intervals(self) -> bool {
-        self.angle_interval.is_usable_step() && self.velocity_interval.is_usable_step()
+        const LEAST: f32 = 1.0e-6;
+        self.angle_interval.as_secs() >= LEAST && self.velocity_interval.as_secs() >= LEAST
+    }
+
+    /// The longer of the two intervals: the span the sample claims to describe.
+    pub(crate) fn longest_interval(self) -> Seconds {
+        if self.angle_interval > self.velocity_interval {
+            self.angle_interval
+        } else {
+            self.velocity_interval
+        }
     }
 }
 

@@ -307,7 +307,7 @@ are integrated over their own intervals. The result is `#[must_use]`:
 | `StepTooLong { dt, limit }` | the same, with `Config::coast` off; state unchanged, but health timers advanced because the time really passed |
 | `InvalidStep { dt }` | the sample is not after the last: `dt` zero or negative; nothing moved, the clock included |
 | `NotFinite` | the **sample** carried a NaN or an infinity; state unchanged, health timers advanced as above |
-| `InvalidInterval { interval }` | an integration interval zero or negative; as `NotFinite` |
+| `InvalidInterval { interval }` | an integration interval under a microsecond, or longer than `Config::max_predict_dt`; as `NotFinite` |
 | `StateNotFinite` | the propagated **state** did, so it was discarded; a finite sample can still overflow f32 through (11)–(14) |
 | `NotInitialized` | no state to propagate |
 
@@ -559,7 +559,7 @@ Known, and stated here rather than discovered in flight. Some are deliberate; th
   against the state as it was then, so a late fix costs nothing, but the filter cannot measure how
   late a receiver is: PX4 takes a parameter and ArduPilot the driver's figure. A wrong one is an error
   that grows with speed, and a receiver with none that fits is worse than fused as current: one
-  corpus log rejects 396 fixes at PX4's 110 ms and 266 at none. Anything older than
+  corpus log rejects 396 fixes at PX4's 110 ms and 267 at none. Anything older than
   `LATENCY_HORIZON`, 0.3 s, is refused. See
   [measurement latency](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#measurement-latency).
 * **Barometer drift costs height where there is none.** The reference is estimated and allowed to

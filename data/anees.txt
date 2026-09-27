@@ -58,8 +58,8 @@
 # `gnss_latency` fused fixes 150 ms stale as current, an error `R` does not describe:
 # anees_pos=4.06 and anees_vel=1.09, any_pos and any_vel over the bound, and its attitude passing
 # only by (24')'s wider covariance (any_att=1950 fused as white). Fused at the time each fix was
-# taken, against the state history, it reads anees_pos=0.109, anees_vel=0.101, anees_att=0.020,
-# and nothing over the bound on any epoch; fused as white too, anees_pos=0.811 and any_att=0.
+# taken, against the state history, it reads anees_pos=0.108, anees_vel=0.101, anees_att=0.020,
+# and nothing over the bound on any epoch; fused as white too, anees_pos=0.810 and any_att=0.
 #
 # One line (22') rewrote from failing to passing, for its cause. `logging_dropout` refused its
 # 1.2 s gap at speed and was ~7 s of rejected fixes before the recovery: anees_pos=2.81,

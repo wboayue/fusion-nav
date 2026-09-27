@@ -117,8 +117,8 @@ impl Default for ImuNoise {
     /// never leaves 1.08°), and still 4.5° with PX4's `R` floors applied, so the vibration
     /// needs it; `a299e722` ends `Degraded`, rejecting 493 velocity solutions against 283,
     /// which PX4's floors cure (43, `Healthy`), so the receiver's raw `R` needs it.
-    /// `gnss_latency` needed it too while a stale fix was fused as current, `false_valid` 323
-    /// to 888 at 0.3×; fused at its own time, (23′), it reads 0 at 0.3× as at 1×. Scaling
+    /// `gnss_latency` does not: with each fix fused at the time it was taken, (23′), it reads
+    /// `false_valid` 0 at 0.3× as at 1×, where fused as current it read 888 at 0.3×. Scaling
     /// `gyro_white` down to 0.7× improves `tilt` and `yaw` on every scenario, but `harsh_imu`'s
     /// `nees_att` crosses 1 (1.07), and on the corpus `f16771dd` grows a 14.1° tilt at
     /// t = 51 s where EKF2 reads 2.6°.

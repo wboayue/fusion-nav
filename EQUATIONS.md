@@ -659,6 +659,12 @@ things about it are not optional:
   each one is applied to every entry. Without it a fix taken before the previous fix was fused is
   judged against a past that fix never corrected, and the same error is corrected twice.
 
+At either end the history runs out. A measurement timed between the last IMU sample and the
+next, ahead of the state, is placed on the present carried forward on its velocity, and
+$`\tau`$ is negative. One older than the history, which only happens in the first moments after a
+start, is placed at the history's oldest entry, and $`\tau`$ is the age of that entry, so that
+$`h`$ and $`H_\tau`$ describe the same moment.
+
 An adoption, which writes a measurement as the state, carries it forward by the state's own
 motion over the age: $`p \leftarrow z + \hat p - \hat p(t-\tau)`$. PX4 answers the same
 question with a delayed fusion horizon, the whole filter run $`\tau_{\max}`$ behind and an output

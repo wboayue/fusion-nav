@@ -155,8 +155,9 @@
 //! that an analytic simulator does not produce, and it sits 17× above even `HARSH_IMU` on
 //! accelerometer noise. So a consistency key here fails in the *overconfident* direction only
 //! where something reaches the filter that its model does not describe. No scenario shows one
-//! on a single seed: `gnss_latency`'s late fixes did, until each was fused at the time it was
-//! taken, (23′). The ensemble of `data/anees.sh` sees the rest, and `data/anees.txt` names them.
+//! on a single seed; `gnss_latency`'s late fixes would, fused as current, and (23′) fuses each
+//! at the time it was taken. The ensemble of `data/anees.sh` sees the rest, and
+//! `data/anees.txt` names them.
 //!
 //! Six of the scenarios are one-variable departures from `mission` on `mission`'s seed, so
 //! what attributes a fault is `score(departure) − score(mission)` rather than either alone.
@@ -4029,9 +4030,11 @@ mod tests {
             let mut log = still_start();
             for i in 0..fixes {
                 let t = 2.0 + i as f64 * DT;
+                // Taken at the IMU sample before it, so the fix has no age and informs
+                // position alone.
                 log = log
-                    .raw(&format!("{t:.6},gnss_pos,0,0,0,,,,1e-12,1e-12,1e-12"))
-                    .imu(t, STILL);
+                    .imu(t, STILL)
+                    .raw(&format!("{t:.6},gnss_pos,0,0,0,,,,1e-12,1e-12,1e-12"));
             }
             replay(&log).summary()
         };

@@ -5,16 +5,19 @@ use nalgebra::{UnitQuaternion, Vector3};
 
 use crate::config::LATENCY_HORIZON;
 use crate::state::State;
-use crate::units::{Attitude, Position, Seconds, Timestamp, Velocity};
+use crate::units::{Attitude, Position, Timestamp, Velocity};
 
 /// Entries held: enough that [`LATENCY_HORIZON`] is covered at [`SPACING`] with one to spare
 /// at each end.
 const CAPACITY: usize = 32;
 
-/// The least time between two entries. An IMU faster than `1 / SPACING` is recorded every few
-/// samples, and the interpolation between them costs millimetres: a 5 m/s² manoeuvre departs
-/// from a straight line by `a Δt² / 8`, 60 µm at 10 ms.
-const SPACING: Seconds = Seconds::from_secs(LATENCY_HORIZON.as_secs() / (CAPACITY - 2) as f32);
+/// The least time between two entries, in microseconds: 10 ms. An IMU faster than 100 Hz is
+/// recorded every few samples, and the interpolation between them costs little: a 5 m/s²
+/// manoeuvre departs from a straight line by `a Δt² / 8`, 60 µm at 10 ms.
+///
+/// Compared in integer microseconds, because `f32` puts 0.3 s / 30 a hair above the 10 000 µs
+/// a 400 Hz IMU's fourth sample reaches, and the spacing would come out at 12.5 ms instead.
+const SPACING: u64 = (LATENCY_HORIZON.as_secs() * 1.0e6) as u64 / (CAPACITY as u64 - 2);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Entry {
@@ -75,7 +78,7 @@ impl History {
     /// Record `state` at `time`, if [`SPACING`] has passed since the newest entry.
     pub(crate) fn record(&mut self, time: Timestamp, state: &State) {
         if let Some(newest) = self.newest()
-            && time.since(newest.time) < SPACING
+            && time.as_micros().saturating_sub(newest.time.as_micros()) < SPACING
         {
             return;
         }
@@ -95,25 +98,49 @@ impl History {
     /// Apply the change from `before` to `after` to every entry: a correction to the present
     /// is a correction to the past it was propagated from.
     ///
-    /// Carried back unchanged rather than through (20): position by `δp`, velocity by `δv`,
-    /// attitude by the same body-frame rotation. The velocity correction's own `δv τ` in
-    /// position is left out, being the product of a correction of a few cm/s and an age of a
-    /// few hundred milliseconds.
+    /// Position by `δp` and velocity by `δv`, leaving out the velocity correction's own `δv τ`
+    /// in position, a correction of a few cm/s times an age of a few hundred milliseconds.
+    /// Attitude by the same rotation in the navigation frame, composed on the left: the local
+    /// error of (2) turns against the body as it rotates, (18), so the error that stays put
+    /// between then and now is the one expressed in navigation axes. A heading adoption, a
+    /// rotation about down, is exact that way at any rate of turn; composed on the right it
+    /// would tilt the past of a vehicle that rolled.
     pub(crate) fn shift(&mut self, before: &State, after: &State) {
         let dp = after.position.vector() - before.position.vector();
         let dv = after.velocity.vector() - before.velocity.vector();
-        let dq = before.attitude.quaternion().inverse() * after.attitude.quaternion();
-        for entry in &mut self.entries {
+        let dq = after.attitude.quaternion() * before.attitude.quaternion().inverse();
+        // The ring fills from index zero, so the entries held are the first `len` until it wraps.
+        for entry in self.entries.iter_mut().take(self.len) {
             entry.position += dp;
             entry.velocity += dv;
-            entry.attitude *= dq;
+            entry.attitude = dq * entry.attitude;
         }
     }
 
-    /// `current` as it stood at `time`, which lies between the oldest entry and `now`:
-    /// position, velocity and attitude interpolated from the history, the biases as they are.
-    /// Before the oldest entry, the oldest.
+    /// When the oldest entry was recorded: the furthest back a measurement can be placed.
+    pub(crate) fn oldest(&self) -> Option<Timestamp> {
+        if self.len == 0 {
+            return None;
+        }
+        let index = (self.next + CAPACITY - self.len) % CAPACITY;
+        self.entries.get(index).map(|entry| entry.time)
+    }
+
+    /// `current` as it stood at `time`: position, velocity and attitude interpolated from the
+    /// history, the biases as they are. Before the oldest entry, the oldest.
+    ///
+    /// After `now`, which a measurement timed between the last IMU sample and the next can be,
+    /// the present carried forward on its velocity: an integrated quantity, where one sample's
+    /// specific force is not, and the step is short enough that `½ a t²` is millimetres.
     pub(crate) fn at(&self, time: Timestamp, now: Timestamp, current: &State) -> State {
+        let lead = time.since(now).as_secs();
+        if lead > 0.0 {
+            let velocity = current.velocity.vector();
+            return State {
+                position: Position::from_vector(current.position.vector() + velocity * lead),
+                ..*current
+            };
+        }
         let present = Entry {
             time: now,
             position: current.position.vector(),
@@ -176,6 +203,7 @@ fn with(current: &State, entry: Entry) -> State {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::units::Seconds;
 
     const DT: Seconds = Seconds::from_secs(0.0025);
 
@@ -225,6 +253,38 @@ mod tests {
 
     /// A correction to the present moves the past with it, so the next old measurement is
     /// judged against the corrected past rather than corrected a second time.
+    /// A heading adoption turns the past about down, whatever the vehicle did since: here it
+    /// rolled a quarter turn between the entry and now, and the entry keeps its roll.
+    #[test]
+    fn a_turn_about_down_reaches_the_past_about_down() {
+        let mut history = History::default();
+        let rolled = |angle: f32| State {
+            attitude: Attitude::body_to_ned(UnitQuaternion::from_euler_angles(angle, 0.0, 0.0)),
+            ..State::default()
+        };
+        history.record(Timestamp::ZERO, &rolled(0.0));
+        let now = Timestamp::from_micros(100_000);
+        let before = rolled(core::f32::consts::FRAC_PI_2);
+        let turned =
+            UnitQuaternion::from_euler_angles(0.0, 0.0, 1.0) * before.attitude.quaternion();
+        let after = State {
+            attitude: Attitude::body_to_ned(turned),
+            ..before
+        };
+        history.shift(&before, &after);
+        let past = history.at(Timestamp::ZERO, now, &after);
+        let (roll, pitch, yaw) = past.attitude.euler_angles();
+        assert!(roll.abs() < 1e-5 && pitch.abs() < 1e-5, "{roll} {pitch}");
+        assert!((yaw - 1.0).abs() < 1e-5, "{yaw}");
+    }
+
+    #[test]
+    fn a_time_ahead_of_the_present_is_carried_forward_on_velocity() {
+        let (history, now, state) = flown();
+        let ahead = history.at(now.after(Seconds::from_secs(0.01)), now, &state);
+        assert!((ahead.position.x() - (state.position.x() + 0.2)).abs() < 1e-4);
+    }
+
     #[test]
     fn a_correction_reaches_the_past() {
         let (mut history, now, state) = flown();

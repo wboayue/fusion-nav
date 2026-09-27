@@ -158,7 +158,7 @@ harsh_imu        2  pos_h<=0.296 pos_v<=0.171 vel<=0.145 pos_h_max<=0.782  tilt<
 gnss_outage      2  pos_h<=1.651 pos_v<=0.099 vel<=0.213 pos_h_max<=11.074 tilt<=0.342 yaw<=0.329 ba<=0.03606 bg<=0.000341 in3s>=0.9900 nees_pos<=0.2101   nees_vel<=0.0960 nees_att<=0.0167 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
 moving_start     4  pos_h<=0.363 pos_v<=0.613 vel<=0.147 pos_h_max<=0.702  tilt<=1.571 yaw<=1.473 ba<=0.04096 bg<=0.002023 in3s>=0.9900 nees_pos<=0.1555   nees_vel<=0.1086 nees_att<=0.0338 false_valid<=0   false_valid_att<=0   scored>=15999  recovered=0
 baro_drift       2  pos_h<=0.295 pos_v<=0.928 vel<=0.141 pos_h_max<=0.775  tilt<=0.333 yaw<=0.291 ba<=0.03579 bg<=0.000340 in3s>=0.9900 nees_pos<=0.4458   nees_vel<=0.1057 nees_att<=0.0165 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
-gnss_latency     2  pos_h<=0.297 pos_v<=0.160 vel<=0.146 pos_h_max<=0.794  tilt<=0.341 yaw<=0.294 ba<=0.03780 bg<=0.000335 in3s>=0.9900 nees_pos<=0.0847  nees_vel<=0.1028 nees_att<=0.0166 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
+gnss_latency     2  pos_h<=0.298 pos_v<=0.160 vel<=0.146 pos_h_max<=0.797  tilt<=0.342 yaw<=0.294 ba<=0.03801 bg<=0.000337 in3s>=0.9900 nees_pos<=0.0850  nees_vel<=0.1028 nees_att<=0.0166 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
 correlated       2  pos_h<=1.164 pos_v<=1.155 vel<=0.234 pos_h_max<=2.414  tilt<=0.707 yaw<=2.330 ba<=0.03899 bg<=0.001501 in3s>=0.9882 nees_pos<=1.7329  nees_vel<=0.2913 nees_att<=0.2396 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
 mag_disturbance  2  pos_h<=0.295 pos_v<=0.173 vel<=0.140 pos_h_max<=0.775  tilt<=0.336 yaw<=0.313 ba<=0.03588 bg<=0.000338 in3s>=0.9900 nees_pos<=0.0905   nees_vel<=0.1054 nees_att<=0.0170 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
 logging_dropout  2  pos_h<=0.296 pos_v<=0.153 vel<=0.143 pos_h_max<=2.761  tilt<=0.411 yaw<=0.397 ba<=0.03713 bg<=0.000367 in3s>=0.9900 nees_pos<=0.0853   nees_vel<=0.1060 nees_att<=0.0187 false_valid<=0   false_valid_att<=0   scored>=36360  recovered=0
@@ -340,8 +340,8 @@ flight           8  pos_h<=1.797 pos_v<=0.310 vel<=0.530 pos_h_max<=4.436  tilt<
 # and `bg` 0.000847 to 0.000889, and `moving_start` `bg` 0.001931 to 0.002002, were not chased.
 #
 # (23') fuses each fix at the time it was taken (#52), against the state history rather than the
-# present, and `gnss_latency` reads like `mission`: `pos_h` 2.197 m to 0.294, `vel` 0.459 to 0.144,
-# `tilt` 0.670 deg to 0.337, `nees_pos` 4.06 to 0.0838, `false_valid` 280 to 0. The latency the
+# present, and `gnss_latency` reads like `mission`: `pos_h` 2.197 m to 0.295, `vel` 0.459 to 0.144,
+# `tilt` 0.670 deg to 0.338, `nees_pos` 4.06 to 0.0841, `false_valid` 280 to 0. The latency the
 # scenario carries is untouched; what moved is that the fix stopped being fused as current. Every
 # other line is byte-identical, having no latency to place. The alternatives were measured on this
 # line at 50, 150 and 300 ms and at half and twice the speed: fusing as current reaches `pos_h`
@@ -349,4 +349,4 @@ flight           8  pos_h<=1.797 pos_v<=0.310 vel<=0.530 pos_h_max<=4.436  tilt<
 # 2.20 to 2.08, since a stale velocity fix is also `a tau` wrong; extrapolating position, velocity
 # and attitude back to second order matches the history here (0.300) and was refused on the
 # corpus, where one IMU sample's vibration in `a tau` took `eb799954` from 2 rejections to 917.
-# The history holds 0.292 to 0.294 m across the whole sweep. GOALS.md, "Measurement latency".
+# The history holds 0.293 to 0.295 m across the whole sweep. GOALS.md, "Measurement latency".

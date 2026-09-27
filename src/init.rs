@@ -289,7 +289,7 @@ pub(crate) fn measure(window: &[StaticSample]) -> Result<Measured, InitError> {
 
 /// The interval of `imu` that is not a forward span of time, for the error that names it.
 pub(crate) fn unusable_interval(imu: ImuSample) -> Seconds {
-    if imu.angle_interval.is_usable_step() {
+    if imu.angle_interval.as_secs() >= 1.0e-6 {
         imu.velocity_interval
     } else {
         imu.angle_interval
@@ -445,7 +445,7 @@ impl core::fmt::Display for Coarse {
 pub enum InitError {
     /// The window held no samples, so there is nothing to align from.
     NoSamples,
-    /// A sample's integration interval was zero or negative, so it covers no span of time
+    /// A sample's integration interval was under a microsecond, so it covers no span of time
     /// to measure the window over or divide its increments by. One that is not a number is
     /// [`NotFinite`](Self::NotFinite).
     InvalidInterval {

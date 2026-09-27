@@ -429,9 +429,11 @@ pub enum Propagation {
         /// The time from the filter's clock to the sample's.
         dt: Seconds,
     },
-    /// An integration interval in the [`ImuSample`](crate::ImuSample) was zero or
-    /// negative. The state and covariance are unchanged; the timers and the clock advanced,
-    /// as under [`NotFinite`](Self::NotFinite) and for its reason.
+    /// An integration interval in the [`ImuSample`](crate::ImuSample) was under a microsecond,
+    /// or longer than [`Config::max_predict_dt`](crate::Config::max_predict_dt), which one
+    /// sample does not describe any more than a gap that long. The state and covariance are
+    /// unchanged; the timers and the clock advanced, as under [`NotFinite`](Self::NotFinite) and
+    /// for its reason.
     ///
     /// Refused because the interval scales what the increment is corrected by and what
     /// (21) adds: a negative one subtracts process noise and lands a variance below zero,

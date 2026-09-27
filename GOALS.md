@@ -562,7 +562,7 @@ twice its speed (`examples/simulate.rs --latency --speed`), against `mission`'s 
 | as current | 2.197 m | 0.459 m/s | 4.06 | 11.4 m, 300 ms at twice the speed |
 | against `p − v τ`, the issue's option 3 | 2.081 | 0.458 | 3.64 | 9.4 |
 | against a second-order extrapolation back | 0.300 | 0.142 | 0.093 | 0.381 |
-| against the state history, `H` carried back | 0.294 | 0.144 | 0.084 | 0.293 |
+| against the state history, `H` carried back | 0.295 | 0.144 | 0.084 | 0.295 |
 
 Option 3 buys almost nothing because a stale *velocity* fix is wrong too, by `a τ`, and moving
 the position does not touch it. Extrapolating position, velocity and attitude back on the last
@@ -574,11 +574,11 @@ all three blocks, 50 seeds, where it asserted the failure.
 
 On the corpus, fixes are dated by each log's own `EKF2_GPS_DELAY`, 110 ms. The delay can be swept
 per log, and the logs that fly fast on an honest receiver agree with that figure: `4b473e91`'s
-velocity NIS reads 0.209, 0.080, 0.039 and 0.099 at 0, 55, 110 and 165 ms, and `093e806a`
+velocity NIS reads 0.209, 0.081, 0.040 and 0.100 at 0, 55, 110 and 165 ms, and `093e806a`
 rejects 273 fixes rather than 294 and recovers 26 times rather than 29. Two logs prefer no delay,
 and both already carry a cause latency does not touch: `a299e722`, whose velocity its own
 positions contradict, 266 rejections to 396; `7ce66f0d`, levelled wrong at hand launch, 1828 to
-1964 and aligned at 39.0 s rather than 17.7. `data/manifest.txt` has each.
+1966 and aligned at 39.0 s rather than 17.7. `data/manifest.txt` has each.
 
 Why not PX4's delayed horizon. It runs the whole filter `τ_max` behind and brings the estimate
 forward with an output predictor, so a `fuse_*` could only queue a measurement: its verdict would
