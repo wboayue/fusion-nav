@@ -229,7 +229,8 @@ fn supervise(filter: &Eskf, board: &mut impl Board) {
     log!(board, "status {} valid {}", state.status, state.validity);
     match state.status {
         Status::Healthy | Status::Degraded | Status::Aligning => {}
-        // Nothing is aiding, so the error grows. `Status` says that much and no more; how
+        // No GNSS is holding horizontal position, so its error grows. `Status` says that much
+        // and no more; how
         // long this vehicle can fly on it is `validity`, the covariance against
         // `Config::accuracy`, which is the mission's own bar.
         Status::DeadReckoning => {

@@ -25,10 +25,10 @@ worst, against {{score mission pos_h_max}} m on the baseline. The band grows fas
 error, and when GNSS returns the first fix is accepted, not rejected, because the filter's
 reported uncertainty covered where it had drifted.
 
-`Status` reads `Degraded` through the gap, not `DeadReckoning`, because the barometer and
-magnetometer are still working and any working sensor counts as aiding. The filter's per-quantity
-`Validity` flags are what report that horizontal position is no longer usable. Whether `Status`
-should weigh sensors differently is #56.
+`Status` reads `Degraded` a fraction of a second into the gap, once GNSS has missed two and a half
+of its own updates, and `DeadReckoning` five seconds in, although the barometer and magnetometer
+are still working: they hold height and heading, and nothing holds horizontal position. The
+filter's per-quantity `Validity` flags say the same thing per output.
 
 {{figure gnss_outage error_position}}
 

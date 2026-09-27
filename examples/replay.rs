@@ -1948,7 +1948,7 @@ impl Replay {
             self.recoveries(),
             // When the filter first called its own attitude usable. It is what settled
             // `Accuracy`'s attitude defaults off the corpus the way replay settled
-            // `Timeouts::degraded_after`: with the bars equal to the priors they were
+            // `SourceHealth::timeout`: with the bars equal to the priors they were
             // compared against, every static log read 0.00 and lost the claim one step
             // later, which is the reading that produced the numbers those defaults now
             // carry.

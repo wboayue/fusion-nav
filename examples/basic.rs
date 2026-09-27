@@ -106,8 +106,12 @@ fn main() -> Result<(), InitError> {
     match state.status {
         Status::Healthy => println!("\nevery source that has been fused is still accepted"),
         Status::Aligning => println!("\nattitude has not converged yet; do not fly on it"),
-        Status::Degraded => println!("\na source has timed out; the estimate is still aided"),
-        Status::DeadReckoning => println!("\nnothing is aiding the filter; drift is unbounded"),
+        Status::Degraded => {
+            println!("\na source has timed out; horizontal position is still aided")
+        }
+        Status::DeadReckoning => {
+            println!("\nno GNSS is holding horizontal position; drift is unbounded")
+        }
     }
 
     Ok(())
