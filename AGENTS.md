@@ -338,6 +338,7 @@ python3 tools/anees.py --self-test   # the ensemble aggregator's fixtures (stdli
 uv run tools/agreement.py --self-test    # agreement with EKF2; replay_report's self-test runs it too
 tools/validation.sh               # regenerate VALIDATION.md, validation/*.md and their figures; local
 tools/validation.sh --check       # fail if a committed page is not what a fresh run renders
+tools/validation.sh --allow-dirty # rewrite from an uncommitted tree, while editing templates
 python3 tools/validation.py --self-test   # the page renderer's fixtures
 # Regenerate on a clean tree: the stamp is `git describe --dirty` taken at the start. So commit
 # first, run it, and commit the result. That diff should be the stamp lines alone, since the PNGs
@@ -919,7 +920,8 @@ is what moves those columns.
 The converter's `#` header lines are the other coupling, and they are guarded less. Each is an
 f-string in `tools/ulog2replay.py` and a parser elsewhere: `# Magnetic declination` and
 `# GNSS noise parameters` read by `examples/replay.rs`, `Estimator:`, `EKF2 origin in replay frame:`
-and `EKF2 aiding:` by `tools/replay_report.py`. Both sides carry fixtures on the same literal
+and `EKF2 aiding:` by `tools/replay_report.py`, which also reads the bounds off
+`tools/anees.py --series`'s `# fusion-nav anees for` line. Both sides carry fixtures on the same literal
 strings, so rewording one side fails a self-test; nothing stops the two sets of literals drifting
 apart together. A parser that finds nothing reads its absence (declination zero, no origin)
 rather than failing, which is why the report's fixtures exist.
