@@ -130,7 +130,7 @@ def epoch_means(runs, block):
     return [sum(run[3][block][k] for run in runs) / n / DOF for k in range(len(runs[0][2]))]
 
 
-def check(runs):
+def same_ensemble(runs):
     """The scenario a list of read() results is an ensemble of, or ValueError saying why not."""
     scenarios = {run[0] for run in runs}
     if len(scenarios) != 1:
@@ -149,7 +149,7 @@ def check(runs):
 
 def ensemble(runs):
     """The `anees` pairs for a list of read() results, refusing one that is not an ensemble."""
-    scenario = check(runs)
+    scenario = same_ensemble(runs)
     times = runs[0][2]
     n = len(runs)
     limit = bound(n)
@@ -178,7 +178,7 @@ def series(runs):
     bounds rather than for a second statistic: `tools/replay_report.py` plots these columns
     and computes nothing from them.
     """
-    scenario = check(runs)
+    scenario = same_ensemble(runs)
     times, n = runs[0][2], len(runs)
     means = [epoch_means(runs, block) for block in BLOCKS]
     lines = [
