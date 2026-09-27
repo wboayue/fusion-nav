@@ -450,8 +450,8 @@ fn repeat_covariance(
 /// arithmetic landing on the step after the loop has already overrun. Worst case, not
 /// typical: a 1.2 s gap is 12 runs. The stack is a frame of 2136 bytes on
 /// `thumbv6m-none-eabi` and 2120 on `thumbv7em-none-eabihf`, which with
-/// [`Eskf::predict`](crate::Eskf::predict)'s 2160 above it and [`propagate_covariance`]'s 2832
-/// below comes to 7128, under `update::<3>`. The exact `F` of an unaccelerated vehicle is a
+/// [`Eskf::predict`](crate::Eskf::predict)'s 2176 above it and [`propagate_covariance`]'s 2832
+/// below comes to 7144, under `update::<3>`. The exact `F` of an unaccelerated vehicle is a
 /// four-term polynomial in `Δt`, since `ω = 0` makes the error dynamics nilpotent, and is the
 /// lever if #41 finds the spike too costly; until then the steps are (22) as it reads.
 ///

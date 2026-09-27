@@ -10,8 +10,8 @@ use crate::observation::{baro, gnss, mag};
 use crate::propagate::{self, ImuSample, Propagated, project, propagate};
 use crate::state::{AttitudeVariance, Covariance, ErrorState, Offset, State};
 use crate::units::{
-    Altitude, AltitudeNoise, Attitude, HeadingNoise, MagField, Position, PositionNoise, Radians,
-    Seconds, Velocity, VelocityNoise,
+    Altitude, AltitudeNoise, AngularRate, Attitude, HeadingNoise, MagField, Position,
+    PositionNoise, Radians, Seconds, Velocity, VelocityNoise,
 };
 use crate::update::{self, Observation, Update, update};
 use nalgebra::Vector3;
@@ -107,6 +107,9 @@ pub struct Eskf {
     /// `D_m` of equations (6) and (35); see
     /// [`set_magnetic_declination`](Self::set_magnetic_declination).
     declination: Radians,
+    /// `ω` of equation (9) from the last step integrated from a sample; see
+    /// [`angular_rate`](Self::angular_rate).
+    angular_rate: Option<AngularRate<Body>>,
     unestablished: Unestablished,
     /// Whether the attitude has ever met [`ALIGNED_TILT`] and [`ALIGNED_HEADING`] since
     /// initialization. Latched, and the test behind [`Status::Aligning`]; see
@@ -143,6 +146,7 @@ impl Eskf {
             offset: Offset::default(),
             origin: None,
             declination: Radians::ZERO,
+            angular_rate: None,
             unestablished: Unestablished::default(),
             aligned: false,
             initialized: false,
@@ -383,6 +387,7 @@ impl Eskf {
         // Nothing a seed carries is unestablished: the caller vouched for every quantity,
         // heading included, so no first measurement overwrites one.
         self.unestablished = Unestablished::default();
+        self.angular_rate = None;
         self.initialized = true;
         self.aligned = false;
         self.note_alignment();
@@ -586,6 +591,8 @@ impl Eskf {
             // Noted here, whatever becomes of the step: nothing else records how far the
             // interval ran, and a coast discarded as non-finite is a gap all the same.
             self.diagnostics.propagation.note_gap(dt);
+            // No sample describes the interval, so no rate does either.
+            self.angular_rate = None;
             let Some(coast) = self.config.coast else {
                 return self.refuse_step(Propagation::StepTooLong { dt, limit });
             };
@@ -617,7 +624,13 @@ impl Eskf {
             &self.config.imu,
             self.config.baro_offset_walk,
         );
-        self.commit_step(propagated, Propagation::Propagated)
+        // Against the bias the step integrated with, before the commit replaces the state.
+        let omega = propagate::corrected_imu(imu, &self.state).omega;
+        let outcome = self.commit_step(propagated, Propagation::Propagated);
+        if outcome == Propagation::Propagated {
+            self.angular_rate = Some(omega);
+        }
+        outcome
     }
 
     /// Commit a propagated or coasted step, or discard it whole if it came out non-finite, and
@@ -1273,6 +1286,53 @@ impl Eskf {
         state
     }
 
+    /// The body angular rate with the estimated gyroscope bias removed, `ω` of equation (9),
+    /// from the last step [`predict`](Self::predict) integrated from a sample.
+    ///
+    /// For correcting a measurement taken away from the IMU, which this filter does not do:
+    /// an antenna at `r` in body axes reads the IMU's position plus `R r` and its velocity
+    /// plus `R (ω × r)`. The caller holds `r` and the raw rate; the filter holds the bias, and
+    /// this is where the two meet. PX4 applies the same correction itself, with the same
+    /// bias-corrected rate (`EKF/aid_sources/gnss/gps_control.cpp:313-318` and `:351-354` at
+    /// `c4e4ef98`).
+    ///
+    /// ```
+    /// use fusion_nav::prelude::*;
+    /// # let mut filter = Eskf::new(Config::default());
+    /// # let dt = Seconds::from_secs(0.0025);
+    /// # let still = StaticSample {
+    /// #     imu: ImuSample { gyro: AngularRate::zero(), accel: Acceleration::body(0.0, 0.0, -GRAVITY) },
+    /// #     ..StaticSample::default()
+    /// # };
+    /// # filter.initialize(&[still; 800], dt)?;
+    /// # let imu = ImuSample { gyro: AngularRate::body(0.0, 0.0, 0.5), ..still.imu };
+    /// # assert!(filter.predict(imu, dt).is_propagated());
+    /// # let (antenna, antenna_velocity) = (Position::ned(0.0, 0.0, -0.4), Velocity::ned(0.1, 0.0, 0.0));
+    /// # let (position_noise, velocity_noise) = (PositionNoise::horizontal_vertical(1.0, 1.5), VelocityNoise::from_speed_accuracy(0.3));
+    /// // The antenna's offset from the IMU, forward, right and down: measured on the airframe.
+    /// let r = nalgebra::Vector3::new(0.0, 0.0, -0.4);
+    ///
+    /// // None before the first step and across a gap, where no sample says how fast the
+    /// // vehicle turned: fuse the fix uncorrected, or not at all, as the offset warrants.
+    /// if let Some(omega) = filter.angular_rate() {
+    ///     let rotation = filter.state().attitude.quaternion();
+    ///     let position = Position::<Ned>::from_vector(antenna.vector() - rotation * r);
+    ///     let velocity =
+    ///         Velocity::<Ned>::from_vector(antenna_velocity.vector() - rotation * omega.vector().cross(&r));
+    ///     let _ = filter.fuse_gnss_position(position, position_noise);
+    ///     let _ = filter.fuse_gnss_velocity(velocity, velocity_noise);
+    /// }
+    /// # Ok::<(), InitError>(())
+    /// ```
+    ///
+    /// `None` until a step is integrated, after any initialization, and after a gap longer than
+    /// [`Config::max_predict_dt`](crate::Config::max_predict_dt), until the next sample: a
+    /// coast reads no sample, and the rate before the gap is not the rate after it. A step
+    /// refused for its sample leaves the last rate in place, as it leaves the state.
+    pub const fn angular_rate(&self) -> Option<AngularRate<Body>> {
+        self.angular_rate
+    }
+
     /// Per-source health. Off the hot path.
     pub const fn diagnostics(&self) -> Diagnostics {
         self.diagnostics
@@ -1645,6 +1705,7 @@ impl Eskf {
         if settled {
             self.origin = None;
         }
+        self.angular_rate = None;
         self.initialized = true;
         // A fresh start is unaligned until its own covariance says otherwise, which
         // `note_alignment` reads at the end of each entry point.
@@ -3203,6 +3264,83 @@ mod tests {
 
         let (_, _, yaw) = filter.state().attitude.euler_angles();
         assert!((yaw + 0.06).abs() < 1e-6, "heading committed as {yaw}");
+    }
+
+    /// A filter seeded at `attitude` with gyroscope bias `bias` and nothing else.
+    fn seeded(attitude: Attitude, bias: AngularRate<Body>) -> Eskf {
+        let mut filter = Eskf::new(Config::default());
+        let state = State {
+            attitude,
+            gyro_bias: bias,
+            ..State::default()
+        };
+        let _ = filter
+            .initialize_from(state, Covariance::from_sigmas([0.1; STATES]))
+            .expect("a finite seed");
+        filter
+    }
+
+    #[test]
+    fn the_angular_rate_is_the_last_integrated_sample_less_the_bias() {
+        let bias = AngularRate::body(0.01, -0.02, 0.005);
+        let mut filter = seeded(Attitude::level(), bias);
+        assert_eq!(filter.angular_rate(), None, "no step integrated yet");
+
+        let imu = ImuSample {
+            gyro: AngularRate::body(0.3, 0.1, -0.2),
+            accel: Acceleration::body(0.0, 0.0, -GRAVITY),
+        };
+        assert!(filter.predict(imu, DT).is_propagated());
+        let omega = filter.angular_rate().expect("a step was integrated");
+        assert_eq!(omega.vector(), imu.gyro.vector() - bias.vector());
+
+        // A refused sample leaves the last rate, as it leaves the state.
+        let broken = ImuSample {
+            gyro: AngularRate::body(f32::NAN, 0.0, 0.0),
+            ..imu
+        };
+        assert_eq!(filter.predict(broken, DT), Propagation::NotFinite);
+        assert_eq!(filter.angular_rate(), Some(omega));
+
+        // A gap is coasted on no sample, so there is no rate until the next one.
+        let gap = Seconds::from_secs(1.0);
+        assert_eq!(filter.predict(imu, gap), Propagation::Coasted { dt: gap });
+        assert_eq!(filter.angular_rate(), None);
+        assert!(filter.predict(imu, DT).is_propagated());
+        assert!(filter.angular_rate().is_some());
+
+        // A fresh start forgets a rate measured against the last one's bias.
+        let _ = filter
+            .initialize(&[still(); 8], Seconds::from_secs(0.25))
+            .expect("a 2 s window of stillness");
+        assert_eq!(filter.angular_rate(), None);
+    }
+
+    #[test]
+    fn the_angular_rate_corrects_a_lever_arm_on_a_rolled_vehicle() {
+        // Nose east and rolled right a quarter turn, so the right wing points down. Worked by
+        // hand rather than through the rotation, so a transposed R cannot agree with itself:
+        // an antenna 1 m forward sits 1 m east of the IMU; a rate about body right is a rate
+        // about down, which turns east toward south, so that antenna moves south.
+        use core::f32::consts::FRAC_PI_2;
+        let mut filter = seeded(attitude_of(FRAC_PI_2, 0.0, FRAC_PI_2), AngularRate::zero());
+        let imu = ImuSample {
+            gyro: AngularRate::body(0.0, 0.5, 0.0),
+            accel: Acceleration::body(0.0, -GRAVITY, 0.0),
+        };
+        assert!(filter.predict(imu, DT).is_propagated());
+
+        let r = Vector3::new(1.0, 0.0, 0.0);
+        let rotation = filter.state().attitude.quaternion();
+        let omega = filter.angular_rate().expect("a step was integrated");
+        // To within the 5 mrad the one step turned it.
+        let arm = rotation * r;
+        assert!((arm - Vector3::new(0.0, 1.0, 0.0)).norm() < 1e-2, "{arm}");
+        let lever = rotation * omega.vector().cross(&r);
+        assert!(
+            (lever - Vector3::new(-0.5, 0.0, 0.0)).norm() < 1e-2,
+            "{lever}"
+        );
     }
 
     #[test]

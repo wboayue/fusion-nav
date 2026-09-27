@@ -563,8 +563,10 @@ Known, and stated here rather than discovered in flight. Some are deliberate; th
   with `Config::coast`'s two densities, set from one VTOL log's gaps at 30 m/s. A vehicle that
   manoeuvres harder than that inside a gap can still be turned down by the gate afterwards,
   until `Config::recovery` adopts a fix.
-* **No lever arms.** GNSS position and velocity are taken as the IMU's, so an antenna offset `r`
-  reads rotation as velocity (`ω × r`), and the filter believes it. See [#25](https://github.com/wboayue/fusion-nav/issues/25).
+* **No lever arms.** GNSS position and velocity are taken as the IMU's, so an uncorrected antenna
+  offset `r` reads rotation as velocity (`ω × r`), and the filter believes it. The caller corrects
+  it with `angular_rate()`, the bias-corrected `ω`, whose documentation writes the correction out;
+  PX4 applies it inside the filter. See [#25](https://github.com/wboayue/fusion-nav/issues/25).
 * **One set of timeouts for every source.** `Config::timeouts` applies one threshold to every
   source, and any accepted source counts as aiding. See [#56](https://github.com/wboayue/fusion-nav/issues/56).
 * **Local tangent plane.** Position is Cartesian NED about a fixed origin. The geodetic
