@@ -245,6 +245,16 @@ def self_test():
             except ValueError:
                 pass
 
+        # Two logs sharing the prefix a page names: refused rather than read from whichever
+        # sorts first.
+        (out / "compare/89a498ce-ffff").mkdir()
+        (out / "compare/89a498ce-ffff/raw.summary").write_text("summary rate=50\n")
+        try:
+            render("{{summary 89a498ce/raw rate}}", runs, "validation/ekf2.md")
+            failures.append("an ambiguous corpus run: rendered")
+        except ValueError:
+            pass
+
     for failure in failures:
         print(f"validation self-test: {failure}", file=sys.stderr)
     if failures:
