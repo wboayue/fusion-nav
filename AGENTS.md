@@ -47,8 +47,14 @@ height's low frequencies (`height_reference_ekf2=baro`). The 24.2 m origin gap o
 mostly the geoid, the replay origin being ellipsoidal and `ref_alt` MSL; the converter now puts
 both on one datum. The `R` policy is most of the rejection disagreement (`093e806a` 278.8 s raw,
 27.1 px4, EKF2 304.9). One finding has no cause yet: on `89a498ce`, the RTK log, EKF2 sits a
-median 3.6 m north of its own receiver's fixes (`pos_n_rms` 4.73). #157 owns giving `clamped` the
-per-axis floors `RPolicy` had to build without it.
+median 3.6 m north of its own receiver's fixes (`pos_n_rms` 4.73).
+The sensor-boundary pass landed (#159): `clamped` takes a `SigmaBounds` per axis, so PX4's and
+ArduPilot's GNSS `R` rules are one call each and `RPolicy::Px4` holds no floor of its own (#157;
+`px4` replay byte-identical on all twelve logs); declination moved off `Config` onto `Eskf`,
+`set_magnetic_declination`, a site property like the origin (#125 part 1; #125 is now the model);
+`Eskf::angular_rate` is the bias-corrected `ω`, committed with the state through `Propagated`, so a
+caller can correct an antenna offset (#25 option 1; #25 is now the filter applying it); and #27's
+two boundary notes. No corpus or scenario output moved.
 #89 landed (#151): `data/anees.sh` gates per-epoch ensemble NEES on 50 seeds against χ² in CI,
 and asserts failures by cause: `gnss_latency` on position and `correlated` (#117's residual);
 `logging_dropout`'s assertion tripped when #144 coasted its gap, and it now passes all three. Of the two it found that no single seed showed, #150
