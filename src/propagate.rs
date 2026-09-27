@@ -39,6 +39,10 @@ use crate::units::{
 /// [`Config::max_predict_dt`](crate::Config::max_predict_dt) is coasted whole, and a shorter
 /// one is not priced, so a driver that drops samples should hand over the integral across the
 /// drop, as an integrating one does.
+///
+/// `Default` is a placeholder for struct-update syntax, not a sample: its intervals are zero,
+/// which [`Eskf::predict`](crate::Eskf::predict) and
+/// [`Eskf::initialize`](crate::Eskf::initialize) both refuse as an invalid interval.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ImuSample {
     /// When both integration intervals end, on the clock every measurement is timed on.
@@ -100,12 +104,19 @@ impl ImuSample {
             && self.velocity_interval.as_secs().is_finite()
     }
 
-    /// Whether both intervals are forward spans of time of at least a microsecond, the
-    /// resolution a [`Timestamp`] keeps. A zero one divides into a rate, a negative one
-    /// subtracts (21)'s process noise, and one of 1e-40 s divides an increment into an infinity.
-    pub(crate) fn has_usable_intervals(self) -> bool {
+    /// The interval that is not a forward span of time of at least a microsecond, the
+    /// resolution a [`Timestamp`] keeps, if either is not. A zero one divides into a rate, a
+    /// negative one subtracts (21)'s process noise, and one of 1e-40 s divides an increment
+    /// into an infinity.
+    ///
+    /// The interval rather than a verdict, and written once, so that
+    /// [`Eskf::initialize`](crate::Eskf::initialize) and
+    /// [`Eskf::predict`](crate::Eskf::predict) refuse the same sample and name the same number.
+    pub(crate) fn unusable_interval(self) -> Option<Seconds> {
         const LEAST: f32 = 1.0e-6;
-        self.angle_interval.as_secs() >= LEAST && self.velocity_interval.as_secs() >= LEAST
+        [self.angle_interval, self.velocity_interval]
+            .into_iter()
+            .find(|interval| interval.as_secs().is_nan() || interval.as_secs() < LEAST)
     }
 
     /// The longer of the two intervals: the span the sample claims to describe.
@@ -118,8 +129,8 @@ impl ImuSample {
     }
 }
 
-/// Tests build samples from rates, as the fixtures were written, and time them where they are
-/// used.
+/// Tests build samples from rates, the form most fixtures state a motion in, and time them
+/// where they are used.
 #[cfg(test)]
 impl ImuSample {
     /// A sample reading `gyro` and `accel`, over one second until [`timed`](Self::timed).
@@ -494,8 +505,8 @@ fn process_noise(noise: &ImuNoise, imu: Corrected) -> [f32; STATES] {
 /// The measurement, since the trade was made here (`-Zemit-stack-sizes`, `opt-level = 3`):
 /// this function's own frame is 2832 bytes on `thumbv6m-none-eabi` and 2760 on
 /// `thumbv7em-none-eabihf`, and the chain that reaches it from
-/// [`Eskf::predict`](crate::Eskf::predict) — `predict` at 2032, `propagate` at 1104 — comes
-/// to 5968 and 5888. It is a frame of its own rather than part of `predict`'s because
+/// [`Eskf::predict`](crate::Eskf::predict) — `predict` at 2168 and 2160, `propagate` at 1056
+/// — comes to 6056 and 5976. It is a frame of its own rather than part of `predict`'s because
 /// [`project`] is a second caller; with one caller it inlined, and the same three
 /// temporaries sat in `predict` instead. That is the "few kilobytes rather than one"
 /// `DESIGN.md` predicts for the working set, comfortable on the STM32H7 class it names and
@@ -589,9 +600,9 @@ const MAX_PROJECTION_STEPS: usize = 64;
 /// one `F` and one `Q`, built once because an unaccelerated vehicle does not rotate, then one
 /// [`propagate_covariance`] per step — ten of them at the default 1 s horizon, up to
 /// [`MAX_PROJECTION_STEPS`]. So an arming check is ten times the arithmetic of an IMU epoch.
-/// The stack is a frame of 1920 bytes on `thumbv6m-none-eabi` and 1936 on
+/// The stack is a frame of 1952 bytes on `thumbv6m-none-eabi` and 1936 on
 /// `thumbv7em-none-eabihf`, which with
-/// [`Eskf::predicted_validity`](crate::Eskf::predicted_validity)'s 1888 above it and
+/// [`Eskf::predicted_validity`](crate::Eskf::predicted_validity)'s 1856 above it and
 /// [`propagate_covariance`]'s 2832 below comes to 6640 — under `update::<3>`, so the
 /// crate's high-water mark is where it was.
 pub(crate) fn project(
@@ -654,10 +665,10 @@ fn repeat_covariance(
 ///
 /// What it costs is up to [`MAX_PROJECTION_STEPS`] runs of (22) in one call, 64 IMU epochs'
 /// arithmetic landing on the step after the loop has already overrun. Worst case, not
-/// typical: a 1.2 s gap is 12 runs. The stack is a frame of 2136 bytes on
-/// `thumbv6m-none-eabi` and 2120 on `thumbv7em-none-eabihf`, which with
+/// typical: a 1.2 s gap is 12 runs. The stack is a frame of 2144 bytes on
+/// `thumbv6m-none-eabi` and 2136 on `thumbv7em-none-eabihf`, which with
 /// [`Eskf::predict`](crate::Eskf::predict)'s 2168 above it and [`propagate_covariance`]'s 2832
-/// below comes to 7136, under `update::<3>`. The exact `F` of an unaccelerated vehicle is a
+/// below comes to 7144, under `update::<3>`. The exact `F` of an unaccelerated vehicle is a
 /// four-term polynomial in `Δt`, since `ω = 0` makes the error dynamics nilpotent, and is the
 /// lever if #41 finds the spike too costly; until then the steps are (22) as it reads.
 ///
@@ -1033,6 +1044,32 @@ mod tests {
     /// differences another `~2e-4` at this `δ`. 2e-3 clears all three and is still five times
     /// smaller than the smallest entry `F` carries here, `Δt = 0.01`, so a dropped or
     /// sign-flipped coupling cannot pass.
+    /// `A` is written out beside `F` rather than derived from it, so the two are held together
+    /// here: `F = I + A Δt` to first order, at the rates the same corrected sample carries. At
+    /// 1 ms the second-order remainder is `|ω|² Δt² / 2`, under 1e-7 at this manoeuvre, so a
+    /// block of `A` placed or signed differently from `F`'s, each at least `Δt`, cannot pass.
+    #[test]
+    fn the_error_dynamics_are_the_transition_matrix_per_unit_time() {
+        let dt = Seconds::from_secs(0.001);
+        let state = tilted_and_moving();
+        let imu = corrected_imu(manoeuvring().timed(Timestamp::ZERO, dt), &state);
+        let omega = imu.omega().vector();
+        let a_b = imu.delta_velocity.vector() / dt.as_secs();
+
+        let f = transition_matrix(&state, imu);
+        let first_order =
+            Transition::identity() + error_dynamics(&state, omega, a_b) * dt.as_secs();
+        for row in 0..STATES {
+            for column in 0..STATES {
+                let (exact, linear) = (f[(row, column)], first_order[(row, column)]);
+                assert!(
+                    (exact - linear).abs() < 1.0e-5,
+                    "[{row}][{column}]: F {exact}, I + A dt {linear}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn the_transition_matrix_matches_a_numerical_jacobian_of_the_nominal_step() {
         const DELTA: f32 = 1.0e-3;

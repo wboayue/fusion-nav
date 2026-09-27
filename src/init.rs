@@ -267,11 +267,13 @@ fn mean(sum: Vector3<f64>, count: u32) -> Vector3<f32> {
 ///
 /// Every check initialization makes on raw input is here, so that everything downstream —
 /// [`classify`], [`nominal_state`], [`attitude_sigmas`] — takes a [`Measured`] and cannot
-/// be handed an empty window, an unusable interval, or a value that is not a number.
+/// be handed an empty window, an unusable interval, a clock that does not run forward, or a
+/// value that is not a number.
 ///
 /// # Errors
 ///
-/// [`InitError::NoSamples`], [`InitError::NotFinite`], [`InitError::InvalidInterval`].
+/// [`InitError::NoSamples`], [`InitError::NotFinite`], [`InitError::InvalidInterval`],
+/// [`InitError::InvalidStep`].
 pub(crate) fn measure(window: &[StaticSample]) -> Result<Measured, InitError> {
     if window.is_empty() {
         return Err(InitError::NoSamples);
@@ -279,21 +281,21 @@ pub(crate) fn measure(window: &[StaticSample]) -> Result<Measured, InitError> {
     if !window.iter().all(StaticSample::is_finite) {
         return Err(InitError::NotFinite);
     }
-    if let Some(sample) = window.iter().find(|s| !s.imu.has_usable_intervals()) {
-        return Err(InitError::InvalidInterval {
-            interval: unusable_interval(sample.imu),
-        });
+    if let Some(interval) = window.iter().find_map(|s| s.imu.unusable_interval()) {
+        return Err(InitError::InvalidInterval { interval });
+    }
+    // The clock starts at the last sample's time, so a window timed anywhere but forward
+    // would start it somewhere the samples do not describe: all at zero, and the first
+    // `predict` coasts the whole flight so far.
+    for pair in window.windows(2) {
+        if let [earlier, later] = pair {
+            let dt = later.imu.time.since(earlier.imu.time);
+            if !dt.is_usable_step() {
+                return Err(InitError::InvalidStep { dt });
+            }
+        }
     }
     Ok(Measured::over(window))
-}
-
-/// The interval of `imu` that is not a forward span of time, for the error that names it.
-pub(crate) fn unusable_interval(imu: ImuSample) -> Seconds {
-    if imu.angle_interval.as_secs() >= 1.0e-6 {
-        imu.velocity_interval
-    } else {
-        imu.angle_interval
-    }
 }
 
 /// The time a window's samples integrated: the sum of their angle intervals.
@@ -452,6 +454,13 @@ pub enum InitError {
         /// The interval offered.
         interval: Seconds,
     },
+    /// A sample was timed no later than the one before it, so the window's timestamps say
+    /// nothing about when it ended, which is where the filter's clock starts. As
+    /// [`Propagation::InvalidStep`](crate::Propagation::InvalidStep) for a step.
+    InvalidStep {
+        /// The time from the previous sample to this one.
+        dt: Seconds,
+    },
     /// A measurement, state, or covariance carried a value that is not finite.
     NotFinite,
     /// A seed covariance had a variance on its diagonal that no prior has: below the floor
@@ -485,6 +494,10 @@ impl core::fmt::Display for InitError {
             Self::InvalidInterval { interval } => {
                 let interval = Fixed::new(interval.as_secs(), Decimals::Three);
                 write!(f, "initialization interval of {interval} s is not usable")
+            }
+            Self::InvalidStep { dt } => {
+                let dt = Fixed::new(dt.as_secs(), Decimals::Three);
+                write!(f, "initialization window stepped {dt} s, not forward")
             }
             Self::NotFinite => write!(f, "initialization input was not finite"),
             Self::InvalidVariance => {
@@ -865,9 +878,9 @@ fn coarse_sigmas(
 /// measures no scatter, and keeps the whole of `σ_tilt²` independent instead.
 ///
 /// Writing the blocks after construction costs a copy of `P`: on `thumbv6m` this frame is
-/// 1120 bytes where a diagonal-only `P₀` inlined to 80, with `Eskf::apply_alignment` at 960
-/// above it. The initialization chain stays well under the 10 KB of `fuse_gnss_position` into
-/// `update::<3>`, so the crate's peak does not move.
+/// 1120 bytes where a diagonal-only `P₀` inlined to 80, with `Eskf::initialize` at 2168
+/// above it. The initialization chain stays well under the 9.5 KB of `fuse_gnss_velocity`
+/// into `update::<3>`, so the crate's peak does not move.
 pub(crate) fn initial_covariance(
     init: &Initialization,
     attitude: &Attitude,
@@ -1759,6 +1772,34 @@ pub(crate) mod tests {
             .imu
             .with_accel(Acceleration::body(f32::NAN, 0.0, 0.0));
         assert_eq!(classify_default(&poisoned, DT), Err(InitError::NotFinite));
+    }
+
+    /// The clock starts at the last sample's time, so a window whose times do not run forward
+    /// is refused rather than aligned: stamped all at zero, it would start the clock at zero
+    /// and the first `predict` would coast the whole flight so far.
+    #[test]
+    fn a_window_timed_other_than_forward_is_refused() {
+        let unstamped: std::vec::Vec<_> = spaced(&[still(); 8], DT)
+            .into_iter()
+            .map(|s| StaticSample {
+                imu: s.imu.timed(Timestamp::ZERO, DT),
+                ..s
+            })
+            .collect();
+        assert_eq!(
+            measure(&unstamped).map(|_| ()),
+            Err(InitError::InvalidStep {
+                dt: Seconds::from_secs(0.0)
+            })
+        );
+        let mut reversed = spaced(&[still(); 8], DT);
+        reversed.reverse();
+        assert_eq!(
+            measure(&reversed).map(|_| ()),
+            Err(InitError::InvalidStep {
+                dt: Seconds::from_secs(-0.25)
+            })
+        );
     }
 
     #[test]

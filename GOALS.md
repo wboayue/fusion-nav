@@ -548,11 +548,11 @@ the assumption, or something cheaper in between (#52).
 
 **Decided (#52):** every `fuse_*` takes the time its measurement was taken, and the filter fuses
 it there, equation (23′): the innovation against a history of the nominal state at that time, and
-`H` carried to today's error through (16)–(19). A time older than `LATENCY_HORIZON` (0.3 s,
-what PX4 and ArduPilot buffer) or ahead of the state by more than a step is refused as
-`Fusion::OutOfHorizon`. The age is an argument rather than configuration for the reason `R` is:
-it is a property of the receiver and the fix, and PX4's `EKF2_GPS_DELAY` is one figure an
-integrator converts into it.
+`H` carried to today's error through (16)–(19). A time older than `LATENCY_HORIZON` or ahead of
+the state by more than `Config::max_predict_dt` is refused as `Fusion::OutOfHorizon`, and one
+ahead by less is carried forward on the estimated velocity and the last sample's rate. The age
+is an argument rather than configuration for the reason `R` is: it is a property of the receiver
+and the fix, and PX4's `EKF2_GPS_DELAY` is one figure an integrator converts into it.
 
 What was measured, on `gnss_latency` (150 ms) and swept at 50, 150 and 300 ms and at half and
 twice its speed (`examples/simulate.rs --latency --speed`), against `mission`'s `pos_h` of 0.292 m:

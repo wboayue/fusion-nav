@@ -232,7 +232,10 @@ fn report(board: &mut impl Board, source: &str, outcome: Fusion) -> bool {
         Fusion::NotInitialized | Fusion::NoReference => {}
         // A driver or a wire, not the flight: the sensor produced something no sensor can, or
         // a timestamp the IMU's clock does not share.
-        Fusion::NotFinite | Fusion::InvalidNoise | Fusion::StateInvalid | Fusion::OutOfHorizon => {
+        Fusion::NotFinite
+        | Fusion::InvalidNoise
+        | Fusion::StateInvalid
+        | Fusion::OutOfHorizon { .. } => {
             log!(board, "{} {}", source, outcome)
         }
     }

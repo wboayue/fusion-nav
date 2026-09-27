@@ -255,8 +255,9 @@ impl Eskf {
     /// # Errors
     ///
     /// [`InitError::NoSamples`] for an empty window, [`InitError::NotFinite`] if a sample
-    /// carries a value that is not a number, and [`InitError::InvalidInterval`] for an
-    /// integration interval that is zero or negative.
+    /// carries a value that is not a number, [`InitError::InvalidInterval`] for an
+    /// integration interval under a microsecond, and [`InitError::InvalidStep`] for a sample
+    /// timed no later than the one before it.
     pub fn initialize(&mut self, window: &[StaticSample]) -> Result<Alignment, InitError> {
         let measured = init::measure(window)?;
         let alignment = init::classify(&measured, &self.config.init);
@@ -315,7 +316,7 @@ impl Eskf {
     /// # Errors
     ///
     /// [`InitError::NotFinite`] if the sample carries a value that is not a number, and
-    /// [`InitError::InvalidInterval`] for an integration interval that is zero or negative.
+    /// [`InitError::InvalidInterval`] for an integration interval under a microsecond.
     pub fn initialize_coarse(&mut self, imu: ImuSample) -> Result<Alignment, InitError> {
         // Treated as a window of one, so the same finiteness, motion and averaging
         // measures apply — an average of one sample being that sample.
@@ -417,20 +418,9 @@ impl Eskf {
         if below_floor(covariance.as_matrix()) {
             return Err(InitError::InvalidVariance);
         }
-        self.state = state;
-        // Diagnostics first: `commit_covariance` counts into them, and a seed sitting on the
-        // floor is a fact about this filter's life rather than the last one's.
-        self.diagnostics = Diagnostics::default();
-        self.commit_covariance(covariance, self.surviving_offset());
         // Nothing a seed carries is unestablished: the caller vouched for every quantity,
         // heading included, so no first measurement overwrites one.
-        self.unestablished = Unestablished::default();
-        self.angular_rate = None;
-        self.initialized = true;
-        self.time = time;
-        self.history.clear();
-        self.history.record(time, &self.state);
-        self.aligned = false;
+        self.start(state, covariance, Unestablished::default(), time);
         self.note_alignment();
         Ok(Alignment::Seeded)
     }
@@ -518,9 +508,10 @@ impl Eskf {
             return false;
         };
         if let Some(old) = self.origin {
-            let before = self.state;
-            self.state.position = new.to_ned(old.to_geodetic(self.state.position));
-            self.history.shift(&before, &self.state);
+            self.commit_state(State {
+                position: new.to_ned(old.to_geodetic(self.state.position)),
+                ..self.state
+            });
         }
         self.origin = Some(new);
         true
@@ -607,8 +598,9 @@ impl Eskf {
     /// A sample carrying a NaN or an infinity is refused too, as
     /// [`Propagation::NotFinite`]: propagating it would put the NaN in the quaternion and
     /// then in the covariance, where nothing reports it and it never leaves. So is one whose
-    /// integration interval is zero or negative, as [`Propagation::InvalidInterval`]. The
-    /// timers advance in both cases, since `Δt` was fine and only the sample was not.
+    /// integration interval is under a microsecond or longer than `max_predict_dt`, as
+    /// [`Propagation::InvalidInterval`]. The timers advance in both cases, since `Δt` was fine
+    /// and only the sample was not.
     ///
     /// A step that comes out of (11)–(14) or (22) non-finite is discarded rather than
     /// stored, as [`Propagation::StateNotFinite`], and the state and the covariance are
@@ -664,8 +656,7 @@ impl Eskf {
         if !imu.is_finite() {
             return self.refuse_step(Propagation::NotFinite);
         }
-        if !imu.has_usable_intervals() {
-            let interval = init::unusable_interval(imu);
+        if let Some(interval) = imu.unusable_interval() {
             return self.refuse_step(Propagation::InvalidInterval { interval });
         }
         // An interval past the limit is the gap test's case arriving as one increment, a
@@ -706,6 +697,18 @@ impl Eskf {
         self.note_alignment();
         self.diagnostics.propagation.record(outcome);
         outcome
+    }
+
+    /// Store a corrected state, and correct the [`History`] by the same change.
+    ///
+    /// Every write of the state other than a propagation or a fresh start comes through here:
+    /// an update, an adoption, a heading reset, a new origin. The past is only consistent with
+    /// the present if each correction reaches both, and a writer that skipped it would leave
+    /// the next old measurement to correct the same error a second time, which no test of the
+    /// present state can see.
+    fn commit_state(&mut self, state: State) {
+        self.history.shift(&self.state, &state);
+        self.state = state;
     }
 
     /// Store a covariance, applying the diagonal floor of equation (42′) and counting what it
@@ -775,8 +778,7 @@ impl Eskf {
                 ratio,
                 innovation,
             } => {
-                self.history.shift(&self.state, &state);
-                self.state = state;
+                self.commit_state(state);
                 self.commit_covariance(covariance, offset);
                 // (30′): `b` is the error in `α₀`, so its estimate comes off it.
                 if let Some(reference) = self.baro_reference {
@@ -802,6 +804,12 @@ impl Eskf {
     ///
     /// One place, for the reason `apply` is one place: every source recovers through here, so
     /// none can adopt without counting it or forget [`note_alignment`](Self::note_alignment).
+    ///
+    /// Out of line for the reason [`observe`](Self::observe) is: inlined, the `Update` it takes
+    /// sat in each `fuse_*` frame beneath `update::<3>`, `fuse_gnss_velocity` at 2384 bytes on
+    /// `thumbv6m-none-eabi` against 1400. That frame into `update::<3>` is the crate's
+    /// high-water mark, 9520.
+    #[inline(never)]
     fn apply_or_recover(
         &mut self,
         outcome: Update,
@@ -870,23 +878,17 @@ impl Eskf {
     /// The adoption after a coarse start is the exception, and takes the fix whole: it writes
     /// all three axes onto the covariance, so any unusable number refuses both halves.
     ///
-    /// `time` is when the measurement was taken, on the clock the IMU's samples are timed on.
-    /// One older than [`LATENCY_HORIZON`], or later than [`time`](Self::time) by more than
-    /// [`Config::max_predict_dt`](crate::Config::max_predict_dt), is
-    /// [`Fusion::OutOfHorizon`].
+    /// `time` is when the measurement was taken, on the clock the IMU's samples are timed on;
+    /// [`Fusion::OutOfHorizon`] says which times cannot be placed.
     pub fn fuse_gnss_position(
         &mut self,
         time: Timestamp,
         position: Position<Ned>,
         noise: PositionNoise<Ned>,
     ) -> GnssFusion {
-        if !self.initialized {
-            return self.refuse_gnss(Fusion::NotInitialized);
+        if let Err(refusal) = self.admit(time) {
+            return self.refuse_gnss(refusal);
         }
-        let age = match self.age_of(time) {
-            Ok(age) => age,
-            Err(refusal) => return self.refuse_gnss(refusal),
-        };
         if self.unestablished.position {
             if !position.is_finite() || !noise.is_finite() {
                 return self.refuse_gnss(Fusion::NotFinite);
@@ -894,7 +896,7 @@ impl Eskf {
             if !noise.is_positive() {
                 return self.refuse_gnss(Fusion::InvalidNoise);
             }
-            self.adopt_position(self.carried_position(position, age), noise, POSITION);
+            self.adopt_position(self.carried_position(position, time), noise, POSITION);
             self.unestablished.position = false;
             self.diagnostics.gnss_position.record_adopted();
             self.diagnostics.gnss_height.record_adopted();
@@ -906,7 +908,7 @@ impl Eskf {
             Some(refusal) => refuse(&mut self.diagnostics.gnss_position, refusal),
             None => {
                 let observation = self
-                    .observe(age, |past| {
+                    .observe(time, |past| {
                         gnss::horizontal_observation(past, position, noise)
                     })
                     .correlated(correlation_inflation(
@@ -925,7 +927,7 @@ impl Eskf {
                     |diagnostics| &mut diagnostics.gnss_position,
                     self.config.recovery.gnss_position,
                     |filter| {
-                        let adopted = filter.carried_position(position, age);
+                        let adopted = filter.carried_position(position, time);
                         filter.adopt_position(adopted, noise, HORIZONTAL);
                     },
                 )
@@ -935,7 +937,7 @@ impl Eskf {
             Some(refusal) => refuse(&mut self.diagnostics.gnss_height, refusal),
             None => {
                 let observation = self
-                    .observe(age, |past| gnss::height_observation(past, position, noise))
+                    .observe(time, |past| gnss::height_observation(past, position, noise))
                     .correlated(correlation_inflation(
                         self.diagnostics.gnss_height.since_measured,
                         self.config.correlation.gnss_height,
@@ -952,7 +954,7 @@ impl Eskf {
                     |diagnostics| &mut diagnostics.gnss_height,
                     self.config.recovery.gnss_height,
                     |filter| {
-                        let adopted = filter.carried_position(position, age);
+                        let adopted = filter.carried_position(position, time);
                         filter.adopt_height(adopted, noise);
                     },
                 )
@@ -961,40 +963,40 @@ impl Eskf {
         GnssFusion { horizontal, height }
     }
 
-    /// How long before the state's [`time`](Self::time) a measurement taken at `time` was, or
-    /// the refusal that says the filter cannot place it: [`Fusion::OutOfHorizon`] for one older
-    /// than [`LATENCY_HORIZON`], or later than the state by more than
+    /// Whether a measurement taken at `time` can be fused, or the refusal that says why not:
+    /// [`Fusion::NotInitialized`], or [`Fusion::OutOfHorizon`] for one older than
+    /// [`LATENCY_HORIZON`] or later than the state by more than
     /// [`Config::max_predict_dt`](crate::Config::max_predict_dt).
     ///
-    /// A measurement later than the state by less has a negative age, and [`past`](Self::past)
-    /// carries the state forward to it. The filter's time is its last IMU sample's, so a
-    /// measurement timed between that sample and the next arrives ahead of it, which is the
-    /// ordinary case for a caller fusing a sensor the moment it reads.
-    fn age_of(&self, time: Timestamp) -> Result<Seconds, Fusion> {
+    /// The filter's time is its last IMU sample's, so a measurement timed between that sample
+    /// and the next arrives ahead of it, which is the ordinary case for a caller fusing a sensor
+    /// the moment it reads; [`past`](Self::past) carries the state forward to it. The bound is
+    /// the one step (22′) would coast rather than integrate, the longest the filter extrapolates
+    /// on one sample.
+    fn admit(&self, time: Timestamp) -> Result<(), Fusion> {
+        if !self.initialized {
+            return Err(Fusion::NotInitialized);
+        }
         let age = self.time.since(time);
         if age > LATENCY_HORIZON || -age.as_secs() > self.config.max_predict_dt.as_secs() {
-            return Err(Fusion::OutOfHorizon);
+            return Err(Fusion::OutOfHorizon { age });
         }
-        Ok(age)
+        Ok(())
     }
 
-    /// The state `age` before this one, from the [`History`], and the age it is actually at:
-    /// no further back than the history reaches, so that a measurement older than the
+    /// The state at `time`, from the [`History`], and how long before the present it was
+    /// placed: no further back than the history reaches, so that a measurement older than the
     /// initialization is placed at the start rather than described by one time and linearized
     /// at another.
-    fn past(&self, age: Seconds) -> (State, Seconds) {
-        let reach = self
-            .history
-            .oldest()
-            .map_or(Seconds::ZERO, |oldest| self.time.since(oldest));
-        let age = if age > reach { reach } else { age };
-        let past = self
-            .history
-            .at(self.time.before(age), self.time, &self.state);
-        (past, age)
+    fn past(&self, time: Timestamp) -> (State, Seconds) {
+        let omega = self
+            .angular_rate
+            .unwrap_or_else(|| AngularRate::body(0.0, 0.0, 0.0));
+        let (past, placed) = self.history.at(time, self.time, &self.state, omega);
+        (past, self.time.since(placed))
     }
 
-    /// Form an observation of the state as it was `age` ago, expressed in today's error.
+    /// Form an observation of the state at `time`, expressed in today's error.
     /// Equation (23′).
     ///
     /// `build` is the observation module's own function, handed the past state instead of the
@@ -1004,20 +1006,20 @@ impl Eskf {
     /// extrapolated from the present, and its `H` is carried to today's error through (16)–(19)
     /// at the mean rates over the age, which the same history gives.
     ///
-    /// Out of line, and beside `update` rather than on top of it: its frame is 1312 bytes on
-    /// `thumbv6m-none-eabi` for `observe::<3>` with `Observation::delayed` at 752 and
-    /// `error_dynamics` at 400 below it, while the `fuse_*` frames that call both grew by at
-    /// most 240 (`fuse_gnss_position`, 2280 to 2520). `update::<3>`, at 8120, is still the
-    /// high-water mark.
+    /// Out of line, so that it sits beside `update` rather than beneath it: `observe::<3>` is
+    /// 1408 bytes on `thumbv6m-none-eabi`, with `Observation::delayed` at 752 and
+    /// `error_dynamics` at 400 below it. Inlined into `fuse_gnss_velocity`, it sat beneath
+    /// `update::<3>` and put the crate's high-water mark at 10800 bytes against 9520.
+    #[inline(never)]
     fn observe<const M: usize>(
         &self,
-        age: Seconds,
+        time: Timestamp,
         build: impl FnOnce(&State) -> Observation<M>,
     ) -> Observation<M> {
-        if age.as_secs() == 0.0 {
+        if time == self.time {
             return build(&self.state);
         }
-        let (past, age) = self.past(age);
+        let (past, age) = self.past(time);
         let tau = age.as_secs();
         if tau == 0.0 {
             return build(&past);
@@ -1032,18 +1034,18 @@ impl Eskf {
         build(&past).delayed(age, &a)
     }
 
-    /// A measurement taken `age` ago carried to now by the state's own motion since:
+    /// A measurement taken at `time` carried to now by the state's own motion since:
     /// `z + x̂ − x̂(t − τ)`, for an adoption, which writes the measurement as the state. A fix
     /// 110 ms old on a vehicle at 30 m/s, adopted as it stands, puts the estimate 3.3 m behind.
-    fn carried_position(&self, taken: Position<Ned>, age: Seconds) -> Position<Ned> {
-        let (past, _) = self.past(age);
+    fn carried_position(&self, taken: Position<Ned>, time: Timestamp) -> Position<Ned> {
+        let (past, _) = self.past(time);
         let moved = self.state.position.vector() - past.position.vector();
         Position::from_vector(taken.vector() + moved)
     }
 
     /// [`carried_position`](Self::carried_position) for a velocity.
-    fn carried_velocity(&self, taken: Velocity<Ned>, age: Seconds) -> Velocity<Ned> {
-        let (past, _) = self.past(age);
+    fn carried_velocity(&self, taken: Velocity<Ned>, time: Timestamp) -> Velocity<Ned> {
+        let (past, _) = self.past(time);
         let moved = self.state.velocity.vector() - past.velocity.vector();
         Velocity::from_vector(taken.vector() + moved)
     }
@@ -1086,23 +1088,17 @@ impl Eskf {
     /// origin puts at the estimate (see [`LocalOrigin::placing`]): with none held it is
     /// refused with [`Fusion::NoReference`], and the next usable fix places it instead.
     ///
-    /// `time` is when the measurement was taken, on the clock the IMU's samples are timed on.
-    /// One older than [`LATENCY_HORIZON`], or later than [`time`](Self::time) by more than
-    /// [`Config::max_predict_dt`](crate::Config::max_predict_dt), is
-    /// [`Fusion::OutOfHorizon`].
+    /// `time` is when the measurement was taken, on the clock the IMU's samples are timed on;
+    /// [`Fusion::OutOfHorizon`] says which times cannot be placed.
     pub fn fuse_gnss_geodetic(
         &mut self,
         time: Timestamp,
         fix: Geodetic,
         noise: PositionNoise<Ned>,
     ) -> GnssFusion {
-        if !self.initialized {
-            return self.refuse_gnss(Fusion::NotInitialized);
+        if let Err(refusal) = self.admit(time) {
+            return self.refuse_gnss(refusal);
         }
-        let age = match self.age_of(time) {
-            Ok(age) => age,
-            Err(refusal) => return self.refuse_gnss(refusal),
-        };
         if !fix.is_finite() {
             return self.refuse_gnss(Fusion::NotFinite);
         }
@@ -1126,7 +1122,7 @@ impl Eskf {
 
         // Equation (44): the origin under the estimate when the fix was taken, and the fix's
         // error as the position's.
-        let (past, _) = self.past(age);
+        let (past, _) = self.past(time);
         let Some(origin) = LocalOrigin::placing(fix, past.position) else {
             return self.refuse_gnss(Fusion::NoReference);
         };
@@ -1162,23 +1158,17 @@ impl Eskf {
     /// [`Config::correlation`](crate::Config::correlation)'s `gnss_velocity`;
     /// the gate reads `noise` itself.
     ///
-    /// `time` is when the measurement was taken, on the clock the IMU's samples are timed on.
-    /// One older than [`LATENCY_HORIZON`], or later than [`time`](Self::time) by more than
-    /// [`Config::max_predict_dt`](crate::Config::max_predict_dt), is
-    /// [`Fusion::OutOfHorizon`].
+    /// `time` is when the measurement was taken, on the clock the IMU's samples are timed on;
+    /// [`Fusion::OutOfHorizon`] says which times cannot be placed.
     pub fn fuse_gnss_velocity(
         &mut self,
         time: Timestamp,
         velocity: Velocity<Ned>,
         noise: VelocityNoise<Ned>,
     ) -> Fusion {
-        if !self.initialized {
-            return refuse(&mut self.diagnostics.gnss_velocity, Fusion::NotInitialized);
+        if let Err(refusal) = self.admit(time) {
+            return refuse(&mut self.diagnostics.gnss_velocity, refusal);
         }
-        let age = match self.age_of(time) {
-            Ok(age) => age,
-            Err(refusal) => return refuse(&mut self.diagnostics.gnss_velocity, refusal),
-        };
         if !velocity.is_finite() || !noise.is_finite() {
             return refuse(&mut self.diagnostics.gnss_velocity, Fusion::NotFinite);
         }
@@ -1186,13 +1176,13 @@ impl Eskf {
             return refuse(&mut self.diagnostics.gnss_velocity, Fusion::InvalidNoise);
         }
         if self.unestablished.velocity {
-            self.adopt_velocity(self.carried_velocity(velocity, age), noise);
+            self.adopt_velocity(self.carried_velocity(velocity, time), noise);
             self.unestablished.velocity = false;
             self.diagnostics.gnss_velocity.record_adopted();
             return Fusion::Reset;
         }
         let observation = self
-            .observe(age, |past| {
+            .observe(time, |past| {
                 gnss::velocity_observation(past, velocity, noise)
             })
             .correlated(correlation_inflation(
@@ -1211,7 +1201,7 @@ impl Eskf {
             |diagnostics| &mut diagnostics.gnss_velocity,
             self.config.recovery.gnss_velocity,
             |filter| {
-                let adopted = filter.carried_velocity(velocity, age);
+                let adopted = filter.carried_velocity(velocity, time);
                 filter.adopt_velocity(adopted, noise);
             },
         )
@@ -1265,23 +1255,17 @@ impl Eskf {
     /// [`Config::correlation`](crate::Config::correlation)'s `baro_altitude`;
     /// the gate reads `noise` itself.
     ///
-    /// `time` is when the measurement was taken, on the clock the IMU's samples are timed on.
-    /// One older than [`LATENCY_HORIZON`], or later than [`time`](Self::time) by more than
-    /// [`Config::max_predict_dt`](crate::Config::max_predict_dt), is
-    /// [`Fusion::OutOfHorizon`].
+    /// `time` is when the measurement was taken, on the clock the IMU's samples are timed on;
+    /// [`Fusion::OutOfHorizon`] says which times cannot be placed.
     pub fn fuse_baro_altitude(
         &mut self,
         time: Timestamp,
         altitude: Altitude,
         noise: AltitudeNoise,
     ) -> Fusion {
-        if !self.initialized {
-            return refuse(&mut self.diagnostics.baro_altitude, Fusion::NotInitialized);
+        if let Err(refusal) = self.admit(time) {
+            return refuse(&mut self.diagnostics.baro_altitude, refusal);
         }
-        let age = match self.age_of(time) {
-            Ok(age) => age,
-            Err(refusal) => return refuse(&mut self.diagnostics.baro_altitude, refusal),
-        };
         if !altitude.as_meters().is_finite() || !noise.is_finite() {
             return refuse(&mut self.diagnostics.baro_altitude, Fusion::NotFinite);
         }
@@ -1292,12 +1276,12 @@ impl Eskf {
             if self.unestablished.position || !self.config.baro_reference_from_estimate {
                 return refuse(&mut self.diagnostics.baro_altitude, Fusion::NoReference);
             }
-            self.reference_from_estimate(altitude, noise, age);
+            self.reference_from_estimate(altitude, noise, time);
             self.diagnostics.baro_altitude.record_accepted(0.0, None);
             return Fusion::Accepted { test_ratio: 0.0 };
         };
         let observation = self
-            .observe(age, |past| {
+            .observe(time, |past| {
                 baro::altitude_observation(past, altitude, reference, noise)
             })
             .correlated(correlation_inflation(
@@ -1322,7 +1306,7 @@ impl Eskf {
             outcome,
             |diagnostics| &mut diagnostics.baro_altitude,
             after,
-            |filter| filter.reference_from_estimate(altitude, noise, age),
+            |filter| filter.reference_from_estimate(altitude, noise, time),
         )
     }
 
@@ -1367,23 +1351,17 @@ impl Eskf {
     /// [`Config::correlation`](crate::Config::correlation)'s `mag_heading`;
     /// the gate reads `noise` itself.
     ///
-    /// `time` is when the measurement was taken, on the clock the IMU's samples are timed on.
-    /// One older than [`LATENCY_HORIZON`], or later than [`time`](Self::time) by more than
-    /// [`Config::max_predict_dt`](crate::Config::max_predict_dt), is
-    /// [`Fusion::OutOfHorizon`].
+    /// `time` is when the measurement was taken, on the clock the IMU's samples are timed on;
+    /// [`Fusion::OutOfHorizon`] says which times cannot be placed.
     pub fn fuse_mag_heading(
         &mut self,
         time: Timestamp,
         field: MagField<Body>,
         noise: HeadingNoise,
     ) -> Fusion {
-        if !self.initialized {
-            return refuse(&mut self.diagnostics.mag_heading, Fusion::NotInitialized);
+        if let Err(refusal) = self.admit(time) {
+            return refuse(&mut self.diagnostics.mag_heading, refusal);
         }
-        let age = match self.age_of(time) {
-            Ok(age) => age,
-            Err(refusal) => return refuse(&mut self.diagnostics.mag_heading, refusal),
-        };
         if !field.is_finite() || !noise.is_finite() {
             return refuse(&mut self.diagnostics.mag_heading, Fusion::NotFinite);
         }
@@ -1392,7 +1370,7 @@ impl Eskf {
         }
         let (covariance, declination) = (&self.covariance, self.declination);
         let observation = self
-            .observe(age, |past| {
+            .observe(time, |past| {
                 mag::heading_observation(past, covariance, field, declination, noise)
             })
             .correlated(correlation_inflation(
@@ -1434,8 +1412,9 @@ impl Eskf {
     /// an ordinary update would read. (36′) is what makes that worth saying: the levelling
     /// error is priced on the path where the tilt it comes from is worst.
     fn adopt_heading(&mut self, observation: &Observation<1>) {
-        // Navigation down in body axes, `R(q̂)ᵀe₃`: (36)'s row, read back rather than
-        // derived again, so the direction the adoption resets is the one the source observes.
+        // Navigation down in body axes, `R(q̂)ᵀe₃`: (36)'s row as (23′) carried it to the
+        // present, read back rather than derived again, so the direction the adoption resets
+        // is the one the source observes.
         let down = observation
             .h
             .fixed_view::<1, 3>(0, ErrorState::AttitudeX.index())
@@ -1484,9 +1463,10 @@ impl Eskf {
         let before = self.state.attitude.quaternion().to_rotation_matrix();
         let mut corrected = exp_quat(Vector3::z() * y) * self.state.attitude.quaternion();
         corrected.renormalize();
-        let unturned = self.state;
-        self.state.attitude = Attitude::body_to_ned(corrected);
-        self.history.shift(&unturned, &self.state);
+        self.commit_state(State {
+            attitude: Attitude::body_to_ned(corrected),
+            ..self.state
+        });
 
         let g_theta = corrected.to_rotation_matrix().inverse() * before;
         let g_theta = g_theta.into_inner();
@@ -1848,9 +1828,10 @@ impl Eskf {
                 *variance = *r;
             }
         }
-        let before = self.state;
-        self.state.position = Position::ned(adopted[0], adopted[1], adopted[2]);
-        self.history.shift(&before, &self.state);
+        self.commit_state(State {
+            position: Position::ned(adopted[0], adopted[1], adopted[2]),
+            ..self.state
+        });
         self.reset_block(axes, variances);
     }
 
@@ -1874,9 +1855,10 @@ impl Eskf {
     // Out of line for the reason `adopt_position` is: +952 bytes on `fuse_gnss_velocity`.
     #[inline(never)]
     fn adopt_velocity(&mut self, velocity: Velocity<Ned>, noise: VelocityNoise<Ned>) {
-        let before = self.state;
-        self.state.velocity = velocity;
-        self.history.shift(&before, &self.state);
+        self.commit_state(State {
+            velocity,
+            ..self.state
+        });
         self.reset_block(
             [
                 ErrorState::VelocityNorth,
@@ -1891,9 +1873,14 @@ impl Eskf {
     /// `z = p̂_D`, so that the altitude lands on the estimate — correlated with the height it
     /// was read against, `P_bb = P_DD + R_m` and `P_xb = −P[:, D]` of (30′). See
     /// [`fuse_baro_altitude`](Self::fuse_baro_altitude) for why.
-    fn reference_from_estimate(&mut self, altitude: Altitude, noise: AltitudeNoise, age: Seconds) {
+    fn reference_from_estimate(
+        &mut self,
+        altitude: Altitude,
+        noise: AltitudeNoise,
+        time: Timestamp,
+    ) {
         // Against the height when the altitude was read, as (23′) reads every measurement.
-        let (past, _) = self.past(age);
+        let (past, _) = self.past(time);
         let reference = Altitude::from_meters(altitude.as_meters() + past.position.vector()[2]);
         let offset = Offset::from_estimate(&self.covariance, noise.variance());
         self.establish_reference(Some((reference, offset)));
@@ -1943,14 +1930,29 @@ impl Eskf {
             sigma_yaw,
             measured.level_variance,
         );
-        self.state = state;
-        // Before the commit, which counts into them; see `initialize_from`.
-        self.diagnostics = Diagnostics::default();
-        self.commit_covariance(covariance, self.surviving_offset());
-        self.unestablished = Unestablished::after(settled, measured.field.is_some());
+        let unestablished = Unestablished::after(settled, measured.field.is_some());
+        self.start(state, covariance, unestablished, time);
         if settled {
             self.origin = None;
         }
+    }
+
+    /// Begin a new life at `time`: the state and covariance a start committed, fresh health,
+    /// and no past. What both entry points share; the barometric reference and the origin are
+    /// each start's own decision.
+    fn start(
+        &mut self,
+        state: State,
+        covariance: Covariance,
+        unestablished: Unestablished,
+        time: Timestamp,
+    ) {
+        self.state = state;
+        // Diagnostics first: `commit_covariance` counts into them, and a start sitting on the
+        // floor is a fact about this filter's life rather than the last one's.
+        self.diagnostics = Diagnostics::default();
+        self.commit_covariance(covariance, self.surviving_offset());
+        self.unestablished = unestablished;
         self.angular_rate = None;
         self.initialized = true;
         self.time = time;
@@ -2448,10 +2450,18 @@ mod tests {
 
         let past = Seconds::from_secs(LATENCY_HORIZON.as_secs() + 0.001);
         let ahead = Seconds::from_secs(filter.config().max_predict_dt.as_secs() + 0.001);
-        for time in [now.before(past), now.after(ahead)] {
-            assert_eq!(
-                filter.fuse_baro_altitude(time, altitude, noise),
-                Fusion::OutOfHorizon
+        for (time, age) in [
+            (now.before(past), past.as_secs()),
+            (now.after(ahead), -ahead.as_secs()),
+        ] {
+            let Fusion::OutOfHorizon { age: refused } =
+                filter.fuse_baro_altitude(time, altitude, noise)
+            else {
+                panic!("not refused");
+            };
+            assert!(
+                (refused.as_secs() - age).abs() < 1e-6,
+                "{refused:?} against {age}"
             );
         }
         let health = filter.diagnostics().baro_altitude;
@@ -3210,6 +3220,52 @@ mod tests {
             outcome.test_ratio().is_some_and(|ratio| ratio < 1.0e-3),
             "{outcome:?}"
         );
+    }
+
+    /// A heading timed ahead of the last IMU sample is judged against the attitude the turn
+    /// will have reached, carried forward on the last sample's rate. Taken against the present
+    /// instead, 90 ms into a 90°/s turn is 8° of error, which the gate turns down.
+    #[test]
+    fn a_heading_ahead_of_the_state_is_judged_against_the_turn() {
+        let rate = core::f32::consts::FRAC_PI_2;
+        let mut sigmas = [0.5; STATES];
+        // Attitude and gyroscope bias tight, so that the covariance cannot absorb the turn.
+        for axis in [
+            ErrorState::AttitudeX,
+            ErrorState::AttitudeY,
+            ErrorState::AttitudeZ,
+        ] {
+            sigmas[axis.index()] = 0.005;
+        }
+        for axis in [
+            ErrorState::GyroBiasX,
+            ErrorState::GyroBiasY,
+            ErrorState::GyroBiasZ,
+        ] {
+            sigmas[axis.index()] = 0.001;
+        }
+        let mut filter = Eskf::new(Config::default());
+        let _ = filter
+            .seed(State::default(), Covariance::from_sigmas(sigmas))
+            .expect("a sane seed");
+        let turning = still().imu.with_gyro(AngularRate::body(0.0, 0.0, rate));
+        for _ in 0..20 {
+            assert!(filter.step(turning, DT).is_propagated());
+        }
+        let lead = Seconds::from_secs(0.09);
+        let (_, _, yaw) = filter.state().attitude.euler_angles();
+        let field_at = |yaw: f32| MagField::body(0.22 * yaw.cos(), -0.22 * yaw.sin(), 0.44);
+        let noise = HeadingNoise::from_sigma(0.02);
+
+        let mut judged = filter.clone();
+        let ahead = field_at(yaw + rate * lead.as_secs());
+        let outcome = judged.fuse_mag_heading(filter.now().after(lead), ahead, noise);
+        assert!(
+            outcome.test_ratio().is_some_and(|ratio| ratio < 0.05),
+            "{outcome:?}"
+        );
+        let current = filter.fuse_mag_heading(filter.now(), ahead, noise);
+        assert!(matches!(current, Fusion::Rejected { .. }), "{current:?}");
     }
 
     /// An interval longer than any step the filter integrates is refused, whatever the

@@ -343,10 +343,6 @@ flight           8  pos_h<=1.797 pos_v<=0.310 vel<=0.530 pos_h_max<=4.436  tilt<
 # present, and `gnss_latency` reads like `mission`: `pos_h` 2.197 m to 0.295, `vel` 0.459 to 0.144,
 # `tilt` 0.670 deg to 0.338, `nees_pos` 4.06 to 0.0841, `false_valid` 280 to 0. The latency the
 # scenario carries is untouched; what moved is that the fix stopped being fused as current. Every
-# other line is byte-identical, having no latency to place. The alternatives were measured on this
-# line at 50, 150 and 300 ms and at half and twice the speed: fusing as current reaches `pos_h`
-# 11.4 m at 300 ms and twice the speed; innovating against `p - v tau`, the issue's option 3, buys
-# 2.20 to 2.08, since a stale velocity fix is also `a tau` wrong; extrapolating position, velocity
-# and attitude back to second order matches the history here (0.300) and was refused on the
-# corpus, where one IMU sample's vibration in `a tau` took `eb799954` from 2 rejections to 917.
-# The history holds 0.293 to 0.295 m across the whole sweep. GOALS.md, "Measurement latency".
+# other line is byte-identical, having no latency to place. The history holds 0.293 to 0.295 m
+# across a sweep of 50 to 300 ms and half to twice the speed; the alternatives measured on this
+# line, and the one refused on the corpus, are GOALS.md's, "Measurement latency".

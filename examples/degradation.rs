@@ -43,12 +43,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Quasi-static initialization. A real window is captured from the IMU while the
     // vehicle sits still; the filter validates the stationarity assumption.
     let window: [StaticSample; (2 * IMU_HZ) as usize] = core::array::from_fn(stationary_sample);
+    // The IMU driver's sample count, which dates every sample after the window as it did
+    // the window's own.
+    let mut samples = window.len() as u64;
     let alignment = filter.initialize(&window)?;
     println!("alignment:         {alignment:?}");
     println!("initialized:       {:?}\n", filter.state().status);
 
     // --- steady state: every source arriving -------------------------------------------
-    run(&mut filter, 2 * IMU_HZ, Sources::all());
+    run(&mut filter, &mut samples, 2 * IMU_HZ, Sources::all());
     report("all sources", &filter);
 
     // A glitch: one fix 50 m north of where every fix before it put the vehicle. The gate
@@ -66,11 +69,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     // --- GNSS drops out ----------------------------------------------------------------
-    run(&mut filter, 3 * IMU_HZ, Sources::without_gnss());
+    run(
+        &mut filter,
+        &mut samples,
+        3 * IMU_HZ,
+        Sources::without_gnss(),
+    );
     report("no GNSS for 3 s", &filter);
 
     // --- everything drops out ----------------------------------------------------------
-    run(&mut filter, 6 * IMU_HZ, Sources::none());
+    run(&mut filter, &mut samples, 6 * IMU_HZ, Sources::none());
     report("nothing for 6 s", &filter);
 
     // Recovery is this application's call, having turned the filter's off.
@@ -148,10 +156,10 @@ impl Sources {
 }
 
 /// The integration loop a flight controller would write.
-fn run(filter: &mut Eskf, ticks: u32, sources: Sources) {
+fn run(filter: &mut Eskf, samples: &mut u64, ticks: u32, sources: Sources) {
     for tick in 0..ticks {
-        // The IMU driver's timestamp; here, one interval after the last sample.
-        let time = filter.time().unwrap_or_default().after(interval());
+        *samples += 1;
+        let time = sample_time(*samples);
         assert!(filter.predict(imu_sample(time)).is_propagated());
 
         if sources.gnss && tick % (IMU_HZ / GNSS_HZ) == 0 {
@@ -249,9 +257,14 @@ fn imu_sample(time: Timestamp) -> ImuSample {
     )
 }
 
-/// The `i`th sample of a window on the ground, on a clock counting from power-on.
+/// When the `n`th IMU sample since power-on ends: the driver's clock, never the filter's.
+fn sample_time(n: u64) -> Timestamp {
+    Timestamp::from_micros(n * 1_000_000 / u64::from(IMU_HZ))
+}
+
+/// The `i`th sample of a window on the ground.
 fn stationary_sample(i: usize) -> StaticSample {
-    let time = Timestamp::from_micros((i as u64 + 1) * 1_000_000 / u64::from(IMU_HZ));
+    let time = sample_time(i as u64 + 1);
     StaticSample {
         imu: ImuSample::from_rates(
             time,

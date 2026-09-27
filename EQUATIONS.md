@@ -653,15 +653,14 @@ things about it are not optional:
 * **It is the state as it stood, not an extrapolation.** Extrapolating back from the present on
   the last IMU sample, $`\hat v - a_n\tau`$, matches the history on a simulated IMU and fails on a
   real one: one sample's specific force carries the airframe's vibration, which the velocities
-  either side of it average out. On `2c42096b`, a vehicle on the ground, it took GNSS rejections
-  from 0 to 94.
+  either side of it average out. GOALS.md, "Measurement latency", has the corpus figures.
 * **Every correction reaches it.** An update moves the estimate of the past with the present, so
   each one is applied to every entry. Without it a fix taken before the previous fix was fused is
   judged against a past that fix never corrected, and the same error is corrected twice.
 
 At either end the history runs out. A measurement timed between the last IMU sample and the
-next, ahead of the state, is placed on the present carried forward on its velocity, and
-$`\tau`$ is negative. One older than the history, which only happens in the first moments after a
+next, ahead of the state, is placed on the present carried forward, position on its velocity
+and attitude on the last sample's rate, and $`\tau`$ is negative. One older than the history, which only happens in the first moments after a
 start, is placed at the history's oldest entry, and $`\tau`$ is the age of that entry, so that
 $`h`$ and $`H_\tau`$ describe the same moment.
 

@@ -4,8 +4,10 @@
 use nalgebra::{UnitQuaternion, Vector3};
 
 use crate::config::LATENCY_HORIZON;
+use crate::frames::Body;
+use crate::math::exp_quat;
 use crate::state::State;
-use crate::units::{Attitude, Position, Timestamp, Velocity};
+use crate::units::{AngularRate, Attitude, Position, Timestamp, Velocity};
 
 /// Entries held: enough that [`LATENCY_HORIZON`] is covered at [`SPACING`] with one to spare
 /// at each end.
@@ -27,6 +29,17 @@ struct Entry {
     attitude: UnitQuaternion<f32>,
 }
 
+impl Entry {
+    fn of(time: Timestamp, state: &State) -> Self {
+        Self {
+            time,
+            position: state.position.vector(),
+            velocity: state.velocity.vector(),
+            attitude: state.attitude.quaternion(),
+        }
+    }
+}
+
 impl Default for Entry {
     fn default() -> Self {
         Self {
@@ -43,8 +56,7 @@ impl Default for Entry {
 /// The state as it stood rather than a quantity integrated from the IMU since: a velocity a
 /// measurement's age ago is the current velocity less the acceleration *integrated* over that
 /// age, and one sample's specific force is no estimate of that integral on a vibrating
-/// airframe. Extrapolating back on the last sample instead took `2c42096b`, a vehicle sitting
-/// on the ground, from 0 GNSS rejections to 94.
+/// airframe. `GOALS.md`, "Measurement latency", has what extrapolating did to the corpus.
 ///
 /// Kept consistent with every correction: an update moves the estimate of the past with the
 /// present, so [`shift`](Self::shift) applies each one to every entry. Without it a fix taken
@@ -71,8 +83,12 @@ impl Default for History {
 
 impl History {
     /// Forget everything: a new start has no past.
+    ///
+    /// The count alone, since nothing reads an entry past `len`: rebuilding the ring put a
+    /// 1552-byte temporary in `Eskf::apply_alignment`'s frame on `thumbv6m-none-eabi`.
     pub(crate) fn clear(&mut self) {
-        *self = Self::default();
+        self.len = 0;
+        self.next = 0;
     }
 
     /// Record `state` at `time`, if [`SPACING`] has passed since the newest entry.
@@ -82,14 +98,8 @@ impl History {
         {
             return;
         }
-        let entry = Entry {
-            time,
-            position: state.position.vector(),
-            velocity: state.velocity.vector(),
-            attitude: state.attitude.quaternion(),
-        };
         if let Some(slot) = self.entries.get_mut(self.next) {
-            *slot = entry;
+            *slot = Entry::of(time, state);
         }
         self.next = (self.next + 1) % CAPACITY;
         self.len = (self.len + 1).min(CAPACITY);
@@ -117,57 +127,61 @@ impl History {
         }
     }
 
-    /// When the oldest entry was recorded: the furthest back a measurement can be placed.
-    pub(crate) fn oldest(&self) -> Option<Timestamp> {
-        if self.len == 0 {
-            return None;
-        }
-        let index = (self.next + CAPACITY - self.len) % CAPACITY;
-        self.entries.get(index).map(|entry| entry.time)
-    }
-
-    /// `current` as it stood at `time`: position, velocity and attitude interpolated from the
-    /// history, the biases as they are. Before the oldest entry, the oldest.
+    /// `current` as it stood at `time`, and the time it was placed at: position, velocity and
+    /// attitude interpolated from the history, the biases as they are. Before the oldest entry,
+    /// the oldest, at its own time.
     ///
     /// After `now`, which a measurement timed between the last IMU sample and the next can be,
-    /// the present carried forward on its velocity: an integrated quantity, where one sample's
-    /// specific force is not, and the step is short enough that `½ a t²` is millimetres.
-    pub(crate) fn at(&self, time: Timestamp, now: Timestamp, current: &State) -> State {
+    /// the present carried forward: position on its velocity and attitude on `omega`, the
+    /// bias-corrected rate of the last sample, which is what the step to come will integrate.
+    /// Velocity stays, because one sample's specific force carries the airframe's vibration and
+    /// the lead is at most [`Config::max_predict_dt`](crate::Config::max_predict_dt): 0.1 m/s
+    /// at 1 m/s² and the default, where attitude left behind is 9° at 90°/s.
+    pub(crate) fn at(
+        &self,
+        time: Timestamp,
+        now: Timestamp,
+        current: &State,
+        omega: AngularRate<Body>,
+    ) -> (State, Timestamp) {
         let lead = time.since(now).as_secs();
         if lead > 0.0 {
-            let velocity = current.velocity.vector();
-            return State {
-                position: Position::from_vector(current.position.vector() + velocity * lead),
+            let ahead = State {
+                position: Position::from_vector(
+                    current.position.vector() + current.velocity.vector() * lead,
+                ),
+                attitude: Attitude::body_to_ned(
+                    current.attitude.quaternion() * exp_quat(omega.vector() * lead),
+                ),
                 ..*current
             };
+            return (ahead, time);
         }
-        let present = Entry {
-            time: now,
-            position: current.position.vector(),
-            velocity: current.velocity.vector(),
-            attitude: current.attitude.quaternion(),
-        };
         // Newest first, the present ahead of them all.
-        let mut later = present;
-        for age in 0..self.len {
-            let index = (self.next + CAPACITY - 1 - age) % CAPACITY;
-            let Some(&earlier) = self.entries.get(index) else {
+        let mut later = Entry::of(now, current);
+        for k in 0..self.len {
+            let Some(earlier) = self.newest_but(k) else {
                 break;
             };
             if earlier.time <= time {
-                return with(current, interpolate(earlier, later, time));
+                return (with(current, interpolate(earlier, later, time)), time);
             }
             later = earlier;
         }
-        with(current, later)
+        (with(current, later), later.time)
     }
 
     fn newest(&self) -> Option<Entry> {
-        if self.len == 0 {
+        self.newest_but(0)
+    }
+
+    /// The entry `k` places older than the newest, if one is held.
+    fn newest_but(&self, k: usize) -> Option<Entry> {
+        if k >= self.len {
             return None;
         }
         self.entries
-            .get((self.next + CAPACITY - 1) % CAPACITY)
+            .get((self.next + CAPACITY - 1 - k) % CAPACITY)
             .copied()
     }
 }
@@ -207,6 +221,10 @@ mod tests {
 
     const DT: Seconds = Seconds::from_secs(0.0025);
 
+    fn still() -> AngularRate<Body> {
+        AngularRate::body(0.0, 0.0, 0.0)
+    }
+
     fn moving(north: f32) -> State {
         State {
             position: Position::ned(north, 0.0, 0.0),
@@ -232,7 +250,7 @@ mod tests {
     fn the_past_of_a_straight_line_is_on_it() {
         let (history, now, state) = flown();
         for age in [0.0, 0.001, 0.0137, 0.15, 0.29] {
-            let past = history.at(now.before(Seconds::from_secs(age)), now, &state);
+            let (past, _) = history.at(now.before(Seconds::from_secs(age)), now, &state, still());
             let expected = state.position.x() - 20.0 * age;
             assert!(
                 (past.position.x() - expected).abs() < 1e-3,
@@ -246,7 +264,11 @@ mod tests {
     #[test]
     fn the_ring_spans_the_horizon_at_imu_rate() {
         let (history, now, state) = flown();
-        let oldest = history.at(Timestamp::ZERO, now, &state);
+        let (oldest, placed) = history.at(Timestamp::ZERO, now, &state, still());
+        assert!(
+            placed > Timestamp::ZERO,
+            "placed at the oldest entry, not before it"
+        );
         let reached = (state.position.x() - oldest.position.x()) / 20.0;
         assert!(reached >= LATENCY_HORIZON.as_secs(), "{reached} s");
     }
@@ -272,17 +294,24 @@ mod tests {
             ..before
         };
         history.shift(&before, &after);
-        let past = history.at(Timestamp::ZERO, now, &after);
+        let (past, _) = history.at(Timestamp::ZERO, now, &after, still());
         let (roll, pitch, yaw) = past.attitude.euler_angles();
         assert!(roll.abs() < 1e-5 && pitch.abs() < 1e-5, "{roll} {pitch}");
         assert!((yaw - 1.0).abs() < 1e-5, "{yaw}");
     }
 
+    /// Position on velocity and attitude on the rate: a heading 100 ms ahead in a 90°/s turn
+    /// is compared against the turn, not against where it stood 9° earlier.
     #[test]
-    fn a_time_ahead_of_the_present_is_carried_forward_on_velocity() {
+    fn a_time_ahead_of_the_present_is_carried_forward() {
         let (history, now, state) = flown();
-        let ahead = history.at(now.after(Seconds::from_secs(0.01)), now, &state);
-        assert!((ahead.position.x() - (state.position.x() + 0.2)).abs() < 1e-4);
+        let turning = AngularRate::body(0.0, 0.0, core::f32::consts::FRAC_PI_2);
+        let lead = Seconds::from_secs(0.1);
+        let (ahead, placed) = history.at(now.after(lead), now, &state, turning);
+        assert_eq!(placed, now.after(lead));
+        assert!((ahead.position.x() - (state.position.x() + 2.0)).abs() < 1e-4);
+        let (_, _, yaw) = ahead.attitude.euler_angles();
+        assert!((yaw - 0.05 * core::f32::consts::PI).abs() < 1e-5, "{yaw}");
     }
 
     #[test]
@@ -293,7 +322,12 @@ mod tests {
             ..state
         };
         history.shift(&state, &corrected);
-        let past = history.at(now.before(Seconds::from_secs(0.1)), now, &corrected);
+        let (past, _) = history.at(
+            now.before(Seconds::from_secs(0.1)),
+            now,
+            &corrected,
+            still(),
+        );
         assert!((past.position.x() - (state.position.x() - 2.0 + 3.0)).abs() < 1e-3);
         assert!((past.position.y() - 0.5).abs() < 1e-6);
     }

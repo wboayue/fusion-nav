@@ -196,12 +196,20 @@ pub enum Fusion {
     /// [`Config::max_predict_dt`](crate::Config::max_predict_dt). The measurement was discarded
     /// and no health timer moved.
     ///
+    /// Inside those bounds the measurement is fused at its own time, equation (23′): against
+    /// the state as it was, or, for one timed between the last IMU sample and the next, as it
+    /// will be, carried forward on the estimated velocity and the last sample's rate.
+    ///
     /// Fused anyway, an old measurement is a statement about where the vehicle was, applied to
     /// where it is: at 20 m/s a fix a second old is 20 m of error handed to the gate as truth.
     /// One later than the state is a clock the IMU and the sensor do not share, or a sample
     /// the caller has not yet handed to [`predict`](crate::Eskf::predict). Either way it is the
     /// timestamp that is wrong, which is a refusal rather than a verdict on the value.
-    OutOfHorizon,
+    OutOfHorizon {
+        /// How long before the state the measurement was taken, negative for one after it:
+        /// what tells a latency longer than the horizon from a clock with another epoch.
+        age: Seconds,
+    },
 }
 
 impl Fusion {
@@ -228,7 +236,7 @@ impl Fusion {
             Self::NotFinite => Some(Refusal::NotFinite),
             Self::InvalidNoise => Some(Refusal::InvalidNoise),
             Self::StateInvalid => Some(Refusal::StateInvalid),
-            Self::OutOfHorizon => Some(Refusal::OutOfHorizon),
+            Self::OutOfHorizon { .. } => Some(Refusal::OutOfHorizon),
             Self::Accepted { .. } | Self::Rejected { .. } | Self::Reset => None,
         }
     }
@@ -244,7 +252,7 @@ impl Fusion {
             | Self::NotFinite
             | Self::InvalidNoise
             | Self::StateInvalid
-            | Self::OutOfHorizon => None,
+            | Self::OutOfHorizon { .. } => None,
         }
     }
 }
@@ -263,7 +271,12 @@ impl core::fmt::Display for Fusion {
             Self::NotFinite => write!(f, "refused, {}", Refusal::NotFinite),
             Self::InvalidNoise => write!(f, "refused, {}", Refusal::InvalidNoise),
             Self::StateInvalid => write!(f, "refused, {}", Refusal::StateInvalid),
-            Self::OutOfHorizon => write!(f, "refused, {}", Refusal::OutOfHorizon),
+            Self::OutOfHorizon { age } => write!(
+                f,
+                "refused, {}, age {} s",
+                Refusal::OutOfHorizon,
+                seconds(age)
+            ),
         }
     }
 }
@@ -860,7 +873,8 @@ pub struct PropagationHealth {
     /// [`Config::coast`](crate::Config::coast) off.
     pub refused_too_long: u32,
     /// Steps refused for their timing: a sample not after the last,
-    /// [`Propagation::InvalidStep`], or an integration interval zero or negative,
+    /// [`Propagation::InvalidStep`], or an integration interval under a microsecond or past
+    /// [`Config::max_predict_dt`](crate::Config::max_predict_dt),
     /// [`Propagation::InvalidInterval`].
     pub refused_invalid: u32,
     /// Steps refused because the [`ImuSample`](crate::ImuSample) carried a NaN or an

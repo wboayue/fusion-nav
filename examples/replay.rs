@@ -1038,8 +1038,15 @@ impl Replay {
         self.first_imu.get_or_insert(t);
         let previous = self.previous_imu;
         self.probe_rate(t);
+        let time = Timestamp::from_secs_f64(t);
+        // A sample not after the last is one `predict` would refuse as `InvalidStep`, and a
+        // window holding it is one `initialize` refuses: it describes no time, so it is left
+        // out, as the filter leaves it out once running.
+        if self.filled > 0 && self.window[self.filled - 1].time >= time {
+            return Ok(());
+        }
         let sample = Held {
-            time: Timestamp::from_secs_f64(t),
+            time,
             imu,
             mag: self.last_mag,
             baro: self.last_baro,
@@ -2778,7 +2785,7 @@ fn verdict(outcome: Fusion) -> &'static str {
         Fusion::NotFinite => "not_finite",
         Fusion::InvalidNoise => "invalid_noise",
         Fusion::StateInvalid => "state_invalid",
-        Fusion::OutOfHorizon => "out_of_horizon",
+        Fusion::OutOfHorizon { .. } => "out_of_horizon",
     }
 }
 

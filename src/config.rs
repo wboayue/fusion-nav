@@ -809,6 +809,11 @@ pub struct Config {
     /// interval short of a dropout is 90.5 ms, twice in the 2 h log's 1.4 M samples —
     /// while catching real SD-card dropouts of 0.34 s and up. The margin at that worst
     /// case is 10 ms, so a slower log than any in the corpus would need this raised.
+    ///
+    /// The same bound holds a measurement timed after the state, which is carried forward to
+    /// its time on the estimated velocity and the last sample's rate: the longest the filter
+    /// extrapolates on one sample either way. Later than this, a `fuse_*` refuses it as
+    /// [`Fusion::OutOfHorizon`](crate::Fusion::OutOfHorizon).
     pub max_predict_dt: Seconds,
     /// Coasting across a step longer than [`max_predict_dt`](Self::max_predict_dt), equation
     /// (22′). `None` refuses the step instead, as

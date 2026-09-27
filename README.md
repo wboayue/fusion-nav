@@ -328,8 +328,9 @@ as its own source, `gnss_position` and `gnss_height`. `is_accepted()` on it asks
 
 `time` is when the measurement was taken, on the clock the IMU's samples are timed on, and it is
 an argument for the reason the noise is: a receiver's latency is a property of that receiver and
-that fix. A measurement older than `LATENCY_HORIZON` (0.3 s, what PX4 and ArduPilot buffer) or
-later than the state by more than a step is refused as `OutOfHorizon`.
+that fix. A measurement older than `LATENCY_HORIZON` or later than the state by more than
+`Config::max_predict_dt` is refused as `OutOfHorizon { age }`, and the age tells a latency past the
+horizon from a clock on another epoch.
 
 The noise is an argument, not configuration, because the accuracy of a fix is a property of that
 fix. Build it the way the source reports it: `PositionNoise::horizontal_vertical(eph, epv)` and
@@ -363,7 +364,7 @@ a `Reset` steps the state, and a refusal says the measurement never reached the 
 | `NoReference` | barometer altitude with no `α₀` and no established position to read one against, or a geodetic fix that cannot place an origin |
 | `NotFinite` | a NaN or infinity in the measurement or its noise; discarded |
 | `InvalidNoise` | a zero or negative variance in the noise — no sensor has one, and `S` would be singular or worse; discarded |
-| `OutOfHorizon` | `time` older than `LATENCY_HORIZON`, or ahead of the state by more than `Config::max_predict_dt`; discarded |
+| `OutOfHorizon { age }` | `time` older than `LATENCY_HORIZON`, or ahead of the state by more than `Config::max_predict_dt`; discarded |
 | `StateInvalid` | the filter's own covariance or correction could not support an update — `S` not positive-definite, or f32 overflow; nothing committed, and the measurement is not at fault |
 | `NotInitialized` | no state to fuse against |
 

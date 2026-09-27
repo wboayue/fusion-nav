@@ -293,6 +293,12 @@ fn surface(state: State, diagnostics: Diagnostics, covariance: &Covariance) {
     show::<InitError>(InitError::InvalidInterval {
         interval: Seconds::from_secs(black_box(-0.5)),
     });
+    show::<InitError>(InitError::InvalidStep {
+        dt: Seconds::from_secs(black_box(-0.5)),
+    });
+    show::<Fusion>(Fusion::OutOfHorizon {
+        age: Seconds::from_secs(black_box(0.4)),
+    });
     show::<Status>(state.status);
     show::<Validity>(state.validity);
     show::<Fusion>(outcome);
