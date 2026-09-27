@@ -87,7 +87,8 @@ loop {
     // the first one places the navigation origin. The names are a u-blox PVT's.
     let fix = Geodetic::from_degrees_e7(lat_e7, lon_e7, height_mm);
     let (eph, epv) = (h_acc_mm as f32 * 1e-3, v_acc_mm as f32 * 1e-3);
-    let noise = PositionNoise::clamped(eph, epv, SigmaBounds::new(0.5, 100.0), SigmaBounds::new(0.75, 100.0));
+    let (horizontal, vertical) = (SigmaBounds::new(0.5, 100.0), SigmaBounds::new(0.75, 100.0));
+    let noise = PositionNoise::clamped(eph, epv, horizontal, vertical);
     if !filter.fuse_gnss_geodetic(fix, noise).is_accepted() {
         /* diagnostics() has the detail */
     }

@@ -64,7 +64,12 @@ use nalgebra::Vector3;
 /// // `clamped` bounds the receiver's own `eph` and `epv` the way both autopilots do.
 /// let outcome = filter.fuse_gnss_geodetic(
 ///     Geodetic::from_degrees(47.397_742, 8.545_594, 488.0),
-///     PositionNoise::clamped(1.5, 3.0, SigmaBounds::new(0.5, 100.0), SigmaBounds::new(0.75, 100.0)),
+///     PositionNoise::clamped(
+///         1.5,
+///         3.0,
+///         SigmaBounds::new(0.5, 100.0),
+///         SigmaBounds::new(0.75, 100.0),
+///     ),
 /// );
 /// assert!(outcome.is_accepted());
 /// assert!(filter.origin().is_some());
@@ -591,8 +596,6 @@ impl Eskf {
             // Noted here, whatever becomes of the step: nothing else records how far the
             // interval ran, and a coast discarded as non-finite is a gap all the same.
             self.diagnostics.propagation.note_gap(dt);
-            // No sample describes the interval, so no rate does either.
-            self.angular_rate = None;
             let Some(coast) = self.config.coast else {
                 return self.refuse_step(Propagation::StepTooLong { dt, limit });
             };
@@ -624,13 +627,7 @@ impl Eskf {
             &self.config.imu,
             self.config.baro_offset_walk,
         );
-        // Against the bias the step integrated with, before the commit replaces the state.
-        let omega = propagate::corrected_imu(imu, &self.state).omega;
-        let outcome = self.commit_step(propagated, Propagation::Propagated);
-        if outcome == Propagation::Propagated {
-            self.angular_rate = Some(omega);
-        }
-        outcome
+        self.commit_step(propagated, Propagation::Propagated)
     }
 
     /// Commit a propagated or coasted step, or discard it whole if it came out non-finite, and
@@ -647,6 +644,7 @@ impl Eskf {
             return self.refuse_step(Propagation::StateNotFinite);
         }
         self.state = propagated.state;
+        self.angular_rate = propagated.omega;
         self.commit_covariance(propagated.covariance, propagated.offset);
         self.note_alignment();
         self.diagnostics.propagation.record(outcome);
@@ -790,8 +788,8 @@ impl Eskf {
     /// Nor does it smooth one: ArduPilot runs each accuracy through a decaying envelope with a
     /// 5 s time constant before bounding it (`AP_NavEKF3_Measurements.cpp:609-633` at
     /// `368dc0c4`), so a spike in `eph` deweights the fixes after it for seconds there and
-    /// only its own fix here. The replay harness takes the same stance for the reasons `data/README.md` gives
-    /// under `r_policy=` (#105). What
+    /// only its own fix here. The replay harness takes the same stance, for the reasons
+    /// `data/README.md` gives under `r_policy=` (#105). What
     /// the filter does add is the receiver's rather than the fix's: a fix's error persists
     /// into the next one, and the update is computed at the variance that leaves, equation
     /// (24′), with the gate still reading `noise` itself. See
@@ -1306,14 +1304,19 @@ impl Eskf {
     /// # let mut filter = Eskf::new(Config::default());
     /// # let dt = Seconds::from_secs(0.0025);
     /// # let still = StaticSample {
-    /// #     imu: ImuSample { gyro: AngularRate::zero(), accel: Acceleration::body(0.0, 0.0, -GRAVITY) },
+    /// #     imu: ImuSample {
+    /// #         gyro: AngularRate::zero(),
+    /// #         accel: Acceleration::body(0.0, 0.0, -GRAVITY),
+    /// #     },
     /// #     ..StaticSample::default()
     /// # };
     /// # filter.initialize(&[still; 800], dt)?;
     /// # let imu = ImuSample { gyro: AngularRate::body(0.0, 0.0, 0.5), ..still.imu };
     /// # assert!(filter.predict(imu, dt).is_propagated());
-    /// # let (antenna, antenna_velocity) = (Position::ned(0.0, 0.0, -0.4), Velocity::ned(0.1, 0.0, 0.0));
-    /// # let (position_noise, velocity_noise) = (PositionNoise::horizontal_vertical(1.0, 1.5), VelocityNoise::from_speed_accuracy(0.3));
+    /// # let antenna = Position::ned(0.0, 0.0, -0.4);
+    /// # let antenna_velocity = Velocity::ned(0.1, 0.0, 0.0);
+    /// # let position_noise = PositionNoise::horizontal_vertical(1.0, 1.5);
+    /// # let velocity_noise = VelocityNoise::from_speed_accuracy(0.3);
     /// // The antenna's offset from the IMU, forward, right and down: measured on the airframe.
     /// let r = nalgebra::Vector3::new(0.0, 0.0, -0.4);
     ///
@@ -1322,18 +1325,19 @@ impl Eskf {
     /// if let Some(omega) = filter.angular_rate() {
     ///     let rotation = filter.state().attitude.quaternion();
     ///     let position = Position::<Ned>::from_vector(antenna.vector() - rotation * r);
-    ///     let velocity =
-    ///         Velocity::<Ned>::from_vector(antenna_velocity.vector() - rotation * omega.vector().cross(&r));
+    ///     let swept = rotation * omega.vector().cross(&r);
+    ///     let velocity = Velocity::<Ned>::from_vector(antenna_velocity.vector() - swept);
     ///     let _ = filter.fuse_gnss_position(position, position_noise);
     ///     let _ = filter.fuse_gnss_velocity(velocity, velocity_noise);
     /// }
     /// # Ok::<(), InitError>(())
     /// ```
     ///
-    /// `None` until a step is integrated, after any initialization, and after a gap longer than
+    /// Committed with the state, and only with it. `None` until a step is integrated, after
+    /// any initialization, and after a gap coasted past
     /// [`Config::max_predict_dt`](crate::Config::max_predict_dt), until the next sample: a
-    /// coast reads no sample, and the rate before the gap is not the rate after it. A step
-    /// refused for its sample leaves the last rate in place, as it leaves the state.
+    /// coast reads no sample, and the rate before the gap is not the rate after it. A refused
+    /// step leaves the last rate in place, as it leaves the state.
     pub const fn angular_rate(&self) -> Option<AngularRate<Body>> {
         self.angular_rate
     }
@@ -3271,17 +3275,18 @@ mod tests {
         assert!((yaw + 0.06).abs() < 1e-6, "heading committed as {yaw}");
     }
 
-    /// A filter seeded at `attitude` with gyroscope bias `bias` and nothing else.
+    /// [`seed`] at `attitude`, with gyroscope bias `bias`.
     fn seeded(attitude: Attitude, bias: AngularRate<Body>) -> Eskf {
         let mut filter = Eskf::new(Config::default());
+        let (state, covariance) = seed();
         let state = State {
             attitude,
             gyro_bias: bias,
-            ..State::default()
+            ..state
         };
         let _ = filter
-            .initialize_from(state, Covariance::from_sigmas([0.1; STATES]))
-            .expect("a finite seed");
+            .initialize_from(state, covariance)
+            .expect("a sane seed");
         filter
     }
 
