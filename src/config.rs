@@ -446,9 +446,14 @@ impl Default for Correlation {
     /// | GNSS velocity | 5 | 0.31–2.2 | 0.50 |
     /// | barometer | 10 | 0.006–4.2 | 0.20 |
     /// | magnetometer | 10 | 0.006–14.6 | 1.2 |
+    /// | dual-antenna GNSS heading | 1 | 0.25 | 0.25 |
     ///
     /// Three receivers' velocity innovations and one magnetometer's alternate in sign, which no
     /// `τ` describes, and are left out rather than read as white.
+    ///
+    /// GNSS heading rests on one log, `a299e722`, the only one whose EKF2 fused a dual-antenna
+    /// yaw: `acf1_gnss_yaw` 0.6696 at 10 Hz. The course constraint has no corpus reading at all,
+    /// since no log flies a vehicle that points where it goes and says so, and is fused white.
     fn default() -> Self {
         Self {
             gnss_position: Some(Seconds::from_secs(4.2)),
@@ -456,7 +461,7 @@ impl Default for Correlation {
             gnss_velocity: Some(Seconds::from_secs(0.5)),
             baro_altitude: Some(Seconds::from_secs(0.2)),
             mag_heading: Some(Seconds::from_secs(1.2)),
-            gnss_heading: None,
+            gnss_heading: Some(Seconds::from_secs(0.25)),
             course: None,
         }
     }

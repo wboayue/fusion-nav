@@ -66,6 +66,13 @@ WGS84_E2 = 6.694_379_990_141e-3
 DEFAULT_BARO_VARIANCE = 4.0  # m^2, sigma = 2.0 m
 DEFAULT_MAG_VARIANCE = 0.09  # rad^2, sigma = 0.3 rad
 
+# Dual-antenna GNSS heading, sigma = 0.1 rad where the receiver logs no accuracy:
+# PX4's hard-coded gnss_heading_noise{0.1f} (EKF/common.h:390), the floor its
+# R_YAW = sq(fmaxf(yaw_acc, gnss_heading_noise)) reads a missing accuracy as
+# (EKF/aid_sources/gnss/gnss_yaw_control.cpp:138-139). So a log without one is
+# fused at exactly what its EKF2 fused it at.
+DEFAULT_GNSS_HEADING_VARIANCE = 0.01  # rad^2, sigma = 0.1 rad
+
 # A *_timestamp_relative of INT32_MAX means "no sample in this message".
 INVALID_RELATIVE = 2_147_483_647
 
@@ -256,7 +263,20 @@ def is_3d_fix(fix, k):
     return fix is None or fix[k] >= 3
 
 
-def convert_gnss(ulog, rows, used):
+def gnss_yaw_enabled(params):
+    """Whether this log's EKF2 fused the receiver's `heading` as a dual-antenna yaw.
+
+    The field alone does not say: a driver may fill it from anything, and a ULog records
+    no meaning beside a name. The log's own configuration does. `EKF2_GPS_CTRL` bit 3
+    since PX4 8962cf2d25 (`src/modules/ekf2/params_gnss.yaml:5-17` at c4e4ef98), and
+    `EKF2_AID_MASK` bit 7, `USE_GPS_YAW`, before it (`EKF/common.h` at 8962cf2d25~1).
+    """
+    if "EKF2_GPS_CTRL" in params:
+        return bool(int(params["EKF2_GPS_CTRL"]) & (1 << 3))
+    return bool(int(params.get("EKF2_AID_MASK", 0)) & (1 << 7))
+
+
+def convert_gnss(ulog, rows, used, heading_variance=DEFAULT_GNSS_HEADING_VARIANCE):
     dataset = pick(ulog, GNSS_TOPICS)
     if dataset is None:
         print("warning: no GNSS topic; position and velocity aiding omitted", file=sys.stderr)
@@ -293,6 +313,13 @@ def convert_gnss(ulog, rows, used):
     else:
         print("warning: GNSS topic has no NED velocity; velocity aiding omitted", file=sys.stderr)
 
+    # `heading` is already the body frame's (msg/SensorGps.msg:76), the antenna mounting
+    # having been taken out upstream, so it is written as it reads.
+    heading = column(dataset, "heading") if "heading" in dataset.data else None
+    if heading is not None and not gnss_yaw_enabled(ulog.initial_parameters):
+        heading = None
+    heading_accuracy = dataset.data.get("heading_accuracy")
+
     origin = None
     for k in range(len(t)):
         if not is_3d_fix(fix, k):
@@ -323,6 +350,11 @@ def convert_gnss(ulog, rows, used):
             rows.append(
                 (t[k], "gnss_vel", [vn[k], ve[k], vd[k]], [variance, variance, variance])
             )
+
+        if heading is not None and math.isfinite(heading[k]):
+            sigma = float(heading_accuracy[k]) if heading_accuracy is not None else 0.0
+            variance = sigma**2 if math.isfinite(sigma) and sigma > 0 else heading_variance
+            rows.append((t[k], "gnss_yaw", [float(heading[k])], [variance]))
 
     if origin is None:
         print("warning: no 3D GNSS fix in the log", file=sys.stderr)
@@ -468,13 +500,13 @@ def open_ulog(path, topics=None):
     return ULog(str(path), topics)
 
 
-def convert(path, baro_variance, mag_variance):
+def convert(path, baro_variance, mag_variance, heading_variance=DEFAULT_GNSS_HEADING_VARIANCE):
     ulog = open_ulog(path)
     rows = []
     used = {}
     note = dropouts(ulog)
     sensor_combined = convert_imu(ulog, rows, used)
-    origin = convert_gnss(ulog, rows, used)
+    origin = convert_gnss(ulog, rows, used, heading_variance)
     convert_baro(ulog, rows, used, baro_variance, sensor_combined)
     convert_mag(ulog, rows, used, mag_variance, sensor_combined)
     # The IMU sample interval, for --reference's bias scaling only. Taken here
@@ -1233,7 +1265,7 @@ def gnss_noise_note(params):
 # VehicleGPSPosition.cpp:168-169`), in EKF2 as EKF2_GPS_DELAY before it. All at
 # c4e4ef98. The first name a log carries is the one it ran.
 MEASUREMENT_DELAYS = [
-    (("gnss_pos", "gnss_vel"), ("SENS_GPS0_DELAY", "EKF2_GPS_DELAY")),
+    (("gnss_pos", "gnss_vel", "gnss_yaw"), ("SENS_GPS0_DELAY", "EKF2_GPS_DELAY")),
     (("baro",), ("EKF2_BARO_DELAY",)),
     (("mag",), ("EKF2_MAG_DELAY",)),
 ]
@@ -1629,6 +1661,18 @@ def self_test():
            "Measurement delays: gnss 110 ms (EKF2_GPS_DELAY), baro 0 ms (EKF2_BARO_DELAY), "
            "mag 0 ms (not in the log)")
     expect("both halves of a fix", (delays["gnss_pos"], delays["gnss_vel"]), (110000, 110000))
+    # The heading field is not the evidence: a299e722 fills it with the configuration on,
+    # every other corpus log leaves it NaN with the configuration off, and a log whose
+    # driver fills it with the configuration off must not be read as a yaw.
+    expect("GPS_CTRL bit 3", gnss_yaw_enabled({"EKF2_GPS_CTRL": 15}), True)
+    expect("GPS_CTRL default", gnss_yaw_enabled({"EKF2_GPS_CTRL": 7}), False)
+    expect("AID_MASK bit 7", gnss_yaw_enabled({"EKF2_AID_MASK": 385}), True)
+    # 2c42096b's 131 has bit 7 set and its receiver logs no heading at all, which is the
+    # other half of the rule: rows need the configuration *and* a finite heading.
+    expect("AID_MASK 131", gnss_yaw_enabled({"EKF2_AID_MASK": 131}), True)
+    expect("AID_MASK without", gnss_yaw_enabled({"EKF2_AID_MASK": 3}), False)
+    expect("GPS_CTRL wins", gnss_yaw_enabled({"EKF2_GPS_CTRL": 7, "EKF2_AID_MASK": 128}), False)
+    expect("neither", gnss_yaw_enabled({}), False)
     expect("the newer name wins", measurement_delays(
         {"SENS_GPS0_DELAY": 33.0, "EKF2_GPS_DELAY": 110.0})[0]["gnss_pos"], 33000)
 
@@ -1658,6 +1702,11 @@ def main():
         help=f"rad^2 on heading, PX4 does not log one (default: {DEFAULT_MAG_VARIANCE})",
     )
     parser.add_argument(
+        "--gnss-heading-variance", type=float, default=DEFAULT_GNSS_HEADING_VARIANCE,
+        help="rad^2 on a dual-antenna heading whose receiver logs no accuracy "
+             f"(default: {DEFAULT_GNSS_HEADING_VARIANCE}, PX4's floor)",
+    )
+    parser.add_argument(
         "--self-test", action="store_true",
         help="run the fixtures no corpus log can check, and exit",
     )
@@ -1682,7 +1731,7 @@ def main():
     output = args.output or args.ulog.with_suffix(".csv")
     try:
         rows, used, dropout_note, imu_dt, parameters, origin, delays = convert(
-            args.ulog, args.baro_variance, args.mag_variance
+            args.ulog, args.baro_variance, args.mag_variance, args.gnss_heading_variance
         )
         note = [
             f"Converted from {args.ulog.name} by tools/ulog2replay.py",
@@ -1692,6 +1741,11 @@ def main():
             f"{args.mag_variance} rad^2 are assumed; PX4 logs neither.",
             "Timestamps rebased to the first sample.",
         ]
+        if any(row[1] == "gnss_yaw" for row in rows):
+            note.append(
+                f"gnss heading variance {args.gnss_heading_variance} rad^2 is assumed where "
+                "the receiver logs no heading_accuracy."
+            )
         if dropout_note:
             note.append(dropout_note)
         count, t0 = write_rows(rows, output, note, delays)
