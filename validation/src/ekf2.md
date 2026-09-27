@@ -58,9 +58,10 @@ Some rows are explained by the log, not by either filter:
 - `3949f175` is a simulation (PX4 SITL) whose magnetic declination setting does not match the
   field its simulator generated. It is kept for its log format.
 - `a299e722` has a receiver whose velocities contradict its own positions. Trusting it fully,
-  this filter refuses many of its velocities and the two estimates drift apart. With EKF2's
-  floors they come closer: heading differs by {{agreement a299e722/px4 heading_diff_med}}°
-  against {{agreement a299e722/raw heading_diff_med}}°.
+  this filter refuses many of its velocities and the two estimates drift apart, until its
+  positions are refused too and adopted back. With EKF2's floors they stay together: east
+  position differs by {{agreement a299e722/px4 pos_e_rms}} m RMS against
+  {{agreement a299e722/raw pos_e_rms}} m.
 
 The sections below look closer at the logs that each test something the others do not, ending
 with the one where this filter clearly does worse.
