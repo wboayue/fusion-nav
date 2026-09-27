@@ -374,7 +374,7 @@ impl core::fmt::Display for Refusal {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Propagation {
-    /// The state and covariance advanced over the full `dt`.
+    /// The state and covariance advanced across the sample.
     Propagated,
     /// `dt` exceeded [`Config::max_predict_dt`](crate::Config::max_predict_dt), so the sample
     /// was not integrated and the filter coasted across the gap instead. Equation (22′).
@@ -399,17 +399,29 @@ pub enum Propagation {
         /// The configured limit.
         limit: Seconds,
     },
-    /// `dt` was zero, negative, or not a number. Nothing was propagated and no timer
-    /// advanced.
+    /// The sample's [`time`](crate::ImuSample::time) was not after the filter's: `dt` is
+    /// zero or negative. Nothing was propagated, no timer advanced and the filter's clock
+    /// did not move.
     ///
     /// Rejected before the bookkeeping rather than after: a negative `dt` would run the
-    /// per-source timers backwards and make stale aiding look fresh, and a NaN would
-    /// poison them for the rest of the flight. Zero is included because two IMU samples
-    /// sharing a timestamp means duplicated data, which is worth knowing about even
-    /// though propagating over it would be harmless.
+    /// per-source timers backwards and make stale aiding look fresh. Zero is included
+    /// because two IMU samples sharing a timestamp means duplicated data, which is worth
+    /// knowing about even though propagating over it would be harmless.
     InvalidStep {
-        /// The `dt` offered.
+        /// The time from the filter's clock to the sample's.
         dt: Seconds,
+    },
+    /// An integration interval in the [`ImuSample`](crate::ImuSample) was zero or
+    /// negative. The state and covariance are unchanged; the timers and the clock advanced,
+    /// as under [`NotFinite`](Self::NotFinite) and for its reason.
+    ///
+    /// Refused because the interval scales what the increment is corrected by and what
+    /// (21) adds: a negative one subtracts process noise and lands a variance below zero,
+    /// which [`Validity`] reads as an estimate better than any the filter could have. An
+    /// interval that is not a number is [`NotFinite`](Self::NotFinite).
+    InvalidInterval {
+        /// The interval offered.
+        interval: Seconds,
     },
     /// A number in the [`ImuSample`](crate::ImuSample) is NaN or infinite. The state and
     /// covariance are unchanged.
@@ -482,6 +494,11 @@ impl core::fmt::Display for Propagation {
             Self::InvalidStep { dt } => {
                 write!(f, "step of {} s not usable, not propagated", seconds(dt))
             }
+            Self::InvalidInterval { interval } => write!(
+                f,
+                "imu interval of {} s not usable, not propagated",
+                seconds(interval)
+            ),
             Self::NotFinite => f.write_str("imu sample not finite, not propagated"),
             Self::StateNotFinite => f.write_str("propagated state not finite, not committed"),
             Self::NotInitialized => f.write_str("filter not initialized, not propagated"),
@@ -822,7 +839,9 @@ pub struct PropagationHealth {
     /// [`Config::max_predict_dt`](crate::Config::max_predict_dt), with
     /// [`Config::coast`](crate::Config::coast) off.
     pub refused_too_long: u32,
-    /// Steps refused as zero, negative, or not a number.
+    /// Steps refused for their timing: a sample not after the last,
+    /// [`Propagation::InvalidStep`], or an integration interval zero or negative,
+    /// [`Propagation::InvalidInterval`].
     pub refused_invalid: u32,
     /// Steps refused because the [`ImuSample`](crate::ImuSample) carried a NaN or an
     /// infinity.
@@ -862,7 +881,7 @@ impl PropagationHealth {
             Propagation::StepTooLong { .. } => {
                 self.refused_too_long = self.refused_too_long.saturating_add(1);
             }
-            Propagation::InvalidStep { .. } => {
+            Propagation::InvalidStep { .. } | Propagation::InvalidInterval { .. } => {
                 self.refused_invalid = self.refused_invalid.saturating_add(1);
             }
             Propagation::NotFinite => {

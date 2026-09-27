@@ -326,26 +326,38 @@ its heading from, and is the rate at which a tilt error turns that heading.
 
 ## Nominal state propagation
 
+The IMU supplies **increments**: a rotation $`\Delta\theta_m`$ integrated over $`\Delta t_\theta`$
+and a velocity $`\Delta v_m`$, specific force integrated over $`\Delta t_v`$, as both PX4's
+`imuSample` and ArduPilot's `imu_elements` carry them. The equations are written in rates, where
+the algebra is clearer, and the code evaluates each one multiplied through by its interval, so
+$`\omega \Delta t_\theta`$ below is the corrected increment itself and no rate is ever formed. A
+rate gyroscope is the case $`\Delta\theta_m = \omega_m \Delta t`$, which `ImuSample::from_rates`
+forms. The two intervals are each increment's own, and the time between samples is neither: it is
+differenced from their timestamps, and it is what the health timers and the gap test of
+[coasting](#coasting-across-a-gap) read.
+
 Bias-corrected IMU measurements:
 
 **(9)**
 
 ```math
-\omega = \omega_m - \hat{\beta}_g
+\omega = \omega_m - \hat{\beta}_g, \qquad \omega\,\Delta t_\theta = \Delta\theta_m - \hat{\beta}_g \Delta t_\theta
 ```
 
 **(10)**
 
 ```math
-a_b = a_m - \hat{\beta}_a
+a_b = a_m - \hat{\beta}_a, \qquad a_b\,\Delta t_v = \Delta v_m - \hat{\beta}_a \Delta t_v
 ```
 
-Specific force rotated into the navigation frame and gravity added:
+Specific force rotated into the navigation frame and gravity added, gravity over the same
+$`\Delta t_v`$ the accelerometer integrated, so a vehicle at rest gains nothing whatever the two
+intervals are:
 
 **(11)**
 
 ```math
-a_n = R(\hat{q})\, a_b + g
+a_n = R(\hat{q})\, a_b + g, \qquad a_n \Delta t_v = R(\hat{q})\,(a_b \Delta t_v) + g\,\Delta t_v
 ```
 
 Continuous-time kinematics:
@@ -356,7 +368,8 @@ Continuous-time kinematics:
 \dot{p} = v, \qquad \dot{v} = a_n, \qquad \dot{q} = \tfrac{1}{2}\, q \otimes \begin{bmatrix} 0 \\ \omega \end{bmatrix}, \qquad \dot{\beta}_a = 0, \qquad \dot{\beta}_g = 0
 ```
 
-Discrete integration over $`\Delta t`$:
+Discrete integration, translation over $`\Delta t = \Delta t_v`$ and rotation over
+$`\Delta t = \Delta t_\theta`$:
 
 **(13)**
 
@@ -432,6 +445,11 @@ I & I\Delta t & 0 & 0 & 0 \\
 \end{bmatrix}
 ```
 
+Each $`\Delta t`$ is the interval of the increment its block reads: $`\Delta t_v`$ on the position
+and velocity rows, $`\Delta t_\theta`$ on the attitude row. So $`[\,a_b\,]_\times \Delta t`$ is the
+skew of the corrected velocity increment and $`\omega\Delta t`$ the corrected angle increment,
+and $`F`$ reads the sample as it arrived.
+
 The attitude block $`R\{\omega\Delta t\}^\mathsf{T}`$ may be approximated as
 $`I - [\,\omega\,]_\times \Delta t`$ where the cost of the exact form is not justified; that
 approximation is the usual source of small attitude-covariance error at high rotation rates.
@@ -444,7 +462,8 @@ Discrete process noise, impulse form:
 Q = \mathrm{diag}\left( 0,\quad \sigma_a^2 \Delta t\, I,\quad \sigma_g^2 \Delta t\, I,\quad \sigma_{\beta a}^2 \Delta t\, I,\quad \sigma_{\beta g}^2 \Delta t\, I \right)
 ```
 
-Every block carries $`\Delta t`$, and the four $`\sigma`$ are **spectral densities**:
+Every block carries $`\Delta t`$, the accelerometer's two over $`\Delta t_v`$ and the gyroscope's
+over $`\Delta t_\theta`$, and the four $`\sigma`$ are **spectral densities**:
 `ImuNoise`'s fields are stated per $`\sqrt{\mathrm{Hz}}`$ and `examples/simulate.rs` draws its
 per-sample noise as $`\sigma / \sqrt{\Delta t}`$, so a density's contribution to variance over a
 step is $`\sigma^2 \Delta t`$ — for the white-noise blocks exactly as for the two random walks.

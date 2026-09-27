@@ -11,7 +11,7 @@ use crate::propagate::{self, ImuSample, Propagated, project, propagate};
 use crate::state::{AttitudeVariance, Covariance, ErrorState, Offset, State};
 use crate::units::{
     Altitude, AltitudeNoise, AngularRate, Attitude, HeadingNoise, MagField, Position,
-    PositionNoise, Radians, Seconds, Velocity, VelocityNoise,
+    PositionNoise, Radians, Seconds, Timestamp, Velocity, VelocityNoise,
 };
 use crate::update::{self, Observation, Update, update};
 use nalgebra::Vector3;
@@ -37,27 +37,32 @@ use nalgebra::Vector3;
 /// use fusion_nav::prelude::*;
 ///
 /// let mut filter = Eskf::new(Config::default());
-/// let dt = Seconds::from_secs(0.0025); // 400 Hz IMU
 ///
-/// // A vehicle sitting still: no rotation, gravity the only specific force. 800 samples
-/// // at 400 Hz is the 2 s `Initialization::min_duration` wants.
-/// let still = StaticSample {
-///     imu: ImuSample {
-///         gyro: AngularRate::body(0.0, 0.0, 0.0),
-///         accel: Acceleration::body(0.0, 0.0, -GRAVITY),
-///     },
-///     ..StaticSample::default()
+/// // A vehicle sitting still: no rotation, gravity the only specific force, read by a
+/// // 400 Hz rate IMU whose clock counts microseconds.
+/// let still = |sample: u64| {
+///     ImuSample::from_rates(
+///         Timestamp::from_micros(2_500 * sample),
+///         AngularRate::body(0.0, 0.0, 0.0),
+///         Acceleration::body(0.0, 0.0, -GRAVITY),
+///         Seconds::from_secs(0.0025),
+///     )
 /// };
 ///
 /// // Initialization reports what it achieved rather than refusing what it dislikes. A
 /// // window that is short or moving gives `Alignment::Coarse`, and the filter runs and
-/// // says `Status::Aligning` until attitude converges.
-/// assert_eq!(filter.initialize(&[still; 800], dt)?, Alignment::Static);
+/// // says `Status::Aligning` until attitude converges. 800 samples at 400 Hz is the 2 s
+/// // `Initialization::min_duration` wants.
+/// let window: [StaticSample; 800] = core::array::from_fn(|i| StaticSample {
+///     imu: still(i as u64 + 1),
+///     ..StaticSample::default()
+/// });
+/// assert_eq!(filter.initialize(&window)?, Alignment::Static);
 ///
 /// // Nothing in that window carried a barometer, so it fixes no reference altitude, and
 /// // the first `fuse_baro_altitude` reads one from the estimate. See `StaticSample::baro`.
 ///
-/// assert!(filter.predict(ImuSample::default(), dt).is_propagated());
+/// assert!(filter.predict(still(801)).is_propagated());
 ///
 /// // GNSS in latitude and longitude. The filter holds the navigation origin: the first
 /// // fix places it, under the estimate, so every later fix converts about the same point.
@@ -121,6 +126,9 @@ pub struct Eskf {
     /// [`is_aligned`](Self::is_aligned) for why it is not read live.
     aligned: bool,
     initialized: bool,
+    /// When the state is valid: the end of the last sample integrated, or of the window or
+    /// seed the filter started from. Meaningless until `initialized`.
+    time: Timestamp,
 }
 
 /// Quantities the start never established, which wait for the first measurement that
@@ -155,6 +163,7 @@ impl Eskf {
             unestablished: Unestablished::default(),
             aligned: false,
             initialized: false,
+            time: Timestamp::ZERO,
         }
     }
 
@@ -166,6 +175,21 @@ impl Eskf {
     /// Whether [`initialize`](Self::initialize) has succeeded.
     pub const fn is_initialized(&self) -> bool {
         self.initialized
+    }
+
+    /// When the estimate is valid: the [`time`](ImuSample::time) of the last sample
+    /// [`predict`](Self::predict) accepted, or of the window or seed the filter started from.
+    /// `None` until initialized.
+    ///
+    /// The clock every later sample is differenced against. A step the filter refused
+    /// before any time passed, [`Propagation::InvalidStep`], leaves it where it was; every
+    /// other outcome moves it, since the time did pass whatever became of the sample.
+    pub const fn time(&self) -> Option<Timestamp> {
+        if self.initialized {
+            Some(self.time)
+        } else {
+            None
+        }
     }
 
     /// Align from a window of samples taken while the vehicle was, ideally, still.
@@ -210,21 +234,18 @@ impl Eskf {
     /// cannot say that: [`sigma_yaw`](crate::Initialization::sigma_yaw) is a prior on a
     /// number nobody measured.
     ///
-    /// `dt` is the interval between consecutive samples, so that
-    /// [`min_duration`](crate::Initialization::min_duration) can be checked against a real
-    /// span of time. As everywhere else, the filter never reads a clock.
+    /// The window's span, which [`min_duration`](crate::Initialization::min_duration) is
+    /// checked against, is the time its samples integrated; the filter's clock starts at the
+    /// last sample's [`time`](ImuSample::time). As everywhere else, the filter never reads a
+    /// clock.
     ///
     /// # Errors
     ///
-    /// [`InitError::NoSamples`] for an empty window, [`InitError::InvalidStep`] for a
-    /// `dt` that is zero, negative or NaN, and [`InitError::NotFinite`] if a sample
-    /// carries a value that is not a number.
-    pub fn initialize(
-        &mut self,
-        window: &[StaticSample],
-        dt: Seconds,
-    ) -> Result<Alignment, InitError> {
-        let measured = init::measure(window, dt)?;
+    /// [`InitError::NoSamples`] for an empty window, [`InitError::NotFinite`] if a sample
+    /// carries a value that is not a number, and [`InitError::InvalidInterval`] for an
+    /// integration interval that is zero or negative.
+    pub fn initialize(&mut self, window: &[StaticSample]) -> Result<Alignment, InitError> {
+        let measured = init::measure(window)?;
         let alignment = init::classify(&measured, &self.config.init);
         // One answer to "was the vehicle on the ground", read by the gyroscope bias of
         // (7), the barometric reference of (30), and what this start establishes.
@@ -232,7 +253,11 @@ impl Eskf {
         // short to align an attitude from can still be a window of a parked vehicle.
         let at_rest = init::at_rest(&measured, &self.config.init);
         let state = init::nominal_state(&measured, self.declination, at_rest);
-        self.apply_alignment(alignment, state, &measured, at_rest);
+        // `measure` refuses an empty window, so there is a last sample.
+        let time = window
+            .last()
+            .map_or(Timestamp::ZERO, |sample| sample.imu.time);
+        self.apply_alignment(alignment, state, &measured, at_rest, time);
         if at_rest {
             self.establish_reference(
                 baro_reference(window)
@@ -254,15 +279,8 @@ impl Eskf {
     /// # Errors
     ///
     /// As [`initialize`](Self::initialize).
-    pub fn alignment_of(
-        &self,
-        window: &[StaticSample],
-        dt: Seconds,
-    ) -> Result<Alignment, InitError> {
-        Ok(init::classify(
-            &init::measure(window, dt)?,
-            &self.config.init,
-        ))
+    pub fn alignment_of(&self, window: &[StaticSample]) -> Result<Alignment, InitError> {
+        Ok(init::classify(&init::measure(window)?, &self.config.init))
     }
 
     /// Start from a single IMU sample, with no window at all.
@@ -283,7 +301,8 @@ impl Eskf {
     ///
     /// # Errors
     ///
-    /// [`InitError::NotFinite`] if the sample carries a value that is not a number.
+    /// [`InitError::NotFinite`] if the sample carries a value that is not a number, and
+    /// [`InitError::InvalidInterval`] for an integration interval that is zero or negative.
     pub fn initialize_coarse(&mut self, imu: ImuSample) -> Result<Alignment, InitError> {
         // Treated as a window of one, so the same finiteness, motion and averaging
         // measures apply — an average of one sample being that sample.
@@ -291,13 +310,10 @@ impl Eskf {
             imu,
             ..StaticSample::default()
         }];
-        if !window[0].is_finite() {
-            return Err(InitError::NotFinite);
-        }
-        // A window of one, spanning no time: its own average, with no rotation to smear
-        // it and no second velocity to difference against — a caller with GNSS in hand
-        // has a window, not this entry point.
-        let measured = Measured::over(&window, Seconds::ZERO);
+        // A window of one: its own average, with no rotation to smear it and no second
+        // velocity to difference against — a caller with GNSS in hand has a window, not
+        // this entry point.
+        let measured = init::measure(&window)?;
         let alignment = Alignment::Coarse(Coarse::NotStationary {
             peak_gyro: measured.peak_gyro,
             peak_accel_deviation: measured.peak_deviation,
@@ -314,7 +330,7 @@ impl Eskf {
         // window shows rest by holding still over a span of time and this one spans none:
         // an accelerometer reading `γ` for an instant is a hover as readily as a vehicle
         // on the ground, and this entry point exists for the launches that are moving.
-        self.apply_alignment(alignment, state, &measured, false);
+        self.apply_alignment(alignment, state, &measured, false, imu.time);
         // The barometric reference is left alone: one sample does not establish one, and
         // a restart at altitude should keep the reference the flight began with.
         self.note_alignment();
@@ -373,10 +389,14 @@ impl Eskf {
     /// Whether the seed counts as aligned is the covariance's answer, not this one's: a
     /// confident seed reports [`Status::Healthy`] straight away, a coarse one
     /// [`Status::Aligning`] until it converges.
+    ///
+    /// `time` is when the seed is valid, and starts the clock the next
+    /// [`predict`](Self::predict) is differenced against.
     pub fn initialize_from(
         &mut self,
         state: State,
         covariance: Covariance,
+        time: Timestamp,
     ) -> Result<Alignment, InitError> {
         if !state.is_finite() || !covariance.is_finite() {
             return Err(InitError::NotFinite);
@@ -394,6 +414,7 @@ impl Eskf {
         self.unestablished = Unestablished::default();
         self.angular_rate = None;
         self.initialized = true;
+        self.time = time;
         self.aligned = false;
         self.note_alignment();
         Ok(Alignment::Seeded)
@@ -544,11 +565,14 @@ impl Eskf {
             .map(|origin| origin.to_geodetic(self.state.position))
     }
 
-    /// Propagate the nominal state and covariance over `dt`. Equations (9)–(22).
+    /// Propagate the nominal state and covariance across one IMU sample. Equations (9)–(22).
     ///
-    /// The hot path, called at IMU rate. `dt` is explicit; the filter never reads a clock.
+    /// The hot path, called at IMU rate. The step is `Δt`, the time from the filter's
+    /// [`time`](Self::time) to the sample's; the filter never reads a clock. The state
+    /// integrates the sample's increments over their own intervals, and `Δt` is what
+    /// everything that is about time passing reads: the health timers, and the test for a gap.
     ///
-    /// A `dt` longer than [`Config::max_predict_dt`](crate::Config::max_predict_dt) is not
+    /// A `Δt` longer than [`Config::max_predict_dt`](crate::Config::max_predict_dt) is not
     /// integrated: one IMU sample cannot describe a long interval, and propagating it anyway
     /// would put a number in the state that looks like an estimate and is not. The filter
     /// coasts across it instead, equation (22′), as [`Propagation::Coasted`]: position moves
@@ -556,14 +580,18 @@ impl Eskf {
     /// [`Config::coast`](crate::Config::coast) allows, so the first fix after the gap is
     /// judged against an uncertainty that grew with it. With coasting off the step is refused,
     /// as [`Propagation::StepTooLong`]. Either way the timers advance, so [`Status`] degrades
-    /// on schedule.
+    /// on schedule. It is `Δt` that is tested rather than an interval, because a gap is time
+    /// no sample describes: a driver that integrated across a stall hands over an increment
+    /// that does describe it, and a logger that dropped samples hands over one that does not.
     ///
-    /// A `dt` that is zero, negative, or NaN is refused before the timers move at all.
+    /// A sample no later than the filter's time is refused before the timers move at all,
+    /// and leaves the clock where it was.
     ///
     /// A sample carrying a NaN or an infinity is refused too, as
     /// [`Propagation::NotFinite`]: propagating it would put the NaN in the quaternion and
-    /// then in the covariance, where nothing reports it and it never leaves. The timers
-    /// advance, since the `dt` was fine and only the sample was not.
+    /// then in the covariance, where nothing reports it and it never leaves. So is one whose
+    /// integration interval is zero or negative, as [`Propagation::InvalidInterval`]. The
+    /// timers advance in both cases, since `Δt` was fine and only the sample was not.
     ///
     /// A step that comes out of (11)–(14) or (22) non-finite is discarded rather than
     /// stored, as [`Propagation::StateNotFinite`], and the state and the covariance are
@@ -577,18 +605,19 @@ impl Eskf {
     /// job. So an unaided filter's [`Validity`] flags go false in the order their variances
     /// cross [`Config::accuracy`](crate::Config::accuracy), and [`Status`] does not follow:
     /// it reads the aiding timers and an alignment that has already latched.
-    pub fn predict(&mut self, imu: ImuSample, dt: Seconds) -> Propagation {
+    pub fn predict(&mut self, imu: ImuSample) -> Propagation {
         if !self.initialized {
             return Propagation::NotInitialized;
         }
-        // Rejected ahead of the bookkeeping: a negative `dt` would wind the timers back
-        // and a NaN would poison them.
+        let dt = imu.time.since(self.time);
+        // Rejected ahead of the bookkeeping: a negative `dt` would wind the timers back.
         if !dt.is_usable_step() {
             return self.refuse_step(Propagation::InvalidStep { dt });
         }
 
-        // Past here the time genuinely passed, so the health bookkeeping is real even
-        // when the propagation itself is refused.
+        // Past here the time genuinely passed, so the clock and the health bookkeeping are
+        // real even when the propagation itself is refused.
+        self.time = imu.time;
         self.diagnostics.advance(dt);
 
         let limit = self.config.max_predict_dt;
@@ -618,12 +647,15 @@ impl Eskf {
         if !imu.is_finite() {
             return self.refuse_step(Propagation::NotFinite);
         }
+        if !imu.has_usable_intervals() {
+            let interval = init::unusable_interval(imu);
+            return self.refuse_step(Propagation::InvalidInterval { interval });
+        }
         let propagated = propagate(
             self.state,
             self.covariance,
             self.offset,
             imu,
-            dt,
             &self.config.imu,
             self.config.baro_offset_walk,
         );
@@ -1303,16 +1335,15 @@ impl Eskf {
     /// use fusion_nav::prelude::*;
     /// # let mut filter = Eskf::new(Config::default());
     /// # let dt = Seconds::from_secs(0.0025);
-    /// # let still = StaticSample {
-    /// #     imu: ImuSample {
-    /// #         gyro: AngularRate::zero(),
-    /// #         accel: Acceleration::body(0.0, 0.0, -GRAVITY),
-    /// #     },
+    /// # let (level, gravity) = (AngularRate::zero(), Acceleration::body(0.0, 0.0, -GRAVITY));
+    /// # let at = |i: u64| Timestamp::from_micros(2_500 * i);
+    /// # let window: [StaticSample; 800] = core::array::from_fn(|i| StaticSample {
+    /// #     imu: ImuSample::from_rates(at(i as u64 + 1), level, gravity, dt),
     /// #     ..StaticSample::default()
-    /// # };
-    /// # filter.initialize(&[still; 800], dt)?;
-    /// # let imu = ImuSample { gyro: AngularRate::body(0.0, 0.0, 0.5), ..still.imu };
-    /// # assert!(filter.predict(imu, dt).is_propagated());
+    /// # });
+    /// # filter.initialize(&window)?;
+    /// # let imu = ImuSample::from_rates(at(801), AngularRate::body(0.0, 0.0, 0.5), gravity, dt);
+    /// # assert!(filter.predict(imu).is_propagated());
     /// # let antenna = Position::ned(0.0, 0.0, -0.4);
     /// # let antenna_velocity = Velocity::ned(0.1, 0.0, 0.0);
     /// # let position_noise = PositionNoise::horizontal_vertical(1.0, 1.5);
@@ -1699,6 +1730,7 @@ impl Eskf {
         state: State,
         measured: &Measured,
         settled: bool,
+        time: Timestamp,
     ) {
         // The bias of (7) as committed, so that what it absorbed is not charged a second
         // time as motion the window could not vouch for; see `init::coarse_sigmas`.
@@ -1721,6 +1753,7 @@ impl Eskf {
         }
         self.angular_rate = None;
         self.initialized = true;
+        self.time = time;
         // A fresh start is unaligned until its own covariance says otherwise, which
         // `note_alignment` reads at the end of each entry point.
         self.aligned = false;
@@ -1842,7 +1875,7 @@ mod tests {
     use crate::config::{Accuracy, Coast, Correlation, GRAVITY, Recovery};
     use crate::geodetic::LocalOrigin;
     use crate::health::Refusal;
-    use crate::init::tests::{gravity_at, still, turning};
+    use crate::init::tests::{gravity_at, spaced, still, turning};
     use crate::observation::mag::tests::{attitude_of, measured};
     use crate::state::ErrorState;
     use crate::state::STATES;
@@ -1850,12 +1883,46 @@ mod tests {
 
     const DT: Seconds = Seconds::from_secs(0.01);
 
+    /// The fixtures are written as rates and a `dt`; these give them a clock. Only the method
+    /// names differ from the filter's own, so a test reads as the call it makes.
+    trait Clocked {
+        /// [`Eskf::predict`] on `imu`'s rates over `dt`, timed `dt` after the filter's clock.
+        fn step(&mut self, imu: ImuSample, dt: Seconds) -> Propagation;
+        /// [`Eskf::initialize`] on `window`, each sample over `dt`.
+        fn initialize_over(
+            &mut self,
+            window: &[StaticSample],
+            dt: Seconds,
+        ) -> Result<Alignment, InitError>;
+        /// [`Eskf::initialize_from`] at the epoch.
+        fn seed(&mut self, state: State, covariance: Covariance) -> Result<Alignment, InitError>;
+    }
+
+    impl Clocked for Eskf {
+        fn step(&mut self, imu: ImuSample, dt: Seconds) -> Propagation {
+            let time = self.time().unwrap_or_default().after(dt);
+            self.predict(imu.timed(time, dt))
+        }
+
+        fn initialize_over(
+            &mut self,
+            window: &[StaticSample],
+            dt: Seconds,
+        ) -> Result<Alignment, InitError> {
+            self.initialize(&spaced(window, dt))
+        }
+
+        fn seed(&mut self, state: State, covariance: Covariance) -> Result<Alignment, InitError> {
+            self.initialize_from(state, covariance, Timestamp::ZERO)
+        }
+    }
+
     /// A window of exactly `Initialization::min_duration`: 8 samples at 4 Hz is 2 s.
     /// No barometer, so no reference is established.
     fn initialized() -> Eskf {
         let mut filter = Eskf::new(Config::default());
         let alignment = filter
-            .initialize(&[still(); 8], Seconds::from_secs(0.25))
+            .initialize_over(&[still(); 8], Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
         assert_eq!(alignment, Alignment::Static);
         filter
@@ -1895,7 +1962,7 @@ mod tests {
     fn aided_with(config: Config) -> Eskf {
         let mut filter = Eskf::new(config);
         let _ = filter
-            .initialize(&window_at(100.0), Seconds::from_secs(0.25))
+            .initialize_over(&window_at(100.0), Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
         assert!(
             filter
@@ -1916,7 +1983,7 @@ mod tests {
     fn an_ordinary_run_never_reaches_the_floor() {
         let mut filter = aided();
         for step in 0..400 {
-            assert_eq!(filter.predict(still().imu, DT), Propagation::Propagated);
+            assert_eq!(filter.step(still().imu, DT), Propagation::Propagated);
             if step % 25 == 0 {
                 assert!(
                     filter
@@ -1961,19 +2028,16 @@ mod tests {
     fn an_unaided_start_holds_its_attitude_for_the_margin_the_defaults_buy() {
         let mut filter = Eskf::new(Config::default());
         assert_eq!(
-            filter.initialize(&window_with_mag(), Seconds::from_secs(0.25)),
+            filter.initialize_over(&window_with_mag(), Seconds::from_secs(0.25)),
             Ok(Alignment::Static)
         );
 
         let dt = Seconds::from_secs(0.005);
-        let holding_still = ImuSample {
-            accel: Acceleration::body(0.0, 0.0, -GRAVITY),
-            ..ImuSample::default()
-        };
+        let holding_still = still().imu;
         let (mut tilt_held, mut heading_held) = (None, None);
 
         for step in 1..8_000 {
-            assert_eq!(filter.predict(holding_still, dt), Propagation::Propagated);
+            assert_eq!(filter.step(holding_still, dt), Propagation::Propagated);
             let elapsed = step as f32 * dt.as_secs();
             let validity = filter.validity();
             if tilt_held.is_none() && !validity.tilt {
@@ -1995,7 +2059,7 @@ mod tests {
     fn predict_before_initialize_is_refused() {
         let mut filter = Eskf::new(Config::default());
         assert_eq!(
-            filter.predict(ImuSample::default(), DT),
+            filter.step(ImuSample::default(), DT),
             Propagation::NotInitialized
         );
     }
@@ -2004,7 +2068,7 @@ mod tests {
     fn a_normal_step_propagates_and_advances_the_timers() {
         let mut filter = aided();
         assert_eq!(
-            filter.predict(ImuSample::default(), DT),
+            filter.step(ImuSample::default(), DT),
             Propagation::Propagated
         );
         assert_eq!(elapsed(&filter), DT.as_secs());
@@ -2019,7 +2083,7 @@ mod tests {
         let before = *filter.covariance();
 
         assert_eq!(
-            filter.predict(ImuSample::default(), DT),
+            filter.step(ImuSample::default(), DT),
             Propagation::Propagated
         );
 
@@ -2056,13 +2120,10 @@ mod tests {
         let enormous = Covariance::from_matrix(
             crate::state::CovarianceMatrix::from_diagonal_element(f32::MAX),
         );
-        assert_eq!(
-            filter.initialize_from(seed, enormous),
-            Ok(Alignment::Seeded)
-        );
+        assert_eq!(filter.seed(seed, enormous), Ok(Alignment::Seeded));
 
         assert_eq!(
-            filter.predict(ImuSample::default(), DT),
+            filter.step(ImuSample::default(), DT),
             Propagation::StateNotFinite
         );
         assert_eq!(filter.state().velocity, seed.velocity);
@@ -2080,7 +2141,7 @@ mod tests {
     fn a_step_with_no_specific_force_leaves_the_estimate_falling() {
         let mut filter = aided();
         assert_eq!(
-            filter.predict(ImuSample::default(), DT),
+            filter.step(ImuSample::default(), DT),
             Propagation::Propagated
         );
         let velocity = filter.state().velocity.vector();
@@ -2102,16 +2163,16 @@ mod tests {
     #[test]
     fn a_propagation_that_overflows_is_refused_and_the_estimate_is_left_alone() {
         let mut filter = aided();
-        let imu = ImuSample {
-            gyro: AngularRate::body(0.0, 0.0, 0.0),
-            accel: Acceleration::body(f32::MAX, 0.0, -GRAVITY),
-        };
+        let imu = ImuSample::reading(
+            AngularRate::body(0.0, 0.0, 0.0),
+            Acceleration::body(f32::MAX, 0.0, -GRAVITY),
+        );
         assert!(imu.is_finite());
 
         let mut before = filter.state();
         let mut steps = 0;
         loop {
-            match filter.predict(imu, DT) {
+            match filter.step(imu, DT) {
                 Propagation::Propagated => {
                     before = filter.state();
                     steps += 1;
@@ -2145,19 +2206,57 @@ mod tests {
     }
 
     #[test]
-    fn zero_negative_and_nan_steps_are_refused_without_moving_the_timers() {
+    fn a_sample_not_after_the_clock_is_refused_without_moving_the_timers_or_the_clock() {
         let mut filter = aided();
-        for bad in [0.0, -0.01, f32::NAN] {
+        let clock = filter.time();
+        for bad in [0.0, -0.01] {
             let dt = Seconds::from_secs(bad);
-            assert!(
-                matches!(
-                    filter.predict(ImuSample::default(), dt),
-                    Propagation::InvalidStep { .. }
-                ),
+            assert_eq!(
+                filter.step(ImuSample::default(), dt),
+                Propagation::InvalidStep { dt },
                 "dt of {bad} should be refused"
             );
             assert_eq!(elapsed(&filter), 0.0, "dt of {bad} moved the timers");
+            assert_eq!(filter.time(), clock, "dt of {bad} moved the clock");
         }
+    }
+
+    /// An interval is the sample's, not time passing: refused, but the clock and the timers
+    /// move as they do for a sample carrying a NaN.
+    #[test]
+    fn a_sample_with_an_unusable_interval_is_refused_after_the_time_passes() {
+        let mut filter = aided();
+        let before = filter.state();
+        let time = filter.time().expect("initialized").after(DT);
+        let backwards = Seconds::from_secs(-0.005);
+        let imu = ImuSample {
+            angle_interval: backwards,
+            ..still().imu.timed(time, DT)
+        };
+        assert_eq!(
+            filter.predict(imu),
+            Propagation::InvalidInterval {
+                interval: backwards
+            }
+        );
+        assert_eq!(filter.state(), before);
+        assert_eq!(filter.time(), Some(time));
+        assert!((elapsed(&filter) - DT.as_secs()).abs() < 1e-6);
+        assert_eq!(filter.diagnostics().propagation.refused_invalid, 1);
+    }
+
+    /// A gap is time no sample describes, and only the timestamps see it: a logger that
+    /// dropped samples hands over an increment integrated over one IMU interval, a second
+    /// after the last one.
+    #[test]
+    fn a_gap_is_read_off_the_timestamps_not_the_interval() {
+        let mut filter = aided();
+        let gap = Seconds::from_secs(1.0);
+        let time = filter.time().expect("initialized").after(gap);
+        assert_eq!(
+            filter.predict(still().imu.timed(time, DT)),
+            Propagation::Coasted { dt: gap }
+        );
     }
 
     /// Coasting off, so a long step is refused.
@@ -2175,7 +2274,7 @@ mod tests {
         // The worst SD-card dropout in the bundled corpus.
         let dt = Seconds::from_secs(1.304);
         assert!(matches!(
-            filter.predict(ImuSample::default(), dt),
+            filter.step(ImuSample::default(), dt),
             Propagation::StepTooLong { .. }
         ));
         assert_eq!(filter.state(), before, "a refused step moves nothing");
@@ -2206,7 +2305,7 @@ mod tests {
         let before = filter.state();
         let gap = Seconds::from_secs(1.2);
         assert_eq!(
-            filter.predict(still().imu, gap),
+            filter.step(still().imu, gap),
             Propagation::Coasted { dt: gap }
         );
 
@@ -2238,10 +2337,7 @@ mod tests {
         });
         let before = filter.state();
         let gap = Seconds::from_secs(1.2);
-        assert_eq!(
-            filter.predict(still().imu, gap),
-            Propagation::StateNotFinite
-        );
+        assert_eq!(filter.step(still().imu, gap), Propagation::StateNotFinite);
         assert_eq!(filter.state(), before, "a discarded coast commits nothing");
         let propagation = filter.diagnostics().propagation;
         assert_eq!(propagation.longest_gap, Some(gap));
@@ -2261,7 +2357,7 @@ mod tests {
                 }),
                 ..Config::default()
             });
-            let _ = filter.predict(still().imu, gap);
+            let _ = filter.step(still().imu, gap);
             let p = *filter.covariance().as_matrix();
             (
                 p[(
@@ -2304,7 +2400,7 @@ mod tests {
                 }),
                 ..Config::default()
             });
-            let _ = filter.predict(still().imu, gap);
+            let _ = filter.step(still().imu, gap);
             let p = *filter.covariance().as_matrix();
             p[(ErrorState::AttitudeZ.index(), ErrorState::AttitudeZ.index())]
         };
@@ -2323,7 +2419,7 @@ mod tests {
         let mut filter = flying(Config::default());
         let before = filter.offset.variance;
         let gap = Seconds::from_secs(1.2);
-        let _ = filter.predict(still().imu, gap);
+        let _ = filter.step(still().imu, gap);
         let walk = filter.config.baro_offset_walk;
         let expected = walk * walk * gap.as_secs();
         let grown = filter.offset.variance - before;
@@ -2341,7 +2437,7 @@ mod tests {
         let gap = Seconds::from_secs(1.2);
 
         let mut coasting = flying(Config::default());
-        let _ = coasting.predict(still().imu, gap);
+        let _ = coasting.step(still().imu, gap);
         assert!(
             coasting
                 .fuse_gnss_position(fix, noise)
@@ -2350,7 +2446,7 @@ mod tests {
         );
 
         let mut refusing = flying(not_coasting());
-        let _ = refusing.predict(still().imu, gap);
+        let _ = refusing.step(still().imu, gap);
         assert!(matches!(
             refusing.fuse_gnss_position(fix, noise).horizontal,
             Fusion::Rejected { .. }
@@ -2364,29 +2460,20 @@ mod tests {
         for (name, imu) in [
             (
                 "NaN gyro",
-                ImuSample {
-                    gyro: AngularRate::body(f32::NAN, 0.0, 0.0),
-                    accel: level,
-                },
+                ImuSample::reading(AngularRate::body(f32::NAN, 0.0, 0.0), level),
             ),
             (
                 "NaN accel",
-                ImuSample {
-                    gyro: still,
-                    accel: Acceleration::body(0.0, f32::NAN, -GRAVITY),
-                },
+                ImuSample::reading(still, Acceleration::body(0.0, f32::NAN, -GRAVITY)),
             ),
             (
                 "infinite accel",
-                ImuSample {
-                    gyro: still,
-                    accel: Acceleration::body(0.0, 0.0, f32::INFINITY),
-                },
+                ImuSample::reading(still, Acceleration::body(0.0, 0.0, f32::INFINITY)),
             ),
         ] {
             let mut filter = aided();
             let before = filter.state();
-            assert_eq!(filter.predict(imu, DT), Propagation::NotFinite, "{name}");
+            assert_eq!(filter.step(imu, DT), Propagation::NotFinite, "{name}");
             assert_eq!(filter.state(), before, "{name} reached the state");
             assert_eq!(
                 elapsed(&filter),
@@ -2407,13 +2494,13 @@ mod tests {
         // the interval ran, while the sensor fault recurs on the next step.
         // A coast reads no sample, so the NaN does not stop it either.
         let dt = Seconds::from_secs(1.304);
-        let imu = ImuSample {
-            gyro: AngularRate::body(f32::NAN, 0.0, 0.0),
-            accel: Acceleration::body(0.0, 0.0, -GRAVITY),
-        };
+        let imu = ImuSample::reading(
+            AngularRate::body(f32::NAN, 0.0, 0.0),
+            Acceleration::body(0.0, 0.0, -GRAVITY),
+        );
         for (config, coasted) in [(Config::default(), true), (not_coasting(), false)] {
             let mut filter = aided_with(config);
-            let outcome = filter.predict(imu, dt);
+            let outcome = filter.step(imu, dt);
             assert_eq!(matches!(outcome, Propagation::Coasted { .. }), coasted);
             assert_eq!(matches!(outcome, Propagation::StepTooLong { .. }), !coasted);
             assert!(
@@ -2506,17 +2593,17 @@ mod tests {
     #[test]
     fn propagation_refusals_are_counted_and_the_worst_gap_kept() {
         let mut filter = aided_with(not_coasting());
-        for bad in [0.0, f32::NAN] {
+        for bad in [0.0, -0.01] {
             assert!(
                 !filter
-                    .predict(ImuSample::default(), Seconds::from_secs(bad))
+                    .step(ImuSample::default(), Seconds::from_secs(bad))
                     .is_propagated()
             );
         }
         for gap in [0.34, 1.304, 0.5] {
             assert!(
                 !filter
-                    .predict(ImuSample::default(), Seconds::from_secs(gap))
+                    .step(ImuSample::default(), Seconds::from_secs(gap))
                     .is_propagated()
             );
         }
@@ -2603,7 +2690,7 @@ mod tests {
             ..Config::default()
         });
         let _ = filter
-            .initialize(&[still(); 8], Seconds::from_secs(0.25))
+            .initialize_over(&[still(); 8], Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
         assert_eq!(
             filter.fuse_baro_altitude(Altitude::from_meters(60.0), AltitudeNoise::from_sigma(2.0)),
@@ -2637,7 +2724,7 @@ mod tests {
     fn an_altitude_above_the_reference_pulls_the_estimate_up_and_moves_nothing_sideways() {
         let mut filter = Eskf::new(Config::default());
         let _ = filter
-            .initialize(&window_at(100.0), Seconds::from_secs(0.25))
+            .initialize_over(&window_at(100.0), Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
 
         // Two metres above the reference the window fixed, on a sensor claiming 0.5 m.
@@ -2664,7 +2751,7 @@ mod tests {
     fn an_altitude_the_gate_turns_down_leaves_the_estimate_where_it_was() {
         let mut filter = Eskf::new(Config::default());
         let _ = filter
-            .initialize(&window_at(100.0), Seconds::from_secs(0.25))
+            .initialize_over(&window_at(100.0), Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
         let before = filter.state().position;
 
@@ -2682,7 +2769,7 @@ mod tests {
         let mut filter = aided();
         assert_eq!(filter.baro_reference(), Some(Altitude::from_meters(100.0)));
         let alignment = filter
-            .initialize(&window_at(250.0), Seconds::from_secs(0.25))
+            .initialize_over(&window_at(250.0), Seconds::from_secs(0.25))
             .expect("a 2 s window");
         assert_eq!(alignment, Alignment::Static);
         assert_eq!(
@@ -2695,7 +2782,7 @@ mod tests {
     /// A window taken while the vehicle was moving, reading 250 m: a restart in flight.
     fn moving_window_at(altitude: f32) -> [StaticSample; 8] {
         let mut window = window_at(altitude);
-        window[3].imu.gyro = AngularRate::body(0.0, 0.4, 0.0);
+        window[3].imu = window[3].imu.with_gyro(AngularRate::body(0.0, 0.4, 0.0));
         window
     }
 
@@ -2707,7 +2794,7 @@ mod tests {
         // barometer would then say z ~ 0 while GNSS about the flight's origin says
         // z ~ -150.
         let alignment = filter
-            .initialize(&moving_window_at(250.0), Seconds::from_secs(0.25))
+            .initialize_over(&moving_window_at(250.0), Seconds::from_secs(0.25))
             .expect("moving, not unusable");
         assert!(matches!(alignment, Alignment::Coarse(..)));
         assert_eq!(filter.baro_reference(), Some(Altitude::from_meters(100.0)));
@@ -2716,15 +2803,15 @@ mod tests {
         // window is too short to measure motion for `classify`, but `α₀` measures it
         // anyway rather than reading window length as stillness.
         let _ = filter
-            .initialize(&moving_window_at(250.0), Seconds::from_secs(0.1))
+            .initialize_over(&moving_window_at(250.0), Seconds::from_secs(0.1))
             .expect("short and moving");
         assert_eq!(filter.baro_reference(), Some(Altitude::from_meters(100.0)));
 
         // And a moving window with no barometer in it does not wipe the reference either.
         let mut window = [still(); 8];
-        window[3].imu.gyro = AngularRate::body(0.0, 0.4, 0.0);
+        window[3].imu = window[3].imu.with_gyro(AngularRate::body(0.0, 0.4, 0.0));
         let _ = filter
-            .initialize(&window, Seconds::from_secs(0.25))
+            .initialize_over(&window, Seconds::from_secs(0.25))
             .expect("moving, not unusable");
         assert_eq!(filter.baro_reference(), Some(Altitude::from_meters(100.0)));
     }
@@ -2737,7 +2824,7 @@ mod tests {
         // cost it barometric aiding for the whole flight with nothing saying so.
         let mut filter = Eskf::new(Config::default());
         let alignment = filter
-            .initialize(&window_at(112.0), Seconds::from_secs(0.1))
+            .initialize_over(&window_at(112.0), Seconds::from_secs(0.1))
             .expect("short, so coarse");
         assert!(matches!(alignment, Alignment::Coarse(..)));
         assert_eq!(filter.baro_reference(), Some(Altitude::from_meters(112.0)));
@@ -2765,9 +2852,7 @@ mod tests {
     fn a_seed_becomes_the_state_and_the_covariance() {
         let mut filter = Eskf::new(Config::default());
         let (state, covariance) = seed();
-        let _ = filter
-            .initialize_from(state, covariance)
-            .expect("a sane seed");
+        let _ = filter.seed(state, covariance).expect("a sane seed");
         assert!(filter.is_initialized());
         assert_eq!(filter.state().velocity, state.velocity);
         assert_eq!(filter.state().gyro_bias, state.gyro_bias);
@@ -2778,9 +2863,7 @@ mod tests {
     fn a_seed_takes_its_baro_reference_from_the_first_altitude() {
         let mut filter = Eskf::new(Config::default());
         let (state, covariance) = seed();
-        let _ = filter
-            .initialize_from(state, covariance)
-            .expect("a sane seed");
+        let _ = filter.seed(state, covariance).expect("a sane seed");
         assert_eq!(filter.baro_reference(), None);
 
         // The seed holds p_D = 0, so the reading is its zero.
@@ -2800,9 +2883,7 @@ mod tests {
     fn reinitializing_in_flight_keeps_the_reference_the_flight_began_with() {
         let mut filter = aided();
         let (state, covariance) = seed();
-        let _ = filter
-            .initialize_from(state, covariance)
-            .expect("a sane seed");
+        let _ = filter.seed(state, covariance).expect("a sane seed");
         assert_eq!(
             filter.baro_reference(),
             Some(Altitude::from_meters(100.0)),
@@ -2815,7 +2896,7 @@ mod tests {
         let mut filter = Eskf::new(Config::default());
         let window = window_at(100.0);
         let _ = filter
-            .initialize(&window, Seconds::from_secs(0.25))
+            .initialize_over(&window, Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
         assert_eq!(filter.offset.cross.norm(), 0.0);
         // Squared deviations of 0.65625 m² over seven degrees of freedom, then over eight
@@ -2838,7 +2919,7 @@ mod tests {
         let mut filter = aided();
         filter.config.correlation = Correlation::WHITE;
         for step in 0..3000 {
-            assert_eq!(filter.predict(still().imu, DT), Propagation::Propagated);
+            assert_eq!(filter.step(still().imu, DT), Propagation::Propagated);
             if step % 10 == 0 {
                 let _ = filter.fuse_gnss_position(
                     Position::ned(0.0, 0.0, 0.0),
@@ -2870,7 +2951,7 @@ mod tests {
         let (mut correlated, mut unaided) = (aided(), aided());
         for step in 0..500 {
             for filter in [&mut white, &mut correlated, &mut unaided] {
-                assert_eq!(filter.predict(still().imu, DT), Propagation::Propagated);
+                assert_eq!(filter.step(still().imu, DT), Propagation::Propagated);
             }
             if step % 20 == 0 {
                 for filter in [&mut white, &mut correlated] {
@@ -2899,7 +2980,7 @@ mod tests {
         let mut correlated = initialized();
         for step in 0..500 {
             for filter in [&mut white, &mut correlated] {
-                assert_eq!(filter.predict(still().imu, DT), Propagation::Propagated);
+                assert_eq!(filter.step(still().imu, DT), Propagation::Propagated);
                 if step % 20 == 0 {
                     let _ = filter.fuse_gnss_velocity(
                         Velocity::ned(0.0, 0.0, 0.0),
@@ -2937,7 +3018,7 @@ mod tests {
         for filter in [&mut interleaved, &mut clean] {
             good(filter);
             for _ in 0..10 {
-                assert_eq!(filter.predict(still().imu, DT), Propagation::Propagated);
+                assert_eq!(filter.step(still().imu, DT), Propagation::Propagated);
             }
         }
         let refused = interleaved.fuse_gnss_position(
@@ -2947,7 +3028,7 @@ mod tests {
         assert_eq!(refused, GnssFusion::both(Fusion::NotFinite));
         for filter in [&mut interleaved, &mut clean] {
             for _ in 0..10 {
-                assert_eq!(filter.predict(still().imu, DT), Propagation::Propagated);
+                assert_eq!(filter.step(still().imu, DT), Propagation::Propagated);
             }
             good(filter);
         }
@@ -2970,7 +3051,7 @@ mod tests {
         let one = PositionNoise::from_sigma(1.0, 1.0, 1.0);
         let steps = |filter: &mut Eskf, n: usize| {
             for _ in 0..n {
-                assert_eq!(filter.predict(still().imu, DT), Propagation::Propagated);
+                assert_eq!(filter.step(still().imu, DT), Propagation::Propagated);
             }
         };
         let (mut rejected, mut half, mut clean) = (aided(), aided(), aided());
@@ -3012,12 +3093,12 @@ mod tests {
         let mut restarted = aided();
         fix(&mut restarted);
         let _ = restarted
-            .initialize(&window_at(100.0), Seconds::from_secs(0.25))
+            .initialize_over(&window_at(100.0), Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
         let mut fresh = aided();
         for filter in [&mut restarted, &mut fresh] {
             for _ in 0..20 {
-                assert_eq!(filter.predict(still().imu, DT), Propagation::Propagated);
+                assert_eq!(filter.step(still().imu, DT), Propagation::Propagated);
             }
             fix(filter);
         }
@@ -3032,7 +3113,7 @@ mod tests {
     fn an_adopted_position_carries_no_correlation_with_the_reference() {
         let mut filter = aided();
         for _ in 0..100 {
-            assert_eq!(filter.predict(still().imu, DT), Propagation::Propagated);
+            assert_eq!(filter.step(still().imu, DT), Propagation::Propagated);
         }
         let _ =
             filter.fuse_baro_altitude(Altitude::from_meters(100.0), AltitudeNoise::from_sigma(0.5));
@@ -3066,10 +3147,7 @@ mod tests {
             ..state
         };
         let mut filter = Eskf::new(Config::default());
-        assert_eq!(
-            filter.initialize_from(poisoned, covariance),
-            Err(InitError::NotFinite)
-        );
+        assert_eq!(filter.seed(poisoned, covariance), Err(InitError::NotFinite));
         assert!(!filter.is_initialized(), "a refused seed leaves no state");
 
         // The same check on the covariance, which is where a stale warm start off
@@ -3080,7 +3158,7 @@ mod tests {
             ErrorState::VelocityNorth.index(),
         )] = -1.0;
         assert_eq!(
-            filter.initialize_from(state, Covariance::from_matrix(matrix)),
+            filter.seed(state, Covariance::from_matrix(matrix)),
             Err(InitError::InvalidVariance)
         );
         matrix[(
@@ -3088,7 +3166,7 @@ mod tests {
             ErrorState::VelocityNorth.index(),
         )] = f32::NAN;
         assert_eq!(
-            filter.initialize_from(state, Covariance::from_matrix(matrix)),
+            filter.seed(state, Covariance::from_matrix(matrix)),
             Err(InitError::NotFinite)
         );
         assert!(!filter.is_initialized());
@@ -3104,7 +3182,7 @@ mod tests {
         let (state, _) = seed();
         let mut filter = Eskf::new(Config::default());
         assert_eq!(
-            filter.initialize_from(state, Covariance::zero()),
+            filter.seed(state, Covariance::zero()),
             Err(InitError::InvalidVariance)
         );
         assert!(!filter.is_initialized(), "a refused seed leaves no state");
@@ -3116,7 +3194,7 @@ mod tests {
         let mut matrix = *covariance.as_matrix();
         matrix[(ErrorState::GyroBiasZ.index(), ErrorState::GyroBiasZ.index())] = 0.0;
         assert_eq!(
-            filter.initialize_from(state, Covariance::from_matrix(matrix)),
+            filter.seed(state, Covariance::from_matrix(matrix)),
             Err(InitError::InvalidVariance)
         );
     }
@@ -3133,7 +3211,7 @@ mod tests {
 
         let mut filter = Eskf::new(Config::default());
         assert_eq!(
-            filter.initialize_from(state, Covariance::from_matrix(matrix)),
+            filter.seed(state, Covariance::from_matrix(matrix)),
             Err(InitError::InvalidVariance)
         );
         assert!(!filter.is_initialized(), "a refused seed leaves no state");
@@ -3144,7 +3222,7 @@ mod tests {
         let mut matrix = *covariance.as_matrix();
         matrix[(ErrorState::GyroBiasZ.index(), ErrorState::GyroBiasZ.index())] = 1e-8;
         let _ = filter
-            .initialize_from(state, Covariance::from_matrix(matrix))
+            .seed(state, Covariance::from_matrix(matrix))
             .expect("above the floor");
         assert_eq!(filter.covariance().variance(ErrorState::GyroBiasZ), 1e-8);
         assert_eq!(filter.diagnostics().floored, 0);
@@ -3155,7 +3233,7 @@ mod tests {
             ErrorState::PositionNorth.index(),
         )] = 1e-8;
         assert_eq!(
-            filter.initialize_from(state, Covariance::from_matrix(matrix)),
+            filter.seed(state, Covariance::from_matrix(matrix)),
             Err(InitError::InvalidVariance)
         );
     }
@@ -3193,7 +3271,7 @@ mod tests {
     fn a_coarse_start_reports_aligning_once_something_is_aiding_it() {
         let mut filter = Eskf::new(Config::default());
         let _ = filter
-            .initialize(&window_at(100.0), Seconds::from_secs(0.1))
+            .initialize_over(&window_at(100.0), Seconds::from_secs(0.1))
             .expect("short, not unusable");
         assert_eq!(
             filter.state().status,
@@ -3214,7 +3292,7 @@ mod tests {
         // Classification itself is tested in `init`; this is what the filter does with it.
         let mut filter = Eskf::new(Config::default());
         let alignment = filter
-            .initialize(&[still(); 8], Seconds::from_secs(0.1))
+            .initialize_over(&[still(); 8], Seconds::from_secs(0.1))
             .expect("a short window is a coarse start, not a refusal");
         assert!(matches!(alignment, Alignment::Coarse(..)));
         assert!(
@@ -3224,7 +3302,7 @@ mod tests {
         assert!(!filter.is_aligned());
 
         let _ = filter
-            .initialize(&turning(0.0, 0.4, 0.0), Seconds::from_secs(0.25))
+            .initialize_over(&turning(0.0, 0.4, 0.0), Seconds::from_secs(0.25))
             .expect("moving, not unusable");
         // On navigation axes: the window is tilted, so body x carries some of the yaw prior.
         let tilt = filter.attitude_variance().tilt_north;
@@ -3237,10 +3315,7 @@ mod tests {
     /// A still window of a vehicle parked at this attitude, reading nothing but gravity.
     fn window_tilted(roll: f32, pitch: f32) -> [StaticSample; 8] {
         [StaticSample {
-            imu: ImuSample {
-                accel: gravity_at(roll, pitch, 0.0),
-                ..still().imu
-            },
+            imu: still().imu.with_accel(gravity_at(roll, pitch, 0.0)),
             ..still()
         }; 8]
     }
@@ -3252,7 +3327,7 @@ mod tests {
         let mut filter = Eskf::new(Config::default());
         assert_eq!(
             filter
-                .initialize(&window_tilted(0.25, -0.1), Seconds::from_secs(0.25))
+                .initialize_over(&window_tilted(0.25, -0.1), Seconds::from_secs(0.25))
                 .expect("a parked vehicle reads exactly g, however it is standing"),
             Alignment::Static
         );
@@ -3273,7 +3348,7 @@ mod tests {
         let mut filter = Eskf::new(Config::default());
         assert!(filter.set_magnetic_declination(Radians::from_radians(-0.06)));
         let _ = filter
-            .initialize(&window_with_mag(), Seconds::from_secs(0.25))
+            .initialize_over(&window_with_mag(), Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
 
         let (_, _, yaw) = filter.state().attitude.euler_angles();
@@ -3289,9 +3364,7 @@ mod tests {
             gyro_bias: bias,
             ..state
         };
-        let _ = filter
-            .initialize_from(state, covariance)
-            .expect("a sane seed");
+        let _ = filter.seed(state, covariance).expect("a sane seed");
         filter
     }
 
@@ -3301,32 +3374,29 @@ mod tests {
         let mut filter = seeded(Attitude::level(), bias);
         assert_eq!(filter.angular_rate(), None, "no step integrated yet");
 
-        let imu = ImuSample {
-            gyro: AngularRate::body(0.3, 0.1, -0.2),
-            accel: Acceleration::body(0.0, 0.0, -GRAVITY),
-        };
-        assert!(filter.predict(imu, DT).is_propagated());
+        let gyro = AngularRate::body(0.3, 0.1, -0.2);
+        let imu = ImuSample::reading(gyro, Acceleration::body(0.0, 0.0, -GRAVITY));
+        assert!(filter.step(imu, DT).is_propagated());
         let omega = filter.angular_rate().expect("a step was integrated");
-        assert_eq!(omega.vector(), imu.gyro.vector() - bias.vector());
+        // Corrected as an increment and divided back out, so equal to rounding.
+        let expected = gyro.vector() - bias.vector();
+        assert!((omega.vector() - expected).norm() < 1e-6, "{omega:?}");
 
         // A refused sample leaves the last rate, as it leaves the state.
-        let broken = ImuSample {
-            gyro: AngularRate::body(f32::NAN, 0.0, 0.0),
-            ..imu
-        };
-        assert_eq!(filter.predict(broken, DT), Propagation::NotFinite);
+        let broken = imu.with_gyro(AngularRate::body(f32::NAN, 0.0, 0.0));
+        assert_eq!(filter.step(broken, DT), Propagation::NotFinite);
         assert_eq!(filter.angular_rate(), Some(omega));
 
         // A gap is coasted on no sample, so there is no rate until the next one.
         let gap = Seconds::from_secs(1.0);
-        assert_eq!(filter.predict(imu, gap), Propagation::Coasted { dt: gap });
+        assert_eq!(filter.step(imu, gap), Propagation::Coasted { dt: gap });
         assert_eq!(filter.angular_rate(), None);
-        assert!(filter.predict(imu, DT).is_propagated());
+        assert!(filter.step(imu, DT).is_propagated());
         assert!(filter.angular_rate().is_some());
 
         // A fresh start forgets a rate measured against the last one's bias.
         let _ = filter
-            .initialize(&[still(); 8], Seconds::from_secs(0.25))
+            .initialize_over(&[still(); 8], Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
         assert_eq!(filter.angular_rate(), None);
     }
@@ -3339,11 +3409,11 @@ mod tests {
         // about down, which turns east toward south, so that antenna moves south.
         use core::f32::consts::FRAC_PI_2;
         let mut filter = seeded(attitude_of(FRAC_PI_2, 0.0, FRAC_PI_2), AngularRate::zero());
-        let imu = ImuSample {
-            gyro: AngularRate::body(0.0, 0.5, 0.0),
-            accel: Acceleration::body(0.0, -GRAVITY, 0.0),
-        };
-        assert!(filter.predict(imu, DT).is_propagated());
+        let imu = ImuSample::reading(
+            AngularRate::body(0.0, 0.5, 0.0),
+            Acceleration::body(0.0, -GRAVITY, 0.0),
+        );
+        assert!(filter.step(imu, DT).is_propagated());
 
         let r = Vector3::new(1.0, 0.0, 0.0);
         let rotation = filter.state().attitude.quaternion();
@@ -3373,7 +3443,7 @@ mod tests {
         // the declination is the only difference between the two filters.
         let mut charted = Eskf::new(Config::default());
         let _ = charted
-            .initialize(&window_with_mag(), Seconds::from_secs(0.25))
+            .initialize_over(&window_with_mag(), Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
         let mut shifted = charted.clone();
         assert!(shifted.set_magnetic_declination(Radians::from_radians(0.02)));
@@ -3413,13 +3483,13 @@ mod tests {
         let offset = AngularRate::body(0.01, -0.02, 0.003);
         let mut window = [still(); 8];
         for sample in &mut window {
-            sample.imu.gyro = offset;
+            sample.imu = sample.imu.with_gyro(offset);
         }
 
         let mut filter = Eskf::new(Config::default());
         assert_eq!(
             filter
-                .initialize(&window, Seconds::from_secs(0.25))
+                .initialize_over(&window, Seconds::from_secs(0.25))
                 .expect("0.022 rad/s is well inside the tolerance"),
             Alignment::Static
         );
@@ -3432,9 +3502,9 @@ mod tests {
         // Over the stationarity tolerance, so the same average is the vehicle turning
         // rather than the sensor lying, and taking it would subtract a turn rate from
         // every later measurement as though it were a sensor error.
-        window[3].imu.gyro = AngularRate::body(0.0, 0.4, 0.0);
+        window[3].imu = window[3].imu.with_gyro(AngularRate::body(0.0, 0.4, 0.0));
         let _ = filter
-            .initialize(&window, Seconds::from_secs(0.25))
+            .initialize_over(&window, Seconds::from_secs(0.25))
             .expect("moving, not unusable");
         assert_eq!(filter.state().gyro_bias, AngularRate::zero());
     }
@@ -3443,10 +3513,7 @@ mod tests {
     fn one_sample_is_levelled_like_a_window_of_one() {
         let mut filter = Eskf::new(Config::default());
         let _ = filter
-            .initialize_coarse(ImuSample {
-                accel: gravity_at(0.0, 0.35, 0.0),
-                ..still().imu
-            })
+            .initialize_coarse(still().imu.with_accel(gravity_at(0.0, 0.35, 0.0)))
             .expect("a finite sample");
 
         let (roll, pitch, _) = filter.state().attitude.euler_angles();
@@ -3460,13 +3527,15 @@ mod tests {
     fn a_refused_window_leaves_the_filter_uninitialized() {
         let mut filter = Eskf::new(Config::default());
         assert_eq!(
-            filter.initialize(&[], Seconds::from_secs(0.25)),
+            filter.initialize_over(&[], Seconds::from_secs(0.25)),
             Err(InitError::NoSamples)
         );
         let mut poisoned = [still(); 8];
-        poisoned[2].imu.accel = Acceleration::body(f32::NAN, 0.0, 0.0);
+        poisoned[2].imu = poisoned[2]
+            .imu
+            .with_accel(Acceleration::body(f32::NAN, 0.0, 0.0));
         assert_eq!(
-            filter.initialize(&poisoned, Seconds::from_secs(0.25)),
+            filter.initialize_over(&poisoned, Seconds::from_secs(0.25)),
             Err(InitError::NotFinite)
         );
         assert!(!filter.is_initialized());
@@ -3481,7 +3550,7 @@ mod tests {
             sample.mag = None;
         }
         let alignment = filter
-            .initialize(&window, Seconds::from_secs(0.25))
+            .initialize_over(&window, Seconds::from_secs(0.25))
             .expect("moving, not unusable");
         assert!(matches!(alignment, Alignment::Coarse(..)));
         filter
@@ -3542,7 +3611,7 @@ mod tests {
                 .fuse_gnss_position(Position::ned(0.1, 0.0, 0.0), noise)
                 .is_accepted()
         );
-        assert!(filter.predict(still().imu, DT).is_propagated());
+        assert!(filter.step(still().imu, DT).is_propagated());
         let (state, covariance) = (filter.state(), *filter.covariance());
         let timer = filter.diagnostics().gnss_position.time_since_accepted;
 
@@ -3696,9 +3765,7 @@ mod tests {
     fn a_seed_is_trusted_and_is_never_overwritten_by_a_fix() {
         let (state, covariance) = seed();
         let mut filter = Eskf::new(Config::default());
-        let _ = filter
-            .initialize_from(state, covariance)
-            .expect("a sane seed");
+        let _ = filter.seed(state, covariance).expect("a sane seed");
         let outcome = filter.fuse_gnss_velocity(
             Velocity::ned(0.0, 0.0, 0.0),
             VelocityNoise::from_speed_accuracy(0.3),
@@ -3726,7 +3793,7 @@ mod tests {
         });
         let mut filter = Eskf::new(Config::default());
         assert_eq!(
-            filter.initialize(&window, Seconds::from_secs(0.25)),
+            filter.initialize_over(&window, Seconds::from_secs(0.25)),
             Ok(Alignment::Static)
         );
         assert!(
@@ -3742,13 +3809,7 @@ mod tests {
         // `Degraded` would be what the status assertion below saw.
         for step in 1..=800 {
             assert_eq!(
-                filter.predict(
-                    ImuSample {
-                        accel: Acceleration::body(0.0, 0.0, -GRAVITY),
-                        ..ImuSample::default()
-                    },
-                    Seconds::from_secs(0.005),
-                ),
+                filter.step(still().imu, Seconds::from_secs(0.005),),
                 Propagation::Propagated
             );
             if step % 100 == 0 {
@@ -3778,7 +3839,7 @@ mod tests {
     fn a_static_start_is_valid_in_every_part() {
         let mut filter = Eskf::new(Config::default());
         let alignment = filter
-            .initialize(&window_with_mag(), Seconds::from_secs(0.25))
+            .initialize_over(&window_with_mag(), Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
         assert_eq!(alignment, Alignment::Static);
 
@@ -3901,13 +3962,10 @@ mod tests {
         // where it was, and the next velocity update pushes the bias correction into the
         // wrong axis.
         let mut filter = initialized();
-        let holding_still = ImuSample {
-            accel: Acceleration::body(0.0, 0.0, -GRAVITY),
-            ..ImuSample::default()
-        };
+        let holding_still = still().imu;
         for _ in 0..2_000 {
             assert_eq!(
-                filter.predict(holding_still, Seconds::from_secs(0.005)),
+                filter.step(holding_still, Seconds::from_secs(0.005)),
                 Propagation::Propagated
             );
         }
@@ -4058,7 +4116,7 @@ mod tests {
     fn a_magnetometer_in_the_window_establishes_heading_at_once() {
         let mut filter = Eskf::new(Config::default());
         let _ = filter
-            .initialize(&window_with_mag(), Seconds::from_secs(0.25))
+            .initialize_over(&window_with_mag(), Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
         assert!(filter.validity().heading);
     }
@@ -4071,7 +4129,7 @@ mod tests {
         // measured is replaced, not averaged with.
         let mut filter = Eskf::new(Config::default());
         let alignment = filter
-            .initialize(&turning(0.0, 0.4, 0.0), Seconds::from_secs(0.25))
+            .initialize_over(&turning(0.0, 0.4, 0.0), Seconds::from_secs(0.25))
             .expect("moving, not unusable");
         assert!(matches!(alignment, Alignment::Coarse(..)));
         assert!(!filter.validity().heading, "the window was moving");
@@ -4112,7 +4170,7 @@ mod tests {
         // window is its length.
         let mut filter = Eskf::new(Config::default());
         let alignment = filter
-            .initialize(&window_with_mag(), Seconds::from_secs(0.1))
+            .initialize_over(&window_with_mag(), Seconds::from_secs(0.1))
             .expect("short, so coarse");
         assert!(matches!(
             alignment,
@@ -4132,7 +4190,7 @@ mod tests {
         // fix to be gated against rather than adopted over.
         let mut filter = Eskf::new(Config::default());
         let _ = filter
-            .initialize(&window_with_mag(), Seconds::from_secs(0.1))
+            .initialize_over(&window_with_mag(), Seconds::from_secs(0.1))
             .expect("short, so coarse");
         assert!(filter.validity().horizontal_position);
         assert!(filter.validity().horizontal_velocity);
@@ -4235,7 +4293,7 @@ mod tests {
         // taken at rest establishes its own position, short or not. A moving one
         // establishes no barometric reference either, so the application names it.
         let _ = filter
-            .initialize(&moving_window_at(100.0), Seconds::from_secs(0.25))
+            .initialize_over(&moving_window_at(100.0), Seconds::from_secs(0.25))
             .expect("moving, not unusable");
         assert!(filter.set_baro_reference(
             Altitude::from_meters(100.0),
@@ -4275,7 +4333,7 @@ mod tests {
             };
             let mut filter = Eskf::new(config);
             let _ = filter
-                .initialize(&window_with_mag(), Seconds::from_secs(0.25))
+                .initialize_over(&window_with_mag(), Seconds::from_secs(0.25))
                 .expect("a 2 s window of stillness");
             (filter.validity().tilt, filter.predicted_validity().tilt)
         };
@@ -4301,7 +4359,7 @@ mod tests {
         // With nothing being accepted, the two do agree: there is no aiding to widen by.
         let mut quiet = Eskf::new(zero_horizon);
         let _ = quiet
-            .initialize(&window_with_mag(), Seconds::from_secs(0.25))
+            .initialize_over(&window_with_mag(), Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
         let (now, predicted) = (quiet.validity(), quiet.predicted_validity());
         assert_eq!(now.tilt, predicted.tilt);
@@ -4312,7 +4370,7 @@ mod tests {
         // making it good: invalid now, and predicted valid because the magnetometer is there.
         let mut aided = Eskf::new(zero_horizon);
         let _ = aided
-            .initialize(&moving_window_at(100.0), Seconds::from_secs(0.25))
+            .initialize_over(&moving_window_at(100.0), Seconds::from_secs(0.25))
             .expect("moving, not unusable");
         assert!(
             aided
@@ -4383,9 +4441,9 @@ mod tests {
         let mut filter = initialized();
         assert!(filter.set_origin(zurich()));
         let mut window = [still(); 8];
-        window[3].imu.gyro = AngularRate::body(0.0, 0.4, 0.0);
+        window[3].imu = window[3].imu.with_gyro(AngularRate::body(0.0, 0.4, 0.0));
         let _ = filter
-            .initialize(&window, Seconds::from_secs(0.25))
+            .initialize_over(&window, Seconds::from_secs(0.25))
             .expect("moving, so position is unestablished");
         let noise = PositionNoise::horizontal_vertical(1.5, 1.5);
 
@@ -4552,9 +4610,7 @@ mod tests {
         let (mut state, covariance) = seed();
         state.position = Position::ned(40.0, -15.0, -3.0);
         let mut filter = Eskf::new(Config::default());
-        let _ = filter
-            .initialize_from(state, covariance)
-            .expect("a sane seed");
+        let _ = filter.seed(state, covariance).expect("a sane seed");
         let _ = filter.fuse_gnss_geodetic(zurich(), PositionNoise::horizontal_vertical(1.5, 1.5));
 
         let origin = filter.origin().expect("placed");
@@ -4641,14 +4697,14 @@ mod tests {
         let mut filter = initialized();
         assert!(filter.set_origin(zurich()));
         let _ = filter
-            .initialize(&[still(); 8], Seconds::from_secs(0.1))
+            .initialize_over(&[still(); 8], Seconds::from_secs(0.1))
             .expect("short, so coarse");
         assert_eq!(filter.origin(), None, "still, so zero is here now");
         assert!(filter.validity().horizontal_position);
 
         assert!(filter.set_origin(zurich()));
         let _ = filter
-            .initialize(&turning(0.0, 0.4, 0.0), Seconds::from_secs(0.25))
+            .initialize_over(&turning(0.0, 0.4, 0.0), Seconds::from_secs(0.25))
             .expect("moving, not unusable");
         assert!(
             filter.origin().is_some(),
@@ -4681,7 +4737,7 @@ mod tests {
             ..Config::default()
         });
         assert_eq!(
-            filter.initialize(&window_with_mag(), Seconds::from_secs(0.25)),
+            filter.initialize_over(&window_with_mag(), Seconds::from_secs(0.25)),
             Ok(Alignment::Static)
         );
 
@@ -4699,12 +4755,12 @@ mod tests {
         let mut filter = Eskf::new(Config::default());
 
         let _ = filter
-            .initialize_from(state, Covariance::from_sigmas([0.001; STATES]))
+            .seed(state, Covariance::from_sigmas([0.001; STATES]))
             .expect("a sane seed");
         assert!(filter.is_aligned());
 
         let _ = filter
-            .initialize_from(state, Covariance::from_sigmas([2.0; STATES]))
+            .seed(state, Covariance::from_sigmas([2.0; STATES]))
             .expect("a sane seed");
         assert!(!filter.is_aligned());
     }
@@ -4715,7 +4771,7 @@ mod tests {
     fn on_its_tail() -> Eskf {
         let mut filter = Eskf::new(Config::default());
         let alignment = filter
-            .initialize(
+            .initialize_over(
                 &window_tilted(0.0, core::f32::consts::FRAC_PI_2),
                 Seconds::from_secs(0.25),
             )
@@ -4743,7 +4799,7 @@ mod tests {
 
         let mut filter = Eskf::new(Config::default());
         let _ = filter
-            .initialize_from(
+            .seed(
                 State {
                     attitude,
                     ..State::default()
@@ -4824,7 +4880,7 @@ mod tests {
     fn hold(filter: &mut Eskf, seconds: f32, every: usize, mut offer: impl FnMut(&mut Eskf)) {
         let steps = (seconds / DT.as_secs()).round() as usize;
         for step in 1..=steps {
-            assert_eq!(filter.predict(still().imu, DT), Propagation::Propagated);
+            assert_eq!(filter.step(still().imu, DT), Propagation::Propagated);
             if step % every == 0 {
                 offer(filter);
             }
@@ -4909,7 +4965,7 @@ mod tests {
             ..Config::default()
         });
         let _ = filter
-            .initialize(&[still(); 8], Seconds::from_secs(0.25))
+            .initialize_over(&[still(); 8], Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
         assert!(
             filter.set_baro_reference(Altitude::from_meters(100.0), AltitudeNoise::from_sigma(0.1))
@@ -4935,9 +4991,9 @@ mod tests {
         // one against, so a barometer rejected past the timeout stays rejected.
         let mut filter = aided();
         let mut window = [still(); 8];
-        window[3].imu.gyro = AngularRate::body(0.0, 0.4, 0.0);
+        window[3].imu = window[3].imu.with_gyro(AngularRate::body(0.0, 0.4, 0.0));
         let _ = filter
-            .initialize(&window, Seconds::from_secs(0.25))
+            .initialize_over(&window, Seconds::from_secs(0.25))
             .expect("moving, not unusable");
         hold(&mut filter, 8.0, 10, |filter| {
             let outcome = filter.fuse_baro_altitude(
@@ -4956,7 +5012,7 @@ mod tests {
             ..Config::default()
         });
         let _ = filter
-            .initialize(&[still(); 8], Seconds::from_secs(0.25))
+            .initialize_over(&[still(); 8], Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
         // Twice the timeout, and short of where dead reckoning alone grows `P` enough to
         // take a kilometre back in, which is about 30 s at rest.

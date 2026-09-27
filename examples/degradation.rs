@@ -17,7 +17,7 @@ const BARO_HZ: u32 = 20;
 const MAG_HZ: u32 = 50;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("fusion-nav degradation example — GNSS position is the only source fused\n");
+    println!("fusion-nav degradation example\n");
 
     let config = Config {
         timeouts: Timeouts {
@@ -40,7 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Quasi-static initialization. A real window is captured from the IMU while the
     // vehicle sits still; the filter validates the stationarity assumption.
     let window: [StaticSample; (2 * IMU_HZ) as usize] = core::array::from_fn(stationary_sample);
-    let alignment = filter.initialize(&window, Seconds::from_secs(1.0 / IMU_HZ as f32))?;
+    let alignment = filter.initialize(&window)?;
     println!("alignment:         {alignment:?}");
     println!("initialized:       {:?}\n", filter.state().status);
 
@@ -144,10 +144,10 @@ impl Sources {
 
 /// The integration loop a flight controller would write.
 fn run(filter: &mut Eskf, ticks: u32, sources: Sources) {
-    let dt = Seconds::from_secs(1.0 / IMU_HZ as f32);
-
     for tick in 0..ticks {
-        assert!(filter.predict(imu_sample(), dt).is_propagated());
+        // The IMU driver's timestamp; here, one interval after the last sample.
+        let time = filter.time().unwrap_or_default().after(interval());
+        assert!(filter.predict(imu_sample(time)).is_propagated());
 
         if sources.gnss && tick % (IMU_HZ / GNSS_HZ) == 0 {
             // The vehicle is still near where it started, which is where the fix puts it.
@@ -226,20 +226,31 @@ fn report(label: &str, filter: &Eskf) {
     println!();
 }
 
-fn imu_sample() -> ImuSample {
-    ImuSample {
-        gyro: AngularRate::body(0.01, -0.002, 0.03),
-        accel: Acceleration::body(0.2, 0.1, -GRAVITY),
-    }
+/// The time between IMU samples.
+fn interval() -> Seconds {
+    Seconds::from_secs(1.0 / IMU_HZ as f32)
 }
 
-/// The `i`th sample of a window on the ground.
+/// A rate IMU's reading, converted to the increments the filter takes.
+fn imu_sample(time: Timestamp) -> ImuSample {
+    ImuSample::from_rates(
+        time,
+        AngularRate::body(0.01, -0.002, 0.03),
+        Acceleration::body(0.2, 0.1, -GRAVITY),
+        interval(),
+    )
+}
+
+/// The `i`th sample of a window on the ground, on a clock counting from power-on.
 fn stationary_sample(i: usize) -> StaticSample {
+    let time = Timestamp::from_micros((i as u64 + 1) * 1_000_000 / u64::from(IMU_HZ));
     StaticSample {
-        imu: ImuSample {
-            gyro: AngularRate::body(0.0, 0.0, 0.0),
-            accel: Acceleration::body(0.0, 0.0, -GRAVITY),
-        },
+        imu: ImuSample::from_rates(
+            time,
+            AngularRate::body(0.0, 0.0, 0.0),
+            Acceleration::body(0.0, 0.0, -GRAVITY),
+            interval(),
+        ),
         mag: Some(MagField::body(0.22, 0.0, 0.44)),
         // Ground level at the launch point, 52 m, with the scatter a real barometer
         // has. This is what fixes the barometer's reference, so the 60 m fused later

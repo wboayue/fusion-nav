@@ -71,18 +71,19 @@ use fusion_nav::prelude::*;
 # let (lat_e7, lon_e7, height_mm, h_acc_mm, v_acc_mm) = (473_977_420, 85_455_940, 488_000, 1_500, 3_000);
 
 let mut filter = Eskf::new(Config::default());
-let dt = Seconds::from_secs(0.0025); // 400 Hz IMU
 
 // Initialize from a window of samples taken while the vehicle sits still. A short or
 // moving window still starts the filter, as `Alignment::Coarse`.
-if let Alignment::Coarse(_) = filter.initialize(&static_window, dt)? {
+if let Alignment::Coarse(_) = filter.initialize(&static_window)? {
     /* running, but reports `Status::Aligning` until attitude converges */
 }
 
 loop {
-    // High-rate propagation on every IMU sample. The outcome is #[must_use]: a step too long
-    // to integrate is coasted on an assumption, or refused with `Config::coast` off.
-    if !filter.predict(imu, dt).is_propagated() { /* log the gap */ }
+    // High-rate propagation on every IMU sample: the increments an integrating driver hands
+    // over, with its timestamp, or `ImuSample::from_rates(time, gyro, accel, interval)` from
+    // a rate gyroscope. The outcome is #[must_use]: a step too long to integrate is coasted
+    // on an assumption, or refused with `Config::coast` off.
+    if !filter.predict(imu).is_propagated() { /* log the gap */ }
 
     // Measurement updates whenever a sensor delivers, each with its own noise. Bound a
     // receiver's accuracy the way PX4 and ArduPilot do, and fuse only a real fix —
@@ -103,7 +104,7 @@ loop {
 ```
 
 `fusion_nav::prelude` carries the whole integration surface. Three runnable programs show it in
-full, and a fourth is the embedded counterpart, `no_std` with no `println!`: where `dt` comes
+full, and a fourth is the embedded counterpart, `no_std` with no `println!`: where the time comes
 from, sources at their own rates, every outcome handled and logged where it is returned.
 
 ```console
@@ -149,7 +150,9 @@ Units are SI and named only where a source commonly supplies something else:
 built `from_sigma` or `from_variance`, so a receiver's σ cannot arrive as a variance.
 Components come out as plain numbers: `.x()`, `.to_array()`, or `.vector()` for `nalgebra`.
 
-The filter never reads a clock. `dt` is an argument everywhere, including initialization.
+The filter never reads a clock. Every `ImuSample` carries a `Timestamp` on the caller's clock and
+the intervals its increments were integrated over; the step between samples is differenced from
+the timestamps, in integer microseconds, and a seed names its time too.
 
 ## Initialization
 
@@ -207,11 +210,11 @@ its *averaged* specific force is from gravity, and a real `ā_n` is part of what
 
 | entry point | for |
 | ----------- | --- |
-| `initialize(window, dt)` | the usual case; `Alignment::Static` if the window was genuinely still, `Alignment::Coarse` with what it measured otherwise |
+| `initialize(window)` | the usual case; `Alignment::Static` if the window was genuinely still, `Alignment::Coarse` with what it measured otherwise |
 | `initialize_coarse(imu)` | no window at all — one sample of gravity, and the filter runs |
-| `initialize_from(state, covariance)` | an estimate the application already holds: a companion AHRS such as `fusion-ahrs`, the last flight's saved state. [Seeding an attitude](#seeding-an-attitude) is where its convention gets named |
+| `initialize_from(state, covariance, time)` | an estimate the application already holds: a companion AHRS such as `fusion-ahrs`, the last flight's saved state. [Seeding an attitude](#seeding-an-attitude) is where its convention gets named |
 
-`alignment_of(window, dt)` reports what `initialize` would make of a window without touching the
+`alignment_of(window)` reports what `initialize` would make of a window without touching the
 filter, for an application that would rather wait for stillness than start coarsely.
 
 A **seed** is checked where a window is not, because it crosses a boundary the filter does not
@@ -278,7 +281,9 @@ let covariance = Covariance::from_sigmas([
     0.01, 0.01, 0.01, // gyroscope bias
 ]);
 
-assert_eq!(filter.initialize_from(state, covariance)?, Alignment::Seeded);
+// When the seed is valid, on the clock the IMU's timestamps are on.
+let time = Timestamp::from_micros(12_500_000);
+assert_eq!(filter.initialize_from(state, covariance, time)?, Alignment::Seeded);
 assert!((filter.state().attitude.euler_angles().2 - 1.1).abs() < 1.0e-6);
 # Ok::<(), InitError>(())
 ```
@@ -287,15 +292,18 @@ assert!((filter.state().attitude.euler_angles().2 - 1.1).abs() < 1.0e-6);
 
 ### Propagation
 
-Call `predict(imu, dt)` on every IMU sample. The result is `#[must_use]`:
+Call `predict(imu)` on every IMU sample. The step `dt` is the time from the last sample's
+timestamp to this one's, and it is what the health timers and the gap test read; the increments
+are integrated over their own intervals. The result is `#[must_use]`:
 
 | `Propagation` | meaning |
 | ------------- | ------- |
-| `Propagated` | state advanced over the full `dt` |
+| `Propagated` | state advanced across the sample |
 | `Coasted { dt }` | `dt` exceeded `Config::max_predict_dt`, so the sample was not integrated: position advanced on the estimated velocity and the covariance grew by what `Config::coast` allows ([equation (22′)](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#coasting-across-a-gap)) |
 | `StepTooLong { dt, limit }` | the same, with `Config::coast` off; state unchanged, but health timers advanced because the time really passed |
-| `InvalidStep { dt }` | `dt` zero, negative, or NaN; nothing moved |
+| `InvalidStep { dt }` | the sample is not after the last: `dt` zero or negative; nothing moved, the clock included |
 | `NotFinite` | the **sample** carried a NaN or an infinity; state unchanged, health timers advanced as above |
+| `InvalidInterval { interval }` | an integration interval zero or negative; as `NotFinite` |
 | `StateNotFinite` | the propagated **state** did, so it was discarded; a finite sample can still overflow f32 through (11)–(14) |
 | `NotInitialized` | no state to propagate |
 

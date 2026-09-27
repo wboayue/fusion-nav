@@ -725,6 +725,36 @@ struct Sinks<'a> {
     fusions: &'a mut dyn Write,
 }
 
+/// An IMU row as the log carries it: a rate gyroscope and an accelerometer, PX4's
+/// `sensor_combined`. The interval each reading stands for is the replay's to decide, so the
+/// increments the filter takes are formed where that is known.
+#[derive(Clone, Copy, Default)]
+struct Rates {
+    gyro: AngularRate<Body>,
+    accel: Acceleration<Body>,
+}
+
+/// A window sample before the rate estimator has fixed the interval it stands for.
+#[derive(Clone, Copy, Default)]
+struct Held {
+    time: Timestamp,
+    imu: Rates,
+    mag: Option<MagField<Body>>,
+    baro: Option<Altitude>,
+    velocity: Option<Velocity<Ned>>,
+}
+
+impl Held {
+    fn sample(self, dt: Seconds) -> StaticSample {
+        StaticSample {
+            imu: ImuSample::from_rates(self.time, self.imu.gyro, self.imu.accel, dt),
+            mag: self.mag,
+            baro: self.baro,
+            velocity: self.velocity,
+        }
+    }
+}
+
 /// A start that could still be committed on its still prefix, kept while the harness
 /// waits to see whether a static window arrives. See [`Replay::onset_of_motion`].
 #[derive(Clone)]
@@ -737,7 +767,7 @@ struct Fallback {
     still: usize,
     dt: Seconds,
     /// The sample that moved, the first the filter would propagate.
-    onset: (f64, ImuSample),
+    onset: (f64, Rates),
     /// Every line since the onset.
     lines: Vec<String>,
     /// The fusion rows those lines wrote while the filter was not initialized.
@@ -750,7 +780,7 @@ struct Replay {
     filter: Eskf,
     /// Candidate static window, slid forward one sample at a time until `initialize`
     /// accepts it. A log that begins in motion simply initializes later.
-    window: [StaticSample; WINDOW],
+    window: [Held; WINDOW],
     filled: usize,
     /// Whether every sample since the log began may still be still, which is what lets a
     /// start shorter than a full window commit at the onset of motion. See
@@ -858,7 +888,7 @@ impl Replay {
         Self {
             consistency: Consistency::new(config.gates),
             filter: Eskf::new(config),
-            window: [StaticSample::default(); WINDOW],
+            window: [Held::default(); WINDOW],
             filled: 0,
             still_since_start: true,
             still_prefix: 0,
@@ -933,7 +963,7 @@ impl Replay {
 
         match r.source {
             "imu" => {
-                let imu = ImuSample {
+                let imu = Rates {
                     gyro: AngularRate::body(r.value(0)?, r.value(1)?, r.value(2)?),
                     accel: Acceleration::body(r.value(3)?, r.value(4)?, r.value(5)?),
                 };
@@ -994,11 +1024,12 @@ impl Replay {
     /// Before initialization the filter refuses measurements with
     /// [`Fusion::NotInitialized`], so aiding rows in this stretch of the log are simply
     /// recorded and dropped.
-    fn accumulate(&mut self, t: f64, imu: ImuSample) -> Result<(), Box<dyn Error>> {
+    fn accumulate(&mut self, t: f64, imu: Rates) -> Result<(), Box<dyn Error>> {
         self.first_imu.get_or_insert(t);
         let previous = self.previous_imu;
         self.probe_rate(t);
-        let sample = StaticSample {
+        let sample = Held {
+            time: Timestamp::from_secs_f64(t),
             imu,
             mag: self.last_mag,
             baro: self.last_baro,
@@ -1014,7 +1045,7 @@ impl Replay {
         let dt = Seconds::from_secs(interval as f32);
         if self.still_since_start && self.filled <= needed {
             // Nothing has slid out yet, so the window is every sample since the log began.
-            let alignment = self.filter.alignment_of(&self.window[..self.filled], dt)?;
+            let alignment = self.filter.alignment_of(&self.window(0..self.filled, dt))?;
             if let Some(still) = self.onset_of_motion(alignment)
                 && let Some(previous) = previous
             {
@@ -1033,7 +1064,7 @@ impl Replay {
             return Ok(());
         }
         let window = self.filled - needed..self.filled;
-        let alignment = self.filter.alignment_of(&self.window[window.clone()], dt)?;
+        let alignment = self.filter.alignment_of(&self.window(window.clone(), dt))?;
         if !self.worth_committing(t, alignment) {
             return Ok(());
         }
@@ -1089,8 +1120,8 @@ impl Replay {
         dt: Seconds,
     ) -> Result<(), Box<dyn Error>> {
         self.window_samples = range.len();
-        let window = &self.window[range];
-        let alignment = self.filter.initialize(window, dt)?;
+        let window = self.window(range, dt);
+        let alignment = self.filter.initialize(&window)?;
         self.alignment = Some(alignment);
         self.initialized_at = Some(t);
         // The filter's own rule: one magnetometer sample anywhere in the window observes
@@ -1124,8 +1155,18 @@ impl Replay {
         }
     }
 
+    /// `self.window[range]` as the filter takes it, every sample standing for `dt`: the
+    /// interval the rate estimator fixed rather than each row's own step, which on a burst
+    /// log is zero as often as not.
+    fn window(&self, range: core::ops::Range<usize>, dt: Seconds) -> Vec<StaticSample> {
+        self.window[range]
+            .iter()
+            .map(|held| held.sample(dt))
+            .collect()
+    }
+
     /// Append a sample, dropping the oldest once the window is full.
-    fn push_to_window(&mut self, sample: StaticSample) {
+    fn push_to_window(&mut self, sample: Held) {
         if self.filled == WINDOW {
             self.window.copy_within(1.., 0);
             self.window[WINDOW - 1] = sample;
@@ -1191,13 +1232,17 @@ impl Replay {
         }
     }
 
-    fn propagate(&mut self, t: f64, imu: ImuSample, out: &mut Sinks) -> io::Result<()> {
-        if let Some(previous) = self.previous_imu.replace(t) {
-            // The filter decides what is too long, not the example.
+    fn propagate(&mut self, t: f64, imu: Rates, out: &mut Sinks) -> io::Result<()> {
+        if self.previous_imu.replace(t).is_some() {
+            // A rate stands for the time since the last sample the filter took, which is the
+            // step the filter measures itself, so the two cannot disagree. The filter decides
+            // what is too long, not the example.
+            let time = Timestamp::from_secs_f64(t);
+            let dt = time.since(self.filter.time().unwrap_or_default());
             let worst_before = self.filter.diagnostics().propagation.longest_gap;
             let propagated = self
                 .filter
-                .predict(imu, Seconds::from_secs((t - previous) as f32))
+                .predict(ImuSample::from_rates(time, imu.gyro, imu.accel, dt))
                 .is_propagated();
             // Timestamp the step that set a new worst, which is the one the filter kept.
             // Comparing to `dt` instead would also match a later step that merely ties it,

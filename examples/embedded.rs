@@ -1,7 +1,7 @@
 //! The integration loop on a microcontroller: `no_std`, no allocator, no `println!`.
 //!
-//! What the desktop examples cannot show. The filter never reads a clock, so `dt` is the
-//! caller's timer arithmetic. Sources arrive at their own rates from their own queues. Every
+//! What the desktop examples cannot show. The filter never reads a clock, so every sample's
+//! timestamp is the caller's timer. Sources arrive at their own rates from their own queues. Every
 //! outcome is handled where it is returned, and what the application does about
 //! `Status::DeadReckoning`, or about a recovery that stepped the state, is a policy the crate
 //! leaves to it.
@@ -31,10 +31,11 @@ use fusion_nav::prelude::*;
 
 const IMU_HZ: u32 = 400;
 
-/// The window is collected at 50 Hz rather than the IMU's 400: a `StaticSample` is 64 bytes,
-/// so the default 2 s `Initialization::min_duration` is 51 KB at full rate, more RAM than a
-/// Cortex-M0 has, and 6.4 KB here. A mean over 100 samples of a still vehicle is not what
-/// limits the alignment.
+/// The window is collected at 50 Hz rather than the IMU's 400: a `StaticSample` is 80 bytes,
+/// so the default 2 s `Initialization::min_duration` is 64 KB at full rate, more RAM than a
+/// Cortex-M0 has, and 8 KB here. Each window sample sums eight IMU samples' increments, as an
+/// integrating driver would, so the window still spans the 2 s it observed. A mean over 100
+/// samples of a still vehicle is not what limits the alignment.
 const WINDOW_DECIMATION: u32 = 8;
 const WINDOW: usize = (2 * IMU_HZ / WINDOW_DECIMATION) as usize;
 
@@ -70,10 +71,11 @@ struct Fix {
 /// The board: what an interrupt or DMA queue hands the loop, and where the loop's decisions
 /// go. `Write` is the log's transport.
 trait Board: core::fmt::Write {
-    /// The next IMU sample and the free-running microsecond counter it was taken at, if one
-    /// is queued. The time the sample was *taken*, not when the loop got to it, so the loop's
-    /// own jitter never reaches `dt`.
-    fn imu(&mut self) -> Option<(u32, ImuSample)>;
+    /// The next IMU sample, if one is queued, timed when it was *taken* rather than when the
+    /// loop got to it, so the loop's own jitter never reaches the step. `Timestamp` counts
+    /// microseconds in 64 bits: a 32-bit timer wraps every 71.6 minutes, and the HAL extends
+    /// it by counting the wraps.
+    fn imu(&mut self) -> Option<ImuSample>;
     /// The next GNSS solution, at 5 Hz.
     fn gnss(&mut self) -> Option<Fix>;
     /// The next barometric altitude, at 20 Hz.
@@ -89,34 +91,31 @@ trait Board: core::fmt::Write {
 
 fn run(board: &mut impl Board) -> ! {
     let mut filter = Eskf::new(Config::default());
-    let mut last = align(&mut filter, board);
+    align(&mut filter, board);
     let mut ticks: u32 = 0;
     loop {
-        let Some((now, imu)) = board.imu() else {
+        let Some(imu) = board.imu() else {
             continue;
         };
-        // Wrapping, because a `u32` of microseconds wraps every 71.6 minutes and the
-        // difference across the wrap is still the interval. Converted after the subtraction:
-        // an absolute timestamp in an `f32` loses the microseconds within hours.
-        let dt = Seconds::from_secs(now.wrapping_sub(last) as f32 * 1e-6);
-        last = now;
-        match filter.predict(imu, dt) {
+        match filter.predict(imu) {
             Propagation::Propagated => {}
             // The state advanced across a gap on its estimated velocity, and the covariance
             // grew to say how little that is worth. Nothing to undo; worth a line in the log,
             // since a gap is the logger or the scheduler falling behind.
             coasted @ Propagation::Coasted { .. } => log!(board, "imu {}", coasted),
             // Refused, and the state is stale by that step. After a gap with `Config::coast` off
-            // (`StepTooLong`) or an overflow (`StateNotFinite`) the timers advanced, so `Status`
-            // already reports the aiding that much staler; a duplicated timestamp or a non-finite
-            // sample moved nothing. What is left is to say so.
+            // (`StepTooLong`), a sample the filter could not use (`NotFinite`,
+            // `InvalidInterval`) or an overflow (`StateNotFinite`) the timers advanced, so
+            // `Status` already reports the aiding that much staler; a duplicated timestamp
+            // moved nothing. What is left is to say so.
             refused @ (Propagation::StepTooLong { .. }
             | Propagation::InvalidStep { .. }
             | Propagation::NotFinite
+            | Propagation::InvalidInterval { .. }
             | Propagation::StateNotFinite) => log!(board, "imu {}", refused),
             // Not reachable once `align` has returned, and aligning again is the answer if it
             // were: a firmware that re-initializes in flight comes through here.
-            Propagation::NotInitialized => last = align(&mut filter, board),
+            Propagation::NotInitialized => align(&mut filter, board),
         }
 
         let mut stepped = false;
@@ -146,25 +145,24 @@ fn run(board: &mut impl Board) -> ! {
     }
 }
 
-/// Collect a still window and initialize from it, until initialization succeeds. Returns the
-/// timestamp of the last IMU sample used, which the first `dt` is measured from.
-fn align(filter: &mut Eskf, board: &mut impl Board) -> u32 {
-    let dt = Seconds::from_secs(WINDOW_DECIMATION as f32 / IMU_HZ as f32);
+/// Collect a still window and initialize from it, until initialization succeeds. The filter's
+/// clock starts at the last sample's time, which the first step is measured from.
+fn align(filter: &mut Eskf, board: &mut impl Board) {
     loop {
         let mut window = [StaticSample::default(); WINDOW];
         let (mut baro, mut mag) = (None, None);
-        let mut last = 0;
         let mut filled = 0;
+        let mut summed: Option<ImuSample> = None;
         let mut seen: u32 = 0;
         while filled < WINDOW {
             // A slower sensor's last reading is held across the samples it spans; the window
             // counts distinct readings, so holding it claims nothing.
             baro = board.baro().or(baro);
             mag = board.mag().or(mag);
-            let Some((now, imu)) = board.imu() else {
+            let Some(imu) = board.imu() else {
                 continue;
             };
-            last = now;
+            let imu = summed.map_or(imu, |sum| accumulate(sum, imu));
             seen = seen.wrapping_add(1);
             if seen.is_multiple_of(WINDOW_DECIMATION) {
                 window[filled] = StaticSample {
@@ -174,17 +172,41 @@ fn align(filter: &mut Eskf, board: &mut impl Board) -> u32 {
                     velocity: None,
                 };
                 filled += 1;
+                summed = None;
+            } else {
+                summed = Some(imu);
             }
         }
-        match filter.initialize(&window, dt) {
+        match filter.initialize(&window) {
             // A short or moving window still starts the filter, coarse: `Status::Aligning`
             // says so until the attitude converges, and the log says why.
             Ok(alignment) => {
                 log!(board, "aligned {}", alignment);
-                return last;
+                return;
             }
             Err(error) => log!(board, "initialization failed: {}", error),
         }
+    }
+}
+
+/// `earlier` and `later` as one sample: the increments and intervals summed, timed at the
+/// later one's end. What an integrating driver does between reads, less the coning correction
+/// it would apply for a vehicle that is turning, which a still one is not.
+fn accumulate(earlier: ImuSample, later: ImuSample) -> ImuSample {
+    ImuSample {
+        time: later.time,
+        delta_angle: DeltaAngle::from_vector(
+            earlier.delta_angle.vector() + later.delta_angle.vector(),
+        ),
+        angle_interval: Seconds::from_secs(
+            earlier.angle_interval.as_secs() + later.angle_interval.as_secs(),
+        ),
+        delta_velocity: DeltaVelocity::from_vector(
+            earlier.delta_velocity.vector() + later.delta_velocity.vector(),
+        ),
+        velocity_interval: Seconds::from_secs(
+            earlier.velocity_interval.as_secs() + later.velocity_interval.as_secs(),
+        ),
     }
 }
 
@@ -239,7 +261,7 @@ impl core::fmt::Write for Hal {
 }
 
 impl Board for Hal {
-    fn imu(&mut self) -> Option<(u32, ImuSample)> {
+    fn imu(&mut self) -> Option<ImuSample> {
         None
     }
     fn gnss(&mut self) -> Option<Fix> {
