@@ -192,9 +192,10 @@ pub enum Fusion {
     /// counting this as one would put a filter fault in the column that times out a sensor.
     StateInvalid,
     /// The measurement's time is one the filter cannot place it at: older than
-    /// [`LATENCY_HORIZON`](crate::LATENCY_HORIZON), or later than the state by more than
-    /// [`Config::max_predict_dt`](crate::Config::max_predict_dt). The measurement was discarded
-    /// and no health timer moved.
+    /// [`LATENCY_HORIZON`](crate::LATENCY_HORIZON), later than the state by more than
+    /// [`Config::max_predict_dt`](crate::Config::max_predict_dt), or before a start that did not
+    /// show the vehicle at rest, whose motion before it nothing describes. The measurement was
+    /// discarded and no health timer moved.
     ///
     /// Inside those bounds the measurement is fused at its own time, equation (23′): against
     /// the state as it was, or, for one timed between the last IMU sample and the next, as it

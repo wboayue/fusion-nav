@@ -131,6 +131,10 @@ pub struct Eskf {
     angular_rate: Option<AngularRate<Body>>,
     /// The recent past of the state, for a measurement's age; see [`History`].
     history: History,
+    /// The earliest time a measurement can be placed at: the start, or the epoch when the start
+    /// was shown at rest and its state also describes the time before it. See
+    /// [`admit`](Self::admit).
+    earliest: Timestamp,
     unestablished: Unestablished,
     /// Whether the attitude has ever met [`ALIGNED_TILT`] and [`ALIGNED_HEADING`] since
     /// initialization. Latched, and the test behind [`Status::Aligning`]; see
@@ -171,6 +175,7 @@ impl Eskf {
             declination: Radians::ZERO,
             angular_rate: None,
             history: History::default(),
+            earliest: Timestamp::ZERO,
             unestablished: Unestablished::default(),
             aligned: false,
             initialized: false,
@@ -420,7 +425,7 @@ impl Eskf {
         }
         // Nothing a seed carries is unestablished: the caller vouched for every quantity,
         // heading included, so no first measurement overwrites one.
-        self.start(state, covariance, Unestablished::default(), time);
+        self.start(state, covariance, Unestablished::default(), time, false);
         self.note_alignment();
         Ok(Alignment::Seeded)
     }
@@ -965,8 +970,14 @@ impl Eskf {
 
     /// Whether a measurement taken at `time` can be fused, or the refusal that says why not:
     /// [`Fusion::NotInitialized`], or [`Fusion::OutOfHorizon`] for one older than
-    /// [`LATENCY_HORIZON`] or later than the state by more than
-    /// [`Config::max_predict_dt`](crate::Config::max_predict_dt).
+    /// [`LATENCY_HORIZON`], later than the state by more than
+    /// [`Config::max_predict_dt`](crate::Config::max_predict_dt), or taken before a start
+    /// that did not show the vehicle at rest.
+    ///
+    /// The history begins at the start, so a measurement from before it would be placed at
+    /// the start's state. After a still window that is where the vehicle was; after a start in
+    /// motion, a seed or a single sample, it is `v τ` from where the vehicle was, 1.6 m for a
+    /// fix 110 ms old at 15 m/s, and the next measurement is a better use of the source.
     ///
     /// The filter's time is its last IMU sample's, so a measurement timed between that sample
     /// and the next arrives ahead of it, which is the ordinary case for a caller fusing a sensor
@@ -978,7 +989,10 @@ impl Eskf {
             return Err(Fusion::NotInitialized);
         }
         let age = self.time.since(time);
-        if age > LATENCY_HORIZON || -age.as_secs() > self.config.max_predict_dt.as_secs() {
+        if age > LATENCY_HORIZON
+            || -age.as_secs() > self.config.max_predict_dt.as_secs()
+            || time < self.earliest
+        {
             return Err(Fusion::OutOfHorizon { age });
         }
         Ok(())
@@ -1931,7 +1945,7 @@ impl Eskf {
             measured.level_variance,
         );
         let unestablished = Unestablished::after(settled, measured.field.is_some());
-        self.start(state, covariance, unestablished, time);
+        self.start(state, covariance, unestablished, time, settled);
         if settled {
             self.origin = None;
         }
@@ -1940,12 +1954,16 @@ impl Eskf {
     /// Begin a new life at `time`: the state and covariance a start committed, fresh health,
     /// and no past. What both entry points share; the barometric reference and the origin are
     /// each start's own decision.
+    ///
+    /// `at_rest` is whether the start showed the vehicle still, which is what lets a
+    /// measurement taken before `time` be placed at all: see [`admit`](Self::admit).
     fn start(
         &mut self,
         state: State,
         covariance: Covariance,
         unestablished: Unestablished,
         time: Timestamp,
+        at_rest: bool,
     ) {
         self.state = state;
         // Diagnostics first: `commit_covariance` counts into them, and a start sitting on the
@@ -1958,6 +1976,7 @@ impl Eskf {
         self.time = time;
         self.history.clear();
         self.history.record(time, &self.state);
+        self.earliest = if at_rest { Timestamp::ZERO } else { time };
         // A fresh start is unaligned until its own covariance says otherwise, which
         // `note_alignment` reads at the end of each entry point.
         self.aligned = false;
@@ -3194,6 +3213,33 @@ mod tests {
         let now = filter.now();
         let current = filter.fuse_gnss_position(now, there, noise).horizontal;
         assert!(matches!(current, Fusion::Rejected { .. }), "{current:?}");
+    }
+
+    /// A start in motion says nothing about where the vehicle was before it, so a fix taken
+    /// before a seed is refused; a still window says the vehicle was where it started, so one
+    /// taken before that start is placed there and fused.
+    #[test]
+    fn a_fix_from_before_the_start_is_placed_only_after_a_start_at_rest() {
+        let noise = PositionNoise::horizontal_vertical(0.5, 0.5);
+        let before = Seconds::from_secs(0.05);
+
+        let mut seeded = Eskf::new(Config::default());
+        let (state, covariance) = seed();
+        let start = Timestamp::from_micros(1_000_000);
+        let _ = seeded
+            .initialize_from(state, covariance, start)
+            .expect("a sane seed");
+        let taken = start.before(before);
+        let refused = seeded.fuse_gnss_position(taken, Position::ned(0.0, 0.0, 0.0), noise);
+        assert_eq!(
+            refused,
+            GnssFusion::both(Fusion::OutOfHorizon { age: before })
+        );
+
+        let mut still = initialized();
+        let taken = still.now().before(before);
+        let fused = still.fuse_gnss_position(taken, Position::ned(0.0, 0.0, 0.0), noise);
+        assert!(fused.is_accepted(), "{fused:?}");
     }
 
     /// A correction reaches the past it was propagated from, so a second fix of the same moment
