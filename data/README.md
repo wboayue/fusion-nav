@@ -526,7 +526,7 @@ nothing else on the line moves when it happens), `r_policy=` (what the harness h
 floor; `px4` under `--r-policy px4`, which only `data/ekf2.txt` pins), `course=` and `without=`
 (choices too: the sideslip in degrees the course constraint was fused at after each `gnss_vel`
 row, from `--course` or a `# Course sideslip` header line, or `off`; and the input source
-`--without` dropped, or `none` — `off` and `none` on every manifest entry, so a figure from a log
+`--without` dropped, or `none`; `off` and `none` on every manifest entry, so a figure from a log
 replayed as a vehicle without its magnetometer says so), `rejected=` and `discarded=` (the gate's verdict, and everything that never reached it — a
 variance of zero or less, a NaN, an altitude with no reference; both count verdicts, so a GNSS
 fix judged or refused whole counts once per half), `refused=` and `invalid=` (steps

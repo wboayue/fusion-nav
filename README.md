@@ -170,7 +170,7 @@ and GNSS velocity. From the window the filter takes:
 * **heading** from the magnetometer if the window carries one, levelled by that roll and
   pitch. Without one, heading is unobserved: stillness says nothing about the rotation about
   gravity. `validity.heading` is false and `Status` stays `Aligning` until the first heading,
-  `fuse_mag_heading`, `fuse_gnss_heading` or `fuse_course`, is accepted, however still the window was — `Initialization::sigma_yaw` is a
+  `fuse_mag_heading`, `fuse_gnss_heading` or `fuse_course`, is accepted, however still the window was: `Initialization::sigma_yaw` is a
   prior on a yaw nobody measured, and the covariance alone cannot tell the two apart, which is
   why the first accepted heading is adopted rather than fused. Leaving `Aligning` is one-way: it reports a
   start that has not been resolved, while `validity.tilt` and `validity.heading` stay live and go
@@ -348,8 +348,8 @@ horizontal position only while GNSS is its sole horizontal aid. Where an axis wa
 all — a two-dimensional fix, a solution with no vertical velocity — `horizontal_vertical` is the
 constructor instead, since it leaves that axis' σ alone where `clamped` would cap it back into a
 measurement. The magnetometer must already be calibrated for hard and soft iron: `noise` is on
-the heading rather than on the field, and the filter widens it by the tilt it levelled with —
-equation (36′) — but nothing in it can find a hard-iron offset. A dual-antenna heading is bounded
+the heading rather than on the field, and the filter widens it by the tilt it levelled with,
+equation (36′), but nothing in it can find a hard-iron offset. A dual-antenna heading is bounded
 the same way as a fix, `HeadingNoise::clamped` with PX4's or ArduPilot's floor. Heading is true only once
 `set_magnetic_declination` names the site's declination, zero until then; set it before
 initializing, since the window's heading reads it, and again when a first fix says where the
