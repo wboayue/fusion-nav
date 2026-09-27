@@ -5,8 +5,9 @@
 
 use nalgebra::{SMatrix, SVector};
 
+use crate::config::Timeouts;
 use crate::display::{Decimals, Fixed};
-use crate::units::Seconds;
+use crate::units::{Seconds, Timestamp};
 
 /// How far the estimate can be trusted: whether attitude has converged, and how well
 /// aided it is.
@@ -152,8 +153,8 @@ pub enum Fusion {
     /// its latitude is beyond ±90°. The next usable fix will. See
     /// [`Eskf::fuse_gnss_geodetic`](crate::Eskf::fuse_gnss_geodetic).
     ///
-    /// Course: no GNSS velocity has been accepted within
-    /// [`Timeouts::degraded_after`](crate::Timeouts::degraded_after), so the velocity the
+    /// Course: no GNSS velocity has been accepted within its own
+    /// [`timeout`](SourceHealth::timeout), so the velocity the
     /// course would be taken along is dead-reckoned or was never established. Usually a call
     /// made before the first [`Eskf::fuse_gnss_velocity`](crate::Eskf::fuse_gnss_velocity), or
     /// after the receiver stopped; see [`Eskf::fuse_course`](crate::Eskf::fuse_course).
@@ -812,6 +813,16 @@ pub struct SourceHealth {
     /// measurement, rather than read as a difference of `since_initialized`, because an `f32`
     /// clock counting hours loses the digits a 0.2 s interval needs.
     pub(crate) since_measured: Option<Seconds>,
+    /// This source's update period as measured: the median of the intervals between its last
+    /// measurements, or `None` until enough have arrived to take one.
+    ///
+    /// Measured rather than configured, because the caller would be asked for a number the
+    /// filter can read off the stream (GOALS.md differentiator 7). Every measurement placed in
+    /// time counts, whether the gate then accepts, rejects or refuses it: this is how often
+    /// the sensor speaks, which [`timeout`](Self::timeout) reads, not how often it is believed.
+    pub period: Option<Seconds>,
+    /// The intervals [`period`](Self::period) is the median of.
+    pub(crate) cadence: Cadence,
 }
 
 impl SourceHealth {
@@ -825,6 +836,48 @@ impl SourceHealth {
     pub fn accepted_within(&self, timeout: Seconds) -> bool {
         self.time_since_accepted
             .is_some_and(|elapsed| elapsed <= timeout)
+    }
+
+    /// How long this source may go unaccepted before it counts as timed out: two and a half
+    /// of its own [`period`](Self::period)s, and never longer than
+    /// [`Timeouts::dead_reckoning_after`], which is also the answer until a period has been
+    /// measured.
+    ///
+    /// Two and a half missed updates, from the one receiver whose jitter was measured: on
+    /// `2c42096b`, a 1 Hz GNSS whose median interval is 1.003 s, 3289 of 4615 fix intervals
+    /// exceed 1.0 s and a threshold there flaps the status 7992 times in two hours; at 2.5 s
+    /// it is 888, two per interval longer than that, so what remains is the receiver's real
+    /// outages. Every other source on the corpus stays under 2.5 periods except across a
+    /// logging dropout.
+    ///
+    /// Per source, because one threshold has to clear the slowest source: sized for a 1 Hz
+    /// GNSS, a 5 Hz barometer that stops is invisible for twelve missed readings. PX4 and
+    /// ArduPilot fix theirs as constants (`no_aid_timeout_max`, 1 s,
+    /// `src/modules/ekf2/EKF/common.h:516` at `c4e4ef98e9`; `hgtRetryTime*_ms`,
+    /// `libraries/AP_NavEKF3/AP_NavEKF3.h:493-497` at `368dc0c428`).
+    pub fn timeout(&self, timeouts: &Timeouts) -> Seconds {
+        let cap = timeouts.dead_reckoning_after;
+        match self.period {
+            Some(period) if MISSED_UPDATES * period.as_secs() < cap.as_secs() => {
+                Seconds::from_secs(MISSED_UPDATES * period.as_secs())
+            }
+            _ => cap,
+        }
+    }
+
+    /// Whether this source was accepted within its own [`timeout`](Self::timeout): aiding
+    /// that is arriving on its schedule.
+    pub fn is_fresh(&self, timeouts: &Timeouts) -> bool {
+        self.accepted_within(self.timeout(timeouts))
+    }
+
+    /// Note a measurement placed at `time`, for [`period`](Self::period). One not after the
+    /// last is ignored: the same fix offered twice, or two sources' halves of it, is not an
+    /// interval.
+    pub(crate) fn note_arrival(&mut self, time: Timestamp) {
+        if let Some(period) = self.cadence.note(time) {
+            self.period = Some(period);
+        }
     }
 
     /// Advance the fusion clock. Called from `predict`, since the filter has no clock.
@@ -888,6 +941,53 @@ impl SourceHealth {
     pub(crate) fn record_refused(&mut self, refusal: Refusal) {
         self.refused = self.refused.saturating_add(1);
         self.last_refusal = Some(refusal);
+    }
+}
+
+/// Missed updates before a source counts as timed out; see [`SourceHealth::timeout`].
+const MISSED_UPDATES: f32 = 2.5;
+
+/// Intervals whose median is a source's period. Odd, so the median is one of them; long
+/// enough that a stretch of a jittery receiver's doubled intervals does not read as its rate.
+const CADENCE: usize = 9;
+
+/// The last [`CADENCE`] intervals between a source's measurements.
+///
+/// Kept apart from the rest of [`SourceHealth`] and summarized once per arrival, since
+/// [`Status`] reads the period on every [`Eskf::state`](crate::Eskf::state) and a median taken
+/// there would sort seven of these per IMU sample.
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Cadence {
+    last: Option<Timestamp>,
+    intervals: [f32; CADENCE],
+    /// Where the next interval goes.
+    next: usize,
+    full: bool,
+}
+
+impl Cadence {
+    /// Record a measurement at `time`, and return the median interval once [`CADENCE`] of
+    /// them have arrived. Not before: two intervals of a receiver that bursts are no rate.
+    fn note(&mut self, time: Timestamp) -> Option<Seconds> {
+        let last = self.last.replace(time);
+        let interval = match last {
+            Some(last) if time > last => time.since(last).as_secs(),
+            Some(last) => {
+                self.last = Some(last);
+                return None;
+            }
+            None => return None,
+        };
+        self.intervals[self.next % CADENCE] = interval;
+        self.next = (self.next + 1) % CADENCE;
+        self.full |= self.next == 0;
+        if !self.full {
+            return None;
+        }
+        let mut sorted = self.intervals;
+        sorted.sort_unstable_by(f32::total_cmp);
+        Some(Seconds::from_secs(sorted[CADENCE / 2]))
     }
 }
 
@@ -1027,15 +1127,21 @@ pub struct Diagnostics {
 
 impl Diagnostics {
     /// Every source, for iteration.
-    pub const fn sources(&self) -> [(&'static str, SourceHealth); 7] {
+    pub fn sources(&self) -> [(&'static str, SourceHealth); 7] {
+        self.named().map(|(name, health)| (name, *health))
+    }
+
+    /// Every source by reference: the one list the other two read, so that
+    /// [`Status`], derived on every [`Eskf::state`](crate::Eskf::state), copies none of them.
+    fn named(&self) -> [(&'static str, &SourceHealth); 7] {
         [
-            ("gnss_position", self.gnss_position),
-            ("gnss_height", self.gnss_height),
-            ("gnss_velocity", self.gnss_velocity),
-            ("baro_altitude", self.baro_altitude),
-            ("mag_heading", self.mag_heading),
-            ("gnss_heading", self.gnss_heading),
-            ("course", self.course),
+            ("gnss_position", &self.gnss_position),
+            ("gnss_height", &self.gnss_height),
+            ("gnss_velocity", &self.gnss_velocity),
+            ("baro_altitude", &self.baro_altitude),
+            ("mag_heading", &self.mag_heading),
+            ("gnss_heading", &self.gnss_heading),
+            ("course", &self.course),
         ]
     }
 
@@ -1043,10 +1149,10 @@ impl Diagnostics {
     /// filter's own velocity rather than a sensor. See
     /// [`Eskf::fuse_course`](crate::Eskf::fuse_course).
     ///
-    /// Taken from [`sources`](Self::sources) rather than listed again, so a source added there
+    /// Taken from the same list as [`sources`](Self::sources) rather than listed again, so a source added there
     /// counts toward `Status` unless it is excluded here by name.
-    pub(crate) fn aiding(&self) -> impl Iterator<Item = SourceHealth> {
-        self.sources()
+    pub(crate) fn aiding(&self) -> impl Iterator<Item = &SourceHealth> {
+        self.named()
             .into_iter()
             .filter(|&(name, _)| name != "course")
             .map(|(_, health)| health)
@@ -1074,6 +1180,66 @@ mod tests {
 
     const fn secs(s: f32) -> Seconds {
         Seconds::from_secs(s)
+    }
+
+    fn at(ms: u64) -> Timestamp {
+        Timestamp::from_micros(ms * 1000)
+    }
+
+    /// A source that has arrived at each of `times`, in milliseconds.
+    fn arrived(times: &[u64]) -> SourceHealth {
+        let mut source = SourceHealth::default();
+        for &t in times {
+            source.note_arrival(at(t));
+        }
+        source
+    }
+
+    #[test]
+    fn a_period_is_the_median_interval_once_the_window_has_filled() {
+        // Eight intervals are not yet a rate.
+        let times: [u64; 9] = core::array::from_fn(|i| 200 * i as u64);
+        assert_eq!(arrived(&times).period, None);
+
+        // Nine are. One doubled and one halved interval among them move the median nowhere,
+        // where a mean would read 0.211 s.
+        let mut times: [u64; 10] = core::array::from_fn(|i| 200 * i as u64);
+        times[4] -= 100;
+        times[9] += 200;
+        let period = arrived(&times).period.expect("nine intervals");
+        assert!((period.as_secs() - 0.2).abs() < 1e-6, "{period:?}");
+    }
+
+    #[test]
+    fn a_time_not_after_the_last_is_not_an_interval() {
+        // Every arrival offered twice, as a geodetic fix is on its way through to position:
+        // zero intervals would make the period 0 and the timeout 0.
+        let times: [u64; 20] = core::array::from_fn(|i| 1000 * (i as u64 / 2));
+        let period = arrived(&times).period.expect("nine intervals");
+        assert!((period.as_secs() - 1.0).abs() < 1e-6, "{period:?}");
+
+        // And one out of order is dropped without losing the latest time.
+        let mut source = arrived(&[0, 1000, 500]);
+        source.note_arrival(at(2000));
+        assert_eq!(source.cadence.intervals[..2], [1.0, 1.0]);
+    }
+
+    #[test]
+    fn a_timeout_is_two_and_a_half_periods_capped_at_dead_reckoning() {
+        let timeouts = Timeouts::default();
+        let cap = timeouts.dead_reckoning_after;
+        assert_eq!(
+            SourceHealth::default().timeout(&timeouts),
+            cap,
+            "no period yet"
+        );
+
+        let times: [u64; 10] = core::array::from_fn(|i| 200 * i as u64);
+        let timeout = arrived(&times).timeout(&timeouts).as_secs();
+        assert!((timeout - 0.5).abs() < 1e-6, "{timeout}");
+
+        let times: [u64; 10] = core::array::from_fn(|i| 3000 * i as u64);
+        assert_eq!(arrived(&times).timeout(&timeouts), cap, "7.5 s, capped");
     }
 
     #[test]

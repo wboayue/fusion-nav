@@ -283,6 +283,9 @@ fn surface(state: State, diagnostics: Diagnostics, covariance: &Covariance) {
         let _ = black_box(name);
         let _ = black_box(source.has_been_used());
         let _ = black_box(source.accepted_within(Seconds::from_secs(black_box(1.0))));
+        let _ = black_box(source.timeout(black_box(&Timeouts::default())));
+        let _ = black_box(source.is_fresh(black_box(&Timeouts::default())));
+        let _ = black_box(source.period);
         if let Some(innovation) = black_box(source.innovation) {
             let _ = black_box(innovation.values());
             let _ = black_box(innovation.variances());

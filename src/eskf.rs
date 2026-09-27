@@ -903,6 +903,8 @@ impl Eskf {
         if let Err(refusal) = self.admit(time) {
             return self.refuse_gnss(refusal);
         }
+        self.diagnostics.gnss_position.note_arrival(time);
+        self.diagnostics.gnss_height.note_arrival(time);
         if self.unestablished.position {
             if !position.is_finite() || !noise.is_finite() {
                 return self.refuse_gnss(Fusion::NotFinite);
@@ -1122,6 +1124,9 @@ impl Eskf {
         if let Err(refusal) = self.admit(time) {
             return self.refuse_gnss(refusal);
         }
+        // Noted again by `fuse_gnss_position` when it delegates, which the same time ignores.
+        self.diagnostics.gnss_position.note_arrival(time);
+        self.diagnostics.gnss_height.note_arrival(time);
         if !fix.is_finite() {
             return self.refuse_gnss(Fusion::NotFinite);
         }
@@ -1192,6 +1197,7 @@ impl Eskf {
         if let Err(refusal) = self.admit(time) {
             return refuse(&mut self.diagnostics.gnss_velocity, refusal);
         }
+        self.diagnostics.gnss_velocity.note_arrival(time);
         if !velocity.is_finite() || !noise.is_finite() {
             return refuse(&mut self.diagnostics.gnss_velocity, Fusion::NotFinite);
         }
@@ -1289,6 +1295,7 @@ impl Eskf {
         if let Err(refusal) = self.admit(time) {
             return refuse(&mut self.diagnostics.baro_altitude, refusal);
         }
+        self.diagnostics.baro_altitude.note_arrival(time);
         if !altitude.as_meters().is_finite() || !noise.is_finite() {
             return refuse(&mut self.diagnostics.baro_altitude, Fusion::NotFinite);
         }
@@ -1388,6 +1395,7 @@ impl Eskf {
         if let Err(refusal) = self.admit(time) {
             return refuse(&mut self.diagnostics.mag_heading, refusal);
         }
+        self.diagnostics.mag_heading.note_arrival(time);
         if !field.is_finite() || !noise.is_finite() {
             return refuse(&mut self.diagnostics.mag_heading, Fusion::NotFinite);
         }
@@ -1401,7 +1409,7 @@ impl Eskf {
         let d = &self.diagnostics;
         let recovery = self.unless_accepted(
             self.config.recovery.mag_heading,
-            &[d.gnss_position, d.gnss_velocity, d.gnss_heading],
+            &[&d.gnss_position, &d.gnss_velocity, &d.gnss_heading],
         );
         let source = HeadingSource {
             health: |diagnostics| &mut diagnostics.mag_heading,
@@ -1455,6 +1463,7 @@ impl Eskf {
         if let Err(refusal) = self.admit(time) {
             return refuse(&mut self.diagnostics.gnss_heading, refusal);
         }
+        self.diagnostics.gnss_heading.note_arrival(time);
         if !heading.as_radians().is_finite() || !noise.is_finite() {
             return refuse(&mut self.diagnostics.gnss_heading, Fusion::NotFinite);
         }
@@ -1494,8 +1503,8 @@ impl Eskf {
     /// fusing one per GNSS velocity passes that fix's time.
     ///
     /// Refused as [`Fusion::Unobservable`] where the estimated velocity names no direction: not
-    /// yet established, not held by a GNSS velocity accepted within
-    /// [`Timeouts::degraded_after`](crate::Timeouts::degraded_after), or too slow against its
+    /// yet established, not held by a fresh GNSS velocity
+    /// ([`SourceHealth::is_fresh`](crate::SourceHealth::is_fresh)), or too slow against its
     /// own uncertainty, which is ArduPilot's 15° bar
     /// on the course read from `P` — see `observation/heading.rs` — and so a speed threshold
     /// the velocity's accuracy sets rather than a parameter. Refused the same way with body x
@@ -1521,6 +1530,7 @@ impl Eskf {
         if let Err(refusal) = self.admit(time) {
             return refuse(&mut self.diagnostics.course, refusal);
         }
+        self.diagnostics.course.note_arrival(time);
         if !sideslip.is_finite() {
             return refuse(&mut self.diagnostics.course, Fusion::NotFinite);
         }
@@ -1530,7 +1540,7 @@ impl Eskf {
         // A velocity no GNSS velocity is holding is a dead-reckoned one, and a course along it
         // would read as aiding while it drifts. It also covers a velocity never established,
         // which only a GNSS velocity's acceptance or `reset_velocity_to` establishes.
-        if !self.accepted_recently(self.diagnostics.gnss_velocity) {
+        if !self.accepted_recently(&self.diagnostics.gnss_velocity) {
             return refuse(&mut self.diagnostics.course, Fusion::NoReference);
         }
         // Screened on the state the observation is built on, the one at `time`.
@@ -1545,7 +1555,7 @@ impl Eskf {
         let d = &self.diagnostics;
         let recovery = self.unless_accepted(
             self.config.recovery.course,
-            &[d.mag_heading, d.gnss_heading],
+            &[&d.mag_heading, &d.gnss_heading],
         );
         let source = HeadingSource {
             health: |diagnostics| &mut diagnostics.course,
@@ -1607,11 +1617,11 @@ impl Eskf {
     fn unless_accepted(
         &self,
         recovery: Option<Seconds>,
-        arbiters: &[SourceHealth],
+        arbiters: &[&SourceHealth],
     ) -> Option<Seconds> {
         if arbiters
             .iter()
-            .any(|&arbiter| self.accepted_recently(arbiter))
+            .any(|arbiter| self.accepted_recently(arbiter))
         {
             None
         } else {
@@ -1932,10 +1942,10 @@ impl Eskf {
         );
         let ahead = self.validity_of(&horizon);
 
-        let fresh = |source| self.accepted_recently(source);
+        let fresh = |source: &SourceHealth| self.accepted_recently(source);
         let d = &self.diagnostics;
-        let (position, velocity) = (fresh(d.gnss_position), fresh(d.gnss_velocity));
-        let height = fresh(d.gnss_height) || fresh(d.baro_altitude);
+        let (position, velocity) = (fresh(&d.gnss_position), fresh(&d.gnss_velocity));
+        let height = fresh(&d.gnss_height) || fresh(&d.baro_altitude);
 
         Validity {
             // Gravity is not an aiding source the filter tracks, so tilt has only the
@@ -1943,9 +1953,9 @@ impl Eskf {
             // whole answer rather than half of it.
             tilt: ahead.tilt,
             heading: ahead.heading
-                || fresh(d.mag_heading)
-                || fresh(d.gnss_heading)
-                || fresh(d.course),
+                || fresh(&d.mag_heading)
+                || fresh(&d.gnss_heading)
+                || fresh(&d.course),
             horizontal_position: ahead.horizontal_position || position,
             vertical_position: ahead.vertical_position || height,
             horizontal_velocity: ahead.horizontal_velocity || velocity,
@@ -1953,11 +1963,12 @@ impl Eskf {
         }
     }
 
-    /// Whether `source` was accepted within
-    /// [`Timeouts::degraded_after`](crate::Timeouts::degraded_after): aiding that is arriving,
-    /// as [`predicted_validity`](Self::predicted_validity) and the heading recovery both ask.
-    fn accepted_recently(&self, source: SourceHealth) -> bool {
-        source.accepted_within(self.config.timeouts.degraded_after)
+    /// Whether `source` was accepted within its own
+    /// [`timeout`](crate::SourceHealth::timeout): aiding that is arriving, as
+    /// [`Status`], [`predicted_validity`](Self::predicted_validity), the course and the
+    /// recovery guards all ask.
+    fn accepted_recently(&self, source: &SourceHealth) -> bool {
+        source.is_fresh(&self.config.timeouts)
     }
 
     /// The barometric reference `α₀` as currently estimated, equations (30) and (30′):
@@ -2189,7 +2200,12 @@ impl Eskf {
 
     /// Aggregate alignment and the per-source timers into one status, most severe first.
     ///
-    /// Only sources that have ever been accepted count toward aiding: a vehicle with no
+    /// [`DeadReckoning`](Status::DeadReckoning) reads horizontal aiding alone, GNSS position
+    /// or velocity within [`Timeouts::dead_reckoning_after`](crate::Timeouts): with GNSS gone
+    /// the barometer still holds height, and position drifts all the same. The rest reads
+    /// every source, each against its own period.
+    ///
+    /// Only sources that have ever been accepted count toward `Degraded`: a vehicle with no
     /// magnetometer is not permanently `Degraded` for lacking one. The course constraint
     /// never counts ([`Diagnostics::aiding`]): it aids nothing the GNSS velocity it needs does
     /// not.
@@ -2197,30 +2213,21 @@ impl Eskf {
     /// Alignment enters as the latch of [`is_aligned`](Self::is_aligned) rather than as the
     /// live [`Validity`], which is the one thing here that is not derived on read.
     fn derive_status(&self) -> Status {
-        let timeouts = &self.config.timeouts;
-        let mut used = 0;
-        let mut fresh = 0;
-        let mut aiding = 0;
-        for source in self.diagnostics.aiding() {
-            if !source.has_been_used() {
-                continue;
-            }
-            used += 1;
-            if source.accepted_within(timeouts.degraded_after) {
-                fresh += 1;
-            }
-            if source.accepted_within(timeouts.dead_reckoning_after) {
-                aiding += 1;
-            }
-        }
-
-        if used == 0 || aiding == 0 {
-            // Nothing is arriving that could align the filter either, so this outranks
+        let d = &self.diagnostics;
+        let horizontal = [&d.gnss_position, &d.gnss_velocity]
+            .into_iter()
+            .any(|source| source.accepted_within(self.config.timeouts.dead_reckoning_after));
+        if !horizontal {
+            // Position is unusable whatever the attitude is doing, so this outranks
             // `Aligning`.
             Status::DeadReckoning
         } else if !self.aligned {
             Status::Aligning
-        } else if fresh == used {
+        } else if d
+            .aiding()
+            .filter(|source| source.has_been_used())
+            .all(|source| self.accepted_recently(source))
+        {
             Status::Healthy
         } else {
             Status::Degraded
@@ -4016,7 +4023,7 @@ mod tests {
     }
 
     #[test]
-    fn a_coarse_start_reports_aligning_once_something_is_aiding_it() {
+    fn a_coarse_start_reports_aligning_once_horizontal_aiding_arrives() {
         let mut filter = Eskf::new(Config::default());
         let _ = filter
             .initialize_over(&window_at(100.0), Seconds::from_secs(0.1))
@@ -4024,7 +4031,7 @@ mod tests {
         assert_eq!(
             filter.state().status,
             Status::DeadReckoning,
-            "nothing is arriving that could align it, which outranks Aligning"
+            "nothing is holding position, which outranks Aligning"
         );
 
         assert!(
@@ -4036,6 +4043,18 @@ mod tests {
                 )
                 .is_accepted()
         );
+        assert_eq!(
+            filter.state().status,
+            Status::DeadReckoning,
+            "a barometer holds height, and position drifts all the same"
+        );
+
+        let velocity = filter.fuse_gnss_velocity(
+            filter.now(),
+            Velocity::ned(0.0, 0.0, 0.0),
+            VelocityNoise::from_speed_accuracy(0.3),
+        );
+        assert!(velocity.is_accepted(), "{velocity:?}");
         assert_eq!(filter.state().status, Status::Aligning);
     }
 
@@ -4561,8 +4580,8 @@ mod tests {
     /// controller branches on, and it goes false here.
     #[test]
     fn a_covariance_growing_past_the_bar_ends_validity_but_not_alignment() {
-        // Aided *and* aligned: the baro gives a source timer to keep the status out of
-        // `DeadReckoning`, and the magnetometer is what makes heading an estimate.
+        // Aided *and* aligned: a GNSS velocity keeps the status out of `DeadReckoning`, and
+        // the magnetometer is what makes heading an estimate.
         let window = window_at(100.0).map(|sample| StaticSample {
             mag: Some(MagField::body(0.22, 0.0, 0.44)),
             ..sample
@@ -4584,24 +4603,22 @@ mod tests {
         assert!(filter.is_aligned());
         assert!(filter.validity().tilt);
 
-        // Past the 3.83 s the default bars buy, with the barometer still arriving at 2 Hz so
-        // that aiding is never stale: otherwise `degraded_after` expires on the way and
-        // `Degraded` would be what the status assertion below saw.
+        // Past the 3.83 s the default bars buy, with a GNSS fix arriving at 2 Hz so that
+        // aiding is never stale. A 100 m one, which holds the status out of `DeadReckoning`
+        // and tells tilt nothing: a velocity would, through the accelerometer bias (8)
+        // correlates it with.
         for step in 1..=800 {
             assert_eq!(
                 filter.step(still().imu, Seconds::from_secs(0.005),),
                 Propagation::Propagated
             );
             if step % 100 == 0 {
-                assert!(
-                    filter
-                        .fuse_baro_altitude(
-                            filter.now(),
-                            Altitude::from_meters(100.0),
-                            AltitudeNoise::from_sigma(2.0)
-                        )
-                        .is_accepted()
+                let fix = filter.fuse_gnss_position(
+                    filter.now(),
+                    Position::ned(0.0, 0.0, 0.0),
+                    PositionNoise::from_sigma(100.0, 100.0, 100.0),
                 );
+                assert!(fix.horizontal.is_accepted(), "{fix:?}");
             }
         }
 
@@ -6304,14 +6321,92 @@ mod tests {
 
     #[test]
     fn a_course_along_a_dead_reckoned_velocity_is_refused() {
-        // Moving fast enough, but nothing has held the velocity for longer than
-        // `Timeouts::degraded_after`: a course along it would read as aiding while it drifts.
-        let mut filter = cruising(Velocity::ned(0.0, 15.0, 0.0));
-        hold(&mut filter, 3.0, 100, |_| {});
+        // Moving fast enough, but a 10 Hz velocity has not held it for five of its periods,
+        // twice its own timeout: a course along it would read as aiding while it drifts.
+        let velocity = Velocity::ned(0.0, 15.0, 0.0);
+        let mut filter = cruising(velocity);
+        hold(&mut filter, 1.0, 10, |filter| {
+            hold_velocity(filter, velocity)
+        });
+        hold(&mut filter, 0.5, 100, |_| {});
         assert_eq!(
             filter.fuse_course(filter.now(), HeadingNoise::from_sigma(0.05)),
             Fusion::NoReference
         );
+    }
+
+    /// Started still with a barometer at 0 m and a magnetometer, so that `Status` can reach
+    /// `Healthy`: without a heading the start stays `Aligning`.
+    fn aligned() -> Eskf {
+        let window = window_at(0.0).map(|sample| StaticSample {
+            mag: Some(MagField::body(0.22, 0.0, 0.44)),
+            ..sample
+        });
+        let mut filter = Eskf::new(Config::default());
+        assert_eq!(
+            filter.initialize_over(&window, Seconds::from_secs(0.25)),
+            Ok(Alignment::Static)
+        );
+        assert!(filter.is_aligned());
+        filter
+    }
+
+    #[test]
+    fn a_fast_source_that_stops_degrades_the_status_on_its_own_schedule() {
+        // A 10 Hz barometer beside a 1 Hz GNSS: the barometer times out after 0.25 s of
+        // silence, where one threshold sized for the receiver would take 2.5 s to notice.
+        let mut filter = aligned();
+        let baro = |filter: &mut Eskf| {
+            let outcome = filter.fuse_baro_altitude(
+                filter.now(),
+                Altitude::from_meters(0.0),
+                AltitudeNoise::from_sigma(2.0),
+            );
+            assert!(outcome.is_accepted(), "{outcome:?}");
+        };
+        let gnss = |filter: &mut Eskf| {
+            hold_velocity(filter, Velocity::ned(0.0, 0.0, 0.0));
+        };
+        hold(&mut filter, 10.0, 10, |filter| {
+            baro(filter);
+            if filter.diagnostics().baro_altitude.accepted % 10 == 0 {
+                gnss(filter);
+            }
+        });
+        assert_eq!(filter.state().status, Status::Healthy);
+
+        hold(&mut filter, 0.4, 100, |_| {});
+        assert_eq!(filter.state().status, Status::Degraded);
+    }
+
+    #[test]
+    fn a_status_reads_dead_reckoning_once_gnss_stops_whatever_else_arrives() {
+        let mut filter = aligned();
+        hold(&mut filter, 2.0, 10, |filter| {
+            hold_velocity(filter, Velocity::ned(0.0, 0.0, 0.0));
+            let _ = filter.fuse_baro_altitude(
+                filter.now(),
+                Altitude::from_meters(0.0),
+                AltitudeNoise::from_sigma(2.0),
+            );
+        });
+        assert_eq!(filter.state().status, Status::Healthy);
+
+        // The barometer keeps arriving, and is still accepted, past `dead_reckoning_after`.
+        hold(&mut filter, 5.5, 10, |filter| {
+            let _ = filter.fuse_baro_altitude(
+                filter.now(),
+                Altitude::from_meters(0.0),
+                AltitudeNoise::from_sigma(2.0),
+            );
+        });
+        assert!(
+            filter
+                .diagnostics()
+                .baro_altitude
+                .is_fresh(&crate::Timeouts::default())
+        );
+        assert_eq!(filter.state().status, Status::DeadReckoning);
     }
 
     #[test]

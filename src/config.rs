@@ -2,9 +2,9 @@
 //!
 //! Every default here is a **placeholder** chosen to make the shape of the API concrete,
 //! and none has been validated against flight data — with three exceptions:
-//! [`Timeouts::degraded_after`] and [`Initialization`]'s stationarity tolerances, both
-//! read off the PX4 replay corpus, and [`ImuNoise`], which follows the defaults PX4 and
-//! ArduPilot ship.
+//! [`SourceHealth::timeout`](crate::SourceHealth::timeout)'s missed-update count and
+//! [`Initialization`]'s stationarity tolerances, both read off the PX4 replay corpus, and
+//! [`ImuNoise`], which follows the defaults PX4 and ArduPilot ship.
 
 use crate::units::{Meters, MetersPerSecond, MetersPerSecond2, Radians, RadiansPerSecond, Seconds};
 
@@ -343,36 +343,34 @@ impl Default for Gates {
     }
 }
 
-/// How long a source may go unaccepted before the status degrades.
+/// How long the filter may go without horizontal aiding before the status reports it
+/// dead-reckoning.
 ///
 /// What the status *says*; what the filter *does* about a source it keeps rejecting is
-/// [`Recovery`]'s.
+/// [`Recovery`]'s. When a single source counts as timed out is not configured: each source's
+/// own measured period sets it, [`SourceHealth::timeout`](crate::SourceHealth::timeout), capped
+/// here.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Timeouts {
-    /// Beyond this, a source counts as timed out and the status becomes
-    /// [`Degraded`](crate::Status::Degraded).
+    /// Beyond this with neither GNSS position nor GNSS velocity accepted, the status becomes
+    /// [`DeadReckoning`](crate::Status::DeadReckoning), whatever else is still arriving. Also
+    /// the longest any source's [`timeout`](crate::SourceHealth::timeout) runs.
     ///
-    /// Must clear the slowest source's update period with margin, or ordinary jitter
-    /// reads as a fault. Roughly two and a half missed updates from the slowest source
-    /// is a reasonable rule.
-    pub degraded_after: Seconds,
-    /// Beyond this with no source accepted at all, the status becomes
-    /// [`DeadReckoning`](crate::Status::DeadReckoning).
+    /// Horizontal, because that is the error nothing else bounds: a barometer holds height and
+    /// a magnetometer heading, and position still drifts. PX4's `inertial_dead_reckoning` is
+    /// the same test (`src/modules/ekf2/EKF/ekf_helper.cpp:804-903` at `c4e4ef98e9`), cleared
+    /// only by horizontal position or velocity aiding, and ArduPilot's `dead_reckoning` flag
+    /// reads horizontal sources alone (`libraries/AP_NavEKF3/AP_NavEKF3_Control.cpp:811` at
+    /// `368dc0c428`). A mission question rather than a measured one: how long a vehicle may
+    /// navigate on its inertial solution is what it is flying for.
     pub dead_reckoning_after: Seconds,
 }
 
 impl Default for Timeouts {
-    /// Sized for a 1 Hz GNSS, the slowest source in common use.
-    ///
-    /// Not the 1.0 s that period suggests: a real 1 Hz receiver jitters either side of
-    /// its period. On `2c42096b`, 3289 of 4615 fix intervals exceed 1.0 s, and a 1.0 s
-    /// threshold flaps the status between `Healthy` and `Degraded` 7992 times in two
-    /// hours; at 2.5 s it is 888, two per interval longer than 2.5 s, so what remains
-    /// is the receiver's real outages. 2.5 s clears two missed fixes and still leaves
-    /// half the window to [`dead_reckoning_after`](Timeouts::dead_reckoning_after).
+    /// PX4's `EKF2_NOAID_TOUT`, the time it allows inertial dead reckoning before reporting
+    /// the horizontal solution invalid (`src/modules/ekf2/EKF/common.h:519` at `c4e4ef98e9`).
     fn default() -> Self {
         Self {
-            degraded_after: Seconds::from_secs(2.5),
             dead_reckoning_after: Seconds::from_secs(5.0),
         }
     }
@@ -511,16 +509,16 @@ pub struct Recovery {
     /// off the reference is the caller's, and a barometer that disagrees stays rejected.
     pub baro_altitude: Option<Seconds>,
     /// Magnetic heading: adopted as the first heading is, with the `R` of (36′) — but only
-    /// while no GNSS position or velocity has been accepted within
-    /// [`Timeouts::degraded_after`], since with those arriving a magnetometer that disagrees
+    /// while neither GNSS position nor velocity is fresh
+    /// ([`SourceHealth::is_fresh`](crate::SourceHealth::is_fresh)), since with those arriving a magnetometer that disagrees
     /// for this long is more likely disturbed than right. Nor while a GNSS heading is
     /// accepted, for the same reason.
     pub mag_heading: Option<Seconds>,
     /// Dual-antenna GNSS heading: adopted as the first heading is, with the caller's `R`. No
     /// guard: it is the absolute heading reference when the vehicle carries one.
     pub gnss_heading: Option<Seconds>,
-    /// Course constraint: adopted as the first heading is — but only while no magnetic or
-    /// GNSS heading has been accepted within [`Timeouts::degraded_after`], since with either
+    /// Course constraint: adopted as the first heading is — but only while neither magnetic
+    /// nor GNSS heading is fresh, since with either
     /// arriving a course that disagrees this long is sideslip the caller did not allow for,
     /// a crosswind or a multirotor crabbing, rather than a wrong heading.
     pub course: Option<Seconds>,
@@ -788,8 +786,8 @@ impl Default for Accuracy {
     /// What those two times move is [`Validity`](crate::Validity), and nothing else.
     /// [`Status`](crate::Status) is already answering on the aiding timers by then — an unaided
     /// filter reports [`DeadReckoning`](crate::Status::DeadReckoning) from
-    /// [`Timeouts::dead_reckoning_after`], or from its first step if no source was ever accepted
-    /// — and [`Aligning`](crate::Status::Aligning) reads the alignment bars rather than these.
+    /// [`Timeouts::dead_reckoning_after`] without horizontal aiding, or from its first step if
+    /// none was ever accepted — and [`Aligning`](crate::Status::Aligning) reads the alignment bars rather than these.
     /// So these are a claim about which outputs a controller may still use, which is the
     /// question [`Accuracy`] exists to answer. Supply your own numbers.
     ///
@@ -819,8 +817,7 @@ impl Default for Accuracy {
 ///
 /// let config = Config {
 ///     timeouts: Timeouts {
-///         degraded_after: Seconds::from_secs(1.5),  // a 5 Hz GNSS can be stricter
-///         ..Timeouts::default()
+///         dead_reckoning_after: Seconds::from_secs(2.0),  // a multirotor in close quarters
 ///     },
 ///     ..Config::default()
 /// };
