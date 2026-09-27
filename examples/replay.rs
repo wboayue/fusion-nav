@@ -26,7 +26,7 @@
 //!
 //! One row per measurement, sorted by time. `#` comments and the header are skipped, and
 //! blank cells are those not applicable to that source. One comment is read: a leading
-//! `# Magnetic declination <rad> rad` line sets `Config::magnetic_declination`, since the site
+//! `# Magnetic declination <rad> rad` line sets `Eskf::set_magnetic_declination`, since the site
 //! and not the harness decides it, and a log without one is replayed at zero. A
 //! `# GNSS noise parameters` line is read only under `--r-policy px4`, which refuses a log
 //! without one.
@@ -410,10 +410,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let truth = args.next();
 
     let text = fs::read_to_string(&input).map_err(|e| format!("{}: {e}", input.display()))?;
-    let config = Config {
-        magnetic_declination: declination_of(&text),
-        ..Config::default()
-    };
+    let config = Config::default();
     let policy = match policy.as_deref() {
         None | Some("raw") => RPolicy::Raw,
         Some("px4") => RPolicy::Px4(gnss_noise_of(&text).ok_or(
@@ -438,6 +435,12 @@ fn run() -> Result<(), Box<dyn Error>> {
     write_fusion_header(&mut fusion_out, config.gates)?;
 
     let mut replay = Replay::new(config, policy, scoring);
+    if !replay
+        .filter
+        .set_magnetic_declination(declination_of(&text))
+    {
+        return Err("the `# Magnetic declination` header is not a finite number".into());
+    }
     {
         let mut out = Sinks {
             epochs: &mut epoch_out,
@@ -1782,11 +1785,7 @@ impl Replay {
             },
             // Degrees, from the log's header (`declination_of`): a log converted before the
             // converter wrote one reads 0.00, which is a site nobody named.
-            self.filter
-                .config()
-                .magnetic_declination
-                .as_radians()
-                .to_degrees(),
+            self.filter.magnetic_declination().as_radians().to_degrees(),
             self.resets(),
             self.recoveries(),
             // When the filter first called its own attitude usable. It is what settled
@@ -2774,7 +2773,6 @@ mod tests {
         drive_with(
             log,
             Config {
-                magnetic_declination: Radians::from_radians(-0.06),
                 accuracy,
                 ..Config::default()
             },
@@ -2800,6 +2798,11 @@ mod tests {
         scoring: Option<Scoring>,
     ) -> Result<(Replay, String), String> {
         let mut replay = Replay::new(config, policy, scoring);
+        assert!(
+            replay
+                .filter
+                .set_magnetic_declination(Radians::from_radians(-0.06))
+        );
         let mut fusions = Vec::new();
         {
             let mut out = Sinks {
@@ -3583,16 +3586,8 @@ mod tests {
             velocity: 0.5,
             no_aid: 10.0,
         });
-        let (replay, _) = drive_under(
-            &moving("0.0001"),
-            Config {
-                magnetic_declination: Radians::from_radians(-0.06),
-                ..Config::default()
-            },
-            px4,
-            None,
-        )
-        .expect("fixture replays");
+        let (replay, _) =
+            drive_under(&moving("0.0001"), Config::default(), px4, None).expect("fixture replays");
         let px4 = replay.summary();
         assert_eq!(key(&px4, "rejected"), "0", "{px4}");
         assert_ne!(key(&px4, "nis_gnss_vel"), "none", "{px4}");
@@ -3746,7 +3741,6 @@ mod tests {
             .gnss_pos(2.4, 0.9, 1.9, -2.9);
         let at = |percentile| {
             let config = Config {
-                magnetic_declination: Radians::from_radians(-0.06),
                 gates: Gates::at(percentile),
                 ..Config::default()
             };

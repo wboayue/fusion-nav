@@ -324,7 +324,10 @@ all — a two-dimensional fix, a solution with no vertical velocity — `horizon
 constructor instead, since it leaves that axis' σ alone where `clamped` would cap it back into a
 measurement. The magnetometer must already be calibrated for hard and soft iron: `noise` is on
 the heading rather than on the field, and the filter widens it by the tilt it levelled with —
-equation (36′) — but nothing in it can find a hard-iron offset.
+equation (36′) — but nothing in it can find a hard-iron offset. Heading is true only once
+`set_magnetic_declination` names the site's declination, zero until then; set it before
+initializing, since the window's heading reads it, and again when a first fix says where the
+vehicle is.
 
 Every measurement passes through an innovation gate first. The result carries the test ratio, so
 a rejection is diagnosable. Reading it is optional: `diagnostics()` keeps the ratio, the counts

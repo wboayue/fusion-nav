@@ -104,6 +104,9 @@ pub struct Eskf {
     /// reference; [`establish_reference`](Self::establish_reference) keeps the two together.
     offset: Offset,
     origin: Option<LocalOrigin>,
+    /// `D_m` of equations (6) and (35); see
+    /// [`set_magnetic_declination`](Self::set_magnetic_declination).
+    declination: Radians,
     unestablished: Unestablished,
     /// Whether the attitude has ever met [`ALIGNED_TILT`] and [`ALIGNED_HEADING`] since
     /// initialization. Latched, and the test behind [`Status::Aligning`]; see
@@ -139,6 +142,7 @@ impl Eskf {
             baro_reference: None,
             offset: Offset::default(),
             origin: None,
+            declination: Radians::ZERO,
             unestablished: Unestablished::default(),
             aligned: false,
             initialized: false,
@@ -218,7 +222,7 @@ impl Eskf {
         // Measured from the window rather than read off `alignment`, because a window too
         // short to align an attitude from can still be a window of a parked vehicle.
         let at_rest = init::at_rest(&measured, &self.config.init);
-        let state = init::nominal_state(&measured, self.config.magnetic_declination, at_rest);
+        let state = init::nominal_state(&measured, self.declination, at_rest);
         self.apply_alignment(alignment, state, &measured, at_rest);
         if at_rest {
             self.establish_reference(
@@ -296,7 +300,7 @@ impl Eskf {
         // stationary gyroscope is a noisier bias than a window's average but a better
         // one than zero.
         let at_rest = init::at_rest(&measured, &self.config.init);
-        let state = init::nominal_state(&measured, self.config.magnetic_declination, at_rest);
+        let state = init::nominal_state(&measured, self.declination, at_rest);
         // That reading establishes nothing, which is why it is not passed on as one. A
         // window shows rest by holding still over a span of time and this one spans none:
         // an accelerometer reading `γ` for an instant is a hover as readily as a vehicle
@@ -484,6 +488,40 @@ impl Eskf {
     /// estimate.
     pub const fn origin(&self) -> Option<LocalOrigin> {
         self.origin
+    }
+
+    /// Set the magnetic declination at the operating site: `D_m` of equations (6) and (35),
+    /// east-positive, the angle that turns a magnetic heading into a true one. Zero until set.
+    ///
+    /// Held by the filter rather than [`Config`] because it is a property of where the vehicle
+    /// is, like the [`origin`](Self::origin) and `α₀`, and a vehicle that powers on before a
+    /// GNSS fix learns its site only once a fix arrives. PX4 tracks it at runtime from the last
+    /// valid GNSS position (`EKF/estimator_interface.h:485` at `c4e4ef98`).
+    ///
+    /// Read wherever a magnetic heading becomes a true one: the heading a static window
+    /// commits by (6), every [`fuse_mag_heading`](Self::fuse_mag_heading) by (35), and the
+    /// heading adoption and recovery. So set it before [`initialize`](Self::initialize) when
+    /// the site is known. It moves no state. A change once heading is established arrives as
+    /// an innovation of exactly the change on the next heading; a large one against the
+    /// heading's σ is [`Fusion::Rejected`] until
+    /// [`Config::recovery`](crate::Config::recovery) adopts a heading at the new value.
+    ///
+    /// Returns `false`, changing nothing, for a value that is not a finite number: it enters
+    /// every heading innovation for the rest of the flight, so a NaN here ends magnetic
+    /// aiding rather than spoiling one update.
+    #[must_use = "a refused declination leaves the previous one in every heading"]
+    pub fn set_magnetic_declination(&mut self, declination: Radians) -> bool {
+        if !declination.as_radians().is_finite() {
+            return false;
+        }
+        self.declination = declination;
+        true
+    }
+
+    /// The magnetic declination in use; see
+    /// [`set_magnetic_declination`](Self::set_magnetic_declination).
+    pub const fn magnetic_declination(&self) -> Radians {
+        self.declination
     }
 
     /// The position estimate as latitude, longitude and height, once the filter is
@@ -1114,7 +1152,7 @@ impl Eskf {
             &self.state,
             &self.covariance,
             field,
-            self.config.magnetic_declination,
+            self.declination,
             noise,
         )
         .correlated(correlation_inflation(
@@ -3153,20 +3191,68 @@ mod tests {
     }
 
     #[test]
-    fn the_configured_declination_reaches_the_heading_it_commits() {
+    fn a_declination_set_before_initializing_reaches_the_heading_it_commits() {
         // The wiring no test in `init` can see. A level vehicle reading a field with no
         // east component is pointing at magnetic north, so its true heading is the
         // declination and nothing else.
-        let mut filter = Eskf::new(Config {
-            magnetic_declination: Radians::from_radians(-0.06),
-            ..Config::default()
-        });
+        let mut filter = Eskf::new(Config::default());
+        assert!(filter.set_magnetic_declination(Radians::from_radians(-0.06)));
         let _ = filter
             .initialize(&window_with_mag(), Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
 
         let (_, _, yaw) = filter.state().attitude.euler_angles();
         assert!((yaw + 0.06).abs() < 1e-6, "heading committed as {yaw}");
+    }
+
+    #[test]
+    fn a_declination_that_is_not_a_number_is_refused_and_changes_nothing() {
+        let mut filter = initialized();
+        assert!(filter.set_magnetic_declination(Radians::from_radians(0.1)));
+        assert!(!filter.set_magnetic_declination(Radians::from_radians(f32::NAN)));
+        assert!(!filter.set_magnetic_declination(Radians::from_radians(f32::INFINITY)));
+        assert_eq!(filter.magnetic_declination(), Radians::from_radians(0.1));
+    }
+
+    #[test]
+    fn a_declination_change_moves_the_next_heading_innovation_by_exactly_itself() {
+        // Established heading, so both headings fuse rather than adopt, from the same state:
+        // the declination is the only difference between the two filters.
+        let mut charted = Eskf::new(Config::default());
+        let _ = charted
+            .initialize(&window_with_mag(), Seconds::from_secs(0.25))
+            .expect("a 2 s window of stillness");
+        let mut shifted = charted.clone();
+        assert!(shifted.set_magnetic_declination(Radians::from_radians(0.02)));
+
+        let field = MagField::body(0.22, 0.01, 0.44);
+        let noise = HeadingNoise::from_sigma(0.05);
+        let nu = |filter: &mut Eskf| {
+            assert!(filter.fuse_mag_heading(field, noise).is_accepted());
+            let innovation = filter.diagnostics().mag_heading.innovation;
+            innovation
+                .expect("an accepted heading publishes its ν")
+                .values()[0]
+        };
+        let moved = nu(&mut shifted) - nu(&mut charted);
+        assert!((moved - 0.02).abs() < 1e-6, "ν moved by {moved}");
+    }
+
+    #[test]
+    fn a_heading_adopted_after_a_declination_change_is_true_heading_at_the_new_value() {
+        // No magnetometer in the window, so the first heading is adopted. A field reading
+        // magnetic north on the heading the filter holds is, at declination d, true heading
+        // d: the adoption steps yaw onto exactly that.
+        let mut filter = initialized();
+        assert!(filter.set_magnetic_declination(Radians::from_radians(0.3)));
+        let field = measured(filter.state().attitude, 0.0);
+        assert!(
+            filter
+                .fuse_mag_heading(field, HeadingNoise::from_sigma(0.05))
+                .is_reset()
+        );
+        let (_, _, yaw) = filter.state().attitude.euler_angles();
+        assert!((yaw - 0.3).abs() < 1e-5, "adopted yaw {yaw}");
     }
 
     #[test]
@@ -4552,7 +4638,7 @@ mod tests {
             &filter.state,
             &filter.covariance,
             field,
-            filter.config.magnetic_declination,
+            filter.declination,
             noise,
         )
         .r_m[0];

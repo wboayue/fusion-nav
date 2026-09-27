@@ -784,9 +784,6 @@ pub struct Config {
     /// (22′). `None` refuses the step instead, as
     /// [`Propagation::StepTooLong`](crate::Propagation::StepTooLong).
     pub coast: Option<Coast>,
-    /// Magnetic declination at the operating site, added to magnetic heading to give
-    /// true heading. Equation (6).
-    pub magnetic_declination: Radians,
     /// Random walk of the barometric offset, m s⁻¹ / √Hz: the `q_b` of equation (30′).
     ///
     /// `α₀`, the reference a barometer's altitude is measured against, is estimated rather
@@ -843,7 +840,6 @@ impl Default for Config {
             accuracy: Accuracy::default(),
             max_predict_dt: Seconds::from_secs(0.1),
             coast: Some(Coast::default()),
-            magnetic_declination: Radians::ZERO,
             baro_offset_walk: 0.13,
             baro_reference_from_estimate: true,
         }

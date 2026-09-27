@@ -20,7 +20,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("fusion-nav degradation example — GNSS position is the only source fused\n");
 
     let config = Config {
-        magnetic_declination: Radians::from_radians(-0.06),
         timeouts: Timeouts {
             degraded_after: Seconds::from_secs(1.0),
             ..Timeouts::default()
@@ -31,6 +30,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let mut filter = Eskf::new(config);
+    assert!(filter.set_magnetic_declination(Radians::from_radians(-0.06)));
 
     // A measurement before initialization is refused rather than silently dropped.
     let early =

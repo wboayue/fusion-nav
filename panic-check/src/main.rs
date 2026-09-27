@@ -136,6 +136,8 @@ fn drive() {
         AltitudeNoise::from_sigma(black_box(0.1)),
     ));
     let _ = black_box(filter.set_origin(fix));
+    let _ = black_box(filter.set_magnetic_declination(Radians::from_radians(black_box(0.1))));
+    let _ = black_box(filter.magnetic_declination());
 
     let _ = black_box(filter.state());
     let _ = black_box(filter.diagnostics());
