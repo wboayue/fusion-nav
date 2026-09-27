@@ -154,6 +154,13 @@ fn drive() {
         MagField::body(black_box(0.22), black_box(0.0), black_box(0.44)),
         HeadingNoise::from_sigma(black_box(0.1)),
     ));
+    let _ = black_box(filter.fuse_gnss_heading(
+        black_box(time),
+        Radians::from_radians(black_box(1.1)),
+        HeadingNoise::clamped(black_box(0.01), SigmaBounds::at_least(black_box(0.1))),
+    ));
+    let _ =
+        black_box(filter.fuse_course(black_box(time), HeadingNoise::from_sigma(black_box(0.05))));
 
     let _ = black_box(filter.reset_position_to(position, position_noise));
     let _ = black_box(filter.reset_velocity_to(velocity, velocity_noise));

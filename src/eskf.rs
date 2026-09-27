@@ -1,13 +1,13 @@
 //! The filter itself.
 
-use crate::config::{ALIGNED_HEADING, ALIGNED_TILT, Config, LATENCY_HORIZON};
+use crate::config::{ALIGNED_HEADING, ALIGNED_TILT, Config, Gate, LATENCY_HORIZON};
 use crate::frames::{Body, Ned};
 use crate::geodetic::{Geodetic, LocalOrigin};
 use crate::health::{Diagnostics, Fusion, GnssFusion, Propagation, SourceHealth, Status, Validity};
 use crate::history::History;
 use crate::init::{self, Alignment, Coarse, InitError, Measured, StaticSample, baro_reference};
 use crate::math::{below_floor, correlation_inflation, exp_quat, floor_diagonal, floor_offset};
-use crate::observation::{baro, gnss, mag};
+use crate::observation::{baro, gnss, heading, mag};
 use crate::propagate::{self, ImuSample, Propagated, project, propagate};
 use crate::state::{AttitudeVariance, Covariance, ErrorState, Offset, State};
 use crate::units::{
@@ -1382,18 +1382,176 @@ impl Eskf {
         if !noise.is_positive() {
             return refuse(&mut self.diagnostics.mag_heading, Fusion::InvalidNoise);
         }
-        let (covariance, declination) = (&self.covariance, self.declination);
+        let declination = self.declination;
+        // With GNSS arriving, a magnetometer that disagrees this long is more likely disturbed
+        // than right: horizontal aiding is already correcting heading through (20), and a GNSS
+        // heading measures it outright.
+        let d = &self.diagnostics;
+        let recovery = self.unless_accepted(
+            self.config.recovery.mag_heading,
+            &[d.gnss_position, d.gnss_velocity, d.gnss_heading],
+        );
+        let source = HeadingSource {
+            health: |diagnostics| &mut diagnostics.mag_heading,
+            gate: self.config.gates.mag_heading,
+            correlation: self.config.correlation.mag_heading,
+            recovery,
+        };
+        self.fuse_heading(time, source, 0.0, |past, covariance| {
+            mag::heading_observation(past, covariance, field, declination, noise)
+        })
+    }
+
+    /// Fuse a true heading from a dual-antenna (moving-baseline) GNSS receiver.
+    /// Equations (35′) and (36).
+    ///
+    /// The heading of the line from the primary antenna to the secondary, which is taken to
+    /// lie along body x: a receiver whose antennas are mounted otherwise has the mounting
+    /// angle subtracted by the caller first, as PX4 and ArduPilot each do from a parameter.
+    /// True rather than magnetic, so no [declination](Self::set_magnetic_declination) applies,
+    /// and nothing is levelled with the estimated attitude, so the (36′) a magnetic heading
+    /// carries has no counterpart; see `observation/heading.rs` for the model and why its
+    /// Jacobian is (36) rather than the exact one PX4 differentiates.
+    ///
+    /// `noise` is the receiver's `heading_accuracy`, bounded before it arrives:
+    /// [`HeadingNoise::clamped`](crate::HeadingNoise::clamped) holds PX4's and ArduPilot's
+    /// floors, and both production estimators apply one because a moving-baseline solution is
+    /// as optimistic about itself as a position fix is.
+    ///
+    /// The first heading after any start that observed no yaw is adopted rather than gated,
+    /// as a magnetic one is — [`Fusion::Reset`], with this `noise` as the adopted variance —
+    /// and both production estimators align on the first sample the same way (PX4
+    /// `aid_sources/gnss/gnss_yaw_control.cpp:100-111` at `c4e4ef98`, ArduPilot
+    /// `AP_NavEKF3_MagFusion.cpp:404-410` at `368dc0c4`). Ordinary updates thereafter, gated at
+    /// [`Gates::gnss_heading`](crate::Gates), and recovered after
+    /// [`Recovery::gnss_heading`](crate::Recovery::gnss_heading).
+    ///
+    /// Fused beside a magnetometer rather than instead of one, where PX4 stops fusing the
+    /// magnetometer while GNSS yaw is active (`aid_sources/magnetometer/mag_control.cpp:189`):
+    /// each is gated against an estimate the other has corrected, and a magnetometer that
+    /// disagrees is not recovered while this is accepted. A body x within 30° of vertical has
+    /// no heading to compare, and is refused as [`Fusion::Unobservable`].
+    ///
+    /// `time` is when the measurement was taken, on the clock the IMU's samples are timed on;
+    /// [`Fusion::OutOfHorizon`] says which times cannot be placed.
+    pub fn fuse_gnss_heading(
+        &mut self,
+        time: Timestamp,
+        heading: Radians,
+        noise: HeadingNoise,
+    ) -> Fusion {
+        if let Err(refusal) = self.admit(time) {
+            return refuse(&mut self.diagnostics.gnss_heading, refusal);
+        }
+        if !heading.as_radians().is_finite() || !noise.is_finite() {
+            return refuse(&mut self.diagnostics.gnss_heading, Fusion::NotFinite);
+        }
+        if !noise.is_positive() {
+            return refuse(&mut self.diagnostics.gnss_heading, Fusion::InvalidNoise);
+        }
+        if !heading::has_heading(&self.state) {
+            return refuse(&mut self.diagnostics.gnss_heading, Fusion::Unobservable);
+        }
+        let source = HeadingSource {
+            health: |diagnostics| &mut diagnostics.gnss_heading,
+            gate: self.config.gates.gnss_heading,
+            correlation: self.config.correlation.gnss_heading,
+            recovery: self.config.recovery.gnss_heading,
+        };
+        self.fuse_heading(time, source, 0.0, |past, _| {
+            heading::gnss_observation(past, heading, noise)
+        })
+    }
+
+    /// Constrain heading to the direction of travel: the vehicle points along its estimated
+    /// velocity, to within `sideslip`. Equations (35″) and (36).
+    ///
+    /// Yaw from course over ground, for a vehicle with no magnetometer or one it cannot trust.
+    /// It is a constraint rather than a measurement: nothing new is read, and what the call
+    /// states is that the nose and the track agree, so it is only as true as the vehicle makes
+    /// it. A fixed-wing in coordinated flight and a ground vehicle on its wheels hold it to a
+    /// few degrees; a crosswind adds its crab angle to `sideslip`. **A multirotor holds no such
+    /// relation** — it hovers, and flies in any direction facing any other — and must not call
+    /// this.
+    ///
+    /// The velocity is the estimate's, not a GNSS velocity handed in: that velocity has already
+    /// been fused through [`fuse_gnss_velocity`](Self::fuse_gnss_velocity), and taking a course
+    /// from it again would count its cross-track error twice. Read off the state, the
+    /// velocity's uncertainty reaches the update through `P`, and the update corrects velocity
+    /// and heading together. So `time` is when the constraint is claimed to hold, and a caller
+    /// fusing one per GNSS velocity passes that fix's time.
+    ///
+    /// Refused as [`Fusion::Unobservable`] where the estimated velocity names no direction: not
+    /// yet established, or too slow against its own uncertainty, which is ArduPilot's 15° bar
+    /// on the course read from `P` — see `observation/heading.rs` — and so a speed threshold
+    /// the velocity's accuracy sets rather than a parameter. Refused the same way with body x
+    /// within 30° of vertical. ArduPilot's plane realigns yaw from course above 5 m/s
+    /// (`realignYawGPS`, `AP_NavEKF3_MagFusion.cpp:145-218` at `368dc0c4`); PX4 has no course
+    /// source and reaches the same vehicle through its GSF yaw estimator.
+    ///
+    /// The first course after a start that observed no yaw is adopted, as a first heading is,
+    /// at `sideslip`'s variance plus the course's own; ordinary updates thereafter, continuously
+    /// rather than ArduPilot's once, gated at [`Gates::course`](crate::Gates) and recovered
+    /// after [`Recovery::course`](crate::Recovery::course) while no other heading is accepted.
+    pub fn fuse_course(&mut self, time: Timestamp, sideslip: HeadingNoise) -> Fusion {
+        if let Err(refusal) = self.admit(time) {
+            return refuse(&mut self.diagnostics.course, refusal);
+        }
+        if !sideslip.is_finite() {
+            return refuse(&mut self.diagnostics.course, Fusion::NotFinite);
+        }
+        if !sideslip.is_positive() {
+            return refuse(&mut self.diagnostics.course, Fusion::InvalidNoise);
+        }
+        let spread = heading::course_variance(&self.state, &self.covariance);
+        let Some(spread) =
+            spread.filter(|_| !self.unestablished.velocity && heading::has_heading(&self.state))
+        else {
+            return refuse(&mut self.diagnostics.course, Fusion::Unobservable);
+        };
+        // With a heading source arriving, a course that disagrees this long is sideslip the
+        // caller did not allow for, not a wrong heading.
+        let d = &self.diagnostics;
+        let recovery = self.unless_accepted(
+            self.config.recovery.course,
+            &[d.mag_heading, d.gnss_heading],
+        );
+        let source = HeadingSource {
+            health: |diagnostics| &mut diagnostics.course,
+            gate: self.config.gates.course,
+            correlation: self.config.correlation.course,
+            recovery,
+        };
+        self.fuse_heading(time, source, spread, |past, _| {
+            heading::course_observation(past, sideslip)
+        })
+    }
+
+    /// The update every heading source shares, once its measurement has been screened:
+    /// formed at `time` by (23′), fused at (24′)'s variance, adopted where heading was never
+    /// established, and otherwise gated and recovered.
+    ///
+    /// `spread` is the variance an adoption carries beyond `R`: zero for a source whose `H`
+    /// reads attitude alone, and the course's own for the constraint, whose `H` reads velocity
+    /// too and whose adopted heading is only as good as the velocity it was taken along.
+    ///
+    /// Out of line for the reason [`observe`](Self::observe) is, so three callers put one frame
+    /// beside `update::<1>` rather than three beneath it.
+    #[inline(never)]
+    fn fuse_heading(
+        &mut self,
+        time: Timestamp,
+        source: HeadingSource,
+        spread: f32,
+        build: impl FnOnce(&State, &Covariance) -> Observation<1>,
+    ) -> Fusion {
+        let since_measured = (source.health)(&mut self.diagnostics).since_measured;
         let observation = self
-            .observe(time, |past| {
-                mag::heading_observation(past, covariance, field, declination, noise)
-            })
-            .correlated(correlation_inflation(
-                self.diagnostics.mag_heading.since_measured,
-                self.config.correlation.mag_heading,
-            ));
+            .observe(time, |past| build(past, &self.covariance))
+            .correlated(correlation_inflation(since_measured, source.correlation));
         if self.unestablished.heading {
-            self.adopt_heading(&observation);
-            self.diagnostics.mag_heading.record_adopted();
+            self.adopt_heading(&observation, spread);
+            (source.health)(&mut self.diagnostics).record_adopted();
             self.note_alignment();
             return Fusion::Reset;
         }
@@ -1402,30 +1560,37 @@ impl Eskf {
             &self.covariance,
             &self.offset,
             &observation,
-            self.config.gates.mag_heading,
+            source.gate,
         );
-        // With GNSS arriving, a magnetometer that disagrees this long is more likely disturbed
-        // than right, and horizontal aiding is already correcting heading through (20).
-        let gnss = &self.diagnostics;
-        let after = if self.accepted_recently(gnss.gnss_position)
-            || self.accepted_recently(gnss.gnss_velocity)
+        self.apply_or_recover(outcome, source.health, source.recovery, |filter| {
+            filter.adopt_heading(&observation, spread)
+        })
+    }
+
+    /// `recovery`, unless any of `arbiters` was accepted recently: a source that disagrees
+    /// with better aiding that is arriving is the one at fault, and adopting it would step the
+    /// estimate away from what the others say.
+    fn unless_accepted(
+        &self,
+        recovery: Option<Seconds>,
+        arbiters: &[SourceHealth],
+    ) -> Option<Seconds> {
+        if arbiters
+            .iter()
+            .any(|&arbiter| self.accepted_recently(arbiter))
         {
             None
         } else {
-            self.config.recovery.mag_heading
-        };
-        self.apply_or_recover(
-            outcome,
-            |diagnostics| &mut diagnostics.mag_heading,
-            after,
-            |filter| filter.adopt_heading(&observation),
-        )
+            recovery
+        }
     }
 
     /// Adopt a heading: [`reset_heading_by`](Self::reset_heading_by) with the `y` and `R`
     /// an ordinary update would read. (36′) is what makes that worth saying: the levelling
     /// error is priced on the path where the tilt it comes from is worst.
-    fn adopt_heading(&mut self, observation: &Observation<1>) {
+    ///
+    /// `spread` is added to `R`: see [`fuse_heading`](Self::fuse_heading).
+    fn adopt_heading(&mut self, observation: &Observation<1>, spread: f32) {
         // Navigation down in body axes, `R(q̂)ᵀe₃`: (36)'s row as (23′) carried it to the
         // present, read back rather than derived again, so the direction the adoption resets
         // is the one the source observes.
@@ -1433,7 +1598,7 @@ impl Eskf {
             .h
             .fixed_view::<1, 3>(0, ErrorState::AttitudeX.index())
             .transpose();
-        self.reset_heading_by(observation.y[0], observation.r_m[0], down);
+        self.reset_heading_by(observation.y[0], observation.r_m[0] + spread, down);
     }
 
     /// Turn the estimate by a yaw error and give the result the measurement's variance:
@@ -1740,7 +1905,10 @@ impl Eskf {
             // projection to speak for it -- which is the one quantity where that is the
             // whole answer rather than half of it.
             tilt: ahead.tilt,
-            heading: ahead.heading || fresh(d.mag_heading),
+            heading: ahead.heading
+                || fresh(d.mag_heading)
+                || fresh(d.gnss_heading)
+                || fresh(d.course),
             horizontal_position: ahead.horizontal_position || position,
             vertical_position: ahead.vertical_position || height,
             horizontal_velocity: ahead.horizontal_velocity || velocity,
@@ -2019,6 +2187,16 @@ impl Eskf {
             Status::Degraded
         }
     }
+}
+
+/// What distinguishes one heading source from another inside
+/// [`Eskf::fuse_heading`]: where its health is kept, and the gate, `τ` and recovery
+/// [`Config`] gives it.
+struct HeadingSource {
+    health: fn(&mut Diagnostics) -> &mut SourceHealth,
+    gate: Gate<1>,
+    correlation: Option<Seconds>,
+    recovery: Option<Seconds>,
 }
 
 impl Unestablished {
@@ -5876,5 +6054,187 @@ mod tests {
             "yaw = {yaw}"
         );
         assert_eq!(filter.diagnostics().mag_heading.recovered, 1);
+    }
+
+    #[test]
+    fn the_first_gnss_heading_is_adopted_and_every_one_after_it_is_fused() {
+        let mut filter = initialized();
+        let noise = HeadingNoise::from_sigma(0.05);
+        let heading = Radians::from_radians(1.1);
+        assert!(
+            filter
+                .fuse_gnss_heading(filter.now(), heading, noise)
+                .is_reset()
+        );
+        let (_, _, yaw) = filter.state().attitude.euler_angles();
+        assert!((yaw - 1.1).abs() < 1e-5, "yaw = {yaw}");
+        assert!(filter.validity().heading);
+        assert!(filter.is_aligned(), "a heading source is a heading source");
+        assert_eq!(filter.diagnostics().gnss_heading.adopted, 1);
+
+        let second = filter.fuse_gnss_heading(filter.now(), heading, noise);
+        assert!(matches!(second, Fusion::Accepted { .. }), "{second:?}");
+    }
+
+    #[test]
+    fn a_gnss_heading_is_screened_before_anything_else() {
+        let mut filter = initialized();
+        let at = |r| Radians::from_radians(r);
+        assert_eq!(
+            filter.fuse_gnss_heading(filter.now(), at(f32::NAN), HeadingNoise::from_sigma(0.1)),
+            Fusion::NotFinite
+        );
+        assert_eq!(
+            filter.fuse_gnss_heading(filter.now(), at(0.3), HeadingNoise::from_variance(0.0)),
+            Fusion::InvalidNoise
+        );
+        assert_eq!(filter.diagnostics().gnss_heading.adopted, 0);
+        assert!(!filter.validity().heading, "a refusal establishes nothing");
+    }
+
+    #[test]
+    fn a_gnss_heading_is_true_heading_whatever_the_declination() {
+        let mut filter = initialized();
+        assert!(filter.set_magnetic_declination(Radians::from_radians(0.3)));
+        let _ = filter.fuse_gnss_heading(
+            filter.now(),
+            Radians::from_radians(1.1),
+            HeadingNoise::from_sigma(0.05),
+        );
+        let (_, _, yaw) = filter.state().attitude.euler_angles();
+        assert!((yaw - 1.1).abs() < 1e-5, "yaw = {yaw}");
+    }
+
+    /// A static start, then flying `velocity` with its heading still unobserved.
+    fn cruising(velocity: Velocity<Ned>) -> Eskf {
+        let mut filter = initialized();
+        assert!(filter.reset_velocity_to(velocity, VelocityNoise::from_speed_accuracy(0.3)));
+        filter
+    }
+
+    #[test]
+    fn a_course_is_refused_without_speed_and_adopted_with_it() {
+        let slow = Velocity::ned(0.5, 0.5, 0.0);
+        let mut filter = cruising(slow);
+        assert_eq!(
+            filter.fuse_course(filter.now(), HeadingNoise::from_sigma(0.05)),
+            Fusion::Unobservable
+        );
+        assert_eq!(
+            filter.diagnostics().course.last_refusal,
+            Some(Refusal::Unobservable)
+        );
+
+        // North-east at 14 m/s: the course is π/4.
+        let mut filter = cruising(Velocity::ned(10.0, 10.0, 0.0));
+        assert!(
+            filter
+                .fuse_course(filter.now(), HeadingNoise::from_sigma(0.05))
+                .is_reset()
+        );
+        let (_, _, yaw) = filter.state().attitude.euler_angles();
+        assert!(
+            (yaw - core::f32::consts::FRAC_PI_4).abs() < 1e-5,
+            "yaw = {yaw}"
+        );
+        assert!(filter.is_aligned());
+        let next = filter.fuse_course(filter.now(), HeadingNoise::from_sigma(0.05));
+        assert!(matches!(next, Fusion::Accepted { .. }), "{next:?}");
+    }
+
+    #[test]
+    fn an_adopted_course_carries_the_velocity_s_uncertainty_as_well_as_the_sideslip() {
+        // 0.3 m/s across 14.1 m/s of track is 0.021 rad of course, on top of 0.05 of sideslip.
+        let mut filter = cruising(Velocity::ned(10.0, 10.0, 0.0));
+        let sideslip = HeadingNoise::from_sigma(0.05);
+        assert!(filter.fuse_course(filter.now(), sideslip).is_reset());
+        let heading = AttitudeVariance::of(&filter.state().attitude, filter.covariance()).heading;
+        let course = 0.09 / 200.0;
+        let expected = sideslip.variance() + course;
+        assert!(
+            (heading - expected).abs() < 1e-6,
+            "heading variance {heading}, expected {expected}"
+        );
+    }
+
+    #[test]
+    fn a_coarse_start_has_no_course_until_velocity_is_established() {
+        let mut filter = coarse();
+        assert_eq!(
+            filter.fuse_course(filter.now(), HeadingNoise::from_sigma(0.05)),
+            Fusion::Unobservable
+        );
+    }
+
+    #[test]
+    fn the_course_corrects_heading_and_velocity_together() {
+        // Heading established at 0, then a course constraint along a velocity 0.2 rad east of
+        // it: the update turns the nose toward the track and the track toward the nose, each
+        // by its share of the uncertainty.
+        let mut filter = cruising(Velocity::ned(20.0 * 0.2f32.cos(), 20.0 * 0.2f32.sin(), 0.0));
+        let _ = filter.fuse_gnss_heading(
+            filter.now(),
+            Radians::from_radians(0.0),
+            HeadingNoise::from_sigma(0.1),
+        );
+        let outcome = filter.fuse_course(filter.now(), HeadingNoise::from_sigma(0.1));
+        assert!(matches!(outcome, Fusion::Accepted { .. }), "{outcome:?}");
+        let state = filter.state();
+        let (_, _, yaw) = state.attitude.euler_angles();
+        let v = state.velocity.vector();
+        let track = v.y.atan2(v.x);
+        assert!(
+            yaw > 0.0 && yaw < 0.2,
+            "the nose turned toward the track: {yaw}"
+        );
+        assert!(
+            track < 0.2 && track > yaw,
+            "the track turned toward the nose: {track}"
+        );
+    }
+
+    #[test]
+    fn a_course_disagreeing_while_another_heading_arrives_is_not_adopted() {
+        // Nose north on a GNSS heading, tracking east: a 90° crab no sideslip allowed for.
+        let mut filter = cruising(Velocity::ned(0.0, 15.0, 0.0));
+        let north = Radians::from_radians(0.0);
+        let noise = HeadingNoise::from_sigma(0.02);
+        assert!(
+            filter
+                .fuse_gnss_heading(filter.now(), north, noise)
+                .is_reset()
+        );
+        // Velocity aided too, or its uncertainty outgrows the speed and the course is refused.
+        let east = Velocity::ned(0.0, 15.0, 0.0);
+        hold(&mut filter, 10.0, 10, |filter| {
+            let _ = filter.fuse_gnss_heading(filter.now(), north, noise);
+            let _ = filter.fuse_gnss_velocity(
+                filter.now(),
+                east,
+                VelocityNoise::from_speed_accuracy(0.3),
+            );
+            let outcome = filter.fuse_course(filter.now(), HeadingNoise::from_sigma(0.02));
+            assert!(matches!(outcome, Fusion::Rejected { .. }), "{outcome:?}");
+        });
+        assert_eq!(filter.diagnostics().course.recovered, 0);
+    }
+
+    #[test]
+    fn a_course_disagreeing_with_nothing_else_to_say_is_adopted() {
+        let mut filter = cruising(Velocity::ned(0.0, 15.0, 0.0));
+        let noise = HeadingNoise::from_sigma(0.02);
+        assert!(
+            filter
+                .fuse_gnss_heading(filter.now(), Radians::from_radians(0.0), noise)
+                .is_reset()
+        );
+        let mut recovered = false;
+        hold(&mut filter, 8.0, 10, |filter| {
+            if !recovered {
+                recovered = filter.fuse_course(filter.now(), noise).is_reset();
+            }
+        });
+        assert!(recovered);
+        assert_eq!(filter.diagnostics().course.recovered, 1);
     }
 }

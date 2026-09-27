@@ -2782,6 +2782,7 @@ fn verdict(outcome: Fusion) -> &'static str {
         Fusion::Rejected { .. } => "rejected",
         Fusion::NotInitialized => "not_initialized",
         Fusion::NoReference => "no_reference",
+        Fusion::Unobservable => "unobservable",
         Fusion::NotFinite => "not_finite",
         Fusion::InvalidNoise => "invalid_noise",
         Fusion::StateInvalid => "state_invalid",

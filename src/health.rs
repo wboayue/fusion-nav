@@ -147,6 +147,18 @@ pub enum Fusion {
     /// its latitude is beyond ±90°. The next usable fix will. See
     /// [`Eskf::fuse_gnss_geodetic`](crate::Eskf::fuse_gnss_geodetic).
     NoReference,
+    /// The geometry says nothing about the quantity measured. The measurement was discarded
+    /// and no health timer moved.
+    ///
+    /// Heading, in two ways. The vehicle's forward axis is within 30° of vertical, where the
+    /// heading of that axis is undefined, and a tailsitter hovering is the case: PX4 refuses a
+    /// GNSS yaw reset on the same bar (`EKF/aid_sources/gnss/gnss_yaw_control.cpp:221` at
+    /// `c4e4ef98`). Or, for [`Eskf::fuse_course`](crate::Eskf::fuse_course), the vehicle is
+    /// not moving fast enough for the direction of its estimated velocity to mean anything:
+    /// velocity not yet established, or its cross-track uncertainty over 15° of course,
+    /// which is a hover or a slow taxi. Fusing either would hand the gate an angle drawn from
+    /// noise.
+    Unobservable,
     /// A number in the measurement or its noise is NaN or infinite. The measurement was
     /// discarded and no health timer moved.
     ///
@@ -234,6 +246,7 @@ impl Fusion {
         match self {
             Self::NotInitialized => Some(Refusal::NotInitialized),
             Self::NoReference => Some(Refusal::NoReference),
+            Self::Unobservable => Some(Refusal::Unobservable),
             Self::NotFinite => Some(Refusal::NotFinite),
             Self::InvalidNoise => Some(Refusal::InvalidNoise),
             Self::StateInvalid => Some(Refusal::StateInvalid),
@@ -250,6 +263,7 @@ impl Fusion {
             Self::Reset
             | Self::NotInitialized
             | Self::NoReference
+            | Self::Unobservable
             | Self::NotFinite
             | Self::InvalidNoise
             | Self::StateInvalid
@@ -269,6 +283,7 @@ impl core::fmt::Display for Fusion {
             Self::Rejected { test_ratio } => write!(f, "rejected, ratio {}", ratio(test_ratio)),
             Self::NotInitialized => write!(f, "refused, {}", Refusal::NotInitialized),
             Self::NoReference => write!(f, "refused, {}", Refusal::NoReference),
+            Self::Unobservable => write!(f, "refused, {}", Refusal::Unobservable),
             Self::NotFinite => write!(f, "refused, {}", Refusal::NotFinite),
             Self::InvalidNoise => write!(f, "refused, {}", Refusal::InvalidNoise),
             Self::StateInvalid => write!(f, "refused, {}", Refusal::StateInvalid),
@@ -369,6 +384,9 @@ pub enum Refusal {
     /// Nothing to measure against: no barometric reference, or no origin the fix could place.
     /// See [`Fusion::NoReference`].
     NoReference,
+    /// The geometry observed nothing: a forward axis near vertical, or too little speed for a
+    /// course. See [`Fusion::Unobservable`].
+    Unobservable,
     /// A number in the measurement or its noise was NaN or infinite. See
     /// [`Fusion::NotFinite`].
     NotFinite,
@@ -388,6 +406,7 @@ impl core::fmt::Display for Refusal {
         f.write_str(match self {
             Self::NotInitialized => "filter not initialized",
             Self::NoReference => "no reference to measure against",
+            Self::Unobservable => "geometry observes nothing",
             Self::NotFinite => "measurement or noise not finite",
             Self::InvalidNoise => "noise variance not positive",
             Self::StateInvalid => "filter state cannot support an update",
@@ -962,6 +981,10 @@ pub struct Diagnostics {
     pub baro_altitude: SourceHealth,
     /// Magnetic heading updates.
     pub mag_heading: SourceHealth,
+    /// Dual-antenna GNSS heading updates.
+    pub gnss_heading: SourceHealth,
+    /// Course constraint updates: heading along the estimated velocity.
+    pub course: SourceHealth,
     /// What [`Eskf::predict`](crate::Eskf::predict) refused. Not a source, so not in
     /// [`sources`](Self::sources).
     pub propagation: PropagationHealth,
@@ -986,13 +1009,15 @@ pub struct Diagnostics {
 
 impl Diagnostics {
     /// Every source, for iteration.
-    pub const fn sources(&self) -> [(&'static str, SourceHealth); 5] {
+    pub const fn sources(&self) -> [(&'static str, SourceHealth); 7] {
         [
             ("gnss_position", self.gnss_position),
             ("gnss_height", self.gnss_height),
             ("gnss_velocity", self.gnss_velocity),
             ("baro_altitude", self.baro_altitude),
             ("mag_heading", self.mag_heading),
+            ("gnss_heading", self.gnss_heading),
+            ("course", self.course),
         ]
     }
 
@@ -1005,6 +1030,8 @@ impl Diagnostics {
         self.gnss_velocity.advance(dt);
         self.baro_altitude.advance(dt);
         self.mag_heading.advance(dt);
+        self.gnss_heading.advance(dt);
+        self.course.advance(dt);
     }
 }
 
@@ -1033,6 +1060,10 @@ mod tests {
         assert_eq!(
             format!("{}", Fusion::NoReference),
             "refused, no reference to measure against"
+        );
+        assert_eq!(
+            format!("{}", Fusion::Unobservable),
+            "refused, geometry observes nothing"
         );
         assert_eq!(
             format!(
