@@ -116,20 +116,19 @@ impl Default for ImuNoise {
     /// real airframe vibrating on the ground — reads a tilt peak of 4.6° against 2.5° (EKF2
     /// never leaves 1.08°), and still 4.5° with PX4's `R` floors applied, so the vibration
     /// needs it; `a299e722` ends `Degraded`, rejecting 493 velocity solutions against 283,
-    /// which PX4's floors cure (43, `Healthy`), so the receiver's raw `R` needs it; and
-    /// `gnss_latency`'s `false_valid` goes 323 to 888 while the same flight without the
-    /// 150 ms of latency stays at 0, so fusing a stale fix as current needs it. Scaling
+    /// which PX4's floors cure (43, `Healthy`), so the receiver's raw `R` needs it.
+    /// `gnss_latency` needed it too while a stale fix was fused as current, `false_valid` 323
+    /// to 888 at 0.3×; fused at its own time, (23′), it reads 0 at 0.3× as at 1×. Scaling
     /// `gyro_white` down to 0.7× improves `tilt` and `yaw` on every scenario, but `harsh_imu`'s
     /// `nees_att` crosses 1 (1.07), and on the corpus `f16771dd` grows a 14.1° tilt at
     /// t = 51 s where EKF2 reads 2.6°.
     /// The simulator's IMU is 58 times quieter than this figure, so the scenarios favouring
     /// less gyroscope noise are the simulator's preference rather than an airframe's.
     ///
-    /// So the factor stands for three things this filter does not model: the delayed fusion
-    /// horizon PX4 has (#52), the floors both estimators put under a receiver's reported
-    /// accuracy (#105), and vibration, which PX4 meets only by inflating accelerometer noise
-    /// on clipping (`covariance.cpp:125-133`). A change that models one of them is the moment
-    /// to measure this again.
+    /// So the factor stands for two things this filter does not model: the floors both
+    /// estimators put under a receiver's reported accuracy (#105), and vibration, which PX4
+    /// meets only by inflating accelerometer noise on clipping (`covariance.cpp:125-133`). A
+    /// change that models either is the moment to measure this again.
     fn default() -> Self {
         Self {
             gyro_white: 1.5e-2,
