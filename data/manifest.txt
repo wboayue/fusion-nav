@@ -590,8 +590,11 @@ b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-
 # to 6. This is the corpus's one dual-antenna log: EKF2_AID_MASK 385 carries
 # USE_GPS_YAW, EKF2 reports cs_gps_yaw on every sample, and sensor_gps.heading
 # sits a median 0.010 rad from EKF2's yaw below 0.5 m/s, where no course could
-# explain it. No heading_accuracy is logged, so the converter writes PX4's
-# 0.1 rad floor, and nis_gnss_yaw reads that as about three times too loose.
+# explain it (a one-off check, not a pinned statistic: sensor_gps.heading
+# against the yaw of vehicle_attitude's quaternion interpolated to each fix,
+# 374 fixes under 0.5 m/s). No heading_accuracy is logged, so the converter
+# writes PX4's 0.1 rad floor, and nis_gnss_yaw reads that as about three times
+# too loose in sigma, eleven in variance.
 # The median heading difference to EKF2 went 4.86 deg to 1.03 (raw) and 6.93
 # to 0.91 (px4), and the magnetometer's standing innovation nu_mag_yaw -0.127
 # rad to -0.002: the 7 deg it carried was this filter's heading, not the

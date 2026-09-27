@@ -360,7 +360,8 @@ The options, in the order they are worth doing:
    the course it never did, and turned down 305 measurements against 273 with its magnetometer
    and 366 with neither. The VTOL `4b473e91` shows the vehicle it is not for: its multirotor
    phases read `nis_course` 4.38, recovered three times, and turned down 45 measurements where
-   its magnetometer turned down none. So option 6 is not needed for the vehicles 5 serves, and a
+   its magnetometer turned down none: 24 of them GNSS positions and velocities, with 4 GNSS
+   recoveries it has none of without the course. So option 6 is not needed for the vehicles 5 serves, and a
    multirotor with neither a magnetometer nor a second antenna remains its case.
 6. **An EKF-GSF yaw estimator.** A bank of small filters over yaw hypotheses weighted by GNSS
    velocity innovations. It is ArduPilot's invention, since ported into PX4, and the general

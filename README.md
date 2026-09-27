@@ -328,7 +328,7 @@ as its own source, `gnss_position` and `gnss_height`. `is_accepted()` on it asks
 | `fuse_baro_altitude(time, altitude, noise)` | altitude, relative to `α₀` |
 | `fuse_mag_heading(time, field, noise)` | body-frame field, reduced to a heading and fused as one scalar |
 | `fuse_gnss_heading(time, heading, noise)` | true heading from a dual-antenna receiver, the mounting angle already removed |
-| `fuse_course(time, sideslip)` | a constraint rather than a reading: the nose points along the estimated velocity, to within `sideslip`. Fixed-wing and ground vehicles; never a multirotor |
+| `fuse_course(time, sideslip)` | a constraint rather than a reading: the nose points along the estimated velocity, to within `sideslip`. Call it after `fuse_gnss_velocity`, with that fix's `time`. Fixed-wing and ground vehicles; never a multirotor |
 
 `time` is when the measurement was taken, on the clock the IMU's samples are timed on, and it is
 an argument for the reason the noise is: a receiver's latency is a property of that receiver and
@@ -366,8 +366,8 @@ a `Reset` steps the state, and a refusal says the measurement never reached the 
 | `Accepted { test_ratio }` | fused; ratio ≤ 1 |
 | `Rejected { test_ratio }` | gated out; ratio > 1, state unchanged |
 | `Reset` | adopted outright: the quantity was never established, or its source was locked out past its [recovery](#recovery-from-gate-lockout) timeout; steps the state |
-| `NoReference` | barometer altitude with no `α₀` and no established position to read one against, or a geodetic fix that cannot place an origin |
-| `Unobservable` | a heading the geometry cannot give: body x within 30° of vertical, or a course while the vehicle is too slow against its velocity's uncertainty; discarded |
+| `NoReference` | barometer altitude with no `α₀` and no established position to read one against, a geodetic fix that cannot place an origin, or a course with no GNSS velocity accepted recently |
+| `Unobservable` | a GNSS heading or course the geometry cannot give: body x within 30° of vertical, or a course while the vehicle is too slow against its velocity's uncertainty; discarded |
 | `NotFinite` | a NaN or infinity in the measurement or its noise; discarded |
 | `InvalidNoise` | a zero or negative variance in the noise — no sensor has one, and `S` would be singular or worse; discarded |
 | `OutOfHorizon { age }` | `time` older than `LATENCY_HORIZON`, or ahead of the state by more than `Config::max_predict_dt`; discarded |
@@ -398,7 +398,7 @@ solution cannot be read without them.
 
 | `Status` | meaning |
 | -------- | ------- |
-| `Healthy` | every source that has been fused is still accepted, and attitude has converged |
+| `Healthy` | every source that has been fused is still accepted, and attitude has converged; the course constraint, which reads no sensor, is not counted |
 | `Aligning` | running and aided, but attitude has not converged — a coarse start still learning, or a heading no magnetometer has observed yet |
 | `Degraded` | a source has timed out; others still aid the solution |
 | `DeadReckoning` | nothing is aiding; position and velocity drift without bound |
@@ -587,7 +587,9 @@ Known, and stated here rather than discovered in flight. Some are deliberate; th
   estimate. See [alignment beyond the static window](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#alignment-beyond-the-static-window).
 * **Correlation times are configured, not measured.** Each source is fused at the variance its
   correlation with the last reading leaves ([equation (24′)](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#correlated-measurements)),
-  with `τ` from `Config::correlation`, whose defaults are the corpus's medians. A sensor whose
+  with `τ` from `Config::correlation`, whose defaults are read off the corpus: medians across
+  logs, and one log each for the dual-antenna heading and the course, the only logs that carry
+  them. A sensor whose
   error persists longer than its `τ` still shrinks the covariance below what it supports, and one
   reporting a σ too small is gated on that σ and weighted less besides. See
   [correlated measurement error](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#correlated-measurement-error-as-equivalent-white-noise).

@@ -206,9 +206,10 @@ fn report(board: &mut impl Board, source: &str, outcome: Fusion) -> bool {
         // The first fix after a coarse start, the first heading, or a recovery from lockout,
         // counted in `SourceHealth::recovered`.
         Fusion::Reset => log!(board, "{} {}", source, outcome),
-        // Expected until there is something to measure against: a barometer before the first
-        // fix of a start in motion, or a course while the vehicle is too slow to have one.
-        // `Diagnostics` counts them.
+        // Expected until there is something to measure against, or while there is nothing to
+        // measure: a barometer before the first fix of a start in motion, a course before the
+        // first GNSS velocity or while the vehicle is too slow to have one. `Diagnostics`
+        // counts them.
         Fusion::NotInitialized | Fusion::NoReference | Fusion::Unobservable => {}
         // A driver or a wire, not the flight: the sensor produced something no sensor can, or
         // a timestamp the IMU's clock does not share.

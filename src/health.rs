@@ -23,7 +23,8 @@ use crate::units::Seconds;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Status {
     /// Every source that has ever been fused is still being accepted, and attitude has
-    /// converged.
+    /// converged. The course constraint is not counted: it reads the filter's own velocity
+    /// rather than a sensor; see [`Eskf::fuse_course`](crate::Eskf::fuse_course).
     Healthy,
     /// At least one source has timed out, but the estimate is still aided.
     Degraded,
@@ -150,18 +151,28 @@ pub enum Fusion {
     /// Geodetic GNSS: no navigation origin is held and this fix cannot place one, because
     /// its latitude is beyond ±90°. The next usable fix will. See
     /// [`Eskf::fuse_gnss_geodetic`](crate::Eskf::fuse_gnss_geodetic).
+    ///
+    /// Course: no GNSS velocity has been accepted within
+    /// [`Timeouts::degraded_after`](crate::Timeouts::degraded_after), so the velocity the
+    /// course would be taken along is dead-reckoned or was never established. Usually a call
+    /// made before the first [`Eskf::fuse_gnss_velocity`](crate::Eskf::fuse_gnss_velocity), or
+    /// after the receiver stopped; see [`Eskf::fuse_course`](crate::Eskf::fuse_course).
     NoReference,
     /// The geometry says nothing about the quantity measured. The measurement was discarded
     /// and no health timer moved.
     ///
-    /// Heading, in two ways. The vehicle's forward axis is within 30° of vertical, where the
-    /// heading of that axis is undefined, and a tailsitter hovering is the case: PX4 refuses a
-    /// GNSS yaw reset on the same bar (`EKF/aid_sources/gnss/gnss_yaw_control.cpp:221` at
-    /// `c4e4ef98`). Or, for [`Eskf::fuse_course`](crate::Eskf::fuse_course), the vehicle is
-    /// not moving fast enough for the direction of its estimated velocity to mean anything:
-    /// velocity not yet established, or its cross-track uncertainty over 15° of course,
-    /// which is a hover or a slow taxi. Fusing either would hand the gate an angle drawn from
-    /// noise.
+    /// A heading from [`Eskf::fuse_gnss_heading`](crate::Eskf::fuse_gnss_heading) or
+    /// [`Eskf::fuse_course`](crate::Eskf::fuse_course), in two ways. The vehicle's forward axis
+    /// is within 30° of vertical, where the heading of that axis is undefined, and a tailsitter
+    /// hovering is the case: PX4 refuses a GNSS yaw reset on the same bar
+    /// (`EKF/aid_sources/gnss/gnss_yaw_control.cpp:221` at `c4e4ef98`). Or, for the course, the
+    /// vehicle is not moving fast enough for the direction of its estimated velocity to mean
+    /// anything: a cross-track uncertainty over 15° of course, which is a hover or a slow taxi.
+    /// Fusing either would hand the gate an angle drawn from noise.
+    ///
+    /// Not the magnetometer's: (34) levels the field rather than reading the heading of body
+    /// x, and (36′) prices the levelling at any tilt, so a magnetic heading is fused through
+    /// 125° of tilt on `285ee2e7`.
     Unobservable,
     /// A number in the measurement or its noise is NaN or infinite. The measurement was
     /// discarded and no health timer moved.
@@ -385,7 +396,8 @@ impl core::fmt::Display for GnssFusion {
 pub enum Refusal {
     /// The filter had not been initialized. See [`Fusion::NotInitialized`].
     NotInitialized,
-    /// Nothing to measure against: no barometric reference, or no origin the fix could place.
+    /// Nothing to measure against: no barometric reference, no origin the fix could place, or
+    /// no held velocity for a course.
     /// See [`Fusion::NoReference`].
     NoReference,
     /// The geometry observed nothing: a forward axis near vertical, or too little speed for a
@@ -1030,15 +1042,14 @@ impl Diagnostics {
     /// The sources [`Status`] counts: every one but the course constraint, which reads the
     /// filter's own velocity rather than a sensor. See
     /// [`Eskf::fuse_course`](crate::Eskf::fuse_course).
-    pub(crate) const fn aiding(&self) -> [SourceHealth; 6] {
-        [
-            self.gnss_position,
-            self.gnss_height,
-            self.gnss_velocity,
-            self.baro_altitude,
-            self.mag_heading,
-            self.gnss_heading,
-        ]
+    ///
+    /// Taken from [`sources`](Self::sources) rather than listed again, so a source added there
+    /// counts toward `Status` unless it is excluded here by name.
+    pub(crate) fn aiding(&self) -> impl Iterator<Item = SourceHealth> {
+        self.sources()
+            .into_iter()
+            .filter(|&(name, _)| name != "course")
+            .map(|(_, health)| health)
     }
 
     /// Advance every source's fusion clock.
@@ -1098,6 +1109,22 @@ mod tests {
         assert_eq!(
             format!("{}", Propagation::Coasted { dt: secs(1.2) }),
             "gap of 1.200 s coasted"
+        );
+    }
+
+    #[test]
+    fn status_counts_every_source_but_the_course() {
+        // `aiding` excludes the course by name, so a misspelling would count it silently.
+        let diagnostics = Diagnostics::default();
+        assert_eq!(
+            diagnostics.aiding().count(),
+            diagnostics.sources().len() - 1
+        );
+        assert!(
+            diagnostics
+                .sources()
+                .iter()
+                .any(|&(name, _)| name == "course")
         );
     }
 

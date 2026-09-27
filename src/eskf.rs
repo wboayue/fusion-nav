@@ -1343,8 +1343,9 @@ impl Eskf {
     /// This is also where heading becomes an estimate. A static window with no
     /// magnetometer in it, and any coarse start, leave yaw unobserved — see
     /// [`initialize`](Self::initialize) — and [`validity`](Self::validity) reports
-    /// `heading` false until the first heading is accepted here, however tight
-    /// [`sigma_yaw`](crate::Initialization::sigma_yaw) was.
+    /// `heading` false until the first heading is accepted, here or from
+    /// [`fuse_gnss_heading`](Self::fuse_gnss_heading) or [`fuse_course`](Self::fuse_course),
+    /// however tight [`sigma_yaw`](crate::Initialization::sigma_yaw) was.
     ///
     /// That first heading is the point `GOALS.md` names for a yaw **reset** rather than an
     /// ordinary update: the error-state attitude of equation (2) is a small-angle
@@ -1355,11 +1356,13 @@ impl Eskf {
     /// a prior nothing ever measured: a static window with no magnetometer leaves
     /// [`sigma_yaw`](crate::Initialization::sigma_yaw), 0.35 rad, on a yaw that is a
     /// guess, and a correct heading more than about 64° from that guess would be
-    /// rejected — locking the filter out of the one source that can ever establish yaw.
+    /// rejected — locking the filter out of what may be the one source that can ever
+    /// establish yaw.
     ///
     /// Ordinary updates thereafter, gated at [`Gates::mag_heading`](crate::Gates) with
     /// one degree of freedom, until a run of rejections outlasts
-    /// [`Recovery::mag_heading`](crate::Recovery::mag_heading) while no GNSS is arriving,
+    /// [`Recovery::mag_heading`](crate::Recovery::mag_heading) while no GNSS position,
+    /// velocity or heading is arriving,
     /// when the next heading is adopted the same way. The field is reduced to a scalar heading before the gate
     /// sees it, so a disturbance is tested as the yaw error it is.
     ///
@@ -1524,14 +1527,16 @@ impl Eskf {
         if !sideslip.is_positive() {
             return refuse(&mut self.diagnostics.course, Fusion::InvalidNoise);
         }
-        // Screened on the state the observation is built on, the one at `time`. A velocity no
-        // GNSS velocity is holding is a dead-reckoned one, and a course along it would read as
-        // aiding while it drifts.
+        // A velocity no GNSS velocity is holding is a dead-reckoned one, and a course along it
+        // would read as aiding while it drifts. It also covers a velocity never established,
+        // which only a GNSS velocity's acceptance or `reset_velocity_to` establishes.
+        if !self.accepted_recently(self.diagnostics.gnss_velocity) {
+            return refuse(&mut self.diagnostics.course, Fusion::NoReference);
+        }
+        // Screened on the state the observation is built on, the one at `time`.
         let past = self.past(time).0;
-        let aided = !self.unestablished.velocity
-            && self.accepted_recently(self.diagnostics.gnss_velocity)
-            && heading::has_heading(&past);
-        let spread = heading::course_variance(&past, &self.covariance).filter(|_| aided);
+        let spread = heading::course_variance(&past, &self.covariance)
+            .filter(|_| heading::has_heading(&past));
         let Some(spread) = spread else {
             return refuse(&mut self.diagnostics.course, Fusion::Unobservable);
         };
@@ -1632,17 +1637,21 @@ impl Eskf {
     /// Turn the estimate by a yaw error and give the result the measurement's variance:
     /// the adoption behind [`Fusion::Reset`] for heading.
     ///
-    /// `y` is the innovation of (35), so the corrected attitude is `Exp(y e₃) ⊗ q̂` —
+    /// `y` is the innovation of (35), (35′) or (35″), so the corrected attitude is `Exp(y e₃) ⊗ q̂` —
     /// composed on the **left**, because `e₃` is the navigation down axis, where the
     /// `δθ` of (2) that `update` injects is a body-frame rotation composed on the right.
     /// Tilt is untouched: a rotation about navigation down moves the tilt axis and not
-    /// the tilt angle, so the roll and pitch gravity established survive a heading the
-    /// magnetometer supplies.
+    /// the tilt angle, so the roll and pitch gravity established survive a heading any
+    /// heading source supplies.
     ///
-    /// `Exp` charges its caller with a finite argument, which (35)'s wrap discharges by
-    /// construction: `y` is in `(-π, π]` whatever the field and the attitude were.
+    /// `Exp` charges its caller with a finite argument, which each innovation's wrap
+    /// discharges by construction: `y` is in `(-π, π]` whatever was measured and the attitude
+    /// were.
     ///
-    /// `variance` is `R` from (36′) rather than the caller's `σ_ψ²` alone. The levelling
+    /// `variance` is the `R` the source's update would read, plus what the heading inherits
+    /// that `R` does not carry: for the course, the uncertainty of the velocity it was taken
+    /// along ([`fuse_heading`](Self::fuse_heading)'s `spread`). For a magnetic heading it is
+    /// `R` from (36′) rather than the caller's `σ_ψ²` alone. The levelling
     /// of (34) is done with the estimated attitude on this path too — on a coarse start,
     /// with the worst tilt the filter ever holds — so an adoption that stored the
     /// magnetometer's own number would report a heading good to
@@ -1691,7 +1700,7 @@ impl Eskf {
     /// of [`diagnostics`](Self::diagnostics), the covariance, and [`Config`], so computing
     /// them on read means there is no invariant for the mutating methods to maintain. The
     /// cost is two rotations of the attitude block, one each for tilt and heading, six other
-    /// covariance entries and four source timers, compared.
+    /// covariance entries and six source timers, compared.
     pub fn state(&self) -> State {
         // `self.state.status` and `.validity` are inert; the stored estimate never
         // carries meaningful ones, and every read overwrites them.
@@ -2181,7 +2190,9 @@ impl Eskf {
     /// Aggregate alignment and the per-source timers into one status, most severe first.
     ///
     /// Only sources that have ever been accepted count toward aiding: a vehicle with no
-    /// magnetometer is not permanently `Degraded` for lacking one.
+    /// magnetometer is not permanently `Degraded` for lacking one. The course constraint
+    /// never counts ([`Diagnostics::aiding`]): it aids nothing the GNSS velocity it needs does
+    /// not.
     ///
     /// Alignment enters as the latch of [`is_aligned`](Self::is_aligned) rather than as the
     /// live [`Validity`], which is the one thing here that is not derived on read.
@@ -6214,7 +6225,7 @@ mod tests {
         let mut filter = coarse();
         assert_eq!(
             filter.fuse_course(filter.now(), HeadingNoise::from_sigma(0.05)),
-            Fusion::Unobservable
+            Fusion::NoReference
         );
     }
 
@@ -6299,7 +6310,7 @@ mod tests {
         hold(&mut filter, 3.0, 100, |_| {});
         assert_eq!(
             filter.fuse_course(filter.now(), HeadingNoise::from_sigma(0.05)),
-            Fusion::Unobservable
+            Fusion::NoReference
         );
     }
 

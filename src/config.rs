@@ -447,15 +447,16 @@ impl Default for Correlation {
     /// | barometer | 10 | 0.006–4.2 | 0.20 |
     /// | magnetometer | 10 | 0.006–14.6 | 1.2 |
     /// | dual-antenna GNSS heading | 1 | 0.25 | 0.25 |
-    /// | course constraint | 1 | 1.4 | 1.4 |
+    /// | course constraint | 1 | 1.37 | 1.37 |
     ///
     /// Three receivers' velocity innovations and one magnetometer's alternate in sign, which no
     /// `τ` describes, and are left out rather than read as white.
     ///
     /// GNSS heading rests on one log, `a299e722`, the only one whose EKF2 fused a dual-antenna
     /// yaw: `acf1_gnss_yaw` 0.6696 at 10 Hz. The course constraint rests on one too,
-    /// `093e806a`, the fixed-wing, replayed with it (`--course 3`): `acf1_course` 0.4891 at
-    /// 1 Hz. What persists there is the sideslip, which the constraint cannot observe, and fused
+    /// `093e806a`, the fixed-wing, replayed as a vehicle without a magnetometer
+    /// (`--without mag --course 3`): `acf1_course` 0.4818 at 1 Hz, `τ` 1.37 s, and 0.4965 with
+    /// its magnetometer, 1.43 s. What persists there is the sideslip, which the constraint cannot observe, and fused
     /// white the simulator's `no_mag` read a heading NEES of 2.7 on a sideslip it averaged as
     /// noise.
     fn default() -> Self {
