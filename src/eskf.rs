@@ -25,9 +25,11 @@ use nalgebra::Vector3;
 /// [`fuse_gnss_position`](Self::fuse_gnss_position),
 /// [`fuse_gnss_geodetic`](Self::fuse_gnss_geodetic),
 /// [`fuse_gnss_velocity`](Self::fuse_gnss_velocity),
-/// [`fuse_baro_altitude`](Self::fuse_baro_altitude) and
-/// [`fuse_mag_heading`](Self::fuse_mag_heading) each correct both, or are turned down by
-/// the gate of (37)–(38).
+/// [`fuse_baro_altitude`](Self::fuse_baro_altitude),
+/// [`fuse_mag_heading`](Self::fuse_mag_heading),
+/// [`fuse_gnss_heading`](Self::fuse_gnss_heading) and
+/// [`fuse_course`](Self::fuse_course) each correct both, or are turned down by the gate of
+/// (37)–(38).
 ///
 /// # Example
 ///
@@ -110,6 +112,11 @@ use nalgebra::Vector3;
 /// );
 /// assert!(outcome.is_accepted());
 /// assert_eq!(filter.state().status, Status::Healthy);
+///
+/// // A vehicle without a magnetometer could have taken it from its course instead, once
+/// // moving: one sitting still goes nowhere, and the direction of no velocity is refused.
+/// let outcome = filter.fuse_course(now, HeadingNoise::from_sigma(0.05));
+/// assert_eq!(outcome, Fusion::Unobservable);
 /// # Ok::<(), fusion_nav::InitError>(())
 /// ```
 #[derive(Clone, Debug)]
@@ -147,7 +154,7 @@ pub struct Eskf {
 
 /// Quantities the start never established, which wait for the first measurement that
 /// observes them: position and velocity for the first GNSS fix after a coarse start (see
-/// [`Fusion::Reset`]), heading for the first magnetic heading.
+/// [`Fusion::Reset`]), heading for the first heading any heading source offers.
 ///
 /// The covariance cannot carry this on its own. Every entry on its diagonal is a prior,
 /// and a prior tight enough to pass [`Config::accuracy`](crate::Config::accuracy) or
@@ -2210,7 +2217,7 @@ impl Unestablished {
     /// [`Coarse::WindowTooShort`]. A window taken in motion establishes neither: the vehicle
     /// passed through somewhere the filter cannot name. Those wait for the first fix.
     ///
-    /// Heading needs a magnetometer on top of stillness. Gravity pins tilt and nothing
+    /// Heading needs a magnetometer in the window on top of stillness. Gravity pins tilt and nothing
     /// pins the rotation about it, so a window carrying no field leaves yaw a prior
     /// however long and however still it was —
     /// [`Initialization::sigma_yaw`](crate::Initialization::sigma_yaw) is 0.35 rad

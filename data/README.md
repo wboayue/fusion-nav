@@ -239,6 +239,14 @@ delay is zero. A `# Measurement delays` header line says which parameter each fi
 No corpus receiver logs a sample time of its own: `sensor_gps.timestamp_sample` is zero or equal
 to `timestamp` wherever it appears.
 
+A `gnss_yaw` row, `v0` the heading in radians and `var0` its variance, is written only where the
+log's own EKF2 fused a dual-antenna heading: `EKF2_GPS_CTRL` bit 3, or `EKF2_AID_MASK` bit 7 on a
+build before it, *and* a finite `sensor_gps.heading`. The field alone is no evidence, since a ULog
+records a name and never what a driver put in it. `a299e722` is the one corpus log with both, a
+real moving-baseline yaw within 0.010 rad of EKF2's at rest; it logs no `heading_accuracy`, so the
+variance is PX4's 0.1 rad floor, the value its EKF2 fused at, and a header line says so. It is
+dated by the GNSS delay, as its fix is.
+
 ### Finding a candidate
 
 An entry exists because it covers something no other log does, and #86 names the gaps. A
@@ -515,7 +523,11 @@ alignment bars — which is where
 the covariance growth of (16)–(22) shows up on logs with no truth — `Status::Aligning` latches, so
 nothing else on the line moves when it happens), `r_policy=` (what the harness handed each GNSS
 `fuse_*` as `R` — `raw` on every entry, and the paragraph below the caveats says why it is not a
-floor; `px4` under `--r-policy px4`, which only `data/ekf2.txt` pins), `rejected=` and `discarded=` (the gate's verdict, and everything that never reached it — a
+floor; `px4` under `--r-policy px4`, which only `data/ekf2.txt` pins), `course=` and `without=`
+(choices too: the sideslip in degrees the course constraint was fused at after each `gnss_vel`
+row, from `--course` or a `# Course sideslip` header line, or `off`; and the input source
+`--without` dropped, or `none` — `off` and `none` on every manifest entry, so a figure from a log
+replayed as a vehicle without its magnetometer says so), `rejected=` and `discarded=` (the gate's verdict, and everything that never reached it — a
 variance of zero or less, a NaN, an altitude with no reference; both count verdicts, so a GNSS
 fix judged or refused whole counts once per half), `refused=` and `invalid=` (steps
 refused as too long or as not a step at all — propagation, not measurements), `floored=`

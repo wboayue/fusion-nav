@@ -49,6 +49,13 @@ the difference is the kind that costs a day.
   [alignment beyond the static window](GOALS.md#alignment-beyond-the-static-window).
 * **Declination** — the angle between magnetic north, which a magnetometer measures, and true
   north, which the navigation frame uses. It varies by location and by year.
+* **Course**, **sideslip** — course is the direction of the horizontal velocity, where the
+  vehicle is going; heading is where its nose points; sideslip is the angle between them. A
+  fixed-wing in coordinated flight holds sideslip near zero, a crosswind adds a crab angle, and a
+  multirotor has no relation between the two at all. The course constraint is equation (35″).
+* **Dual-antenna heading**, **moving baseline** — a GNSS receiver with two antennas measuring the
+  direction of the line between them, a true heading independent of any magnetic field.
+  Equation (35′).
 * **Geodetic coordinates**, **ECEF**, **local tangent plane** — latitude/longitude/height on the
   WGS-84 ellipsoid; an earth-centred Cartesian frame; and the flat NED frame this filter works
   in, pinned to a geodetic **origin**. Converting between them is
@@ -269,7 +276,8 @@ document, the entry points there instead of repeating it.
   publish. `ALIGNED_HEADING` has none to take: both latch yaw on the magnetometer reset rather
   than on a variance, so its doc comment says what the 30° is chosen against instead.
 * **GSF yaw estimator** — a Gaussian Sum Filter recovering yaw from IMU and GNSS velocity, which
-  is how both fly without a magnetometer. Unbuilt here, so heading needs a magnetometer; the
+  is how both fly without a magnetometer. Unbuilt here: without a magnetometer, heading comes
+  from a second antenna or from the course constraint, and a multirotor has neither; the
   README's limitations say what that costs.
 * **Lane**, **core** — ArduPilot runs several EKF3 instances on different IMUs and switches
   between them on relative error (`libraries/AP_NavEKF3/AP_NavEKF3.h:329-337`). `Eskf` is one

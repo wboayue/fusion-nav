@@ -946,6 +946,59 @@ valid attitude (36′) exists to remove, reintroduced where the error is largest
 the adopted variance is 0.582 rather than 0.01: $`\sigma`$ = 0.76 rad, outside `Accuracy::heading`,
 so the heading is established and honestly reported invalid.
 
+### Heading from GNSS
+
+Two heading sources arrive as an angle rather than a field, so nothing is levelled with the
+estimated attitude and (36′) has no counterpart in either. Both read the heading of the forward
+axis, body $`x`$ in navigation axes, $`f = R(\hat{q})\,e_1`$:
+
+```math
+\hat{\psi} = \mathrm{atan2}(f_E,\ f_N)
+```
+
+A left rotation about navigation down turns the horizontal part of every vector by the same
+angle, so $`\hat{\psi}`$ moves one for one with the rotation (36) reads, at any tilt. Where
+$`f`$ is within 30° of vertical its horizontal part names no direction, and both sources are
+refused as unobservable (PX4's bar for a GNSS yaw reset,
+`EKF/aid_sources/gnss/gnss_yaw_control.cpp:221` at `c4e4ef98`).
+
+A **dual-antenna receiver** measures that heading directly, true rather than magnetic, with the
+antennas' mounting angle removed by the caller:
+
+**(35′)**
+
+```math
+y = \mathrm{wrap}\big(\psi_m - \hat{\psi}\big), \qquad H \text{ from (36)}, \qquad R_m = \sigma_\psi^2
+```
+
+PX4 differentiates the antenna baseline's heading exactly, so its $`H`$ carries tilt; (36) is
+kept here for the reason the magnetometer keeps it, [What the levelling costs](#what-the-levelling-costs).
+
+The **course constraint** reads no sensor. It states that the vehicle points along its velocity
+to within a sideslip $`\beta`$, $`h(x) = \psi - \chi`$ measured as zero, with the course taken
+from the *estimated* velocity:
+
+**(35″)**
+
+```math
+\chi = \mathrm{atan2}(\hat{v}_E,\ \hat{v}_N), \qquad y = \mathrm{wrap}\big(\chi - \hat{\psi}\big), \qquad R_m = \sigma_\beta^2
+```
+
+```math
+H = \begin{bmatrix} 0 & -\nabla_v\chi^\mathsf{T} & e_3^\mathsf{T} R(\hat{q}) & 0 & 0 \end{bmatrix},
+\qquad \nabla_v\chi = \frac{1}{v_h^2}\begin{bmatrix} -\hat{v}_E & \hat{v}_N & 0 \end{bmatrix}^\mathsf{T}
+```
+
+Taking $`\chi`$ from a GNSS velocity instead would count that velocity's cross-track error
+twice, once in (29) and again here as if independent. Read off the state, it reaches $`S`$
+through $`P`$ with its correlations, and $`R_m`$ is the one thing the constraint adds. The same
+term sets when it is refused: $`\sigma_\chi^2 = \nabla_v\chi^\mathsf{T} P_{vv} \nabla_v\chi`$ over
+$`\sin^2 15°`$ (ArduPilot's `GPS_VEL_YAW_ALIGN_MAX_ANG_ERR`, `AP_NavEKF3_core.h:125` at
+`368dc0c4`), so the speed threshold is the velocity's own accuracy rather than a parameter. An
+adoption carries $`\sigma_\beta^2 + \sigma_\chi^2`$. The sideslip persists as long as the wind
+and the trim do, which (24′) prices; what it cannot do is observe it, so the heading is no
+better than $`\beta`$.
+
 ## Innovation gating
 
 The normalized innovation squared
@@ -1182,8 +1235,10 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | (30) | barometric altitude | `observation/baro.rs` | `altitude_jacobian`, `altitude_observation` |
 | (30′) | barometric offset | `state.rs`, `update.rs`, `propagate.rs` | `Offset`; `update`'s blocks; `propagate_offset`; `Eskf::establish_reference` |
 | (31)–(33) | magnetometer, three-axis | — | unbuilt and [out of scope](GOALS.md#magnetometer-without-magnetic-field-states); no `field_jacobian` exists |
-| (34)–(36) | magnetometer, heading only | `observation/mag.rs` | `heading_innovation`, `heading_jacobian`, `heading_observation` |
+| (34)–(36) | magnetometer, heading only | `observation/mag.rs`, `observation/heading.rs` | `heading_innovation`, `heading_observation`; `heading_jacobian` in `heading.rs`, shared by every heading source |
 | (36′) | levelling variance | `observation/mag.rs` | `levelling_variance`, with `tan δ` and `f̂_b` from `init.rs`'s `heading_sensitivity` |
+| (35′) | dual-antenna GNSS heading | `observation/heading.rs` | `gnss_observation`, `has_heading`; committed by `Eskf::fuse_gnss_heading` |
+| (35″) | course constraint | `observation/heading.rs` | `course_observation`, `course_variance`; committed by `Eskf::fuse_course` |
 | (37) `γ` | gate thresholds | `config.rs` | `Gate::at`, `Gate::new`, `Gates::at` |
 | (37)–(38) | innovation gating, test ratio | `update.rs` | `nis`, `test_ratio`, called by `update` |
 | — | per-source health tracking | `health.rs` | `SourceHealth`, `Status` |

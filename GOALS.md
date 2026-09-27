@@ -291,7 +291,8 @@ The options, in the order they are worth doing:
    a variance bar. Promotion is read from the covariance rather than run off a timer, and the
    bars are constants, so there is no new knob. Heading is the exception no covariance
    can settle: stillness never observes yaw, so a vehicle with no magnetometer stays `Aligning`
-   however tight the prior. Options 5 and 6 are for that vehicle.
+   however tight the prior. Options 5 and 6 are for that vehicle, and so is a second GNSS
+   antenna, `Eskf::fuse_gnss_heading` (#24), where the vehicle carries one.
 3. **Gate policy while aligning.** Less of a special case than it first appears. The innovation
    covariance `S = H P Hᵀ + R` already grows with `P`, so an honestly inflated coarse `P₀` makes
    the normalized test ratio self-scaling: [gate lockout](EQUATIONS.md#gate-lockout) is what an
@@ -342,7 +343,25 @@ The options, in the order they are worth doing:
    simulator's `moving_start` is: a banked, climbing turn from the first sample, with truth beside
    it and a line in `data/scenarios.txt`. Reading option 4's verdict off it is #59's.
 5. **Yaw from course over ground.** While moving, velocity direction is heading, nearly free.
-   Works for fixed-wing and ground vehicles, not for a multirotor that crabs and hovers.
+   Works for fixed-wing and ground vehicles, not for a multirotor that crabs and hovers. Built as
+   `Eskf::fuse_course` (#53): a constraint on the *estimated* velocity, equation (35″), since a
+   course read off a GNSS velocity already fused would count its cross-track error twice. Fused
+   continuously, where ArduPilot's plane realigns from it once, and refused below a speed the
+   velocity's own uncertainty sets rather than a parameter.
+
+   #53 stated its bar before measuring: heading established within 10 s of first moving fast
+   enough, and yaw RMSE within twice `moving_start`'s magnetometer figure, 0.917°. On the
+   simulator's `no_mag`, a fixed-wing with no magnetometer, the first course was adopted 0.8 s
+   after takeoff, and heading RMSE from then was 1.82° against the 1.83 the bar allows (1.47°
+   from ten seconds later; the whole log reads 6.62°, its first 5.8 s spent on a guess). The bar
+   is met, and it says less than it seems: after adoption the error *is* the sideslip, which the
+   simulator sets (0.02 ± 0.035 rad, 1.8° RMS) and the constraint cannot observe. The corpus's
+   fixed-wing, `093e806a`, replayed without its magnetometer, aligned 6.56 s in where without
+   the course it never did, and turned down 305 measurements against 273 with its magnetometer
+   and 366 with neither. The VTOL `4b473e91` shows the vehicle it is not for: its multirotor
+   phases read `nis_course` 4.40, recovered three times, and turned down 45 measurements where
+   its magnetometer turned down none. So option 6 is not needed for the vehicles 5 serves, and a
+   multirotor with neither a magnetometer nor a second antenna remains its case.
 6. **An EKF-GSF yaw estimator.** A bank of small filters over yaw hypotheses weighted by GNSS
    velocity innovations. It is ArduPilot's invention, since ported into PX4, and the general
    answer to aligning yaw while moving without a magnetometer. Effective, and genuinely a second

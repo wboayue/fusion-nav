@@ -2,8 +2,8 @@
 
 Embedded-first inertial navigation using a 15-state Error-State Kalman Filter (ESKF).
 
-> **Status: complete and aided by GNSS position and velocity, the barometer and magnetic
-> heading.** Equations (1)–(44) are implemented, bar two: the three-axis magnetometer of
+> **Status: complete and aided by GNSS position and velocity, the barometer, and heading from
+> a magnetometer, a dual-antenna receiver or the course.** Equations (1)–(44) are implemented, bar two: the three-axis magnetometer of
 > (31)–(33), which is
 > [out of scope](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#magnetometer-without-magnetic-field-states)
 > rather than pending, and (5′), whose in-motion levelling term is measured and reported but not
@@ -11,7 +11,8 @@ Embedded-first inertial navigation using a 15-state Error-State Kalman Filter (E
 > its covariance; `predict` propagates the state *and* its uncertainty, (9)–(22); every
 > `fuse_*` corrects both through the innovation gate of (37)–(38) — `fuse_gnss_position`,
 > `fuse_gnss_geodetic`, `fuse_gnss_velocity` and `fuse_baro_altitude` by (23)–(30),
-> `fuse_mag_heading` by (34)–(36). Yaw is the one attitude component any of them observes
+> `fuse_mag_heading` by (34)–(36), `fuse_gnss_heading` and `fuse_course` by (35′), (35″) and
+> (36). Yaw is the one attitude component any of them observes
 > directly; roll and pitch are corrected as far as the covariance carries an observation into
 > them. Where no aiding arrives, the uncertainty grows without bound and `Validity` says so:
 > each flag goes false as its own variance passes `Config::accuracy`, 3.83 s in for tilt at
@@ -168,8 +169,8 @@ and GNSS velocity. From the window the filter takes:
 * **roll and pitch** from the averaged accelerometer
 * **heading** from the magnetometer if the window carries one, levelled by that roll and
   pitch. Without one, heading is unobserved: stillness says nothing about the rotation about
-  gravity. `validity.heading` is false and `Status` stays `Aligning` until the first
-  `fuse_mag_heading` is accepted, however still the window was — `Initialization::sigma_yaw` is a
+  gravity. `validity.heading` is false and `Status` stays `Aligning` until the first heading,
+  `fuse_mag_heading`, `fuse_gnss_heading` or `fuse_course`, is accepted, however still the window was — `Initialization::sigma_yaw` is a
   prior on a yaw nobody measured, and the covariance alone cannot tell the two apart, which is
   why the first accepted heading is adopted rather than fused. Leaving `Aligning` is one-way: it reports a
   start that has not been resolved, while `validity.tilt` and `validity.heading` stay live and go
@@ -233,9 +234,9 @@ rather than poisoned.
 
 After a coarse start the first GNSS position and first GNSS velocity are **adopted rather than
 fused**, reported as `Fusion::Reset`. A vehicle that initialized while moving has no position or
-velocity for the gate to judge a fix against. The first magnetic heading is adopted the same way
-whenever initialization left yaw unobserved — after any coarse start, and after a static window
-that carried no magnetometer, since stillness observes tilt and never yaw. That one steps the
+velocity for the gate to judge a fix against. The first heading, magnetic, GNSS or course, is
+adopted the same way whenever initialization left yaw unobserved: after any coarse start, and
+after a static window that carried no magnetometer, since stillness observes tilt and never yaw. That one steps the
 attitude, by up to half a circle. This happens once per quantity; everything after is fused
 normally.
 
@@ -326,6 +327,8 @@ as its own source, `gnss_position` and `gnss_height`. `is_accepted()` on it asks
 | `fuse_gnss_velocity(time, velocity, noise)` | NED velocity |
 | `fuse_baro_altitude(time, altitude, noise)` | altitude, relative to `α₀` |
 | `fuse_mag_heading(time, field, noise)` | body-frame field, reduced to a heading and fused as one scalar |
+| `fuse_gnss_heading(time, heading, noise)` | true heading from a dual-antenna receiver, the mounting angle already removed |
+| `fuse_course(time, sideslip)` | a constraint rather than a reading: the nose points along the estimated velocity, to within `sideslip`. Fixed-wing and ground vehicles; never a multirotor |
 
 `time` is when the measurement was taken, on the clock the IMU's samples are timed on, and it is
 an argument for the reason the noise is: a receiver's latency is a property of that receiver and
@@ -346,7 +349,8 @@ all — a two-dimensional fix, a solution with no vertical velocity — `horizon
 constructor instead, since it leaves that axis' σ alone where `clamped` would cap it back into a
 measurement. The magnetometer must already be calibrated for hard and soft iron: `noise` is on
 the heading rather than on the field, and the filter widens it by the tilt it levelled with —
-equation (36′) — but nothing in it can find a hard-iron offset. Heading is true only once
+equation (36′) — but nothing in it can find a hard-iron offset. A dual-antenna heading is bounded
+the same way as a fix, `HeadingNoise::clamped` with PX4's or ArduPilot's floor. Heading is true only once
 `set_magnetic_declination` names the site's declination, zero until then; set it before
 initializing, since the window's heading reads it, and again when a first fix says where the
 vehicle is.
@@ -363,6 +367,7 @@ a `Reset` steps the state, and a refusal says the measurement never reached the 
 | `Rejected { test_ratio }` | gated out; ratio > 1, state unchanged |
 | `Reset` | adopted outright: the quantity was never established, or its source was locked out past its [recovery](#recovery-from-gate-lockout) timeout; steps the state |
 | `NoReference` | barometer altitude with no `α₀` and no established position to read one against, or a geodetic fix that cannot place an origin |
+| `Unobservable` | a heading the geometry cannot give: body x within 30° of vertical, or a course while the vehicle is too slow against its velocity's uncertainty; discarded |
 | `NotFinite` | a NaN or infinity in the measurement or its noise; discarded |
 | `InvalidNoise` | a zero or negative variance in the noise — no sensor has one, and `S` would be singular or worse; discarded |
 | `OutOfHorizon { age }` | `time` older than `LATENCY_HORIZON`, or ahead of the state by more than `Config::max_predict_dt`; discarded |
@@ -570,11 +575,12 @@ Known, and stated here rather than discovered in flight. Some are deliberate; th
   [barometric reference as an estimated offset](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#barometric-reference-as-an-estimated-offset).
 * **No magnetic-field states.** Hard- and soft-iron calibration is the application's job; an
   uncalibrated magnetometer gives a heading bias the filter cannot detect.
-* **Heading needs a magnetometer.** It is the only heading source the filter has, so a vehicle
-  without one never leaves `Aligning` and never reports `validity.heading`, however good the rest
-  of the estimate is. `Aligning` hides `Degraded`, so such a vehicle's source timeouts stop
-  showing in `Status` too and have to be read from `diagnostics()`. Yaw from course over ground,
-  dual-antenna GNSS heading and a GSF yaw estimator are the answers, all unbuilt. See
+* **Heading needs a magnetometer, a second antenna or forward flight.** A multirotor with neither
+  sensor has no heading source: it never leaves `Aligning` and never reports `validity.heading`,
+  however good the rest of the estimate is, and `Aligning` hides `Degraded`, so its source
+  timeouts have to be read from `diagnostics()`. The course constraint serves a vehicle that points
+  where it goes, and its heading is no better than the sideslip it is told to allow. A GSF yaw
+  estimator, the general answer, is unbuilt. See
   [alignment beyond the static window](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#alignment-beyond-the-static-window).
 * **In-motion alignment is coarse.** A moving start runs and reports `Aligning`, but full
   alignment of a bare vehicle in motion is not yet built; `initialize_from` covers a held

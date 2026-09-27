@@ -40,9 +40,11 @@ pub enum Status {
     /// — fixed bars, not [`Config::accuracy`](crate::Config::accuracy), which is the
     /// mission's and moves only [`Validity`](crate::Validity). A heading nothing has observed
     /// needs a measurement instead: stillness never supplies yaw, so a filter that
-    /// started without a magnetometer stays here however small the covariance is, until
-    /// [`Eskf::fuse_mag_heading`](crate::Eskf::fuse_mag_heading) accepts one. A vehicle
-    /// carrying no magnetometer at all therefore never leaves, and — since this hides
+    /// started without a magnetometer stays here however small the covariance is, until a
+    /// heading source — [`Eskf::fuse_mag_heading`](crate::Eskf::fuse_mag_heading),
+    /// [`fuse_gnss_heading`](crate::Eskf::fuse_gnss_heading) or
+    /// [`fuse_course`](crate::Eskf::fuse_course) — accepts one. A vehicle with none of the
+    /// three therefore never leaves, and — since this hides
     /// [`Degraded`](Self::Degraded) — its source timeouts stop showing in `Status` and
     /// have to be read from [`Diagnostics`].
     ///
@@ -113,9 +115,11 @@ pub enum Fusion {
     ///
     /// Heading is the third, and it is not a coarse start's alone: stillness observes
     /// tilt and never yaw, so a static window carrying no magnetometer leaves yaw a
-    /// prior nothing measured, and the first
-    /// [`fuse_mag_heading`](crate::Eskf::fuse_mag_heading) is adopted there too. Only a
-    /// seed escapes, having vouched for every quantity.
+    /// prior nothing measured, and the first heading from
+    /// [`fuse_mag_heading`](crate::Eskf::fuse_mag_heading),
+    /// [`fuse_gnss_heading`](crate::Eskf::fuse_gnss_heading) or
+    /// [`fuse_course`](crate::Eskf::fuse_course) is adopted there too. Only a seed escapes,
+    /// having vouched for every quantity.
     ///
     /// The state becomes the measurement and its covariance block becomes the
     /// measurement's, which is what fusing against an infinitely uncertain prior
@@ -575,7 +579,7 @@ fn seconds(value: Seconds) -> Fixed {
 /// Every flag is derived from the covariance against
 /// [`Config::accuracy`](crate::Config::accuracy), plus the requirement that the quantity
 /// was ever established at all — a coarse start has no position until a fix arrives, a
-/// window with no magnetometer has no heading until one is fused, and a tight prior on a
+/// window with no magnetometer has no heading until a heading source is fused, and a tight prior on a
 /// number nobody set is not validity.
 ///
 /// Horizontal and vertical are separate because sources are: a vehicle with a barometer
