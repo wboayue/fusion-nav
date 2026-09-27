@@ -275,6 +275,19 @@ impl RPolicy {
         )
     }
 
+    /// A GNSS heading row's `R`.
+    ///
+    /// Under `Px4`, EKF2's hard-coded 0.1 rad floor, `HeadingNoise::clamped`'s first example,
+    /// which also reads an accuracy of zero as the floor rather than refusing it.
+    fn heading(self, var: f32) -> HeadingNoise {
+        match self {
+            RPolicy::Px4(_) if var.is_finite() && var >= 0.0 => {
+                HeadingNoise::clamped(var.sqrt(), SigmaBounds::at_least(0.1))
+            }
+            _ => HeadingNoise::from_variance(var),
+        }
+    }
+
     /// A GNSS velocity row's `R`.
     ///
     /// Under `Px4`, EKF2's rule as `VelocityNoise::clamped`'s doc writes it: `sacc` floored at
@@ -369,8 +382,11 @@ const ATTITUDE_SIGMAS: [(&str, AttitudeColumn); 3] = [
 ///
 /// `gnss_hgt` is the one name no input row carries: a `gnss_pos` row is one fix and two
 /// verdicts, the horizontal half under `gnss_pos` and the height under `gnss_hgt`, because
-/// the filter gates them apart (`GnssFusion`).
-const SOURCES: [&str; 5] = ["gnss_pos", "gnss_hgt", "gnss_vel", "baro", "mag"];
+/// the filter gates them apart (`GnssFusion`). `course` is the other: no row carries a course,
+/// which the harness fuses after each `gnss_vel` row when a sideslip is given (`sideslip_of`).
+const SOURCES: [&str; 7] = [
+    "gnss_pos", "gnss_hgt", "gnss_vel", "baro", "mag", "gnss_yaw", "course",
+];
 
 /// What each source's innovation components are, in the order the filter publishes them, so a
 /// `nu_` key names an axis rather than a subscript.
@@ -381,15 +397,33 @@ const SOURCES: [&str; 5] = ["gnss_pos", "gnss_hgt", "gnss_vel", "baro", "mag"];
 /// discovered by an index out of range. The lengths are the observation dimensions of
 /// (28)–(30) and (34)–(36), and are checked against what the filter publishes rather than
 /// trusted.
-const AXES: [&[&str]; 5] = [&["n", "e"], &["d"], &["n", "e", "d"], &["d"], &["yaw"]];
+const AXES: [&[&str]; 7] = [
+    &["n", "e"],
+    &["d"],
+    &["n", "e", "d"],
+    &["d"],
+    &["yaw"],
+    &["yaw"],
+    &["yaw"],
+];
 
 /// Last test ratio per source, in `Diagnostics` order.
-const RATIOS: [&str; 5] = ["r_gnss_pos", "r_gnss_hgt", "r_gnss_vel", "r_baro", "r_mag"];
+const RATIOS: [&str; 7] = [
+    "r_gnss_pos",
+    "r_gnss_hgt",
+    "r_gnss_vel",
+    "r_baro",
+    "r_mag",
+    "r_gnss_yaw",
+    "r_course",
+];
 const GNSS_POS: usize = 0;
 const GNSS_HGT: usize = 1;
 const GNSS_VEL: usize = 2;
 const BARO: usize = 3;
 const MAG: usize = 4;
+const GNSS_YAW: usize = 5;
+const COURSE: usize = 6;
 
 fn main() {
     if let Err(e) = run() {
@@ -400,11 +434,21 @@ fn main() {
 
 fn run() -> Result<(), Box<dyn Error>> {
     let mut policy = None;
+    let mut course = None;
+    let mut without = None;
     let mut positional = Vec::new();
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--r-policy" {
             policy = Some(args.next().ok_or("--r-policy wants `raw` or `px4`")?);
+        } else if arg == "--course" {
+            let degrees: f32 = args
+                .next()
+                .and_then(|value| value.parse().ok())
+                .ok_or("--course wants a sideslip sigma in degrees")?;
+            course = Some(Radians::from_degrees(degrees));
+        } else if arg == "--without" {
+            without = Some(args.next().ok_or("--without wants an input source name")?);
         } else {
             positional.push(arg);
         }
@@ -440,6 +484,14 @@ fn run() -> Result<(), Box<dyn Error>> {
     write_fusion_header(&mut fusion_out, config.gates)?;
 
     let mut replay = Replay::new(config, policy, scoring);
+    replay.course = course.or_else(|| sideslip_of(&text));
+    if replay
+        .course
+        .is_some_and(|sideslip| !(sideslip.as_radians() > 0.0 && sideslip.as_radians().is_finite()))
+    {
+        return Err("the course sideslip is not a positive number".into());
+    }
+    replay.without = without;
     if !replay
         .filter
         .set_magnetic_declination(declination_of(&text))
@@ -487,6 +539,8 @@ fn thresholds(gates: Gates) -> [f32; SOURCES.len()] {
         gates.gnss_velocity.threshold(),
         gates.baro_altitude.threshold(),
         gates.mag_heading.threshold(),
+        gates.gnss_heading.threshold(),
+        gates.course.threshold(),
     ]
 }
 
@@ -813,6 +867,13 @@ struct Replay {
     /// carry mag during the window gets an observed initial heading. The bundled log does
     /// not, which is the point: yaw starts unobserved and `sigma_yaw` stays inflated.
     last_mag: Option<MagField<Body>>,
+    /// The sideslip σ the course constraint is fused at after each `gnss_vel` row, or `None`
+    /// for no course: from `--course`, or the `# Course sideslip` header line the simulator
+    /// writes for a vehicle that points where it flies. See `sideslip_of`.
+    course: Option<Radians>,
+    /// An input source whose rows are skipped, `--without mag`: a vehicle without that sensor,
+    /// replayed from a log that has one.
+    without: Option<String>,
     /// Most recent barometer reading, attached to static samples the same way. This is
     /// what fixes the reference the filter's altitudes are relative to, and a log whose
     /// barometer starts after initialization leaves it unset for the whole replay.
@@ -903,6 +964,8 @@ impl Replay {
             probed: 0,
             window_samples: 0,
             last_mag: None,
+            course: None,
+            without: None,
             last_baro: None,
             pending_velocity: None,
             previous_imu: None,
@@ -964,6 +1027,9 @@ impl Replay {
             return Ok(());
         }
         let r = Record::parse(line).ok_or("malformed row")?;
+        if self.without.as_deref() == Some(r.source) {
+            return Ok(());
+        }
 
         match r.source {
             "imu" => {
@@ -1003,6 +1069,11 @@ impl Replay {
                         .velocity([r.variance(0)?, r.variance(1)?, r.variance(2)?]),
                 );
                 self.observe(r.t, GNSS_VEL, outcome, out)?;
+                if let Some(sideslip) = self.course {
+                    let sideslip = HeadingNoise::from_sigma(sideslip.as_radians());
+                    let outcome = self.filter.fuse_course(r.taken(), sideslip);
+                    self.observe(r.t, COURSE, outcome, out)?;
+                }
             }
             "baro" => {
                 let altitude = Altitude::from_meters(r.value(0)?);
@@ -1023,6 +1094,14 @@ impl Replay {
                     HeadingNoise::from_variance(r.variance(0)?),
                 );
                 self.observe(r.t, MAG, outcome, out)?;
+            }
+            "gnss_yaw" => {
+                let outcome = self.filter.fuse_gnss_heading(
+                    r.taken(),
+                    Radians::from_radians(r.value(0)?),
+                    self.policy.heading(r.variance(0)?),
+                );
+                self.observe(r.t, GNSS_YAW, outcome, out)?;
             }
             other => return Err(format!("unknown source `{other}`").into()),
         }
@@ -1805,7 +1884,7 @@ impl Replay {
         format!(
             "summary rate={:.0} window={} {} align={} an={} alpha0={} heading={} \
              roll0={roll0:.2} pitch0={pitch0:.2} yaw0={yaw0:.2} declination={:.2} resets={} \
-             recovered={} aligned_at={} attitude_lost={} r_policy={} rejected={}{} discarded={} coasted={} refused={} \
+             recovered={} aligned_at={} attitude_lost={} r_policy={} course={} without={} rejected={}{} discarded={} coasted={} refused={} \
              invalid={} floored={} epochs={}{} \
              transitions={} status={:?}",
             self.interval.map_or(0.0, |interval| 1.0 / interval),
@@ -1868,6 +1947,14 @@ impl Replay {
             // changes, and because the update of (23)–(28) should push it to `never`.
             self.attitude_lost_after(),
             self.policy.name(),
+            // Choices rather than counts, as `r_policy=` is: whether the course constraint was
+            // fused and at what sideslip, and which input source was dropped, so a figure from
+            // a vehicle replayed without its magnetometer names that it was.
+            self.course.map_or_else(
+                || "off".to_string(),
+                |s| format!("{:.1}", s.as_radians().to_degrees())
+            ),
+            self.without.as_deref().unwrap_or("none"),
             // The gate's verdict, which no other key on this line reports: `refused=` and
             // `invalid=` are propagation steps, not measurements, so a change that started
             // turning down every fix in the corpus would pass `--check` unmoved without
@@ -2097,11 +2184,23 @@ impl TruthRow {
 /// score as heading bias with nothing failing to say so. `declination=` on the `summary` line
 /// is what notices it stop arriving.
 fn declination_of(text: &str) -> Radians {
+    header_radians(text, "# Magnetic declination ").unwrap_or(Radians::ZERO)
+}
+
+/// The sideslip a leading `# Course sideslip <rad> rad` line names, which turns on the course
+/// constraint. The simulator writes one for a scenario whose vehicle points where it flies; no
+/// converted log carries one, since whether a vehicle does is not in its log.
+fn sideslip_of(text: &str) -> Option<Radians> {
+    header_radians(text, "# Course sideslip ")
+}
+
+/// The number a leading `#` line starting with `prefix` carries, in radians.
+fn header_radians(text: &str, prefix: &str) -> Option<Radians> {
     text.lines()
         .take_while(|line| line.starts_with('#'))
-        .find_map(|line| line.strip_prefix("# Magnetic declination "))
+        .find_map(|line| line.strip_prefix(prefix))
         .and_then(|rest| rest.split_whitespace().next()?.parse().ok())
-        .map_or(Radians::ZERO, Radians::from_radians)
+        .map(Radians::from_radians)
 }
 
 /// The floors a `# GNSS noise parameters` header line names, which `--r-policy px4` fuses
@@ -2897,6 +2996,16 @@ mod tests {
             self
         }
 
+        fn gnss_yaw(mut self, t: f64, heading: f32) -> Self {
+            self.0 += &format!("{t:.6},gnss_yaw,{heading},,,,,,0.0025,,\n");
+            self
+        }
+
+        /// The `# Course sideslip` header line, which has to lead the file to be read.
+        fn course(self, sideslip: f32) -> Self {
+            Self(format!("# Course sideslip {sideslip} rad\n") + &self.0)
+        }
+
         fn baro(mut self, t: f64, altitude: f32) -> Self {
             self.0 += &format!("{t:.6},baro,{altitude},,,,,,4,,\n");
             self
@@ -2971,6 +3080,9 @@ mod tests {
                 .filter
                 .set_magnetic_declination(Radians::from_radians(-0.06))
         );
+        // Read from the log as `run` reads it, so a fixture turns the course on the way the
+        // simulator does.
+        replay.course = sideslip_of(&log.0);
         let mut fusions = Vec::new();
         {
             let mut out = Sinks {
@@ -3360,6 +3472,49 @@ mod tests {
     /// Airborne from the first sample, so the harness starts coarse at `PATIENCE`.
     fn coarse_start() -> Log {
         Log::new().run(0.0, 501, DT, TURNING)
+    }
+
+    #[test]
+    fn a_course_is_fused_after_each_velocity_once_a_sideslip_is_given() {
+        // A coarse start adopts the first velocity and the first course; the second of each
+        // reaches the gate, which is where the dimension `AXES` names is published.
+        let moving = |log: Log| {
+            log.gnss_vel(10.02, 15.0, 0.0, 0.0)
+                .imu(10.04, TURNING)
+                .gnss_vel(10.06, 15.0, 0.0, 0.0)
+                .imu(10.08, TURNING)
+                .gnss_vel(10.10, 15.0, 0.0, 0.0)
+        };
+        let fused = replay(&moving(coarse_start().course(0.05)));
+        let summary = fused.summary();
+        assert_eq!(key(&summary, "course"), "2.9");
+        assert_eq!(fused.filter.diagnostics().course.adopted, 1, "{summary}");
+        assert_eq!(fused.consistency.dimension[COURSE], AXES[COURSE].len());
+
+        // No sideslip, no course: the neutral replay every corpus log is pinned under.
+        let neutral = replay(&moving(coarse_start()));
+        assert_eq!(key(&neutral.summary(), "course"), "off");
+        assert!(!neutral.filter.diagnostics().course.has_been_used());
+    }
+
+    #[test]
+    fn a_source_named_by_without_is_never_offered() {
+        let log = still_start().mag(2.0).mag(2.1);
+        let mut kept = Replay::new(Config::default(), RPolicy::Raw, None);
+        let mut dropped = Replay::new(Config::default(), RPolicy::Raw, None);
+        dropped.without = Some("mag".to_string());
+        for replay in [&mut kept, &mut dropped] {
+            let mut sinks = Sinks {
+                epochs: &mut io::sink(),
+                fusions: &mut io::sink(),
+            };
+            for line in log.0.lines() {
+                replay.row(line, &mut sinks).expect("fixture replays");
+            }
+        }
+        assert!(kept.filter.diagnostics().mag_heading.has_been_used());
+        assert!(!dropped.filter.diagnostics().mag_heading.has_been_used());
+        assert_eq!(key(&dropped.summary(), "without"), "mag");
     }
 
     #[test]
@@ -3881,7 +4036,9 @@ mod tests {
             .gnss_vel(2.0, 0.1, 0.0, 0.0)
             .baro(2.0, 42.5)
             .mag(2.0)
-            .mag(2.1);
+            .mag(2.1)
+            .gnss_yaw(2.0, 0.0)
+            .gnss_yaw(2.1, 0.0);
         let replay = replay(&log);
         let summary = replay.summary();
         for (source, spelling) in SOURCES.iter().enumerate() {
@@ -3896,6 +4053,10 @@ mod tests {
                     summary.contains(&format!(" nu_{spelling}_{axis}=")),
                     "no nu_{spelling}_{axis}= on the line: {summary}"
                 );
+            }
+            // A course needs speed, which a still start has not got; the test below moves.
+            if source == COURSE {
+                continue;
             }
             assert_eq!(
                 AXES[source].len(),
@@ -4882,7 +5043,7 @@ mod tests {
             row.split(',').count(),
             "header:\n{header}\nrow:\n{row}"
         );
-        assert_eq!(header.split(',').count(), 2 + 16 + 15 + 3 + 5);
+        assert_eq!(header.split(',').count(), 2 + 16 + 15 + 3 + 7);
     }
 
     #[test]
