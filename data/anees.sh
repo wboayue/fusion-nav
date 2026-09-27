@@ -4,6 +4,9 @@
 #
 #   data/anees.sh              every scenario in data/anees.txt
 #   data/anees.sh mission      only these
+#   data/anees.sh --series DIR [scenario...]
+#                              also write DIR/<scenario>.csv, the per-epoch series, and
+#                              DIR/<scenario>.anees, the line; tools/validation.sh draws them
 #
 # data/bench.sh asks whether one pinned flight got less accurate. This asks whether the
 # covariance tells the truth about the error, which no ceiling can: a ceiling passes a filter
@@ -33,6 +36,14 @@ die() { echo "anees: $*" >&2; exit 1; }
 command -v python3 >/dev/null || die "python3 is required (standard library only)"
 
 jobs=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
+
+series=
+if [ "${1:-}" = "--series" ]; then
+    [ -n "${2:-}" ] || die "--series wants a directory"
+    series=$2
+    shift 2
+    mkdir -p "$series"
+fi
 
 wanted=" $* "
 selected() {
@@ -89,7 +100,13 @@ while read -r name runs expect || [ -n "$name" ]; do
     seq 1 "$runs" | xargs -P "$jobs" -I{} bash -c 'fly "$0" {} "$1"' "$name" "$dir" ||
         die "$name: a run failed"
 
-    line=$(python3 "$root/tools/anees.py" "$dir"/*.nees.csv) || die "$name: aggregation failed"
+    if [ -n "$series" ]; then
+        line=$(python3 "$root/tools/anees.py" --series "$series/$name.csv" "$dir"/*.nees.csv) ||
+            die "$name: aggregation failed"
+        printf '%s\n' "$line" > "$series/$name.anees"
+    else
+        line=$(python3 "$root/tools/anees.py" "$dir"/*.nees.csv) || die "$name: aggregation failed"
+    fi
     rm -rf "$dir"
     if compare_pairs "$line" "$expect" "$name"; then
         echo "  ok       $name"

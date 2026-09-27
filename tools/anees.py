@@ -2,6 +2,7 @@
 """Average per-epoch NEES across an ensemble of seeds and test it against the chi-square bound.
 
     tools/anees.py run1.nees.csv run2.nees.csv ...    print one `anees` line
+    tools/anees.py --series out.csv run1.nees.csv ... also write eps_bar_k / 3 per epoch
     tools/anees.py --self-test                         run the fixtures
 
 The input is `examples/replay.rs`'s `<out>.nees.csv`: `eps = dx' P^-1 dx` per 3-state block,
@@ -129,8 +130,8 @@ def epoch_means(runs, block):
     return [sum(run[3][block][k] for run in runs) / n / DOF for k in range(len(runs[0][2]))]
 
 
-def ensemble(runs):
-    """The `anees` pairs for a list of read() results, refusing one that is not an ensemble."""
+def check(runs):
+    """The scenario a list of read() results is an ensemble of, or ValueError saying why not."""
     scenarios = {run[0] for run in runs}
     if len(scenarios) != 1:
         raise ValueError(f"runs from more than one scenario: {', '.join(sorted(scenarios))}")
@@ -143,6 +144,13 @@ def ensemble(runs):
     for run in runs[1:]:
         if run[2] != times:
             raise ValueError(f"seed {run[1]} has other epochs than seed {runs[0][1]}")
+    return scenarios.pop()
+
+
+def ensemble(runs):
+    """The `anees` pairs for a list of read() results, refusing one that is not an ensemble."""
+    scenario = check(runs)
+    times = runs[0][2]
     n = len(runs)
     limit = bound(n)
     limit_any = bound(n, len(times))
@@ -160,7 +168,27 @@ def ensemble(runs):
         pairs.append(f"any_{block}={sum(1 for m in mean if m > limit_any)}")
         pairs.append(f"peak_{block}={mean[peak]:.4f}")
         pairs.append(f"peak_{block}_at={times[peak]}")
-    return scenarios.pop(), pairs
+    return scenario, pairs
+
+
+def series(runs):
+    """eps_bar_k / 3 per block at every epoch, as CSV text under a header naming the ensemble.
+
+    The series every key of `ensemble` is read from, for a figure to draw against the two
+    bounds rather than for a second statistic: `tools/replay_report.py` plots these columns
+    and computes nothing from them.
+    """
+    scenario = check(runs)
+    times, n = runs[0][2], len(runs)
+    means = [epoch_means(runs, block) for block in BLOCKS]
+    lines = [
+        f"# fusion-nav anees for `{scenario}`, runs {n}, "
+        f"bound {bound(n):.4f}, bound_any {bound(n, len(times)):.4f}",
+        "t_s," + ",".join(f"anees_{block}" for block in BLOCKS),
+    ]
+    for k, t in enumerate(times):
+        lines.append(t + "," + ",".join(f"{mean[k]:.6f}" for mean in means))
+    return "\n".join(lines) + "\n"
 
 
 def self_test():
@@ -208,6 +236,20 @@ def self_test():
     refused("no epochs", [run(1, [])])
     refused("misaligned epochs", [run(1, [1.0]), run(2, [1.0], times=["0.0050"])])
 
+    # The series is the per-epoch mean the keys above read, not a second computation: the same
+    # two seeds give pos 1.0 then 3.0 per dof, and vel and att 1.0 throughout.
+    text = series([run(1, [0.0, 6.0]), run(2, [6.0, 12.0])]).splitlines()
+    check("series header", text[0],
+          "# fusion-nav anees for `fixture`, runs 2, bound 2.0986, bound_any 2.4082")
+    check("series columns", text[1], "t_s,anees_pos,anees_vel,anees_att")
+    check("series epoch 0", text[2], "0.0000,1.000000,1.000000,1.000000")
+    check("series epoch 1", text[3], "1.0000,3.000000,1.000000,1.000000")
+    try:
+        series([run(1, [1.0]), run(1, [1.0])])
+        failures.append("series of a repeated seed: accepted")
+    except ValueError:
+        pass
+
     for failure in failures:
         print(f"anees self-test: {failure}", file=sys.stderr)
     if failures:
@@ -219,10 +261,19 @@ def main(argv):
     if argv == ["--self-test"]:
         self_test()
         return
+    out = None
+    if argv[:1] == ["--series"]:
+        if len(argv) < 2:
+            sys.exit("anees: --series wants an output path")
+        out, argv = argv[1], argv[2:]
     if not argv:
         sys.exit(__doc__.split("\n\n")[1])
     try:
-        scenario, pairs = ensemble([read(path) for path in argv])
+        runs = [read(path) for path in argv]
+        scenario, pairs = ensemble(runs)
+        if out:
+            with open(out, "w") as f:
+                f.write(series(runs))
     except ValueError as e:
         sys.exit(f"anees: {e}")
     print(f"anees {scenario} " + " ".join(pairs))
