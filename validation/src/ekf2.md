@@ -61,7 +61,9 @@ Some rows are explained by the log, not by either filter:
   this filter refuses many of its velocities and the two estimates drift apart, until its
   positions are refused too and adopted back. With EKF2's floors they stay together: east
   position differs by {{agreement a299e722/px4 pos_e_rms}} m RMS against
-  {{agreement a299e722/raw pos_e_rms}} m.
+  {{agreement a299e722/raw pos_e_rms}} m. It is also the one log with a dual-antenna receiver, whose heading
+  both estimators fuse; their headings differ by a median of
+  {{agreement a299e722/px4 heading_diff_med}}°.
 
 The sections below look closer at the logs that each test something the others do not, ending
 with the one where this filter clearly does worse.
