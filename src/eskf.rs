@@ -548,6 +548,9 @@ impl Eskf {
             let Some(coast) = self.config.coast else {
                 return self.refuse_step(Propagation::StepTooLong { dt, limit });
             };
+            // Noted before the coast can be discarded as non-finite: nothing else records how far
+            // the interval ran, and a refused step with coasting off is measured too.
+            self.diagnostics.propagation.note_gap(dt);
             // The sample is not read, so a non-finite one does not stop a coast.
             let coasted = propagate::coast(
                 self.state,
@@ -2109,6 +2112,28 @@ mod tests {
         assert_eq!(propagation.coasted, 1);
         assert_eq!(propagation.refused_too_long, 0, "a coast is not a refusal");
         assert_eq!(propagation.longest_gap, Some(gap));
+    }
+
+    #[test]
+    fn a_coast_discarded_as_non_finite_still_measures_the_gap() {
+        let mut filter = flying(Config {
+            coast: Some(Coast {
+                acceleration: f32::INFINITY,
+                rotation: 0.1,
+            }),
+            ..Config::default()
+        });
+        let before = filter.state();
+        let gap = Seconds::from_secs(1.2);
+        assert_eq!(
+            filter.predict(still().imu, gap),
+            Propagation::StateNotFinite
+        );
+        assert_eq!(filter.state(), before, "a discarded coast commits nothing");
+        let propagation = filter.diagnostics().propagation;
+        assert_eq!(propagation.longest_gap, Some(gap));
+        assert_eq!(propagation.coasted, 0);
+        assert_eq!(propagation.refused_state_not_finite, 1);
     }
 
     #[test]

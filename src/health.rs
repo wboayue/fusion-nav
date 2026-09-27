@@ -855,9 +855,10 @@ impl PropagationHealth {
     /// Record what one step did, if it was coasted or refused.
     pub(crate) fn record(&mut self, outcome: Propagation) {
         match outcome {
-            Propagation::Coasted { dt } => {
+            // The gap is noted by `Eskf::predict` before the coast is committed, so that one
+            // discarded as non-finite is still measured.
+            Propagation::Coasted { .. } => {
                 self.coasted = self.coasted.saturating_add(1);
-                self.note_gap(dt);
             }
             Propagation::StepTooLong { dt, .. } => {
                 self.refused_too_long = self.refused_too_long.saturating_add(1);
@@ -876,7 +877,8 @@ impl PropagationHealth {
         }
     }
 
-    fn note_gap(&mut self, dt: Seconds) {
+    /// Keep `dt` if it is the longest gap past the limit so far.
+    pub(crate) fn note_gap(&mut self, dt: Seconds) {
         if self.longest_gap.is_none_or(|worst| dt > worst) {
             self.longest_gap = Some(dt);
         }

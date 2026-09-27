@@ -78,8 +78,8 @@ if let Alignment::Coarse(_) = filter.initialize(&static_window, dt)? {
 }
 
 loop {
-    // High-rate propagation on every IMU sample. The outcome is #[must_use]: a refused
-    // step leaves the state where it was.
+    // High-rate propagation on every IMU sample. The outcome is #[must_use]: a step too long
+    // to integrate is coasted on an assumption, or refused with `Config::coast` off.
     if !filter.predict(imu, dt).is_propagated() { /* log the gap */ }
 
     // Measurement updates whenever a sensor delivers, each with its own noise. Bound a
