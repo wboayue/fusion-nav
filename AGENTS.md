@@ -785,10 +785,8 @@ off-by-default feature of the same name.
 - `src/init.rs` — initialization's types (`StaticSample`, `StaticWindow`, `Alignment`, `Coarse`,
   `InitError`) and pure functions (`level_from_accel`, `heading_from_mag`, `nominal_state`,
   `classify`, `attitude_sigmas`, `initial_covariance`). `StaticWindow` folds each sample in as
-  it is pushed, so a caller never buffers the window; every statistic it keeps is a single
-  pass, the halves of `window_drift` split at a block boundary rather than the middle, and the
-  barometer's scatter is Welford's. The `initialize*` methods on `Eskf` call these and commit
-  the result. Tests for the pure
+  it is pushed, so a caller never buffers the window; its doc comment owns how each statistic
+  is taken in one pass. The `initialize*` methods on `Eskf` call these and commit the result. Tests for the pure
   functions live here; tests of what the filter does with them stay in `eskf.rs`.
 - `src/propagate.rs` — `ImuSample` and equations (9)–(22), in increments; `error_dynamics`, the
   `A` of (16)–(19) that (23′) carries `H` through.

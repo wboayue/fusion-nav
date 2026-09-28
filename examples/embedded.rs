@@ -147,7 +147,7 @@ fn run(board: &mut impl Board) -> ! {
 fn align(filter: &mut Eskf, board: &mut impl Board) {
     let mut window = StaticWindow::new();
     let (mut baro, mut mag) = (None, None);
-    while window.span() < filter.config().init.min_duration {
+    while window.is_empty() || window.span() < filter.config().init.min_duration {
         // A slower sensor's last reading is held across the samples it spans; the window
         // counts distinct readings, so holding it claims nothing.
         baro = board.baro().map(|(_, altitude)| altitude).or(baro);
@@ -168,8 +168,8 @@ fn align(filter: &mut Eskf, board: &mut impl Board) {
         }
     }
     // A short or moving window still starts the filter, coarse: `Status::Aligning` says so
-    // until the attitude converges, and the log says why. The window spans time, so it
-    // holds a sample and `initialize` has nothing to refuse.
+    // until the attitude converges, and the log says why. The window holds a sample, so
+    // `initialize` has nothing to refuse.
     match filter.initialize(&window) {
         Ok(alignment) => log!(board, "aligned {}", alignment),
         Err(error) => log!(board, "initialization failed: {}", error),

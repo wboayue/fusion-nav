@@ -95,8 +95,8 @@ impl StaticSample {
 /// sums, peaks, the span, the barometer's scatter and the first and last GNSS velocity. So
 /// the samples are folded in as they arrive rather than buffered. A buffered window at the
 /// default [`Initialization::min_duration`] of 2 s is 800 [`StaticSample`]s at 400 Hz, 64 KB
-/// at 80 bytes each on `thumbv6m`, more RAM than a Cortex-M0 has; this is 800 bytes at any
-/// rate and any length, [`HalfSums`] 528 of them.
+/// at 80 bytes each on `thumbv6m`, more RAM than a Cortex-M0 has; this is 736 bytes at any
+/// rate and any length.
 ///
 /// ```
 /// # use fusion_nav::prelude::*;
@@ -124,23 +124,20 @@ impl StaticSample {
 /// keep the still tail, so it can align a little sooner, at the cost of the buffer; build
 /// one with [`TryFrom`].
 ///
-/// Each [`push`](Self::push) does a few dozen `f64` operations, which on a core with no
+/// Each [`push`](Self::push) runs 22 `f64` additions, 7 multiplications and 11 widenings
+/// (counted in its `thumbv6m` disassembly, less the merge a doubling adds), which on a core with no
 /// double-precision unit are library calls, inside the loop that is already reading the
-/// IMU. That is the price of not buffering; it is paid only until the window commits, and
-/// the reasons the sums are `f64` are [`level_variance`]'s and [`Scatter`]'s.
+/// IMU. That is the price of not buffering, paid only until the window commits. Two of the
+/// sums need `f64`: `Σ f fᵀ`, differenced down to a scatter many orders under `γ²`, and the
+/// barometer's, in metres above mean sea level. For the averages it is precaution: summing a
+/// few thousand readings near `γ` in `f32` costs on the order of 10⁻⁵ rad of tilt, against a
+/// 0.02 rad prior.
 #[derive(Clone, Debug)]
 pub struct StaticWindow {
-    /// Samples accepted. `u64` so that no window a vehicle could collect overflows it.
-    count: u64,
-    /// `Σ f`, the specific force (5) levels from.
-    force: Vector3<f64>,
     /// `Σ f fᵀ`, for the window's scatter about `f̄`; see [`level_variance`].
     outer: Matrix3<f64>,
     /// `Σ ω`, the angular rate (7) takes as the gyroscope bias.
     rate: Vector3<f64>,
-    /// `Σ m` over the samples that carry a field, and how many do.
-    field: Vector3<f64>,
-    fields: u64,
     peak_gyro: f32,
     peak_deviation: f32,
     /// The time the samples integrated; see [`span`](Self::span).
@@ -148,7 +145,8 @@ pub struct StaticWindow {
     /// The last sample's time: the start of the filter's clock, and what the next sample's
     /// step is differenced against.
     end: Option<Timestamp>,
-    halves: HalfSums,
+    /// `Σ f` and `Σ m`, the sums (5) and (6) average, kept in blocks for the halves.
+    sums: BlockSums,
     velocities: Velocities,
     baro: Scatter,
 }
@@ -164,17 +162,13 @@ impl StaticWindow {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            count: 0,
-            force: Vector3::zeros(),
             outer: Matrix3::zeros(),
             rate: Vector3::zeros(),
-            field: Vector3::zeros(),
-            fields: 0,
             peak_gyro: 0.0,
             peak_deviation: 0.0,
             span: 0.0,
             end: None,
-            halves: HalfSums::new(),
+            sums: BlockSums::new(),
             velocities: Velocities::default(),
             baro: Scatter::default(),
         }
@@ -215,20 +209,16 @@ impl StaticWindow {
             sample.imu.angular_rate().vector(),
         );
         let interval = f64::from(sample.imu.angle_interval.as_secs());
-        self.count += 1;
-        self.force += widen(accel);
         self.outer += widen(accel) * widen(accel).transpose();
         self.rate += widen(gyro);
-        let field = sample.mag.map(|measurement| widen(measurement.vector()));
-        if let Some(field) = field {
-            self.field += field;
-            self.fields += 1;
-        }
         self.peak_gyro = self.peak_gyro.max(gyro.norm());
         self.peak_deviation = self.peak_deviation.max((accel.norm() - GRAVITY).abs());
         self.span += interval;
         self.end = Some(sample.imu.time);
-        self.halves.push(widen(accel), field);
+        self.sums.push(
+            widen(accel),
+            sample.mag.map(|measurement| widen(measurement.vector())),
+        );
         self.velocities.push(sample.velocity, interval);
         self.baro.push(sample.baro);
         Ok(())
@@ -251,20 +241,32 @@ impl StaticWindow {
         Seconds::from_secs(self.span as f32)
     }
 
+    /// Whether the window holds no sample yet, which
+    /// [`Eskf::initialize`](crate::Eskf::initialize) refuses as [`InitError::NoSamples`].
+    ///
+    /// A window collected until its [`span`](Self::span) reaches a `min_duration` of zero is
+    /// one, so a collection loop tests this as well as the span.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.end.is_none()
+    }
+
     /// What the window measured, or [`InitError::NoSamples`] for a window with nothing in it.
     pub(crate) fn measured(&self) -> Result<Measured, InitError> {
         let end = self.end.ok_or(InitError::NoSamples)?;
+        let whole = self.sums.whole();
         Ok(Measured {
-            force: Acceleration::from_vector(mean(self.force, self.count)),
-            rate: AngularRate::from_vector(mean(self.rate, self.count)),
-            field: (self.fields > 0).then(|| MagField::from_vector(mean(self.field, self.fields))),
+            force: Acceleration::from_vector(mean(whole.force, whole.samples)),
+            rate: AngularRate::from_vector(mean(self.rate, whole.samples)),
+            field: (whole.fields > 0)
+                .then(|| MagField::from_vector(mean(whole.field, whole.fields))),
             inertial_accel: self.velocities.inertial_acceleration(),
             peak_gyro: RadiansPerSecond::from_rad_per_s(self.peak_gyro),
             peak_deviation: MetersPerSecond2::from_m_per_s2(self.peak_deviation),
             span: self.span(),
             end,
-            halves: self.halves.halves(),
-            level_variance: level_variance(self.outer, self.force, self.count),
+            halves: self.sums.halves(),
+            level_variance: level_variance(self.outer, whole.force, whole.samples),
         })
     }
 
@@ -355,11 +357,11 @@ impl Measured {
     }
 }
 
-/// How many blocks [`HalfSums`] keeps.
+/// How many blocks [`BlockSums`] keeps.
 ///
 /// The split lands within half a block of the middle, and at least `BLOCKS / 2` blocks are
 /// full, so the halves are within `n / BLOCKS` samples of equal: 37.5 % to 62.5 % of the
-/// window at worst. Each block is 64 bytes.
+/// window at worst.
 ///
 /// Measured against an exact split (4096 blocks, which no window the replay harness builds
 /// fills, reproduces every scenario and corpus output byte for byte): 8 blocks and 16 each
@@ -368,16 +370,18 @@ impl Measured {
 /// disagreement is the largest bound.
 const BLOCKS: usize = 8;
 
-/// The sums of [`Halves`], for a window whose length is not known until it ends.
+/// The window's `Σ f` and `Σ m`, kept so that [`Halves`] can be taken from them in a window
+/// whose length is not known until it ends.
 ///
 /// The halves are the only statistic here a single pass cannot take exactly, because the
 /// middle of a window moves as it grows. So the window is kept as up to [`BLOCKS`] blocks of
 /// equal size, each summing its own samples; when the last fills, adjacent pairs merge and
 /// the size doubles. [`halves`](Self::halves) splits at the block boundary nearest the
 /// middle, not at the middle, and [`window_drift`] compares two averages that each still
-/// cover at least three eighths of the window.
+/// cover at least three eighths of the window. The whole window's sums are the blocks'
+/// total rather than a running total kept beside them, so the two cannot disagree.
 #[derive(Clone, Copy, Debug)]
-struct HalfSums {
+struct BlockSums {
     blocks: [Block; BLOCKS],
     /// Samples a block holds before the next one starts.
     size: u64,
@@ -385,7 +389,7 @@ struct HalfSums {
     current: usize,
 }
 
-/// One block of [`HalfSums`].
+/// One block of [`BlockSums`].
 #[derive(Clone, Copy, Debug)]
 struct Block {
     force: Vector3<f64>,
@@ -402,6 +406,10 @@ impl Block {
         fields: 0,
     };
 
+    fn total(blocks: &[Self]) -> Self {
+        blocks.iter().fold(Self::EMPTY, |sum, b| sum.merged(*b))
+    }
+
     fn merged(self, other: Self) -> Self {
         Self {
             force: self.force + other.force,
@@ -412,7 +420,7 @@ impl Block {
     }
 }
 
-impl HalfSums {
+impl BlockSums {
     const fn new() -> Self {
         Self {
             blocks: [Block::EMPTY; BLOCKS],
@@ -430,12 +438,18 @@ impl HalfSums {
             if self.current + 1 < BLOCKS {
                 self.current += 1;
             } else {
-                let full = self.blocks;
-                self.blocks = [Block::EMPTY; BLOCKS];
-                for (merged, pair) in self.blocks.iter_mut().zip(full.chunks_exact(2)) {
-                    if let [first, second] = pair {
-                        *merged = first.merged(*second);
+                // In place, since pair `i` is read from `2i` and `2i + 1`, never from below
+                // `i`: a copy of the blocks is 512 bytes of stack.
+                for pair in 0..BLOCKS / 2 {
+                    if let (Some(&first), Some(&second)) =
+                        (self.blocks.get(2 * pair), self.blocks.get(2 * pair + 1))
+                        && let Some(merged) = self.blocks.get_mut(pair)
+                    {
+                        *merged = first.merged(second);
                     }
+                }
+                for empty in self.blocks.iter_mut().skip(BLOCKS / 2) {
+                    *empty = Block::EMPTY;
                 }
                 self.size *= 2;
                 self.current = BLOCKS / 2;
@@ -451,10 +465,20 @@ impl HalfSums {
         }
     }
 
+    /// The blocks filled so far.
+    fn filled(&self) -> &[Block] {
+        self.blocks.get(..=self.current).unwrap_or_default()
+    }
+
+    /// The whole window, as one block.
+    fn whole(&self) -> Block {
+        Block::total(self.filled())
+    }
+
     /// The two halves, split at the block boundary nearest the middle, the earlier of two
     /// equally near: for a window of `n` blocks of one sample, that is `n / 2`.
     fn halves(&self) -> Option<Halves> {
-        let blocks = self.blocks.get(..=self.current).unwrap_or_default();
+        let blocks = self.filled();
         let total: u64 = blocks.iter().map(|b| b.samples).sum();
         // Twice the distance from the middle, in samples, so an odd window stays integral.
         let (mut split, mut nearest, mut before) = (0, total, 0u64);
@@ -466,8 +490,7 @@ impl HalfSums {
             }
         }
         let (first, second) = blocks.split_at(split.min(blocks.len()));
-        let sum = |part: &[Block]| part.iter().fold(Block::EMPTY, |sum, b| sum.merged(*b));
-        let (first, second) = (sum(first), sum(second));
+        let (first, second) = (Block::total(first), Block::total(second));
         (first.samples > 0 && second.samples > 0).then(|| Halves {
             force: [
                 Acceleration::from_vector(mean(first.force, first.samples)),
@@ -526,9 +549,9 @@ impl Velocities {
     fn inertial_acceleration(&self) -> Option<Acceleration<Ned>> {
         let (first, last) = (self.first?, self.last?);
         let span = self.span as f32;
-        // Two velocities on one sample, or on samples that integrated nothing between them,
-        // span no time. A difference over zero seconds is an infinity, not an acceleration,
-        // and this is the only division here.
+        // `push` refuses an interval under a microsecond, so two velocities are at least that
+        // far apart and this never refuses one. It stays because this is the only division
+        // here, and a difference over zero seconds is an infinity, not an acceleration.
         (span > 0.0).then(|| Acceleration::from_vector((last.vector() - first.vector()) / span))
     }
 }
@@ -828,7 +851,7 @@ impl core::error::Error for InitError {}
 /// Classify a measured window as a static or a coarse start.
 ///
 /// The test behind [`Eskf::alignment_of`](crate::Eskf::alignment_of): still enough, then
-/// long enough, against the tolerances in `init`. Total, because [`measure`] has already
+/// long enough, against the tolerances in `init`. Total, because [`StaticWindow::push`] has already
 /// refused every window that can be refused.
 ///
 /// Motion is tested first so that each coarse variant answers one question. A window that
@@ -868,7 +891,7 @@ pub(crate) fn classify(measured: &Measured, init: &Initialization) -> Alignment 
 /// (`src/modules/ekf2/EKF/ekf.cpp:213-227`, `c4e4ef98`) — so averaging is this crate's,
 /// and it is worth taking only where their precondition holds.
 ///
-/// Every value read here is finite and the window is non-empty: [`measure`] refuses
+/// Every value read here is finite and the window is non-empty: [`StaticWindow`] refuses
 /// both before any of this is reached.
 pub(crate) fn nominal_state(measured: &Measured, declination: Radians, at_rest: bool) -> State {
     let (roll, pitch) = level_from_accel(measured.force);
@@ -1278,7 +1301,7 @@ pub(crate) mod tests {
 
     /// What a buffered window measures: every sample pushed in order, as
     /// [`StaticWindow::try_from`] does.
-    pub(crate) fn measure(window: &[StaticSample]) -> Result<Measured, InitError> {
+    fn measure(window: &[StaticSample]) -> Result<Measured, InitError> {
         StaticWindow::try_from(window)?.measured()
     }
 
@@ -1994,7 +2017,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// `window_span`'s `f64`: the sum in `f32` falls short of the product it replaced.
+    /// [`StaticWindow::span`]'s `f64`: the sum in `f32` falls short of the product it replaced.
     #[test]
     fn a_window_of_exactly_the_minimum_duration_is_long_enough_at_any_rate() {
         for (dt, samples) in [(0.02, 100), (0.01, 200), (0.005, 400), (0.0025, 800)] {
@@ -2154,7 +2177,7 @@ pub(crate) mod tests {
 
     /// The window's halves over samples whose specific force is `forces` along body x.
     fn halves_of(forces: &[f64]) -> Option<Halves> {
-        let mut sums = HalfSums::new();
+        let mut sums = BlockSums::new();
         for &force in forces {
             sums.push(Vector3::new(force, 0.0, 0.0), None);
         }

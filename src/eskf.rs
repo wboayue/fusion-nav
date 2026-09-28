@@ -332,7 +332,8 @@ impl Eskf {
     /// [`InitError::InvalidInterval`] for an integration interval under a microsecond.
     pub fn initialize_coarse(&mut self, imu: ImuSample) -> Result<Alignment, InitError> {
         // Treated as a window of one, so the same finiteness, motion and averaging
-        // measures apply — an average of one sample being that sample.
+        // measures apply — an average of one sample being that sample. The window is most
+        // of this frame (2088 bytes on `thumbv6m`), well under `update`'s.
         let mut window = StaticWindow::new();
         window.push(StaticSample {
             imu,

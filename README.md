@@ -226,7 +226,7 @@ its *averaged* specific force is from gravity, and a real `ā_n` is part of what
 | `initialize_from(state, covariance, time)` | an estimate the application already holds: a companion AHRS such as `fusion-ahrs`, the last flight's saved state. [Seeding an attitude](#seeding-an-attitude) is where its convention gets named |
 
 The window is a `StaticWindow`, which keeps what the samples reduce to rather than the samples,
-so it costs the same 800 bytes at any IMU rate; a slice of buffered samples converts with
+so it costs under a kilobyte at any IMU rate; a slice of buffered samples converts with
 `StaticWindow::try_from`. `alignment_of(window)` reports what `initialize` would make of a window
 without touching the filter, for an application that would rather wait for stillness than start
 coarsely: a window only grows, so one that moved is started over.
