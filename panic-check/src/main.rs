@@ -129,8 +129,19 @@ fn drive() {
     ));
     let _ = black_box(VelocityNoise::from_speed_accuracy(black_box(0.3)));
 
-    let _ = black_box(filter.alignment_of(black_box(&window)));
-    let _ = black_box(filter.initialize(black_box(&window)));
+    // Folded in one at a time, as a firmware does, and from a buffered slice, as a desktop
+    // caller does: two routes into the same accumulator.
+    let mut streamed = StaticWindow::new();
+    for sample in black_box(window) {
+        let _ = black_box(streamed.push(black_box(sample)));
+    }
+    let _ = black_box(streamed.span());
+    let _ = black_box(streamed.is_long_enough(black_box(&Initialization::default())));
+    let _ = black_box(streamed.is_at_rest(black_box(&Initialization::default())));
+    let _ = black_box(streamed.try_extend(black_box(window)));
+    let _ = black_box(StaticWindow::try_from(black_box(&window[..])));
+    let _ = black_box(filter.alignment_of(black_box(&streamed)));
+    let _ = black_box(filter.initialize(black_box(&streamed)));
     let _ = black_box(filter.initialize_coarse(black_box(sample.imu)));
     let _ = black_box(filter.initialize_from(
         black_box(State::default()),
@@ -303,6 +314,9 @@ fn surface(state: State, diagnostics: Diagnostics, covariance: &Covariance) {
 
     show::<InitError>(InitError::InvalidInterval {
         interval: Seconds::from_secs(black_box(-0.5)),
+    });
+    show::<SampleRefusal>(SampleRefusal::InvalidStep {
+        dt: Seconds::from_secs(black_box(-0.01)),
     });
     show::<InitError>(InitError::InvalidStep {
         dt: Seconds::from_secs(black_box(-0.5)),

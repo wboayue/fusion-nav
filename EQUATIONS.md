@@ -302,7 +302,9 @@ averages sit from what a still vehicle reads — not how far the worst sample in
 with $`T`$ the window's span, $`\hat d = -\bar f / \lVert \bar f \rVert`$ the direction (5)
 levelled to, and the subscripts 1 and 2 the same averages taken over the first and the second
 **half** of the window — $`\psi_i`$ being the heading (6) yields from that half alone, so the
-declination cancels. The rotation charged is what (7) did *not* take,
+declination cancels. The code takes the window one sample at a time and cannot know its middle
+until it ends, so it splits at the nearest of the block boundaries it keeps, which leaves each
+half between 37.5 % and 62.5 % of the window (`init::BLOCKS`). The rotation charged is what (7) did *not* take,
 $`\bar\omega_r = \bar\omega - \hat\beta_{g,0}`$: a window at rest commits the whole average as
 gyroscope bias, and the same quantity cannot be both removed from the state and charged to the
 prior around it. Where (7) left the bias at zero, $`\bar\omega_r = \bar\omega`$.
@@ -1216,10 +1218,10 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | equations | concept | module | function |
 | --------- | ------- | ------ | -------- |
 | (1)–(4) | state definitions | `state.rs` | `State`, `ErrorState` |
-| (5)–(8) | static initialization | `init.rs` | `measure`, `level_from_accel`, `heading_from_mag`, `nominal_state`, `classify`, `attitude_sigmas`, `initial_covariance`, with `state.rs`'s `AttitudeVariance::in_body` and `Covariance::set_attitude_accel_bias_block` |
+| (5)–(8) | static initialization | `init.rs` | `StaticWindow::push` and `measured`, `level_from_accel`, `heading_from_mag`, `nominal_state`, `classify`, `attitude_sigmas`, `initial_covariance`, with `state.rs`'s `AttitudeVariance::in_body` and `Covariance::set_attitude_accel_bias_block` |
 | (8′) | what a coarse window supports | `init.rs` | `coarse_sigmas`, `window_drift`, `heading_sensitivity` — `tan δ` shared with (36′) |
-| (5′) `ā_n` | in-motion levelling | `init.rs` | `inertial_acceleration`; the correction itself is unbuilt — #59 |
-| (30) `α₀` | barometric reference and its variance | `init.rs` | `baro_reference` |
+| (5′) `ā_n` | in-motion levelling | `init.rs` | `Velocities::inertial_acceleration`; the correction itself is unbuilt — #59 |
+| (30) `α₀` | barometric reference and its variance | `init.rs` | `Scatter::reference`, through `StaticWindow::baro_reference` |
 | (9)–(11) | bias correction, gravity | `propagate.rs` | `ImuSample`, `corrected_imu` |
 | (12)–(15) | nominal propagation | `propagate.rs` | `propagate_nominal` |
 | (16)–(19) | error dynamics | `propagate.rs` | carried as the derivation on `transition_matrix`; (20) is what the filter computes |

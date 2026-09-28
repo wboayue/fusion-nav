@@ -31,14 +31,6 @@ use fusion_nav::prelude::*;
 
 const IMU_HZ: u32 = 400;
 
-/// The window is collected at 50 Hz rather than the IMU's 400: a `StaticSample` is 80 bytes,
-/// so the default 2 s `Initialization::min_duration` is 64 KB at full rate, more RAM than a
-/// Cortex-M0 has, and 8 KB here. Each window sample sums eight IMU samples' increments, as an
-/// integrating driver would, so the window still spans the 2 s it observed. A mean over 100
-/// samples of a still vehicle is not what limits the alignment.
-const WINDOW_DECIMATION: u32 = 8;
-const WINDOW: usize = (2 * IMU_HZ / WINDOW_DECIMATION) as usize;
-
 /// Health is reported once a second: `diagnostics()` is for logging, not the hot path.
 const REPORT_EVERY: u32 = IMU_HZ;
 
@@ -149,47 +141,38 @@ fn run(board: &mut impl Board) -> ! {
     }
 }
 
-/// Collect a still window and initialize from it, until initialization succeeds. The filter's
-/// clock starts at the last sample's time, which the first step is measured from.
+/// Collect a still window at the IMU's rate and initialize from it. The window keeps what the
+/// samples reduce to rather than the samples, so its size does not depend on the rate. The
+/// filter's clock starts at the last sample's time, which the first step is measured from.
 fn align(filter: &mut Eskf, board: &mut impl Board) {
-    loop {
-        let mut window = [StaticSample::default(); WINDOW];
-        let (mut baro, mut mag) = (None, None);
-        let mut filled = 0;
-        let mut summed: Option<ImuSample> = None;
-        let mut seen: u32 = 0;
-        while filled < WINDOW {
-            // A slower sensor's last reading is held across the samples it spans; the window
-            // counts distinct readings, so holding it claims nothing.
-            baro = board.baro().map(|(_, altitude)| altitude).or(baro);
-            mag = board.mag().map(|(_, field)| field).or(mag);
-            let Some(imu) = board.imu() else {
-                continue;
-            };
-            let imu = summed.map_or(imu, |sum| sum.accumulate(imu));
-            seen = seen.wrapping_add(1);
-            if seen.is_multiple_of(WINDOW_DECIMATION) {
-                window[filled] = StaticSample {
-                    imu,
-                    baro,
-                    mag,
-                    velocity: None,
-                };
-                filled += 1;
-                summed = None;
-            } else {
-                summed = Some(imu);
-            }
+    let mut window = StaticWindow::new();
+    let (mut baro, mut mag) = (None, None);
+    while !window.is_long_enough(&filter.config().init) {
+        // A slower sensor's last reading is held across the samples it spans; the window
+        // counts distinct readings, so holding it claims nothing.
+        baro = board.baro().map(|(_, altitude)| altitude).or(baro);
+        mag = board.mag().map(|(_, field)| field).or(mag);
+        let Some(imu) = board.imu() else {
+            continue;
+        };
+        let sample = StaticSample {
+            imu,
+            baro,
+            mag,
+            velocity: None,
+        };
+        // A sample the window refuses leaves it as it was, so it is dropped and the window
+        // goes on without it.
+        if let Err(error) = window.push(sample) {
+            log!(board, "window sample refused: {}", error);
         }
-        match filter.initialize(&window) {
-            // A short or moving window still starts the filter, coarse: `Status::Aligning`
-            // says so until the attitude converges, and the log says why.
-            Ok(alignment) => {
-                log!(board, "aligned {}", alignment);
-                return;
-            }
-            Err(error) => log!(board, "initialization failed: {}", error),
-        }
+    }
+    // A short or moving window still starts the filter, coarse: `Status::Aligning` says so
+    // until the attitude converges, and the log says why. The window holds a sample, so
+    // `initialize` has nothing to refuse.
+    match filter.initialize(&window) {
+        Ok(alignment) => log!(board, "aligned {}", alignment),
+        Err(error) => log!(board, "initialization failed: {}", error),
     }
 }
 

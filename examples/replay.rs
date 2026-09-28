@@ -190,10 +190,10 @@ use nalgebra::{SVector, UnitQuaternion, Vector3};
 ///
 /// `Initialization::min_duration` is a span of time, so the samples it takes depend on the
 /// log: 2 s is 100 samples at 50 Hz and 800 at 400 Hz. The corpus needs 500 at most, at
-/// 250 Hz; this is sized for the faster IMUs a converter will eventually hand it. A fixed
-/// array rather than a `Vec`, to stay honest about what the filter itself is allowed to
-/// assume — though an embedded caller at 400 Hz would decimate rather than carry 40 KB of
-/// window.
+/// 250 Hz; this is sized for the faster IMUs a converter will eventually hand it. The harness
+/// buffers, where an embedded caller folds samples into a `StaticWindow` as they arrive,
+/// because it slides the window forward until it is still and an accumulator cannot drop its
+/// oldest sample.
 const WINDOW: usize = 1024;
 
 /// Intervals sampled before fixing the IMU rate.
@@ -1152,7 +1152,7 @@ impl Replay {
         let dt = Seconds::from_secs(interval as f32);
         if self.still_since_start && self.filled <= needed {
             // Nothing has slid out yet, so the window is every sample since the log began.
-            let alignment = self.filter.alignment_of(&self.window(0..self.filled, dt))?;
+            let alignment = self.alignment_of(0..self.filled, dt)?;
             if let Some(still) = self.onset_of_motion(alignment)
                 && let Some(previous) = previous
             {
@@ -1171,7 +1171,7 @@ impl Replay {
             return Ok(());
         }
         let window = self.filled - needed..self.filled;
-        let alignment = self.filter.alignment_of(&self.window(window.clone(), dt))?;
+        let alignment = self.alignment_of(window.clone(), dt)?;
         if !self.worth_committing(t, alignment) {
             return Ok(());
         }
@@ -1227,13 +1227,13 @@ impl Replay {
         dt: Seconds,
     ) -> Result<(), Box<dyn Error>> {
         self.window_samples = range.len();
-        let window = self.window(range, dt);
+        let window = self.window(range.clone(), dt)?;
         let alignment = self.filter.initialize(&window)?;
         self.alignment = Some(alignment);
         self.initialized_at = Some(t);
         // The filter's own rule: one magnetometer sample anywhere in the window observes
         // heading, and none at all leaves yaw a prior until a heading is fused.
-        self.mag_at_init = window.iter().any(|s| s.mag.is_some());
+        self.mag_at_init = self.window[range].iter().any(|held| held.mag.is_some());
         self.alpha0_from_window = self.filter.baro_reference().is_some();
         let state = self.filter.state();
         self.note_alignment(t, self.filter.is_aligned(), state.validity);
@@ -1262,14 +1262,28 @@ impl Replay {
         }
     }
 
-    /// `self.window[range]` as the filter takes it, every sample standing for `dt`: the
-    /// interval the rate estimator fixed rather than each row's own step, which on a burst
-    /// log is zero as often as not.
-    fn window(&self, range: core::ops::Range<usize>, dt: Seconds) -> Vec<StaticSample> {
-        self.window[range]
-            .iter()
-            .map(|held| held.sample(dt))
-            .collect()
+    /// `self.window[range]` as the filter takes it, every sample standing for `dt`.
+    ///
+    /// `dt` is the interval the rate estimator fixed rather than each row's own step, which
+    /// on a burst log is zero as often as not. The harness slides a buffered window, which a
+    /// `StaticWindow` cannot do, so each candidate is folded in anew.
+    fn window(
+        &self,
+        range: core::ops::Range<usize>,
+        dt: Seconds,
+    ) -> Result<StaticWindow, SampleRefusal> {
+        let mut window = StaticWindow::new();
+        window.try_extend(self.window[range].iter().map(|held| held.sample(dt)))?;
+        Ok(window)
+    }
+
+    /// What the filter would make of `self.window[range]`.
+    fn alignment_of(
+        &self,
+        range: core::ops::Range<usize>,
+        dt: Seconds,
+    ) -> Result<Alignment, InitError> {
+        self.filter.alignment_of(&self.window(range, dt)?)
     }
 
     /// Append a sample, dropping the oldest once the window is full.
