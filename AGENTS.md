@@ -75,7 +75,23 @@ a reader who has never computed a NEES. Every number and table comes through a p
 `validation/src/`, and every figure through `replay_report.py --figures`. `tools/validation.sh`
 regenerates them from the gates it runs, and `--check` re-derives them. The pages state the
 losses: `correlated` (#51) is overconfident and `7ce66f0d` levels wrong (#59). Order: #47, which needs the *API frozen* milestone closed or
-each open issue deferred in writing (#50 is the last open one); #41 needs a board.
+each open issue deferred in writing (#174 is the last open one); #41 needs a board.
+#50 landed (#178): `StaticWindow::noise(&init)` reports the white noise a still window measured,
+per axis, as `WindowNoise`: a **floor** under `Config::imu` and a barometer's `R`, never applied,
+and asked of the window so a `Config` can be derived before any filter exists. The IMU densities
+are equation (8″), the weighted scatter of increments over 50 ms blocks (`WindowNoise::BLOCK`),
+because real still windows are not white (lag-one −0.98 to +0.96 on the window rows) and one
+sample's scatter misread the density 6× high to 2.9× low; a lag-one `(1+ρ)/(1−ρ)` correction
+missed by up to 3.3×. The block length is the figure's real uncertainty, up to 2.3× between 50 and
+125 ms, against ±11 % from 40 blocks. `WindowNoise::MIN_READINGS` (9) gates each sensor; `α₀`
+keeps two, because (30′) refines it and holding it to nine left the corpus no real short still
+start with its own reference. The floor is a floor on the corpus in both directions it could fail:
+`ImuNoise::default` sits 9 to 180× above the gyroscope's and 6 to 230× above the accelerometer's,
+and fusing the barometer's as `R` took `nis_baro` to 1.54 to 34.56 on five of six real logs.
+`noise_gyro=`, `noise_accel=`, `noise_baro=` are pinned on all thirteen logs and bounded in
+`data/scenarios.txt` about the simulator's injected densities, the one two-sided truth bound
+there. `a299e722`'s rows average 2.5 ms while standing for 20 ms, so its figures read about √8
+high and are left out of the quoted ranges until #177 carries the converter's integral intervals.
 #81, #125, #25 and #62 landed together (#170), the sensor boundary. The edge converts both ways
 (`as_flu_to_enu`, `to_enu`, `to_flu`). The filter reads PX4's WMM table (`src/magnetic.rs`, the
 `magnetic-model` feature, 2.5 KB) where it places its origin unless the caller set a declination,
@@ -142,8 +158,8 @@ on six logs, each noted; `2c42096b` 888 → 48, since its mean interval is 1.54 
 reaches the estimate through the recovery guards and the course's `NoReference`, which GOALS'
 derived-configuration row records. `diagnostics()` and `sources()` return references
 (`Eskf::state`'s frame 688 → 56 bytes on `thumbv6m`).
-#155 landed (#166): the initialization window is folded in as it arrives. `StaticWindow` (744 B
-on `thumbv6m`, where a buffered 2 s window at 400 Hz is 64 KB of 80-byte `StaticSample`s) takes
+#155 landed (#166): the initialization window is folded in as it arrives. `StaticWindow` (936 B
+on `thumbv6m` since #50's sums, where a buffered 2 s window at 400 Hz is 64 KB of 80-byte `StaticSample`s) takes
 `push`, `try_extend` or `TryFrom<&[StaticSample]>`, refuses a sample with `SampleRefusal` and
 leaves the window as it was, and answers `is_long_enough` and `is_at_rest` per sample;
 `initialize` and `alignment_of` take it and can refuse only an empty one. `examples/embedded.rs`
@@ -831,7 +847,7 @@ the declination table, and CI builds and tests without it too.
   `InitError`) and pure functions (`level_from_accel`, `heading_from_mag`, `nominal_state`,
   `classify`, `attitude_sigmas`, `initial_covariance`). `StaticWindow` folds each sample in as
   it is pushed, so a caller never buffers the window; its doc comment owns how each statistic
-  is taken in one pass. The `initialize*` methods on `Eskf` call these and commit the result.
+  is taken in one pass, and `StaticWindow::noise` reports the sensors' noise floor, (8″). The `initialize*` methods on `Eskf` call these and commit the result.
   Tests for the pure functions live here; tests of what the filter does with them stay in
   `eskf.rs`.
 - `src/propagate.rs` — `ImuSample` and equations (9)–(22), in increments; `error_dynamics`, the
@@ -1151,13 +1167,14 @@ altitudes to an invented origin. `cd7e0001` is the corpus log that covers the se
 while it started coarse); the LPE log
 (`7592c9b2…`) yields no barometer rows at all.
 
-Still open: the same window could *measure* the barometer and IMU noise and hand back a starting
-`R`/`Q` instead of making the caller guess, as another output of `initialize`. That sits under
-GOALS.md differentiator 7, "Configuration derived, not demanded" — do not ask for a value the
-system could measure. Note its boundary before acting on it: derived at a defined moment and
-reported, never silently retuned in flight, which would cost the determinism claim — a recovery
-is an adoption on a schedule `Config::recovery` fixes in advance, not a retuning. Anything the static window cannot honestly measure goes
-to an offline tool that prints a `Config`, not into the filter.
+The same window also *measures* the barometer and IMU noise, `StaticWindow::noise` (#50, equation
+(8″)), under GOALS.md differentiator 7, "Configuration derived, not demanded". What it hands back
+is a floor, not a starting `R`/`Q`: a vehicle on the ground is quieter than one in flight, and the
+corpus measured both directions (`WindowNoise`'s doc). Keep its boundary: derived at a defined
+moment and reported, never silently retuned in flight, which would cost the determinism claim; a
+recovery is an adoption on a schedule `Config::recovery` fixes in advance, not a retuning.
+Anything the window cannot honestly measure, the noise to configure above the floor included,
+goes to an offline tool that prints a `Config` (#51), not into the filter.
 
 ### Documentation is the specification
 
