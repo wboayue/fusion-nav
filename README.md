@@ -260,12 +260,17 @@ A quaternion carries no frames, so `Attitude` has no `From<UnitQuaternion>` and 
 names the convention it takes. Nothing else in initialization is like this: a seed is the one input
 with no residual to expose a wrong one.
 
-| the source publishes | constructor |
-| -------------------- | ----------- |
-| body FRD to NED — PX4 `vehicle_attitude.q`, ArduPilot `get_quat_body_to_ned`, `fusion-ahrs` on `Convention::Ned` | `Attitude::body_to_ned(q)`, which converts nothing |
-| NED to body FRD, the stored inverse | `Attitude::ned_to_body(q)` |
-| body FLU to ENU — ROS REP 103 | `Attitude::flu_to_enu(q)` |
-| body FLU to NWU — Madgwick-family, `fusion-ahrs` on its default | `Attitude::flu_to_nwu(q)` |
+| the convention | in | out |
+| -------------- | -- | --- |
+| body FRD to NED — PX4 `vehicle_attitude.q`, ArduPilot `get_quat_body_to_ned`, `fusion-ahrs` on `Convention::Ned` | `Attitude::body_to_ned(q)`, which converts nothing | `attitude.quaternion()` |
+| NED to body FRD, the stored inverse | `Attitude::ned_to_body(q)` | `attitude.as_ned_to_body()` |
+| body FLU to ENU — ROS REP 103 | `Attitude::flu_to_enu(q)` | `attitude.as_flu_to_enu()` |
+| body FLU to NWU — Madgwick-family, `fusion-ahrs` on its default | `Attitude::flu_to_nwu(q)` | `attitude.as_flu_to_nwu()` |
+
+The edge is symmetric: whatever enters in a convention can leave in it. Vectors go the same way,
+`Position::enu(..).to_ned()` in and `position.to_enu()` out, `AngularRate::flu(..)` in and
+`rate.to_flu()` out, and `AttitudeVariance::to_enu` orders the attitude variances for an ENU
+covariance.
 
 Where both frames differ the conversion is two-sided, `q_ned←frd = r_nav ⊗ q ⊗ r_body⁻¹`; rotating
 only the navigation frame reports the same heading with the vehicle upside down, which a level

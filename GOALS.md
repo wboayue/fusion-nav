@@ -117,6 +117,13 @@ explicitly and names both frames while doing it: `Position::enu(..).to_ned()`,
 Madgwick-family one. A quaternion takes no `From` impl at all, since `.into()` would claim
 body-to-NED for whatever arrived.
 
+The edge is symmetric. Every conversion in has its inverse out, named with the same two frames:
+`attitude.as_flu_to_enu()` for a ROS publisher, `Position::to_enu`, `AngularRate::to_flu`. The
+filter's outputs are NED by definition, and re-expressing them could have been left to the
+application, but an application that seeded through `flu_to_enu` publishes back to ROS, and without
+the inverse it writes `r_nav⁻¹ ⊗ q ⊗ r_body` by hand: the two-sided conversion the constructors exist
+to stop anyone writing, on an output where no residual will ever expose a half-applied one.
+
 ### 3. Readable mathematics
 
 PX4's fusion equations are SymForce-generated and effectively unauditable by hand.

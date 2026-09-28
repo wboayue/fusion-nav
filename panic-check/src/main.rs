@@ -195,6 +195,7 @@ fn drive() {
     let _ = black_box(filter.is_aligned());
     let _ = black_box(filter.validity());
     let _ = black_box(filter.attitude_variance());
+    let _ = black_box(filter.attitude_variance().to_enu());
     let _ = black_box(filter.predicted_validity());
 
     // The tangent plane is reachable through `fuse_gnss_geodetic` above, but it is also a
@@ -249,6 +250,9 @@ fn surface(state: State, diagnostics: Diagnostics, covariance: &Covariance) {
     )));
     let _ = black_box(Attitude::flu_to_enu(black_box(state.attitude.quaternion())));
     let _ = black_box(Attitude::flu_to_nwu(black_box(state.attitude.quaternion())));
+    let _ = black_box(black_box(state.attitude).as_ned_to_body());
+    let _ = black_box(black_box(state.attitude).as_flu_to_enu());
+    let _ = black_box(black_box(state.attitude).as_flu_to_nwu());
 
     let _ = black_box(state.position.x());
     let _ = black_box(state.position.y());
@@ -257,6 +261,8 @@ fn surface(state: State, diagnostics: Diagnostics, covariance: &Covariance) {
     let _ = black_box(state.gyro_bias.to_array());
     let _ = black_box(Position::<Ned>::zero());
     let _ = black_box(Position::enu(black_box(1.0), black_box(2.0), black_box(3.0)).to_ned());
+    let _ = black_box(black_box(state.position).to_enu());
+    let _ = black_box(black_box(state.gyro_bias).to_flu());
     let _ = black_box(AngularRate::flu(
         black_box(0.1),
         black_box(0.2),
