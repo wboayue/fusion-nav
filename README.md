@@ -229,7 +229,8 @@ The window is a `StaticWindow`, which keeps what the samples reduce to rather th
 so it costs under a kilobyte at any IMU rate; a slice of buffered samples converts with
 `StaticWindow::try_from`. `alignment_of(window)` reports what `initialize` would make of a window
 without touching the filter, for an application that would rather wait for stillness than start
-coarsely: a window only grows, so one that moved is started over.
+coarsely. A window only grows, so one that moved is started over, and `window.is_at_rest(&init)`
+says after every sample whether it has; `try_extend` folds in any iterator of samples.
 
 A **seed** is checked where a window is not, because it crosses a boundary the filter does not
 control — another estimator, or storage that may be stale. `initialize_from` returns

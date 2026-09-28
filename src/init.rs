@@ -107,22 +107,26 @@ impl StaticSample {
 /// #     ..StaticSample::default()
 /// # };
 /// let mut filter = Eskf::new(Config::default());
+/// let init = filter.config().init;
 /// let mut window = StaticWindow::new();
 /// let mut i = 0;
-/// while window.span() < filter.config().init.min_duration {
+/// while window.span() < init.min_duration {
 ///     i += 1;
 ///     window.push(sample(i))?;
+///     // Waiting for stillness: a vehicle that moved starts the wait over.
+///     if !window.is_at_rest(&init) {
+///         window = StaticWindow::new();
+///     }
 /// }
 /// assert_eq!(filter.initialize(&window)?, Alignment::Static);
 /// # Ok::<(), InitError>(())
 /// ```
 ///
 /// A window only grows, so an application waiting for stillness restarts it rather than
-/// sliding it: once [`alignment_of`](crate::Eskf::alignment_of) reports
-/// [`Coarse::NotStationary`], the peak that caused it stays in the window, and
-/// `window = StaticWindow::new()` is the way on. A slice of buffered samples can slide and
-/// keep the still tail, so it can align a little sooner, at the cost of the buffer; build
-/// one with [`TryFrom`].
+/// sliding it: once [`is_at_rest`](Self::is_at_rest) says no, the peak that caused it stays
+/// in the window. A slice of buffered samples can slide and keep the still tail, so it can
+/// align a little sooner, at the cost of the buffer; [`try_extend`](Self::try_extend) or
+/// [`TryFrom`] builds a window from one.
 ///
 /// Each [`push`](Self::push) runs 22 `f64` additions, 7 multiplications and 11 widenings
 /// (counted in its `thumbv6m` disassembly, less the merge a doubling adds), which on a core with no
@@ -224,6 +228,38 @@ impl StaticWindow {
         Ok(())
     }
 
+    /// Push every sample `samples` yields, in order, stopping at the first one refused.
+    ///
+    /// The samples before it stay in the window, and the refused one and those after it are
+    /// not taken: a buffered window is one start, and a sample it cannot use says the buffer
+    /// is not the window the caller thought it was.
+    ///
+    /// # Errors
+    ///
+    /// As [`push`](Self::push), for the first sample refused.
+    pub fn try_extend(
+        &mut self,
+        samples: impl IntoIterator<Item = StaticSample>,
+    ) -> Result<(), InitError> {
+        samples.into_iter().try_for_each(|sample| self.push(sample))
+    }
+
+    /// Whether the window's peak motion so far is within the tolerances of a still one.
+    ///
+    /// The test [`Alignment::Static`] and the barometric reference rest on, asked of the
+    /// peaks alone, so it is cheap after every sample where
+    /// [`alignment_of`](crate::Eskf::alignment_of) measures the whole window. Peaks do not
+    /// fall, so once this is false it stays false: the window to wait on is a new one. An
+    /// empty window has not moved.
+    #[must_use]
+    pub fn is_at_rest(&self, init: &Initialization) -> bool {
+        at_rest(
+            RadiansPerSecond::from_rad_per_s(self.peak_gyro),
+            MetersPerSecond2::from_m_per_s2(self.peak_deviation),
+            init,
+        )
+    }
+
     /// The time the window's samples integrated: the sum of their angle intervals, and what
     /// [`Initialization::min_duration`] is checked against.
     ///
@@ -276,17 +312,15 @@ impl StaticWindow {
     }
 }
 
-/// A window from samples already buffered: each is [pushed](StaticWindow::push) in order,
-/// and the first refused refuses the window. An empty slice is an empty window, which
+/// A window from samples already buffered, through [`StaticWindow::try_extend`]: the first
+/// refused refuses the window. An empty slice is an empty window, which
 /// [`Eskf::initialize`](crate::Eskf::initialize) refuses as [`InitError::NoSamples`].
 impl TryFrom<&[StaticSample]> for StaticWindow {
     type Error = InitError;
 
     fn try_from(samples: &[StaticSample]) -> Result<Self, InitError> {
         let mut window = Self::new();
-        for sample in samples {
-            window.push(*sample)?;
-        }
+        window.try_extend(samples.iter().copied())?;
         Ok(window)
     }
 }
@@ -861,7 +895,7 @@ impl core::error::Error for InitError {}
 /// window that had not yet reached `min_duration` could not tell from the outcome that it
 /// was still — which is what deciding to initialize at the onset of motion asks.
 pub(crate) fn classify(measured: &Measured, init: &Initialization) -> Alignment {
-    if !at_rest(measured, init) {
+    if !at_rest(measured.peak_gyro, measured.peak_deviation, init) {
         return Alignment::Coarse(Coarse::NotStationary {
             peak_gyro: measured.peak_gyro,
             peak_accel_deviation: measured.peak_deviation,
@@ -1288,8 +1322,15 @@ const UNKNOWN_HEADING_SIGMA: Radians = Radians::from_radians(1.813_799_4);
 /// whether position and velocity were established at all — all mean *the vehicle was on
 /// the ground*, and a deck accelerating under it is not that however precisely the
 /// acceleration is known.
-pub(crate) fn at_rest(measured: &Measured, init: &Initialization) -> bool {
-    measured.peak_gyro <= init.max_gyro_rate && measured.peak_deviation <= init.max_accel_deviation
+///
+/// It takes the peaks rather than a [`Measured`] so that [`StaticWindow::is_at_rest`] can ask
+/// it after every sample without measuring the window.
+pub(crate) fn at_rest(
+    peak_gyro: RadiansPerSecond,
+    peak_deviation: MetersPerSecond2,
+    init: &Initialization,
+) -> bool {
+    peak_gyro <= init.max_gyro_rate && peak_deviation <= init.max_accel_deviation
 }
 
 #[cfg(test)]
@@ -1395,7 +1436,8 @@ pub(crate) mod tests {
     fn sigmas(window: &[StaticSample], dt: Seconds) -> (f32, f32) {
         let init = Initialization::default();
         let measured = measure(&spaced(window, dt)).expect("a usable window");
-        let state = nominal_state(&measured, Radians::ZERO, at_rest(&measured, &init));
+        let settled = at_rest(measured.peak_gyro, measured.peak_deviation, &init);
+        let state = nominal_state(&measured, Radians::ZERO, settled);
         let (tilt, yaw) = attitude_sigmas(
             &init,
             classify(&measured, &init),
@@ -1891,7 +1933,10 @@ pub(crate) mod tests {
         let dt = Seconds::from_secs(0.2);
         let init = Initialization::default();
         let measured = measure(&spaced(&window, dt)).expect("a usable window");
-        assert!(at_rest(&measured, &init), "0.05 rad/s is inside 0.262");
+        assert!(
+            at_rest(measured.peak_gyro, measured.peak_deviation, &init),
+            "0.05 rad/s is inside 0.262"
+        );
         let bias = nominal_state(&measured, Radians::ZERO, true)
             .gyro_bias
             .vector();
@@ -2233,6 +2278,41 @@ pub(crate) mod tests {
     #[test]
     fn a_window_of_one_has_no_halves() {
         assert_eq!(halves_of(&[1.0]), None);
+    }
+
+    #[test]
+    fn a_window_is_at_rest_until_it_moves_and_never_again_after() {
+        let init = Initialization::default();
+        let mut samples = spaced(&[still(); 6], DT);
+        // Over the 0.262 rad/s default.
+        samples[2].imu = samples[2].imu.with_gyro(AngularRate::body(0.0, 0.4, 0.0));
+        let mut window = StaticWindow::new();
+        assert!(window.is_at_rest(&init), "an empty window has not moved");
+        for (index, sample) in samples.into_iter().enumerate() {
+            assert_eq!(window.push(sample), Ok(()));
+            assert_eq!(window.is_at_rest(&init), index < 2, "after sample {index}");
+            // The same verdict `alignment_of` reaches by measuring the whole window.
+            let moved = matches!(
+                classify(&window.measured().expect("a sample"), &init),
+                Alignment::Coarse(Coarse::NotStationary { .. })
+            );
+            assert_eq!(moved, !window.is_at_rest(&init), "after sample {index}");
+        }
+    }
+
+    #[test]
+    fn extending_a_window_stops_at_the_first_sample_refused() {
+        let mut samples = spaced(&[still(); 5], DT);
+        samples[2].imu = samples[2]
+            .imu
+            .with_accel(Acceleration::body(f32::NAN, 0.0, 0.0));
+        let mut window = StaticWindow::new();
+        assert_eq!(
+            window.try_extend(samples.clone()),
+            Err(InitError::NotFinite)
+        );
+        // The two before it are in, and the two after it, usable as they are, are not.
+        assert_eq!(window.measured(), measure(&samples[..2]));
     }
 
     #[test]

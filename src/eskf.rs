@@ -280,7 +280,11 @@ impl Eskf {
         // (7), the barometric reference of (30), and what this start establishes.
         // Measured from the window rather than read off `alignment`, because a window too
         // short to align an attitude from can still be a window of a parked vehicle.
-        let at_rest = init::at_rest(&measured, &self.config.init);
+        let at_rest = init::at_rest(
+            measured.peak_gyro,
+            measured.peak_deviation,
+            &self.config.init,
+        );
         let state = init::nominal_state(&measured, self.declination, at_rest);
         self.apply_alignment(alignment, state, &measured, at_rest, measured.end);
         if at_rest {
@@ -353,7 +357,11 @@ impl Eskf {
         // where the sample says the vehicle was on the ground, and one reading of a
         // stationary gyroscope is a noisier bias than a window's average but a better
         // one than zero.
-        let at_rest = init::at_rest(&measured, &self.config.init);
+        let at_rest = init::at_rest(
+            measured.peak_gyro,
+            measured.peak_deviation,
+            &self.config.init,
+        );
         let state = init::nominal_state(&measured, self.declination, at_rest);
         // That reading establishes nothing, which is why it is not passed on as one. A
         // window shows rest by holding still over a span of time and this one spans none:

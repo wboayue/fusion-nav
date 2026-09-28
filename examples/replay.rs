@@ -1227,15 +1227,13 @@ impl Replay {
         dt: Seconds,
     ) -> Result<(), Box<dyn Error>> {
         self.window_samples = range.len();
-        let window = self.window(range, dt);
-        let alignment = self
-            .filter
-            .initialize(&StaticWindow::try_from(window.as_slice())?)?;
+        let window = self.window(range.clone(), dt)?;
+        let alignment = self.filter.initialize(&window)?;
         self.alignment = Some(alignment);
         self.initialized_at = Some(t);
         // The filter's own rule: one magnetometer sample anywhere in the window observes
         // heading, and none at all leaves yaw a prior until a heading is fused.
-        self.mag_at_init = window.iter().any(|s| s.mag.is_some());
+        self.mag_at_init = self.window[range].iter().any(|held| held.mag.is_some());
         self.alpha0_from_window = self.filter.baro_reference().is_some();
         let state = self.filter.state();
         self.note_alignment(t, self.filter.is_aligned(), state.validity);
@@ -1267,22 +1265,25 @@ impl Replay {
     /// `self.window[range]` as the filter takes it, every sample standing for `dt`: the
     /// interval the rate estimator fixed rather than each row's own step, which on a burst
     /// log is zero as often as not.
-    fn window(&self, range: core::ops::Range<usize>, dt: Seconds) -> Vec<StaticSample> {
-        self.window[range]
-            .iter()
-            .map(|held| held.sample(dt))
-            .collect()
+    /// `self.window[range]` as the filter reads it. The harness slides a buffered window,
+    /// which a `StaticWindow` cannot do, so each candidate is folded in anew.
+    fn window(
+        &self,
+        range: core::ops::Range<usize>,
+        dt: Seconds,
+    ) -> Result<StaticWindow, InitError> {
+        let mut window = StaticWindow::new();
+        window.try_extend(self.window[range].iter().map(|held| held.sample(dt)))?;
+        Ok(window)
     }
 
-    /// What the filter would make of `self.window[range]`. The harness slides a buffered
-    /// window, which a `StaticWindow` cannot do, so each candidate is folded in anew.
+    /// What the filter would make of `self.window[range]`.
     fn alignment_of(
         &self,
         range: core::ops::Range<usize>,
         dt: Seconds,
     ) -> Result<Alignment, InitError> {
-        let window = StaticWindow::try_from(self.window(range, dt).as_slice())?;
-        self.filter.alignment_of(&window)
+        self.filter.alignment_of(&self.window(range, dt)?)
     }
 
     /// Append a sample, dropping the oldest once the window is full.
