@@ -68,15 +68,20 @@ caused it to drift. The error-state form keeps attitude as a quaternion and esti
 
 ```rust,no_run
 use fusion_nav::prelude::*;
-# let (static_window, imu) = ([StaticSample::default(); 800], ImuSample::default());
+# let (next_still_sample, imu) = (StaticSample::default, ImuSample::default());
 # let (lat_e7, lon_e7, height_mm, h_acc_mm, v_acc_mm) = (473_977_420, 85_455_940, 488_000, 1_500, 3_000);
 # let arrived = Timestamp::from_micros(12_500_000);
 
 let mut filter = Eskf::new(Config::default());
 
-// Initialize from a window of samples taken while the vehicle sits still. A short or
-// moving window still starts the filter, as `Alignment::Coarse`.
-if let Alignment::Coarse(_) = filter.initialize(&static_window)? {
+// Initialize from samples taken while the vehicle sits still, folded in as they arrive
+// rather than buffered. A short or moving window still starts the filter, as
+// `Alignment::Coarse`.
+let mut window = StaticWindow::new();
+while window.span() < filter.config().init.min_duration {
+    window.push(next_still_sample())?;
+}
+if let Alignment::Coarse(_) = filter.initialize(&window)? {
     /* running, but reports `Status::Aligning` until attitude converges */
 }
 
@@ -220,8 +225,11 @@ its *averaged* specific force is from gravity, and a real `ā_n` is part of what
 | `initialize_coarse(imu)` | no window at all — one sample of gravity, and the filter runs |
 | `initialize_from(state, covariance, time)` | an estimate the application already holds: a companion AHRS such as `fusion-ahrs`, the last flight's saved state. [Seeding an attitude](#seeding-an-attitude) is where its convention gets named |
 
-`alignment_of(window)` reports what `initialize` would make of a window without touching the
-filter, for an application that would rather wait for stillness than start coarsely.
+The window is a `StaticWindow`, which keeps what the samples reduce to rather than the samples,
+so it costs the same 800 bytes at any IMU rate; a slice of buffered samples converts with
+`StaticWindow::try_from`. `alignment_of(window)` reports what `initialize` would make of a window
+without touching the filter, for an application that would rather wait for stillness than start
+coarsely: a window only grows, so one that moved is started over.
 
 A **seed** is checked where a window is not, because it crosses a boundary the filter does not
 control — another estimator, or storage that may be stale. `initialize_from` returns

@@ -5,7 +5,7 @@ use crate::frames::{Body, Ned};
 use crate::geodetic::{Geodetic, LocalOrigin};
 use crate::health::{Diagnostics, Fusion, GnssFusion, Propagation, SourceHealth, Status, Validity};
 use crate::history::History;
-use crate::init::{self, Alignment, Coarse, InitError, Measured, StaticSample, baro_reference};
+use crate::init::{self, Alignment, Coarse, InitError, Measured, StaticSample, StaticWindow};
 use crate::math::{below_floor, correlation_inflation, exp_quat, floor_diagonal, floor_offset};
 use crate::observation::{baro, gnss, heading, mag};
 use crate::propagate::{self, ImuSample, Propagated, project, propagate};
@@ -55,11 +55,14 @@ use nalgebra::Vector3;
 /// // Initialization reports what it achieved rather than refusing what it dislikes. A
 /// // window that is short or moving gives `Alignment::Coarse`, and the filter runs and
 /// // says `Status::Aligning` until attitude converges. 800 samples at 400 Hz is the 2 s
-/// // `Initialization::min_duration` wants.
-/// let window: [StaticSample; 800] = core::array::from_fn(|i| StaticSample {
-///     imu: still(i as u64 + 1),
-///     ..StaticSample::default()
-/// });
+/// // `Initialization::min_duration` wants, folded in one at a time rather than buffered.
+/// let mut window = StaticWindow::new();
+/// for sample in 1..=800 {
+///     window.push(StaticSample {
+///         imu: still(sample),
+///         ..StaticSample::default()
+///     })?;
+/// }
 /// assert_eq!(filter.initialize(&window)?, Alignment::Static);
 ///
 /// // Nothing in that window carried a barometer, so it fixes no reference altitude, and
@@ -268,12 +271,10 @@ impl Eskf {
     ///
     /// # Errors
     ///
-    /// [`InitError::NoSamples`] for an empty window, [`InitError::NotFinite`] if a sample
-    /// carries a value that is not a number, [`InitError::InvalidInterval`] for an
-    /// integration interval under a microsecond, and [`InitError::InvalidStep`] for a sample
-    /// timed no later than the one before it.
-    pub fn initialize(&mut self, window: &[StaticSample]) -> Result<Alignment, InitError> {
-        let measured = init::measure(window)?;
+    /// [`InitError::NoSamples`] for an empty window. A sample nothing can be made of is
+    /// refused as it is [pushed](StaticWindow::push), so a window holds none.
+    pub fn initialize(&mut self, window: &StaticWindow) -> Result<Alignment, InitError> {
+        let measured = window.measured()?;
         let alignment = init::classify(&measured, &self.config.init);
         // One answer to "was the vehicle on the ground", read by the gyroscope bias of
         // (7), the barometric reference of (30), and what this start establishes.
@@ -281,14 +282,11 @@ impl Eskf {
         // short to align an attitude from can still be a window of a parked vehicle.
         let at_rest = init::at_rest(&measured, &self.config.init);
         let state = init::nominal_state(&measured, self.declination, at_rest);
-        // `measure` refuses an empty window, so there is a last sample.
-        let time = window
-            .last()
-            .map_or(Timestamp::ZERO, |sample| sample.imu.time);
-        self.apply_alignment(alignment, state, &measured, at_rest, time);
+        self.apply_alignment(alignment, state, &measured, at_rest, measured.end);
         if at_rest {
             self.establish_reference(
-                baro_reference(window)
+                window
+                    .baro_reference()
                     .map(|(reference, variance)| (reference, Offset::independent(variance))),
             );
         }
@@ -300,15 +298,16 @@ impl Eskf {
     /// the filter.
     ///
     /// For the application that would rather wait for stillness than start coarsely:
-    /// slide the window forward until this reports [`Alignment::Static`], then commit.
+    /// restart the window, or slide a buffered one forward, until this reports
+    /// [`Alignment::Static`], then commit; [`StaticWindow`] says which suits which.
     /// The filter cannot do that waiting itself — it does not know whether the vehicle is
     /// about to launch or has been sitting on the bench for an hour.
     ///
     /// # Errors
     ///
     /// As [`initialize`](Self::initialize).
-    pub fn alignment_of(&self, window: &[StaticSample]) -> Result<Alignment, InitError> {
-        Ok(init::classify(&init::measure(window)?, &self.config.init))
+    pub fn alignment_of(&self, window: &StaticWindow) -> Result<Alignment, InitError> {
+        Ok(init::classify(&window.measured()?, &self.config.init))
     }
 
     /// Start from a single IMU sample, with no window at all.
@@ -334,14 +333,15 @@ impl Eskf {
     pub fn initialize_coarse(&mut self, imu: ImuSample) -> Result<Alignment, InitError> {
         // Treated as a window of one, so the same finiteness, motion and averaging
         // measures apply — an average of one sample being that sample.
-        let window = [StaticSample {
+        let mut window = StaticWindow::new();
+        window.push(StaticSample {
             imu,
             ..StaticSample::default()
-        }];
+        })?;
         // A window of one: its own average, with no rotation to smear it and no second
         // velocity to difference against — a caller with GNSS in hand has a window, not
         // this entry point.
-        let measured = init::measure(&window)?;
+        let measured = window.measured()?;
         let alignment = Alignment::Coarse(Coarse::NotStationary {
             peak_gyro: measured.peak_gyro,
             peak_accel_deviation: measured.peak_deviation,
@@ -1737,10 +1737,13 @@ impl Eskf {
     /// # let dt = Seconds::from_secs(0.0025);
     /// # let (level, gravity) = (AngularRate::zero(), Acceleration::body(0.0, 0.0, -GRAVITY));
     /// # let at = |i: u64| Timestamp::from_micros(2_500 * i);
-    /// # let window: [StaticSample; 800] = core::array::from_fn(|i| StaticSample {
-    /// #     imu: ImuSample::from_rates(at(i as u64 + 1), level, gravity, dt),
-    /// #     ..StaticSample::default()
-    /// # });
+    /// # let mut window = StaticWindow::new();
+    /// # for i in 1..=800 {
+    /// #     window.push(StaticSample {
+    /// #         imu: ImuSample::from_rates(at(i), level, gravity, dt),
+    /// #         ..StaticSample::default()
+    /// #     })?;
+    /// # }
     /// # filter.initialize(&window)?;
     /// # let imu = ImuSample::from_rates(at(801), AngularRate::body(0.0, 0.0, 0.5), gravity, dt);
     /// # assert!(filter.predict(imu).is_propagated());
@@ -2358,7 +2361,7 @@ mod tests {
             window: &[StaticSample],
             dt: Seconds,
         ) -> Result<Alignment, InitError> {
-            self.initialize(&spaced(window, dt))
+            self.initialize(&StaticWindow::try_from(spaced(window, dt).as_slice())?)
         }
 
         fn seed(&mut self, state: State, covariance: Covariance) -> Result<Alignment, InitError> {

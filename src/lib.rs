@@ -43,11 +43,14 @@ pub use state::{CovarianceMatrix, STATES};
 /// // relative to, and its scatter is how well: one reading held across the window has
 /// // none, and fixes no reference. Without one the first altitude is spent reading a
 /// // reference from the estimate instead, and tests nothing.
-/// let window: [StaticSample; 800] = core::array::from_fn(|i| StaticSample {
-///     imu: still(i as u64 + 1),
-///     baro: Some(Altitude::from_meters(if i % 2 == 0 { 112.25 } else { 111.75 })),
-///     ..StaticSample::default()
-/// });
+/// let mut window = StaticWindow::new();
+/// for i in 1..=800 {
+///     window.push(StaticSample {
+///         imu: still(i),
+///         baro: Some(Altitude::from_meters(if i % 2 == 1 { 112.25 } else { 111.75 })),
+///         ..StaticSample::default()
+///     })?;
+/// }
 /// filter.initialize(&window)?;
 /// assert_eq!(filter.predict(still(801)), Propagation::Propagated);
 ///
@@ -94,7 +97,7 @@ pub mod prelude {
         Diagnostics, Fusion, GnssFusion, Innovation, Propagation, PropagationHealth, Refusal,
         SourceHealth, Status, Validity,
     };
-    pub use crate::init::{Alignment, Coarse, InitError, StaticSample};
+    pub use crate::init::{Alignment, Coarse, InitError, StaticSample, StaticWindow};
     pub use crate::propagate::ImuSample;
     pub use crate::state::{AttitudeVariance, Covariance, ErrorState, State};
     pub use crate::units::{

@@ -15,7 +15,7 @@ use crate::propagate::ImuSample;
 use crate::state::{AttitudeVariance, Covariance, State};
 use crate::units::{
     Acceleration, Altitude, AngularRate, Attitude, MagField, MetersPerSecond2, Position, Radians,
-    RadiansPerSecond, Seconds, Velocity,
+    RadiansPerSecond, Seconds, Timestamp, Velocity,
 };
 
 /// One sample from the quasi-static initialization window.
@@ -89,12 +89,212 @@ impl StaticSample {
     }
 }
 
-/// What one pass over the initialization window measures: the averages equations (5)–(7)
-/// level from, the peaks [`at_rest`] judges, and the span [`classify`] measures.
+/// The initialization window, accumulated one sample at a time.
+///
+/// [`Eskf::initialize`](crate::Eskf::initialize) needs only what the window reduces to:
+/// sums, peaks, the span, the barometer's scatter and the first and last GNSS velocity. So
+/// the samples are folded in as they arrive rather than buffered. A buffered window at the
+/// default [`Initialization::min_duration`] of 2 s is 800 [`StaticSample`]s at 400 Hz, 64 KB
+/// at 80 bytes each on `thumbv6m`, more RAM than a Cortex-M0 has; this is 800 bytes at any
+/// rate and any length, [`HalfSums`] 528 of them.
+///
+/// ```
+/// # use fusion_nav::prelude::*;
+/// # let dt = Seconds::from_secs(0.0025);
+/// # let gravity = Acceleration::body(0.0, 0.0, -GRAVITY);
+/// # let sample = |i: u64| StaticSample {
+/// #     imu: ImuSample::from_rates(Timestamp::from_micros(2_500 * i), AngularRate::zero(), gravity, dt),
+/// #     ..StaticSample::default()
+/// # };
+/// let mut filter = Eskf::new(Config::default());
+/// let mut window = StaticWindow::new();
+/// let mut i = 0;
+/// while window.span() < filter.config().init.min_duration {
+///     i += 1;
+///     window.push(sample(i))?;
+/// }
+/// assert_eq!(filter.initialize(&window)?, Alignment::Static);
+/// # Ok::<(), InitError>(())
+/// ```
+///
+/// A window only grows, so an application waiting for stillness restarts it rather than
+/// sliding it: once [`alignment_of`](crate::Eskf::alignment_of) reports
+/// [`Coarse::NotStationary`], the peak that caused it stays in the window, and
+/// `window = StaticWindow::new()` is the way on. A slice of buffered samples can slide and
+/// keep the still tail, so it can align a little sooner, at the cost of the buffer; build
+/// one with [`TryFrom`].
+///
+/// Each [`push`](Self::push) does a few dozen `f64` operations, which on a core with no
+/// double-precision unit are library calls, inside the loop that is already reading the
+/// IMU. That is the price of not buffering; it is paid only until the window commits, and
+/// the reasons the sums are `f64` are [`level_variance`]'s and [`Scatter`]'s.
+#[derive(Clone, Debug)]
+pub struct StaticWindow {
+    /// Samples accepted. `u64` so that no window a vehicle could collect overflows it.
+    count: u64,
+    /// `Σ f`, the specific force (5) levels from.
+    force: Vector3<f64>,
+    /// `Σ f fᵀ`, for the window's scatter about `f̄`; see [`level_variance`].
+    outer: Matrix3<f64>,
+    /// `Σ ω`, the angular rate (7) takes as the gyroscope bias.
+    rate: Vector3<f64>,
+    /// `Σ m` over the samples that carry a field, and how many do.
+    field: Vector3<f64>,
+    fields: u64,
+    peak_gyro: f32,
+    peak_deviation: f32,
+    /// The time the samples integrated; see [`span`](Self::span).
+    span: f64,
+    /// The last sample's time: the start of the filter's clock, and what the next sample's
+    /// step is differenced against.
+    end: Option<Timestamp>,
+    halves: HalfSums,
+    velocities: Velocities,
+    baro: Scatter,
+}
+
+impl Default for StaticWindow {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StaticWindow {
+    /// An empty window.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            count: 0,
+            force: Vector3::zeros(),
+            outer: Matrix3::zeros(),
+            rate: Vector3::zeros(),
+            field: Vector3::zeros(),
+            fields: 0,
+            peak_gyro: 0.0,
+            peak_deviation: 0.0,
+            span: 0.0,
+            end: None,
+            halves: HalfSums::new(),
+            velocities: Velocities::default(),
+            baro: Scatter::default(),
+        }
+    }
+
+    /// Add one sample to the window.
+    ///
+    /// Every check initialization makes on raw input is here, so that nothing downstream
+    /// can be handed an unusable interval, a clock that does not run forward, or a value
+    /// that is not a number. A refused sample leaves the window as it was, so the caller
+    /// can drop it and go on, or start over. The clock is checked because it starts at the
+    /// last sample's time: a window timed anywhere but forward would start it somewhere the
+    /// samples do not describe, and the first `predict` would coast the whole flight so far.
+    ///
+    /// # Errors
+    ///
+    /// [`InitError::NotFinite`] if the sample carries a value that is not a number,
+    /// [`InitError::InvalidInterval`] for an integration interval under a microsecond, and
+    /// [`InitError::InvalidStep`] for a sample timed no later than the one before it.
+    pub fn push(&mut self, sample: StaticSample) -> Result<(), InitError> {
+        if !sample.is_finite() {
+            return Err(InitError::NotFinite);
+        }
+        if let Some(interval) = sample.imu.unusable_interval() {
+            return Err(InitError::InvalidInterval { interval });
+        }
+        if let Some(end) = self.end {
+            let dt = sample.imu.time.since(end);
+            if !dt.is_usable_step() {
+                return Err(InitError::InvalidStep { dt });
+            }
+        }
+
+        // Rates, one division per sample: every statistic here is a statement about a
+        // rate or a force.
+        let (accel, gyro) = (
+            sample.imu.specific_force().vector(),
+            sample.imu.angular_rate().vector(),
+        );
+        let interval = f64::from(sample.imu.angle_interval.as_secs());
+        self.count += 1;
+        self.force += widen(accel);
+        self.outer += widen(accel) * widen(accel).transpose();
+        self.rate += widen(gyro);
+        let field = sample.mag.map(|measurement| widen(measurement.vector()));
+        if let Some(field) = field {
+            self.field += field;
+            self.fields += 1;
+        }
+        self.peak_gyro = self.peak_gyro.max(gyro.norm());
+        self.peak_deviation = self.peak_deviation.max((accel.norm() - GRAVITY).abs());
+        self.span += interval;
+        self.end = Some(sample.imu.time);
+        self.halves.push(widen(accel), field);
+        self.velocities.push(sample.velocity, interval);
+        self.baro.push(sample.baro);
+        Ok(())
+    }
+
+    /// The time the window's samples integrated: the sum of their angle intervals, and what
+    /// [`Initialization::min_duration`] is checked against.
+    ///
+    /// Integrated time rather than the distance between the first and last timestamps,
+    /// because it is what the window observed: a window a logger dropped samples from covers
+    /// the samples it kept, and a stillness test over time nobody measured would pass on
+    /// nothing. The angle interval rather than the velocity one for no reason but one: the
+    /// two cover the same sample and differ only by when a driver closed each integral.
+    ///
+    /// Summed in `f64`: in `f32`, 100 intervals of 20 ms come to 1.9999987 s, and a window of
+    /// exactly `min_duration` would read as too short by the rounding. That is
+    /// `data/flight.csv`'s window: summed in `f32`, it starts `short`.
+    #[must_use]
+    pub fn span(&self) -> Seconds {
+        Seconds::from_secs(self.span as f32)
+    }
+
+    /// What the window measured, or [`InitError::NoSamples`] for a window with nothing in it.
+    pub(crate) fn measured(&self) -> Result<Measured, InitError> {
+        let end = self.end.ok_or(InitError::NoSamples)?;
+        Ok(Measured {
+            force: Acceleration::from_vector(mean(self.force, self.count)),
+            rate: AngularRate::from_vector(mean(self.rate, self.count)),
+            field: (self.fields > 0).then(|| MagField::from_vector(mean(self.field, self.fields))),
+            inertial_accel: self.velocities.inertial_acceleration(),
+            peak_gyro: RadiansPerSecond::from_rad_per_s(self.peak_gyro),
+            peak_deviation: MetersPerSecond2::from_m_per_s2(self.peak_deviation),
+            span: self.span(),
+            end,
+            halves: self.halves.halves(),
+            level_variance: level_variance(self.outer, self.force, self.count),
+        })
+    }
+
+    /// `α₀` of equation (30) and the variance of that mean, `P_bb` of (30′); see [`Scatter`].
+    pub(crate) fn baro_reference(&self) -> Option<(Altitude, f32)> {
+        self.baro.reference()
+    }
+}
+
+/// A window from samples already buffered: each is [pushed](StaticWindow::push) in order,
+/// and the first refused refuses the window. An empty slice is an empty window, which
+/// [`Eskf::initialize`](crate::Eskf::initialize) refuses as [`InitError::NoSamples`].
+impl TryFrom<&[StaticSample]> for StaticWindow {
+    type Error = InitError;
+
+    fn try_from(samples: &[StaticSample]) -> Result<Self, InitError> {
+        let mut window = Self::new();
+        for sample in samples {
+            window.push(*sample)?;
+        }
+        Ok(window)
+    }
+}
+
+/// What the initialization window measures: the averages equations (5)–(7) level from, the
+/// peaks [`at_rest`] judges, and the span [`classify`] measures.
 ///
 /// One value rather than a function per quantity, because the state and its covariance
 /// have to describe the *same* average. [`nominal_state`] levels from `force` and
-/// [`attitude_sigmas`] bounds how well it levelled; two walks of the window would be two
+/// [`attitude_sigmas`] bounds how well it levelled; two readings of the window would be two
 /// definitions of `f̄`, free to drift apart while each still looked right on its own.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Measured {
@@ -106,14 +306,16 @@ pub(crate) struct Measured {
     /// `m̄`, the averaged magnetic field (6) takes a heading from, over the samples that
     /// carry one. `None` if none do, which is a vehicle with no magnetometer.
     pub field: Option<MagField<Body>>,
-    /// `ā_n` of equation (5′); see [`inertial_acceleration`].
+    /// `ā_n` of equation (5′); see [`Velocities`].
     pub inertial_accel: Option<Acceleration<Ned>>,
     /// Largest angular rate magnitude in the window.
     pub peak_gyro: RadiansPerSecond,
     /// Largest departure of the specific-force magnitude from gravity.
     pub peak_deviation: MetersPerSecond2,
-    /// The time the window's samples integrated, [`window_span`].
+    /// The time the window's samples integrated, [`StaticWindow::span`].
     pub span: Seconds,
+    /// The last sample's time, where the filter's clock starts.
+    pub end: Timestamp,
     /// The same averages over each half of the window, for [`window_drift`]. `None` for
     /// a window of one, which has no halves to disagree.
     pub halves: Option<Halves>,
@@ -138,75 +340,6 @@ pub(crate) struct Halves {
 }
 
 impl Measured {
-    /// Measure a window whose samples have already been checked.
-    ///
-    /// [`measure`] is the entry point that checks them. The one other caller is
-    /// [`Eskf::initialize_coarse`](crate::Eskf::initialize_coarse), which holds a window
-    /// of one, checks it itself, and spans its one sample's interval.
-    ///
-    /// The averages accumulate in `f64`, which here is precaution rather than necessity:
-    /// summing a few thousand readings near `γ` in f32 costs on the order of 10⁻⁵ rad of
-    /// tilt, against a 0.02 rad prior. It is the choice [`baro_reference`] has to make for
-    /// real — altitudes are metres above mean sea level — and this sum is paid once per
-    /// flight.
-    pub(crate) fn over(window: &[StaticSample]) -> Self {
-        let mut rate = Vector3::<f64>::zeros();
-        let mut peak_gyro = 0.0f32;
-        let mut peak_deviation = 0.0f32;
-        // Accumulated per half, so that the whole-window averages below are sums of two
-        // rather than a third running total kept alongside them.
-        let mut force = [Vector3::<f64>::zeros(); 2];
-        let mut field = [Vector3::<f64>::zeros(); 2];
-        let mut samples = [0u32; 2];
-        let mut fields = [0u32; 2];
-        // `Σ f fᵀ`, for the window's scatter about `f̄`; see `level_variance`.
-        let mut outer = Matrix3::<f64>::zeros();
-        let split = window.len() / 2;
-        for (index, sample) in window.iter().enumerate() {
-            let half = usize::from(index >= split);
-            // Rates, one division per sample: every statistic here is a statement about a
-            // rate or a force, and the window is paid for once per flight.
-            let (accel, gyro) = (
-                sample.imu.specific_force().vector(),
-                sample.imu.angular_rate().vector(),
-            );
-            force[half] += widen(accel);
-            outer += widen(accel) * widen(accel).transpose();
-            samples[half] += 1;
-            rate += widen(gyro);
-            if let Some(measurement) = sample.mag {
-                field[half] += widen(measurement.vector());
-                fields[half] += 1;
-            }
-            peak_gyro = peak_gyro.max(gyro.norm());
-            peak_deviation = peak_deviation.max((accel.norm() - GRAVITY).abs());
-        }
-        let total = samples[0] + samples[1];
-        let carried = fields[0] + fields[1];
-        Self {
-            force: Acceleration::from_vector(mean(force[0] + force[1], total)),
-            rate: AngularRate::from_vector(mean(rate, total)),
-            field: (carried > 0).then(|| MagField::from_vector(mean(field[0] + field[1], carried))),
-            inertial_accel: inertial_acceleration(window),
-            peak_gyro: RadiansPerSecond::from_rad_per_s(peak_gyro),
-            peak_deviation: MetersPerSecond2::from_m_per_s2(peak_deviation),
-            span: window_span(window),
-            level_variance: level_variance(outer, force[0] + force[1], total),
-            halves: (samples[0] > 0 && samples[1] > 0).then(|| Halves {
-                force: [
-                    Acceleration::from_vector(mean(force[0], samples[0])),
-                    Acceleration::from_vector(mean(force[1], samples[1])),
-                ],
-                field: (fields[0] > 0 && fields[1] > 0).then(|| {
-                    [
-                        MagField::from_vector(mean(field[0], fields[0])),
-                        MagField::from_vector(mean(field[1], fields[1])),
-                    ]
-                }),
-            }),
-        }
-    }
-
     /// The direction equation (5) called down, `−f̄ / ‖f̄‖`: the axis the tilt bound and
     /// the dip are both measured about.
     ///
@@ -222,6 +355,243 @@ impl Measured {
     }
 }
 
+/// How many blocks [`HalfSums`] keeps.
+///
+/// The split lands within half a block of the middle, and at least `BLOCKS / 2` blocks are
+/// full, so the halves are within `n / BLOCKS` samples of equal: 37.5 % to 62.5 % of the
+/// window at worst. Each block is 64 bytes.
+///
+/// Measured against an exact split (4096 blocks, which no window the replay harness builds
+/// fills, reproduces every scenario and corpus output byte for byte): 8 blocks and 16 each
+/// move one corpus log, `7ce66f0d`, by one in the last printed digit of three innovation
+/// keys, and no scenario. The halves only reach [`coarse_sigmas`], and only where their
+/// disagreement is the largest bound.
+const BLOCKS: usize = 8;
+
+/// The sums of [`Halves`], for a window whose length is not known until it ends.
+///
+/// The halves are the only statistic here a single pass cannot take exactly, because the
+/// middle of a window moves as it grows. So the window is kept as up to [`BLOCKS`] blocks of
+/// equal size, each summing its own samples; when the last fills, adjacent pairs merge and
+/// the size doubles. [`halves`](Self::halves) splits at the block boundary nearest the
+/// middle, not at the middle, and [`window_drift`] compares two averages that each still
+/// cover at least three eighths of the window.
+#[derive(Clone, Copy, Debug)]
+struct HalfSums {
+    blocks: [Block; BLOCKS],
+    /// Samples a block holds before the next one starts.
+    size: u64,
+    /// The block now filling.
+    current: usize,
+}
+
+/// One block of [`HalfSums`].
+#[derive(Clone, Copy, Debug)]
+struct Block {
+    force: Vector3<f64>,
+    samples: u64,
+    field: Vector3<f64>,
+    fields: u64,
+}
+
+impl Block {
+    const EMPTY: Self = Self {
+        force: Vector3::new(0.0, 0.0, 0.0),
+        samples: 0,
+        field: Vector3::new(0.0, 0.0, 0.0),
+        fields: 0,
+    };
+
+    fn merged(self, other: Self) -> Self {
+        Self {
+            force: self.force + other.force,
+            samples: self.samples + other.samples,
+            field: self.field + other.field,
+            fields: self.fields + other.fields,
+        }
+    }
+}
+
+impl HalfSums {
+    const fn new() -> Self {
+        Self {
+            blocks: [Block::EMPTY; BLOCKS],
+            size: 1,
+            current: 0,
+        }
+    }
+
+    fn push(&mut self, force: Vector3<f64>, field: Option<Vector3<f64>>) {
+        if self
+            .blocks
+            .get(self.current)
+            .is_some_and(|b| b.samples >= self.size)
+        {
+            if self.current + 1 < BLOCKS {
+                self.current += 1;
+            } else {
+                let full = self.blocks;
+                self.blocks = [Block::EMPTY; BLOCKS];
+                for (merged, pair) in self.blocks.iter_mut().zip(full.chunks_exact(2)) {
+                    if let [first, second] = pair {
+                        *merged = first.merged(*second);
+                    }
+                }
+                self.size *= 2;
+                self.current = BLOCKS / 2;
+            }
+        }
+        if let Some(block) = self.blocks.get_mut(self.current) {
+            block.force += force;
+            block.samples += 1;
+            if let Some(field) = field {
+                block.field += field;
+                block.fields += 1;
+            }
+        }
+    }
+
+    /// The two halves, split at the block boundary nearest the middle, the earlier of two
+    /// equally near: for a window of `n` blocks of one sample, that is `n / 2`.
+    fn halves(&self) -> Option<Halves> {
+        let blocks = self.blocks.get(..=self.current).unwrap_or_default();
+        let total: u64 = blocks.iter().map(|b| b.samples).sum();
+        // Twice the distance from the middle, in samples, so an odd window stays integral.
+        let (mut split, mut nearest, mut before) = (0, total, 0u64);
+        for (index, block) in blocks.iter().enumerate() {
+            before += block.samples;
+            let distance = (2 * before).abs_diff(total);
+            if distance < nearest {
+                (split, nearest) = (index + 1, distance);
+            }
+        }
+        let (first, second) = blocks.split_at(split.min(blocks.len()));
+        let sum = |part: &[Block]| part.iter().fold(Block::EMPTY, |sum, b| sum.merged(*b));
+        let (first, second) = (sum(first), sum(second));
+        (first.samples > 0 && second.samples > 0).then(|| Halves {
+            force: [
+                Acceleration::from_vector(mean(first.force, first.samples)),
+                Acceleration::from_vector(mean(second.force, second.samples)),
+            ],
+            field: (first.fields > 0 && second.fields > 0).then(|| {
+                [
+                    MagField::from_vector(mean(first.field, first.fields)),
+                    MagField::from_vector(mean(second.field, second.fields)),
+                ]
+            }),
+        })
+    }
+}
+
+/// The first and last GNSS velocity in the window, for `ā_n` of equation (5′), the term
+/// in-motion levelling subtracts from the averaged specific force.
+///
+/// Endpoints only; the velocities in between are not differenced at all. The mean of a
+/// derivative *is* its endpoint difference over the span, and the mean is what is wanted,
+/// because (5) levels the averaged specific force and the term to subtract is therefore
+/// the averaged acceleration. Differencing consecutive samples and averaging those gives
+/// the same number with the intermediate noise added back — which matters here, since
+/// this is the noisiest part of in-motion levelling: a receiver's velocity error divided
+/// by a span, and a 1 Hz receiver over a 2 s window divides it by very little.
+///
+/// The span is the time the samples after the first velocity's, up to the last's,
+/// integrated, so it is only as honest as the dating of the window; see
+/// [`StaticSample::velocity`].
+#[derive(Clone, Copy, Debug, Default)]
+struct Velocities {
+    first: Option<Velocity<Ned>>,
+    last: Option<Velocity<Ned>>,
+    /// Integrated since the first velocity's sample.
+    since_first: f64,
+    /// `since_first` as of the last velocity's sample.
+    span: f64,
+}
+
+impl Velocities {
+    fn push(&mut self, velocity: Option<Velocity<Ned>>, interval: f64) {
+        if self.first.is_some() {
+            self.since_first += interval;
+        }
+        if let Some(velocity) = velocity {
+            if self.first.is_none() {
+                self.first = Some(velocity);
+            } else {
+                self.last = Some(velocity);
+                self.span = self.since_first;
+            }
+        }
+    }
+
+    /// `ā_n`. `None` unless two samples separated in time carry a velocity.
+    fn inertial_acceleration(&self) -> Option<Acceleration<Ned>> {
+        let (first, last) = (self.first?, self.last?);
+        let span = self.span as f32;
+        // Two velocities on one sample, or on samples that integrated nothing between them,
+        // span no time. A difference over zero seconds is an infinity, not an acceleration,
+        // and this is the only division here.
+        (span > 0.0).then(|| Acceleration::from_vector((last.vector() - first.vector()) / span))
+    }
+}
+
+/// The barometer readings in the window, for `α₀` of equation (30) and the variance of that
+/// mean, `P_bb` of (30′).
+///
+/// A reading is a value that differs from the previous sample's, because
+/// [`StaticSample::baro`] may be held across IMU epochs: a 20 Hz barometer held on a 200 Hz
+/// IMU would otherwise count each reading ten times and report a variance ten times too
+/// small, and one reading held across the whole window would pass for many with no scatter.
+/// Two genuine readings that happen to agree are merged by the same test, which can only
+/// make the variance larger.
+///
+/// The variance is the window's own: the sample variance of the readings over their count,
+/// the standard error of a mean. It is measured rather than asked for, because the window
+/// is the one moment the barometer's scatter can be read with the vehicle known to be still
+/// (GOALS.md differentiator 7), and a reading's `R` on the corpus is a constant the
+/// converter substitutes. It assumes the readings independent; a correlated barometer
+/// averages down more slowly than this says.
+///
+/// Welford's single pass, in `f64`: the textbook one-pass form, `Σa²/n − ā²`, differences
+/// two squares of metres above mean sea level down to a scatter of centimetres, which is
+/// the cancellation the running mean and `M₂` avoid.
+#[derive(Clone, Copy, Debug, Default)]
+struct Scatter {
+    /// The previous sample's reading, fresh or held.
+    previous: Option<Altitude>,
+    count: u64,
+    mean: f64,
+    /// `Σ (a − ā)²`, Welford's `M₂`.
+    squares: f64,
+}
+
+impl Scatter {
+    fn push(&mut self, baro: Option<Altitude>) {
+        let fresh = baro.filter(|altitude| Some(*altitude) != self.previous);
+        self.previous = baro;
+        if let Some(altitude) = fresh {
+            let a = f64::from(altitude.as_meters());
+            self.count += 1;
+            let before = a - self.mean;
+            self.mean += before / self.count as f64;
+            self.squares += before * (a - self.mean);
+        }
+    }
+
+    /// The mean and its variance, and `None` for fewer than two readings. One reading is
+    /// refused rather than given a variance: it has no scatter to measure, and a reference
+    /// whose error is invented is what (30′) exists to stop.
+    fn reference(&self) -> Option<(Altitude, f32)> {
+        if self.count < 2 {
+            return None;
+        }
+        let n = self.count as f64;
+        let scatter = self.squares / (n - 1.0);
+        Some((
+            Altitude::from_meters(self.mean as f32),
+            (scatter / n) as f32,
+        ))
+    }
+}
+
 /// [`Measured::level_variance`], from the window's `Σ f` and `Σ f fᵀ`.
 ///
 /// The scatter across `f̄` over the sample count is how far the average could sit from the
@@ -229,11 +599,11 @@ impl Measured {
 /// by `γ²` it is a tilt, and it is what `P₀` keeps independent of the bias. It assumes the
 /// samples independent, so vibration slower than the sample rate is undercounted, and it is
 /// a floor rather than the whole independent share for that reason.
-fn level_variance(outer: Matrix3<f64>, sum: Vector3<f64>, count: u32) -> Option<f32> {
+fn level_variance(outer: Matrix3<f64>, sum: Vector3<f64>, count: u64) -> Option<f32> {
     if count < 2 {
         return None;
     }
-    let n = f64::from(count);
+    let n = count as f64;
     let mean = sum / n;
     let down = mean.try_normalize(f64::MIN_POSITIVE)?;
     // Sums near `γ²` per sample, differenced down to a scatter many orders smaller: the
@@ -244,7 +614,7 @@ fn level_variance(outer: Matrix3<f64>, sum: Vector3<f64>, count: u32) -> Option<
     Some(((across / 2.0).max(0.0) / n / (gravity * gravity)) as f32)
 }
 
-/// Widen a measurement for accumulation; see [`Measured::over`].
+/// Widen a measurement for accumulation; see [`StaticWindow`].
 fn widen(measurement: Vector3<f32>) -> Vector3<f64> {
     Vector3::new(
         f64::from(measurement.x),
@@ -253,68 +623,14 @@ fn widen(measurement: Vector3<f32>) -> Vector3<f64> {
     )
 }
 
-/// An accumulated sum as its mean, and zero for nothing accumulated — which [`measure`]
-/// refuses before any caller sees it.
-fn mean(sum: Vector3<f64>, count: u32) -> Vector3<f32> {
+/// An accumulated sum as its mean, and zero for nothing accumulated — which
+/// [`StaticWindow::measured`] refuses before any caller sees it.
+fn mean(sum: Vector3<f64>, count: u64) -> Vector3<f32> {
     if count == 0 {
         return Vector3::zeros();
     }
-    let n = f64::from(count);
+    let n = count as f64;
     Vector3::new((sum.x / n) as f32, (sum.y / n) as f32, (sum.z / n) as f32)
-}
-
-/// Measure a window, refusing the input nothing can be made of.
-///
-/// Every check initialization makes on raw input is here, so that everything downstream —
-/// [`classify`], [`nominal_state`], [`attitude_sigmas`] — takes a [`Measured`] and cannot
-/// be handed an empty window, an unusable interval, a clock that does not run forward, or a
-/// value that is not a number.
-///
-/// # Errors
-///
-/// [`InitError::NoSamples`], [`InitError::NotFinite`], [`InitError::InvalidInterval`],
-/// [`InitError::InvalidStep`].
-pub(crate) fn measure(window: &[StaticSample]) -> Result<Measured, InitError> {
-    if window.is_empty() {
-        return Err(InitError::NoSamples);
-    }
-    if !window.iter().all(StaticSample::is_finite) {
-        return Err(InitError::NotFinite);
-    }
-    if let Some(interval) = window.iter().find_map(|s| s.imu.unusable_interval()) {
-        return Err(InitError::InvalidInterval { interval });
-    }
-    // The clock starts at the last sample's time, so a window timed anywhere but forward
-    // would start it somewhere the samples do not describe: all at zero, and the first
-    // `predict` coasts the whole flight so far.
-    for pair in window.windows(2) {
-        if let [earlier, later] = pair {
-            let dt = later.imu.time.since(earlier.imu.time);
-            if !dt.is_usable_step() {
-                return Err(InitError::InvalidStep { dt });
-            }
-        }
-    }
-    Ok(Measured::over(window))
-}
-
-/// The time a window's samples integrated: the sum of their angle intervals.
-///
-/// Integrated time rather than the distance between the first and last timestamps, because
-/// it is what the window observed: a window a logger dropped samples from covers the samples
-/// it kept, and a stillness test over time nobody measured would pass on nothing. The angle
-/// interval rather than the velocity one for no reason but one: the two cover the same
-/// sample and differ only by when a driver closed each integral.
-///
-/// Summed in `f64`: in `f32`, 100 intervals of 20 ms come to 1.9999987 s, and a window of
-/// exactly [`Initialization::min_duration`] would read as too short by the rounding. That is
-/// `data/flight.csv`'s window: summed in `f32`, it starts `short`.
-fn window_span(window: &[StaticSample]) -> Seconds {
-    let span: f64 = window
-        .iter()
-        .map(|s| f64::from(s.imu.angle_interval.as_secs()))
-        .sum();
-    Seconds::from_secs(span as f32)
 }
 
 /// What [`Eskf::initialize`](crate::Eskf::initialize) achieved.
@@ -953,88 +1269,30 @@ pub(crate) fn at_rest(measured: &Measured, init: &Initialization) -> bool {
     measured.peak_gyro <= init.max_gyro_rate && measured.peak_deviation <= init.max_accel_deviation
 }
 
-/// Mean navigation-frame acceleration over the window: `ā_n` of equation (5′), the term
-/// in-motion levelling subtracts from the averaged specific force. `None` unless two
-/// samples separated in time carry a velocity.
-///
-/// Endpoints only; the velocities in between are not differenced at all. The mean of a
-/// derivative *is* its endpoint difference over the span, and the mean is what is wanted,
-/// because (5) levels the averaged specific force and the term to subtract is therefore
-/// the averaged acceleration. Differencing consecutive samples and averaging those gives
-/// the same number with the intermediate noise added back — which matters here, since
-/// this is the noisiest part of in-motion levelling: a receiver's velocity error divided
-/// by a span, and a 1 Hz receiver over a 2 s window divides it by very little.
-///
-/// The span is the time the samples from the first velocity's to the last's integrated, so it
-/// is only as honest as the dating of the window; see [`StaticSample::velocity`].
-pub(crate) fn inertial_acceleration(window: &[StaticSample]) -> Option<Acceleration<Ned>> {
-    let mut first: Option<(usize, Velocity<Ned>)> = None;
-    let mut last: Option<(usize, Velocity<Ned>)> = None;
-    for (index, sample) in window.iter().enumerate() {
-        if let Some(velocity) = sample.velocity {
-            first.get_or_insert((index, velocity));
-            last = Some((index, velocity));
-        }
-    }
-    let ((first_index, first), (last_index, last)) = (first?, last?);
-    let span = window_span(window.get(first_index + 1..=last_index).unwrap_or_default()).as_secs();
-    // One velocity, or several on the same sample, spans no time. A difference over zero
-    // seconds is an infinity, not an acceleration, and this is the only division here.
-    (span > 0.0).then(|| Acceleration::from_vector((last.vector() - first.vector()) / span))
-}
-
-/// Mean barometric altitude over the readings in the window, `α₀` of equation (30), and the
-/// variance of that mean, `P_bb` of (30′). `None` for fewer than two readings.
-///
-/// A reading is a value that differs from the previous sample's, because
-/// [`StaticSample::baro`] may be held across IMU epochs: a 20 Hz barometer held on a 200 Hz
-/// IMU would otherwise count each reading ten times and report a variance ten times too
-/// small, and one reading held across the whole window would pass for many with no scatter.
-/// Two genuine readings that happen to agree are merged by the same test, which can only
-/// make the variance larger.
-///
-/// The variance is the window's own: the sample variance of the readings over their count,
-/// the standard error of a mean. It is measured rather than asked for, because the window
-/// is the one moment the barometer's scatter can be read with the vehicle known to be still
-/// (GOALS.md differentiator 7), and a reading's `R` on the corpus is a constant the
-/// converter substitutes. It assumes the readings independent; a correlated barometer
-/// averages down more slowly than this says.
-///
-/// One reading is refused rather than given a variance: it has no scatter to measure, and
-/// a reference whose error is invented is what (30′) exists to stop.
-///
-/// Accumulated in `f64`: a window is up to a few thousand samples and an altitude is
-/// metres above mean sea level, so an `f32` running sum of 800 readings near 1000 m has
-/// already lost more precision than the reference is worth.
-pub(crate) fn baro_reference(window: &[StaticSample]) -> Option<(Altitude, f32)> {
-    let readings = || {
-        window
-            .iter()
-            .scan(None, |previous, sample| {
-                let fresh = sample.baro.filter(|altitude| Some(*altitude) != *previous);
-                *previous = sample.baro;
-                Some(fresh)
-            })
-            .flatten()
-            .map(|altitude| f64::from(altitude.as_meters()))
-    };
-    let count = readings().count();
-    if count < 2 {
-        return None;
-    }
-    let n = count as f64;
-    let mean = readings().sum::<f64>() / n;
-    let scatter = readings().map(|a| (a - mean) * (a - mean)).sum::<f64>() / (n - 1.0);
-    Some((Altitude::from_meters(mean as f32), (scatter / n) as f32))
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use std::format;
 
     use super::*;
     use crate::state::ErrorState;
-    use crate::units::Timestamp;
+
+    /// What a buffered window measures: every sample pushed in order, as
+    /// [`StaticWindow::try_from`] does.
+    pub(crate) fn measure(window: &[StaticSample]) -> Result<Measured, InitError> {
+        StaticWindow::try_from(window)?.measured()
+    }
+
+    /// `α₀` and its variance over `window`, each sample `DT` after the last.
+    fn baro_reference(window: &[StaticSample]) -> Option<(Altitude, f32)> {
+        StaticWindow::try_from(spaced(window, DT).as_slice())
+            .expect("a usable window")
+            .baro_reference()
+    }
+
+    /// `ā_n` over a window already spaced.
+    fn inertial_acceleration(window: &[StaticSample]) -> Option<Acceleration<Ned>> {
+        measure(window).expect("a usable window").inertial_accel
+    }
 
     #[test]
     fn a_coarse_start_reads_as_what_was_measured() {
@@ -1860,6 +2118,102 @@ pub(crate) mod tests {
         let mut window = [still(); 8];
         window[3].baro = Some(Altitude::from_meters(10.0));
         assert_eq!(baro_reference(&window), None);
+    }
+
+    #[test]
+    fn the_barometer_scatter_is_the_two_pass_one_at_any_altitude() {
+        // Centimetres of scatter at 1000 m, each reading different from the one before.
+        let window: std::vec::Vec<_> = (0..400)
+            .map(|i| StaticSample {
+                baro: Some(Altitude::from_meters(
+                    1000.0 + 0.03 * ((i * 7 % 11) as f32 - 5.0),
+                )),
+                ..still()
+            })
+            .collect();
+        let readings: std::vec::Vec<f64> = window
+            .iter()
+            .filter_map(|s| s.baro)
+            .map(|a| f64::from(a.as_meters()))
+            .collect();
+        let n = readings.len() as f64;
+        let mean = readings.iter().sum::<f64>() / n;
+        let scatter = readings
+            .iter()
+            .map(|a| (a - mean) * (a - mean))
+            .sum::<f64>()
+            / (n - 1.0);
+        let (reference, variance) = baro_reference(&window).expect("400 readings");
+        assert_eq!(reference, Altitude::from_meters(mean as f32));
+        let expected = (scatter / n) as f32;
+        assert!(
+            ((variance - expected) / expected).abs() < 1e-6,
+            "{variance} against {expected}"
+        );
+    }
+
+    /// The window's halves over samples whose specific force is `forces` along body x.
+    fn halves_of(forces: &[f64]) -> Option<Halves> {
+        let mut sums = HalfSums::new();
+        for &force in forces {
+            sums.push(Vector3::new(force, 0.0, 0.0), None);
+        }
+        sums.halves()
+    }
+
+    #[test]
+    fn a_window_within_the_blocks_splits_at_the_middle_rounded_down() {
+        // Seven samples in seven blocks of one: 3 and 4, as `n / 2` splits them.
+        let halves = halves_of(&[1.0, 1.0, 1.0, 5.0, 5.0, 5.0, 5.0]).expect("two halves");
+        assert_eq!(
+            halves.force,
+            [
+                Acceleration::body(1.0, 0.0, 0.0),
+                Acceleration::body(5.0, 0.0, 0.0)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_window_past_the_blocks_splits_at_the_boundary_nearest_the_middle() {
+        // Twenty samples merge twice, into five blocks of four. The middle, 10, is two from
+        // the boundaries at 8 and 12, and the earlier is taken; the later would average
+        // four 3s into the first half.
+        let forces: std::vec::Vec<f64> = (0..20).map(|i| if i < 8 { 1.0 } else { 3.0 }).collect();
+        let halves = halves_of(&forces).expect("two halves");
+        assert_eq!(
+            halves.force,
+            [
+                Acceleration::body(1.0, 0.0, 0.0),
+                Acceleration::body(3.0, 0.0, 0.0)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_window_of_one_has_no_halves() {
+        assert_eq!(halves_of(&[1.0]), None);
+    }
+
+    #[test]
+    fn a_refused_sample_leaves_the_window_as_it_was() {
+        let good = spaced(&[still(); 3], DT);
+        let mut window = StaticWindow::new();
+        assert_eq!(window.push(good[0]), Ok(()));
+        let mut poisoned = good[1];
+        poisoned.imu = poisoned
+            .imu
+            .with_accel(Acceleration::body(f32::NAN, 0.0, 0.0));
+        assert_eq!(window.push(poisoned), Err(InitError::NotFinite));
+        // Refused for its time, and the next sample's step is still read from the last
+        // one accepted.
+        assert!(matches!(
+            window.push(good[0]),
+            Err(InitError::InvalidStep { .. })
+        ));
+        assert_eq!(window.push(good[1]), Ok(()));
+        assert_eq!(window.push(good[2]), Ok(()));
+        assert_eq!(window.measured(), measure(&good));
     }
 
     /// A window whose GNSS reports the vehicle gaining 4 m/s of north velocity over the

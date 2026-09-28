@@ -782,10 +782,13 @@ off-by-default feature of the same name.
   a moving or short window starts coarse under `Status::Aligning`, yaw from course is
   `fuse_course` (#53), and in-motion levelling (5′, #59) is the option still unbuilt — read that
   section before touching initialization.
-- `src/init.rs` — initialization's types (`StaticSample`, `Alignment`, `Coarse`, `InitError`)
-  and pure functions (`level_from_accel`, `heading_from_mag`, `nominal_state`, `classify`,
-  `attitude_sigmas`, `initial_covariance`, `baro_reference`, `inertial_acceleration`).
-  The `initialize*` methods on `Eskf` call these and commit the result. Tests for the pure
+- `src/init.rs` — initialization's types (`StaticSample`, `StaticWindow`, `Alignment`, `Coarse`,
+  `InitError`) and pure functions (`level_from_accel`, `heading_from_mag`, `nominal_state`,
+  `classify`, `attitude_sigmas`, `initial_covariance`). `StaticWindow` folds each sample in as
+  it is pushed, so a caller never buffers the window; every statistic it keeps is a single
+  pass, the halves of `window_drift` split at a block boundary rather than the middle, and the
+  barometer's scatter is Welford's. The `initialize*` methods on `Eskf` call these and commit
+  the result. Tests for the pure
   functions live here; tests of what the filter does with them stay in `eskf.rs`.
 - `src/propagate.rs` — `ImuSample` and equations (9)–(22), in increments; `error_dynamics`, the
   `A` of (16)–(19) that (23′) carries `H` through.
@@ -877,7 +880,7 @@ off-by-default feature of the same name.
 
 - **A window sample's `baro` and `mag` may be held.** A slower sensor's last value repeats across
   IMU epochs, and the harness does exactly that. A mean survives it; any other statistic over
-  the window has to count distinct readings, which is why `init::baro_reference` counts a value
+  the window has to count distinct readings, which is why `init::Scatter` counts a value
   only where it differs from the previous sample's. The corollary for fixtures: `[sample; N]`
   with a barometer is *one reading held*, which sets no reference — the fixtures, both examples
   and the `prelude` doctest all had to be given real scatter.
