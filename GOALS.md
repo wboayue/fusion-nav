@@ -651,6 +651,49 @@ The cost is that a vehicle flying far from 45° latitude carries a small constan
 until someone runs the offline tool, and that the error shows up in the accelerometer bias estimate
 rather than anywhere labelled gravity.
 
+### Magnetic declination from a table, read where the origin is placed
+
+A magnetic heading is true only once the declination is added, and at the corpus sites it runs
+from −11.1° to +13.8°. Zero until the caller sets it put a standing bias of that size on every
+magnetic heading, the heading adoption and a heading recovery. Differentiator 7 says the filter
+should find it itself, and the origin is where it learns the site.
+
+**Decided:** the filter reads PX4's WMM table (`src/magnetic.rs`) wherever it places its origin,
+unless the caller has set a declination, which then holds for good. This is the rule local gravity
+above turned down, a constant changed where the origin arrives, and the two differ in size and in
+what the change touches. Gravity's error is 0.03 m s⁻² at the extreme, and deriving it mid-flight
+would change a propagation constant. Declination's is ten degrees, and it changes only what a
+magnetic heading means, so a heading the magnetometer alone referred to north is turned with it
+(`Eskf::place_origin`), and one a true source vouched for is left alone.
+
+**Decided:** a fixed epoch, as both upstreams ship, and no date argument. Measured at the eleven
+corpus origins with `pygeomag` 1.1.0: the table's own error, from interpolating a 10° grid, is at
+most 0.26° against WMM-2020 at the table's epoch (2024.41) and 0.16° against WMM2025 at 2026.0, and
+the model's secular drift over 2025 to 2030 is at most 0.42°. All of it sits well under the
+3.1° a magnetic heading is fused at, so a date would buy nothing measurable until the table
+is several years stale, and the answer then is to regenerate it.
+
+What PX4 does that this does not: it re-reads the table every 10 s at the current position and
+takes a change over 1° (`EKF/aid_sources/magnetometer/mag_control.cpp:90-113`, `:641-652` at
+`c4e4ef98`). Here the value is read at the origin, which a flight inside the tangent plane's range
+barely leaves; a vehicle that travels hundreds of kilometres calls `set_magnetic_declination` as it
+goes. And the table costs 2.5 KB of flash, so it sits behind the `magnetic-model` feature, on by
+default.
+
+### Sensor offsets as per-call arguments
+
+A GNSS receiver measures its antenna, which sits somewhere other than the IMU. PX4 and ArduPilot
+both refer the fix to the IMU from a configured offset (`SENS_GPS0_OFF*`, `GPS1_POS_*`).
+
+**Decided:** the offset is an argument to each GNSS `fuse_*`, `antenna: Position<Body>`, and the
+filter applies it, equations (28′) and (29′). Not a `Config` field, which is for mission questions,
+and not a setter beside the origin, which would hold one antenna: PX4 carries the offset on every
+GNSS message (`antenna_offset_x/y/z`, `src/modules/sensors/vehicle_gps_position/VehicleGPSPosition.cpp:198`
+at `c4e4ef98`) because a second receiver has its own, and here it travels with the fix as `R`
+does. The update carries the arm's dependence on attitude and gyroscope bias in `H`, where PX4
+corrects the measurement alone; `observation/gnss.rs` records the corpus figures that chose it.
+The estimate stays the IMU's, and `Eskf::angular_rate` is what moves it to any other point.
+
 ### Rejection handling: recover by default, opt out per source
 
 Innovation gating protects against bad measurements but is self-sealing. When the filter itself

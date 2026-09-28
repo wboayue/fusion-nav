@@ -547,6 +547,7 @@ def convert(path, baro_variance, mag_variance, heading_variance=DEFAULT_GNSS_HEA
     parameters = [
         origin_note(origin),
         declination_note(ulog.initial_parameters, origin and origin[:2]),
+        antenna_note(ulog.initial_parameters, pick(ulog, GNSS_TOPICS)),
         gnss_noise_note(ulog.initial_parameters),
         delays_note,
     ]
@@ -1304,6 +1305,54 @@ def origin_note(origin):
     return f"Navigation origin {origin[0]:.9f} {origin[1]:.9f} {origin[2]:.3f} (lat deg, lon deg, height m; the first 3D fix)"
 
 
+# Where the antenna and the IMU sit on the airframe, body FRD metres, under each name PX4
+# has given them. EKF2 subtracts the second from the first and applies the difference to
+# every fix (`pos_offset_body = gnss_sample.pos_body - _params.imu_pos_body`,
+# EKF/aid_sources/gnss/gps_control.cpp:313 at c4e4ef98). The antenna's parameters were
+# renamed EKF2_GPS_POS_* -> SENS_GPS0_OFF* (src/lib/parameters/param_translation.cpp:182-186),
+# and current firmware carries the value on every message as `antenna_offset_x/y/z`
+# (src/modules/sensors/vehicle_gps_position/VehicleGPSPosition.cpp:198), which is read first.
+ANTENNA_PARAMETERS = (
+    ("SENS_GPS0_OFFX", "SENS_GPS0_OFFY", "SENS_GPS0_OFFZ"),
+    ("EKF2_GPS_POS_X", "EKF2_GPS_POS_Y", "EKF2_GPS_POS_Z"),
+)
+IMU_POSITION = ("EKF2_IMU_POS_X", "EKF2_IMU_POS_Y", "EKF2_IMU_POS_Z")
+ANTENNA_FIELDS = ("antenna_offset_x", "antenna_offset_y", "antenna_offset_z")
+
+
+def antenna_note(params, gnss):
+    """The header line `examples/replay.rs` reads every GNSS fix's lever arm from: the
+    antenna's offset from the IMU in body axes, forward, right, down, as the log's EKF2
+    applied it, and where each half came from.
+
+    `gnss` is the GNSS dataset, whose per-message offset wins where the build logs one; a
+    value that changes across the log is refused, since the replay format carries one.
+    """
+    antenna, source = None, None
+    if gnss is not None and all(f in gnss.data for f in ANTENNA_FIELDS):
+        columns = [gnss.data[f] for f in ANTENNA_FIELDS]
+        if any(float(c.min()) != float(c.max()) for c in columns):
+            raise ConversionError(
+                f"`{gnss.name}` antenna offset changes during the log; one lever arm per "
+                "file is all the replay format carries"
+            )
+        antenna, source = [float(c[0]) for c in columns], f"{gnss.name}.antenna_offset"
+    else:
+        for names in ANTENNA_PARAMETERS:
+            if all(n in params for n in names):
+                antenna, source = [float(params[n]) for n in names], names[0][:-1] + "*"
+                break
+    if antenna is None:
+        antenna, source = [0.0, 0.0, 0.0], "no antenna position in the log"
+    imu = [float(params.get(n, 0.0)) for n in IMU_POSITION]
+    imu_source = "EKF2_IMU_POS*" if all(n in params for n in IMU_POSITION) else "IMU at zero"
+    arm = [a - b for a, b in zip(antenna, imu)]
+    return (
+        f"GNSS antenna {arm[0]:.3f} {arm[1]:.3f} {arm[2]:.3f} m "
+        f"(forward, right, down from the IMU: {source} less {imu_source})"
+    )
+
+
 def declination_note(params, origin):
     """The header line `examples/replay.rs` reads its magnetic declination from.
 
@@ -1710,6 +1759,30 @@ def self_test():
     expect("origin line", origin_note((56.41, 43.76, 150.0, None)),
            "Navigation origin 56.410000000 43.760000000 150.000 (lat deg, lon deg, height m; the first 3D fix)")
     expect("no origin", origin_note(None), "Navigation origin none (no 3D fix)")
+    # a299e722's: antenna 0.30 left, 0.15 up; IMU 0.30 forward, 0.093 up.
+    legacy = {"EKF2_GPS_POS_X": 0.3, "EKF2_GPS_POS_Y": -0.3, "EKF2_GPS_POS_Z": -0.15,
+              "EKF2_IMU_POS_X": 0.3, "EKF2_IMU_POS_Y": 0.0, "EKF2_IMU_POS_Z": -0.093}
+    expect("antenna less IMU", antenna_note(legacy, None).split(" m (")[0],
+           "GNSS antenna 0.000 -0.300 -0.057")
+    renamed = dict(legacy, SENS_GPS0_OFFX=1.0, SENS_GPS0_OFFY=0.0, SENS_GPS0_OFFZ=0.0)
+    expect("the current name first", antenna_note(renamed, None).split(" m (")[0],
+           "GNSS antenna 0.700 0.000 0.093")
+    import numpy
+    on_message = Fixture("sensor_gps", timestamp=[0, 1], antenna_offset_x=numpy.array([0.5, 0.5]),
+                         antenna_offset_y=numpy.array([0.0, 0.0]),
+                         antenna_offset_z=numpy.array([-0.2, -0.2]))
+    expect("the message over the parameter", antenna_note(renamed, on_message).split(" m (")[0],
+           "GNSS antenna 0.200 0.000 -0.107")
+    expect("nothing", antenna_note({}, None).split(" m (")[0], "GNSS antenna 0.000 0.000 0.000")
+    moved = Fixture("sensor_gps", timestamp=[0, 1], antenna_offset_x=numpy.array([0.5, 0.6]),
+                    antenna_offset_y=numpy.array([0.0, 0.0]),
+                    antenna_offset_z=numpy.array([0.0, 0.0]))
+    try:
+        antenna_note({}, moved)
+        refused = False
+    except ConversionError:
+        refused = True
+    expect("an offset that moves is refused", refused, True)
     # A 2.5 ms burst inside a true 20 ms period, a299e722's shape: the median holds.
     burst = Fixture("sensor_combined", timestamp=[0, 20000, 40000, 42500, 60000, 80000, 100000])
     expect("imu rate through bursts", screen_imu_rate(burst), {"imu_hz": "50"})

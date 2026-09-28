@@ -88,7 +88,7 @@ use nalgebra::Vector3;
 ///         3.0,
 ///         SigmaBounds::new(0.5, 100.0),
 ///         SigmaBounds::new(0.75, 100.0),
-///     ),
+///     ), Position::zero(),
 /// );
 /// assert!(outcome.is_accepted());
 /// assert!(filter.origin().is_some());
@@ -98,7 +98,7 @@ use nalgebra::Vector3;
 /// let outcome = filter.fuse_gnss_velocity(
 ///     now,
 ///     Velocity::ned(0.0, 0.0, 0.0),
-///     VelocityNoise::horizontal_vertical(0.3, 1000.0),
+///     VelocityNoise::horizontal_vertical(0.3, 1000.0), Position::zero(),
 /// );
 /// assert!(outcome.is_accepted());
 ///
@@ -951,6 +951,17 @@ impl Eskf {
     /// The adoption after a coarse start is the exception, and takes the fix whole: it writes
     /// all three axes onto the covariance, so any unusable number refuses both halves.
     ///
+    /// `antenna` is where the antenna sits relative to the IMU in body axes, forward, right,
+    /// down ([`Position::body`](crate::Position)), and [`Position::zero`](crate::Position) for
+    /// one on top of it. The fix is the antenna's, `p + R r` of (28′), and the estimate stays
+    /// the IMU's. Unlike PX4, which subtracts `R̂ r` from the fix and keeps `H` as it was
+    /// (`EKF/aid_sources/gnss/gps_control.cpp:351-354` at `c4e4ef98`), the update carries the
+    /// arm's dependence on attitude, `−R̂[r]×`, so a fix observes heading through a long mast;
+    /// see `observation/gnss.rs` for what that was measured against. An argument, as `noise`
+    /// is and as PX4 carries it on each GNSS message (`antenna_offset_x/y/z`), because a
+    /// second receiver has its own; from PX4's parameters it is `SENS_GPS0_OFF*` less
+    /// `EKF2_IMU_POS*`.
+    ///
     /// `time` is when the measurement was taken, on the clock the IMU's samples are timed on;
     /// [`Fusion::OutOfHorizon`] says which times cannot be placed.
     pub fn fuse_gnss_position(
@@ -958,6 +969,7 @@ impl Eskf {
         time: Timestamp,
         position: Position<Ned>,
         noise: PositionNoise<Ned>,
+        antenna: Position<Body>,
     ) -> GnssFusion {
         if let Err(refusal) = self.admit(time) {
             return self.refuse_gnss(refusal);
@@ -971,7 +983,8 @@ impl Eskf {
             if !noise.is_positive() {
                 return self.refuse_gnss(Fusion::InvalidNoise);
             }
-            self.adopt_position(self.carried_position(position, time), noise, POSITION);
+            let adopted = self.carried_position(position, antenna, time);
+            self.adopt_position(adopted, noise, POSITION);
             self.unestablished.position = false;
             self.diagnostics.gnss_position.record_adopted();
             self.diagnostics.gnss_height.record_adopted();
@@ -983,8 +996,8 @@ impl Eskf {
             Some(refusal) => refuse(&mut self.diagnostics.gnss_position, refusal),
             None => {
                 let observation = self
-                    .observe(time, |past| {
-                        gnss::horizontal_observation(past, position, noise)
+                    .observe(time, |past, _| {
+                        gnss::horizontal_observation(past, position, noise, antenna)
                     })
                     .correlated(correlation_inflation(
                         self.diagnostics.gnss_position.since_measured,
@@ -1002,7 +1015,7 @@ impl Eskf {
                     |diagnostics| &mut diagnostics.gnss_position,
                     self.config.recovery.gnss_position,
                     |filter| {
-                        let adopted = filter.carried_position(position, time);
+                        let adopted = filter.carried_position(position, antenna, time);
                         filter.adopt_position(adopted, noise, HORIZONTAL);
                     },
                 )
@@ -1012,7 +1025,9 @@ impl Eskf {
             Some(refusal) => refuse(&mut self.diagnostics.gnss_height, refusal),
             None => {
                 let observation = self
-                    .observe(time, |past| gnss::height_observation(past, position, noise))
+                    .observe(time, |past, _| {
+                        gnss::height_observation(past, position, noise, antenna)
+                    })
                     .correlated(correlation_inflation(
                         self.diagnostics.gnss_height.since_measured,
                         self.config.correlation.gnss_height,
@@ -1029,7 +1044,7 @@ impl Eskf {
                     |diagnostics| &mut diagnostics.gnss_height,
                     self.config.recovery.gnss_height,
                     |filter| {
-                        let adopted = filter.carried_position(position, time);
+                        let adopted = filter.carried_position(position, antenna, time);
                         filter.adopt_height(adopted, noise);
                     },
                 )
@@ -1098,40 +1113,70 @@ impl Eskf {
     fn observe<const M: usize>(
         &self,
         time: Timestamp,
-        build: impl FnOnce(&State) -> Observation<M>,
+        build: impl FnOnce(&State, AngularRate<Body>) -> Observation<M>,
     ) -> Observation<M> {
         if time == self.time {
-            return build(&self.state);
+            return build(&self.state, self.mean_rate(&self.state, 0.0));
         }
         let (past, age) = self.past(time);
         let tau = age.as_secs();
+        let omega = self.mean_rate(&past, tau);
         if tau == 0.0 {
-            return build(&past);
+            return build(&past, omega);
         }
-        let (now, then) = (self.state.attitude.quaternion(), past.attitude.quaternion());
+        let now = self.state.attitude.quaternion();
         // Mean rates over the age, rather than the last sample's: one sample's specific force
         // carries the airframe's vibration, which the velocities either side of it average out.
-        let omega = (then.inverse() * now).scaled_axis() / tau;
         let a_n = (self.state.velocity.vector() - past.velocity.vector()) / tau;
         let a_b = now.inverse() * (a_n - propagate::gravity());
-        let a = propagate::error_dynamics(&self.state, omega, a_b);
-        build(&past).delayed(age, &a)
+        let a = propagate::error_dynamics(&self.state, omega.vector(), a_b);
+        build(&past, omega).delayed(age, &a)
     }
 
-    /// A measurement taken at `time` carried to now by the state's own motion since:
-    /// `z + x̂ − x̂(t − τ)`, for an adoption, which writes the measurement as the state. A fix
-    /// 110 ms old on a vehicle at 30 m/s, adopted as it stands, puts the estimate 3.3 m behind.
-    fn carried_position(&self, taken: Position<Ned>, time: Timestamp) -> Position<Ned> {
+    /// The body rate between `past`, `tau` before now, and now: the rotation the attitude
+    /// made, over the time it took. Bias-corrected by construction, since it is the estimate's
+    /// own turn. With no interval, the last sample's `ω` of (9), or none after a coast.
+    ///
+    /// What (23′) carries `H` with, and the rate a GNSS velocity's antenna turned at, (29′):
+    /// a solution 110 ms old is the antenna's motion then, not now.
+    fn mean_rate(&self, past: &State, tau: f32) -> AngularRate<Body> {
+        if tau == 0.0 {
+            return self.angular_rate.unwrap_or_default();
+        }
+        let (now, then) = (self.state.attitude.quaternion(), past.attitude.quaternion());
+        AngularRate::from_vector((then.inverse() * now).scaled_axis() / tau)
+    }
+
+    /// A fix of the antenna taken at `time`, as the IMU's position now: referred to the IMU
+    /// by the attitude then, `z − R̂(t − τ) r` of (28′), and carried to now by the state's own
+    /// motion since, `+ x̂ − x̂(t − τ)`. For an adoption, which writes the measurement as the
+    /// state. A fix 110 ms old on a vehicle at 30 m/s, adopted as it stands, puts the estimate
+    /// 3.3 m behind.
+    fn carried_position(
+        &self,
+        taken: Position<Ned>,
+        antenna: Position<Body>,
+        time: Timestamp,
+    ) -> Position<Ned> {
         let (past, _) = self.past(time);
+        let arm = past.attitude.quaternion() * antenna.vector();
         let moved = self.state.position.vector() - past.position.vector();
-        Position::from_vector(taken.vector() + moved)
+        Position::from_vector(taken.vector() - arm + moved)
     }
 
-    /// [`carried_position`](Self::carried_position) for a velocity.
-    fn carried_velocity(&self, taken: Velocity<Ned>, time: Timestamp) -> Velocity<Ned> {
-        let (past, _) = self.past(time);
+    /// [`carried_position`](Self::carried_position) for a velocity, referred to the IMU by
+    /// (29′) at the rate the vehicle was turning then.
+    fn carried_velocity(
+        &self,
+        taken: Velocity<Ned>,
+        antenna: Position<Body>,
+        time: Timestamp,
+    ) -> Velocity<Ned> {
+        let (past, age) = self.past(time);
+        let omega = self.mean_rate(&past, age.as_secs());
+        let turning = past.attitude.quaternion() * omega.vector().cross(&antenna.vector());
         let moved = self.state.velocity.vector() - past.velocity.vector();
-        Velocity::from_vector(taken.vector() + moved)
+        Velocity::from_vector(taken.vector() - turning + moved)
     }
 
     /// Refuse both halves of a GNSS fix for one reason.
@@ -1162,8 +1207,9 @@ impl Eskf {
     /// zero until they have a fix, and a finite zero is a usable origin: the first one
     /// would put the navigation frame in the Gulf of Guinea for the rest of the flight.
     ///
-    /// `noise` is as for [`fuse_gnss_position`](Self::fuse_gnss_position), floor
-    /// included, and so is the split into two gated halves.
+    /// `noise` and `antenna` are as for [`fuse_gnss_position`](Self::fuse_gnss_position), floor
+    /// included, and so is the split into two gated halves. The origin (44) places goes under
+    /// the estimate of the antenna, since the fix is the antenna's.
     ///
     /// A fix that is not a number is refused with [`Fusion::NotFinite`], both halves, since
     /// no conversion survives one; so is a noise that is not, where the fix would place the
@@ -1179,6 +1225,7 @@ impl Eskf {
         time: Timestamp,
         fix: Geodetic,
         noise: PositionNoise<Ned>,
+        antenna: Position<Body>,
     ) -> GnssFusion {
         if let Err(refusal) = self.admit(time) {
             return self.refuse_gnss(refusal);
@@ -1190,7 +1237,7 @@ impl Eskf {
             return self.refuse_gnss(Fusion::NotFinite);
         }
         if let Some(origin) = self.origin {
-            return self.fuse_gnss_position(time, origin.to_ned(fix), noise);
+            return self.fuse_gnss_position(time, origin.to_ned(fix), noise, antenna);
         }
         if !noise.is_finite() {
             return self.refuse_gnss(Fusion::NotFinite);
@@ -1204,13 +1251,15 @@ impl Eskf {
                 return self.refuse_gnss(Fusion::NoReference);
             };
             self.place_origin(origin);
-            return self.fuse_gnss_position(time, Position::zero(), noise);
+            return self.fuse_gnss_position(time, Position::zero(), noise, antenna);
         }
 
         // Equation (44): the origin under the estimate when the fix was taken, and the fix's
-        // error as the position's.
+        // error as the position's. The estimate of the antenna's position, which is what the
+        // fix measures, (28′).
         let (past, _) = self.past(time);
-        let Some(origin) = LocalOrigin::placing(fix, past.position) else {
+        let antenna_then = past.position.vector() + past.attitude.quaternion() * antenna.vector();
+        let Some(origin) = LocalOrigin::placing(fix, Position::from_vector(antenna_then)) else {
             return self.refuse_gnss(Fusion::NoReference);
         };
         self.place_origin(origin);
@@ -1245,6 +1294,11 @@ impl Eskf {
     /// [`Config::correlation`](crate::Config::correlation)'s `gnss_velocity`;
     /// the gate reads `noise` itself.
     ///
+    /// `antenna` is as for [`fuse_gnss_position`](Self::fuse_gnss_position): the solution is
+    /// the antenna's velocity, `v + R(ω × r)` of (29′), with `ω` the rate the vehicle turned
+    /// at over the solution's age, read off the state's own history rather than the last
+    /// sample.
+    ///
     /// `time` is when the measurement was taken, on the clock the IMU's samples are timed on;
     /// [`Fusion::OutOfHorizon`] says which times cannot be placed.
     pub fn fuse_gnss_velocity(
@@ -1252,6 +1306,7 @@ impl Eskf {
         time: Timestamp,
         velocity: Velocity<Ned>,
         noise: VelocityNoise<Ned>,
+        antenna: Position<Body>,
     ) -> Fusion {
         if let Err(refusal) = self.admit(time) {
             return refuse(&mut self.diagnostics.gnss_velocity, refusal);
@@ -1264,14 +1319,14 @@ impl Eskf {
             return refuse(&mut self.diagnostics.gnss_velocity, Fusion::InvalidNoise);
         }
         if self.unestablished.velocity {
-            self.adopt_velocity(self.carried_velocity(velocity, time), noise);
+            self.adopt_velocity(self.carried_velocity(velocity, antenna, time), noise);
             self.unestablished.velocity = false;
             self.diagnostics.gnss_velocity.record_adopted();
             return Fusion::Reset;
         }
         let observation = self
-            .observe(time, |past| {
-                gnss::velocity_observation(past, velocity, noise)
+            .observe(time, |past, omega| {
+                gnss::velocity_observation(past, velocity, noise, antenna, omega)
             })
             .correlated(correlation_inflation(
                 self.diagnostics.gnss_velocity.since_measured,
@@ -1289,7 +1344,7 @@ impl Eskf {
             |diagnostics| &mut diagnostics.gnss_velocity,
             self.config.recovery.gnss_velocity,
             |filter| {
-                let adopted = filter.carried_velocity(velocity, time);
+                let adopted = filter.carried_velocity(velocity, antenna, time);
                 filter.adopt_velocity(adopted, noise);
             },
         )
@@ -1370,7 +1425,7 @@ impl Eskf {
             return Fusion::Accepted { test_ratio: 0.0 };
         };
         let observation = self
-            .observe(time, |past| {
+            .observe(time, |past, _| {
                 baro::altitude_observation(past, altitude, reference, noise)
             })
             .correlated(correlation_inflation(
@@ -1653,7 +1708,7 @@ impl Eskf {
     ) -> Fusion {
         let since_measured = (source.health)(&mut self.diagnostics).since_measured;
         let observation = self
-            .observe(time, |past| build(past, &self.covariance))
+            .observe(time, |past, _| build(past, &self.covariance))
             .correlated(correlation_inflation(since_measured, source.correlation));
         if self.unestablished.heading {
             self.adopt_heading(&observation, spread);
@@ -1795,12 +1850,13 @@ impl Eskf {
     /// The body angular rate with the estimated gyroscope bias removed, `ω` of equation (9),
     /// from the last step [`predict`](Self::predict) integrated from a sample.
     ///
-    /// For correcting a measurement taken away from the IMU, which this filter does not do:
-    /// an antenna at `r` in body axes reads the IMU's position plus `R r` and its velocity
-    /// plus `R (ω × r)`. The caller holds `r` and the raw rate; the filter holds the bias, and
-    /// this is where the two meet. PX4 applies the same correction itself, with the same
-    /// bias-corrected rate (`EKF/aid_sources/gnss/gps_control.cpp:313-318` and `:351-354` at
-    /// `c4e4ef98`).
+    /// For moving the estimate to a point other than the IMU. The GNSS `fuse_*` take their
+    /// antenna's offset and refer the fix to the IMU themselves, (28′) and (29′); the estimate
+    /// they correct stays the IMU's, and a point at `r` in body axes (the centre of mass a
+    /// controller wants, a payload, a sensor this crate does not fuse) is at the IMU's position
+    /// plus `R r` and moves at its velocity plus `R (ω × r)`. PX4 reports its estimate at the
+    /// IMU the same way, and corrects each aiding source with this bias-corrected rate
+    /// (`EKF/aid_sources/gnss/gps_control.cpp:313-318` at `c4e4ef98`).
     ///
     /// ```
     /// use fusion_nav::prelude::*;
@@ -1818,23 +1874,19 @@ impl Eskf {
     /// # filter.initialize(&window)?;
     /// # let imu = ImuSample::from_rates(at(801), AngularRate::body(0.0, 0.0, 0.5), gravity, dt);
     /// # assert!(filter.predict(imu).is_propagated());
-    /// # let fix_time = at(801);
-    /// # let antenna = Position::ned(0.0, 0.0, -0.4);
-    /// # let antenna_velocity = Velocity::ned(0.1, 0.0, 0.0);
-    /// # let position_noise = PositionNoise::horizontal_vertical(1.0, 1.5);
-    /// # let velocity_noise = VelocityNoise::from_speed_accuracy(0.3);
-    /// // The antenna's offset from the IMU, forward, right and down: measured on the airframe.
-    /// let r = nalgebra::Vector3::new(0.0, 0.0, -0.4);
+    /// // The centre of mass, 0.2 m behind the IMU: measured on the airframe.
+    /// let r = Position::body(-0.2, 0.0, 0.0).vector();
     ///
     /// // None before the first step and across a gap, where no sample says how fast the
-    /// // vehicle turned: fuse the fix uncorrected, or not at all, as the offset warrants.
+    /// // vehicle turned.
     /// if let Some(omega) = filter.angular_rate() {
-    ///     let rotation = filter.state().attitude.quaternion();
-    ///     let position = Position::<Ned>::from_vector(antenna.vector() - rotation * r);
-    ///     let swept = rotation * omega.vector().cross(&r);
-    ///     let velocity = Velocity::<Ned>::from_vector(antenna_velocity.vector() - swept);
-    ///     let _ = filter.fuse_gnss_position(fix_time, position, position_noise);
-    ///     let _ = filter.fuse_gnss_velocity(fix_time, velocity, velocity_noise);
+    ///     let state = filter.state();
+    ///     let rotation = state.attitude.quaternion();
+    ///     let position = state.position.vector() + rotation * r;
+    ///     let velocity = state.velocity.vector() + rotation * omega.vector().cross(&r);
+    ///     // Yawing at 0.5 rad/s, a point 0.2 m aft swings sideways at 0.1 m/s.
+    ///     assert!((velocity.norm() - 0.1).abs() < 1e-3);
+    /// #   let _ = position;
     /// }
     /// # Ok::<(), InitError>(())
     /// ```
@@ -2540,6 +2592,7 @@ mod tests {
                             filter.now(),
                             Position::ned(0.0, 0.0, 0.0),
                             PositionNoise::horizontal_vertical(1.5, 1.5),
+                            Position::zero(),
                         )
                         .is_accepted()
                 );
@@ -3036,7 +3089,7 @@ mod tests {
         let _ = coasting.step(still().imu, gap);
         assert!(
             coasting
-                .fuse_gnss_position(coasting.now(), fix, noise)
+                .fuse_gnss_position(coasting.now(), fix, noise, Position::zero())
                 .horizontal
                 .is_accepted()
         );
@@ -3045,7 +3098,7 @@ mod tests {
         let _ = refusing.step(still().imu, gap);
         assert!(matches!(
             refusing
-                .fuse_gnss_position(refusing.now(), fix, noise)
+                .fuse_gnss_position(refusing.now(), fix, noise, Position::zero())
                 .horizontal,
             Fusion::Rejected { .. }
         ));
@@ -3124,14 +3177,15 @@ mod tests {
         let noise = VelocityNoise::from_speed_accuracy(0.3);
 
         assert_eq!(
-            filter.fuse_gnss_velocity(filter.now(), nan, noise),
+            filter.fuse_gnss_velocity(filter.now(), nan, noise, Position::zero()),
             Fusion::NotFinite
         );
         assert_eq!(
             filter.fuse_gnss_velocity(
                 filter.now(),
                 Velocity::ned(1.0, 0.0, 0.0),
-                VelocityNoise::from_variance(0.0, 1.0, 1.0)
+                VelocityNoise::from_variance(0.0, 1.0, 1.0),
+                Position::zero()
             ),
             Fusion::InvalidNoise
         );
@@ -3185,13 +3239,23 @@ mod tests {
         let mut filter = coarse();
         let noise = PositionNoise::horizontal_vertical(1.5, 1.5);
         assert_eq!(
-            filter.fuse_gnss_position(filter.now(), Position::ned(120.0, -40.0, -75.0), noise),
+            filter.fuse_gnss_position(
+                filter.now(),
+                Position::ned(120.0, -40.0, -75.0),
+                noise,
+                Position::zero()
+            ),
             GnssFusion::both(Fusion::Reset)
         );
         // The second fix has an estimate to be judged against, so it is fused, not adopted.
         assert!(
             filter
-                .fuse_gnss_position(filter.now(), Position::ned(121.0, -40.0, -75.0), noise)
+                .fuse_gnss_position(
+                    filter.now(),
+                    Position::ned(121.0, -40.0, -75.0),
+                    noise,
+                    Position::zero()
+                )
                 .is_accepted()
         );
 
@@ -3258,7 +3322,8 @@ mod tests {
             filter.fuse_gnss_position(
                 filter.now(),
                 Position::ned(10.0, -4.0, -30.0),
-                PositionNoise::from_sigma(1.0, 1.0, 2.8)
+                PositionNoise::from_sigma(1.0, 1.0, 2.8),
+                Position::zero()
             ),
             GnssFusion::both(Fusion::Reset)
         );
@@ -3519,7 +3584,9 @@ mod tests {
         let mut filter = flying();
         let there = Position::ned(filter.state().position.x() - 5.0, 0.0, 0.0);
         let taken = filter.now().before(age);
-        let aged = filter.fuse_gnss_position(taken, there, noise).horizontal;
+        let aged = filter
+            .fuse_gnss_position(taken, there, noise, Position::zero())
+            .horizontal;
         assert!(
             aged.test_ratio().is_some_and(|ratio| ratio < 1.0e-3),
             "{aged:?}"
@@ -3527,7 +3594,9 @@ mod tests {
 
         let mut filter = flying();
         let now = filter.now();
-        let current = filter.fuse_gnss_position(now, there, noise).horizontal;
+        let current = filter
+            .fuse_gnss_position(now, there, noise, Position::zero())
+            .horizontal;
         assert!(matches!(current, Fusion::Rejected { .. }), "{current:?}");
     }
 
@@ -3546,7 +3615,8 @@ mod tests {
             .initialize_from(state, covariance, start)
             .expect("a sane seed");
         let taken = start.before(before);
-        let refused = seeded.fuse_gnss_position(taken, Position::ned(0.0, 0.0, 0.0), noise);
+        let refused =
+            seeded.fuse_gnss_position(taken, Position::ned(0.0, 0.0, 0.0), noise, Position::zero());
         assert_eq!(
             refused,
             GnssFusion::both(Fusion::OutOfHorizon { age: before })
@@ -3554,7 +3624,8 @@ mod tests {
 
         let mut still = initialized();
         let taken = still.now().before(before);
-        let fused = still.fuse_gnss_position(taken, Position::ned(0.0, 0.0, 0.0), noise);
+        let fused =
+            still.fuse_gnss_position(taken, Position::ned(0.0, 0.0, 0.0), noise, Position::zero());
         assert!(fused.is_accepted(), "{fused:?}");
     }
 
@@ -3574,8 +3645,12 @@ mod tests {
         let taken = filter.now().before(Seconds::from_secs(0.2));
         let off = Position::ned(3.0, 0.0, 0.0);
         let noise = PositionNoise::horizontal_vertical(0.5, 0.5);
-        let first = filter.fuse_gnss_position(taken, off, noise).horizontal;
-        let second = filter.fuse_gnss_position(taken, off, noise).horizontal;
+        let first = filter
+            .fuse_gnss_position(taken, off, noise, Position::zero())
+            .horizontal;
+        let second = filter
+            .fuse_gnss_position(taken, off, noise, Position::zero())
+            .horizontal;
         let (Some(first), Some(second)) = (first.test_ratio(), second.test_ratio()) else {
             panic!("both fixes reach the gate: {first:?}, {second:?}");
         };
@@ -3601,7 +3676,9 @@ mod tests {
         let there = Position::ned(filter.state().position.x() + 1.0, 0.0, 0.0);
         let noise = PositionNoise::horizontal_vertical(0.5, 0.5);
         let taken = filter.now().after(lead);
-        let outcome = filter.fuse_gnss_position(taken, there, noise).horizontal;
+        let outcome = filter
+            .fuse_gnss_position(taken, there, noise, Position::zero())
+            .horizontal;
         assert!(
             outcome.test_ratio().is_some_and(|ratio| ratio < 1.0e-3),
             "{outcome:?}"
@@ -3759,6 +3836,7 @@ mod tests {
                     filter.now(),
                     Position::ned(0.0, 0.0, 0.0),
                     PositionNoise::from_sigma(1.0, 1.0, 1.0),
+                    Position::zero(),
                 );
                 let _ = filter.fuse_baro_altitude(
                     filter.now(),
@@ -3795,6 +3873,7 @@ mod tests {
                         filter.now(),
                         Position::ned(0.0, 0.0, 0.0),
                         PositionNoise::from_sigma(1.0, 1.0, 1.0),
+                        Position::zero(),
                     );
                 }
             }
@@ -3823,6 +3902,7 @@ mod tests {
                         filter.now(),
                         Velocity::ned(0.0, 0.0, 0.0),
                         VelocityNoise::from_speed_accuracy(0.3),
+                        Position::zero(),
                     );
                 }
                 if step % 5 == 0 {
@@ -3852,6 +3932,7 @@ mod tests {
                 filter.now(),
                 Position::ned(0.0, 0.0, 0.0),
                 PositionNoise::from_sigma(1.0, 1.0, 1.0),
+                Position::zero(),
             );
         };
         let (mut interleaved, mut clean) = (aided(), aided());
@@ -3865,6 +3946,7 @@ mod tests {
             interleaved.now(),
             Position::ned(f32::NAN, f32::NAN, f32::NAN),
             PositionNoise::from_sigma(1.0, 1.0, 1.0),
+            Position::zero(),
         );
         assert_eq!(refused, GnssFusion::both(Fusion::NotFinite));
         for filter in [&mut interleaved, &mut clean] {
@@ -3887,7 +3969,7 @@ mod tests {
         // accepted, 110 ms before it, not from the one turned away 10 ms before. The half that
         // was accepted does restart its own clock, which the two halves keep apart.
         let fix = |filter: &mut Eskf, position: Position<Ned>, noise: PositionNoise<Ned>| {
-            let _ = filter.fuse_gnss_position(filter.now(), position, noise);
+            let _ = filter.fuse_gnss_position(filter.now(), position, noise, Position::zero());
         };
         let one = PositionNoise::from_sigma(1.0, 1.0, 1.0);
         let steps = |filter: &mut Eskf, n: usize| {
@@ -3900,8 +3982,12 @@ mod tests {
             fix(filter, Position::ned(0.0, 0.0, 0.0), one);
             steps(filter, 10);
         }
-        let outcome =
-            rejected.fuse_gnss_position(rejected.now(), Position::ned(1000.0, 0.0, 1000.0), one);
+        let outcome = rejected.fuse_gnss_position(
+            rejected.now(),
+            Position::ned(1000.0, 0.0, 1000.0),
+            one,
+            Position::zero(),
+        );
         assert!(
             matches!(outcome.horizontal, Fusion::Rejected { .. }),
             "{outcome:?}"
@@ -3910,6 +3996,7 @@ mod tests {
             half.now(),
             Position::ned(0.0, 0.0, 0.0),
             PositionNoise::horizontal_vertical(1.0, f32::NAN),
+            Position::zero(),
         );
         assert_eq!(outcome.height, Fusion::NotFinite);
         for filter in [&mut rejected, &mut half, &mut clean] {
@@ -3932,6 +4019,7 @@ mod tests {
                 filter.now(),
                 Position::ned(0.0, 0.0, 0.0),
                 PositionNoise::from_sigma(1.0, 1.0, 1.0),
+                Position::zero(),
             );
         };
         let mut restarted = aided();
@@ -4145,6 +4233,7 @@ mod tests {
             filter.now(),
             Velocity::ned(0.0, 0.0, 0.0),
             VelocityNoise::from_speed_accuracy(0.3),
+            Position::zero(),
         );
         assert!(velocity.is_accepted(), "{velocity:?}");
         assert_eq!(filter.state().status, Status::Aligning);
@@ -4424,6 +4513,7 @@ mod tests {
             filter.now(),
             fix,
             PositionNoise::horizontal_vertical(1.5, 1.5),
+            Position::zero(),
         );
 
         assert_eq!(outcome, GnssFusion::both(Fusion::Reset));
@@ -4441,6 +4531,7 @@ mod tests {
             filter.now(),
             fix,
             PositionNoise::horizontal_vertical(1.5, 1.5),
+            Position::zero(),
         );
         assert!(
             matches!(outcome.horizontal, Fusion::Accepted { .. })
@@ -4458,6 +4549,7 @@ mod tests {
             filter.now(),
             Position::ned(0.5, -0.5, 0.2),
             PositionNoise::horizontal_vertical(1.0, 1.0),
+            Position::zero(),
         );
 
         let Fusion::Accepted { test_ratio } = outcome.horizontal else {
@@ -4477,7 +4569,12 @@ mod tests {
         let noise = PositionNoise::horizontal_vertical(1.0, 1.0);
         assert!(
             filter
-                .fuse_gnss_position(filter.now(), Position::ned(0.1, 0.0, 0.0), noise)
+                .fuse_gnss_position(
+                    filter.now(),
+                    Position::ned(0.1, 0.0, 0.0),
+                    noise,
+                    Position::zero()
+                )
                 .is_accepted()
         );
         assert!(filter.step(still().imu, DT).is_propagated());
@@ -4485,8 +4582,12 @@ mod tests {
         let timer = filter.diagnostics().gnss_position.time_since_accepted;
 
         // A kilometre out in both halves, so neither changes anything.
-        let both =
-            filter.fuse_gnss_position(filter.now(), Position::ned(1000.0, 0.0, 1000.0), noise);
+        let both = filter.fuse_gnss_position(
+            filter.now(),
+            Position::ned(1000.0, 0.0, 1000.0),
+            noise,
+            Position::zero(),
+        );
         assert!(matches!(both.height, Fusion::Rejected { .. }), "{both:?}");
         let outcome = both.horizontal;
         assert!(matches!(outcome, Fusion::Rejected { test_ratio } if test_ratio > 1.0));
@@ -4510,6 +4611,7 @@ mod tests {
             filter.now(),
             Position::ned(0.1, 0.0, 0.0),
             PositionNoise::horizontal_vertical(1.0, 1.0),
+            Position::zero(),
         );
         assert_eq!(outcome.horizontal, Fusion::StateInvalid);
         let health = filter.diagnostics().gnss_position;
@@ -4533,6 +4635,7 @@ mod tests {
             filter.now(),
             Position::ned(0.2, -0.1, -50.0),
             PositionNoise::horizontal_vertical(1.0, 1.0),
+            Position::zero(),
         );
         assert!(
             matches!(outcome.horizontal, Fusion::Accepted { .. }),
@@ -4558,6 +4661,7 @@ mod tests {
             filter.now(),
             Position::ned(0.2, -0.1, 0.0),
             PositionNoise::<Ned>::from_variance(1.0, 1.0, 0.0),
+            Position::zero(),
         );
         assert!(
             matches!(outcome.horizontal, Fusion::Accepted { .. }),
@@ -4579,7 +4683,8 @@ mod tests {
                 .fuse_gnss_velocity(
                     filter.now(),
                     velocity,
-                    VelocityNoise::from_speed_accuracy(0.3)
+                    VelocityNoise::from_speed_accuracy(0.3),
+                    Position::zero()
                 )
                 .is_reset()
         );
@@ -4591,7 +4696,8 @@ mod tests {
                 .fuse_gnss_position(
                     filter.now(),
                     Position::ned(1.0, 2.0, 3.0),
-                    PositionNoise::horizontal_vertical(1.5, 1.5)
+                    PositionNoise::horizontal_vertical(1.5, 1.5),
+                    Position::zero()
                 )
                 .is_reset()
         );
@@ -4604,6 +4710,7 @@ mod tests {
             filter.now(),
             Position::ned(0.2, -0.1, 0.0),
             PositionNoise::horizontal_vertical(1.5, 1.5),
+            Position::zero(),
         );
         assert!(
             !outcome.is_reset(),
@@ -4649,6 +4756,7 @@ mod tests {
             filter.now(),
             Velocity::ned(0.0, 0.0, 0.0),
             VelocityNoise::from_speed_accuracy(0.3),
+            Position::zero(),
         );
         assert!(
             !outcome.is_reset(),
@@ -4702,6 +4810,7 @@ mod tests {
                     filter.now(),
                     Position::ned(0.0, 0.0, 0.0),
                     PositionNoise::from_sigma(100.0, 100.0, 100.0),
+                    Position::zero(),
                 );
                 assert!(fix.horizontal.is_accepted(), "{fix:?}");
             }
@@ -5099,6 +5208,7 @@ mod tests {
             filter.now(),
             Position::ned(0.2, -0.1, 0.0),
             PositionNoise::horizontal_vertical(1.5, 1.5),
+            Position::zero(),
         );
         assert!(
             !outcome.is_reset(),
@@ -5135,6 +5245,7 @@ mod tests {
                     filter.now(),
                     Position::ned(120.0, -40.0, -75.0),
                     PositionNoise::horizontal_vertical(1.5, 1.5),
+                    Position::zero(),
                 )
                 .is_reset()
         );
@@ -5166,6 +5277,7 @@ mod tests {
             filter.now(),
             Position::ned(0.0, 0.0, 0.0),
             PositionNoise::horizontal_vertical(1.5, 1.5),
+            Position::zero(),
         );
         // ...and the magnetometer is being accepted, so heading will come in even though
         // it is worthless at this instant. A σ of 0.6 rad is what makes it worthless: the
@@ -5313,6 +5425,7 @@ mod tests {
             filter.now(),
             zurich(),
             PositionNoise::horizontal_vertical(1.5, 1.5),
+            Position::zero(),
         );
         assert!(outcome.is_accepted() && !outcome.is_reset(), "{outcome:?}");
 
@@ -5347,7 +5460,7 @@ mod tests {
             .expect("a finite site");
 
         let noise = PositionNoise::horizontal_vertical(1.5, 1.5);
-        let _ = filter.fuse_gnss_geodetic(filter.now(), east_of_moscow(), noise);
+        let _ = filter.fuse_gnss_geodetic(filter.now(), east_of_moscow(), noise, Position::zero());
         assert_eq!(filter.magnetic_declination(), model);
         assert!((yaw_of(&filter) - model.as_radians()).abs() < 1e-6);
         let attitude = |p: &Covariance| p.as_matrix().fixed_view::<3, 3>(6, 6).into_owned();
@@ -5381,7 +5494,7 @@ mod tests {
             .expect("a 2 s window of stillness");
         let yaw = yaw_of(&filter);
         let noise = PositionNoise::horizontal_vertical(1.5, 1.5);
-        let _ = filter.fuse_gnss_geodetic(filter.now(), east_of_moscow(), noise);
+        let _ = filter.fuse_gnss_geodetic(filter.now(), east_of_moscow(), noise, Position::zero());
         assert_eq!(filter.magnetic_declination(), Radians::from_radians(0.1));
         assert_eq!(yaw_of(&filter), yaw);
     }
@@ -5398,7 +5511,7 @@ mod tests {
         let yaw = yaw_of(&filter);
 
         let noise = PositionNoise::horizontal_vertical(1.5, 1.5);
-        let _ = filter.fuse_gnss_geodetic(filter.now(), east_of_moscow(), noise);
+        let _ = filter.fuse_gnss_geodetic(filter.now(), east_of_moscow(), noise, Position::zero());
         assert!(
             filter.magnetic_declination().as_radians() > 0.2,
             "the model was read"
@@ -5421,7 +5534,7 @@ mod tests {
         let yaw = yaw_of(&filter);
 
         let noise = PositionNoise::horizontal_vertical(1.5, 1.5);
-        let _ = filter.fuse_gnss_geodetic(filter.now(), east_of_moscow(), noise);
+        let _ = filter.fuse_gnss_geodetic(filter.now(), east_of_moscow(), noise, Position::zero());
         assert!(
             filter.magnetic_declination().as_radians() > 0.2,
             "the model was read"
@@ -5460,9 +5573,114 @@ mod tests {
             .initialize_over(&window_with_mag(), Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
         let noise = PositionNoise::horizontal_vertical(1.5, 1.5);
-        let _ = filter.fuse_gnss_geodetic(filter.now(), east_of_moscow(), noise);
+        let _ = filter.fuse_gnss_geodetic(filter.now(), east_of_moscow(), noise, Position::zero());
         assert_eq!(filter.magnetic_declination(), Radians::ZERO);
         assert_eq!(yaw_of(&filter), 0.0);
+    }
+
+    /// Nose east and level, so body forward is navigation east: an antenna 1 m forward and
+    /// 0.5 m up is 1 m east of the IMU and 0.5 m above it, worked by hand.
+    fn nose_east() -> Eskf {
+        seeded(
+            attitude_of(0.0, 0.0, core::f32::consts::FRAC_PI_2),
+            AngularRate::zero(),
+        )
+    }
+
+    fn mast() -> Position<Body> {
+        Position::body(1.0, 0.0, -0.5)
+    }
+
+    #[test]
+    fn a_fix_of_the_antenna_where_the_estimate_puts_it_moves_nothing() {
+        let mut filter = nose_east();
+        let before = filter.state().position;
+        let at_antenna = Position::ned(0.0, 1.0, -0.5);
+        let noise = PositionNoise::horizontal_vertical(0.5, 0.5);
+        let fused = filter.fuse_gnss_position(filter.now(), at_antenna, noise, mast());
+        assert!(
+            fused
+                .horizontal
+                .test_ratio()
+                .is_some_and(|ratio| ratio < 1e-9),
+            "{fused:?}"
+        );
+        assert!(fused.height.test_ratio().is_some_and(|ratio| ratio < 1e-9));
+        assert!(near(filter.state().position, before));
+
+        // The same fix read as the IMU's is a metre east of the estimate.
+        let mut unarmed = nose_east();
+        let fused = unarmed.fuse_gnss_position(unarmed.now(), at_antenna, noise, Position::zero());
+        assert!(
+            fused
+                .horizontal
+                .test_ratio()
+                .is_some_and(|ratio| ratio > 0.1)
+        );
+    }
+
+    #[test]
+    fn a_velocity_of_the_antenna_includes_its_swing_about_the_imu() {
+        // Yawing at 0.5 rad/s, nose east: an antenna 1 m forward swings south at 0.5 m/s on
+        // top of whatever the IMU is doing.
+        let mut filter = nose_east();
+        let imu = ImuSample::reading(
+            AngularRate::body(0.0, 0.0, 0.5),
+            Acceleration::body(0.0, 0.0, -GRAVITY),
+        );
+        assert!(filter.step(imu, DT).is_propagated());
+        let v = filter.state().velocity.vector();
+        let swung = Velocity::ned(v.x - 0.5, v.y, v.z);
+        let noise = VelocityNoise::from_speed_accuracy(0.1);
+        let fused = filter.fuse_gnss_velocity(filter.now(), swung, noise, mast());
+        let ratio = fused.test_ratio().expect("fused");
+        assert!(ratio < 1e-3, "ratio {ratio}");
+    }
+
+    #[test]
+    fn an_adopted_fix_is_referred_to_the_imu() {
+        let mut filter = coarse();
+        let yaw = filter.state().attitude.quaternion();
+        let at_antenna = Position::ned(10.0, 20.0, -5.0);
+        let noise = PositionNoise::horizontal_vertical(0.5, 0.5);
+        let adopted = filter.fuse_gnss_position(filter.now(), at_antenna, noise, mast());
+        assert!(adopted.is_reset(), "{adopted:?}");
+        let imu = at_antenna.vector() - yaw * mast().vector();
+        assert!(near(filter.state().position, Position::from_vector(imu)));
+    }
+
+    #[test]
+    fn an_adopted_velocity_is_the_imus_not_the_antennas_swing() {
+        let mut filter = coarse();
+        let imu = ImuSample::reading(
+            AngularRate::body(0.0, 0.0, 0.5),
+            Acceleration::body(0.0, 0.0, -GRAVITY),
+        );
+        assert!(filter.step(imu, DT).is_propagated());
+        let rotation = filter.state().attitude.quaternion();
+        let omega = filter
+            .angular_rate()
+            .expect("a step was integrated")
+            .vector();
+        let at_antenna = Velocity::ned(3.0, -2.0, 0.5);
+        let noise = VelocityNoise::from_speed_accuracy(0.3);
+        let adopted = filter.fuse_gnss_velocity(filter.now(), at_antenna, noise, mast());
+        assert!(adopted.is_reset(), "{adopted:?}");
+        let imu = at_antenna.vector() - rotation * omega.cross(&mast().vector());
+        let got = filter.state().velocity.vector();
+        assert!((got - imu).norm() < 1e-4, "{got} against {imu}");
+    }
+
+    #[test]
+    fn the_origin_goes_under_the_antenna_the_first_fix_measured() {
+        // Level and nose north after a static start: the antenna is 1 m north of the IMU,
+        // so the fix places the origin 1 m south of it, under the IMU.
+        let mut filter = initialized();
+        let noise = PositionNoise::horizontal_vertical(1.5, 1.5);
+        let _ = filter.fuse_gnss_geodetic(filter.now(), zurich(), noise, mast());
+        let origin = filter.origin().expect("placed by the first fix");
+        assert!(near(origin.to_ned(zurich()), Position::ned(1.0, 0.0, -0.5)));
+        assert!(near(filter.state().position, Position::zero()));
     }
 
     #[test]
@@ -5481,6 +5699,7 @@ mod tests {
             filter.now(),
             zurich(),
             PositionNoise::horizontal_vertical(1.5, 3.0),
+            Position::zero(),
         );
 
         let p = filter.covariance();
@@ -5508,21 +5727,22 @@ mod tests {
 
         let nonsense = Geodetic::from_degrees(f64::NAN, 8.5, 488.0);
         assert_eq!(
-            filter.fuse_gnss_geodetic(filter.now(), nonsense, noise),
+            filter.fuse_gnss_geodetic(filter.now(), nonsense, noise, Position::zero()),
             GnssFusion::both(Fusion::NotFinite)
         );
         assert_eq!(
             filter.fuse_gnss_geodetic(
                 filter.now(),
                 zurich(),
-                PositionNoise::from_sigma(f32::NAN, 1.5, 1.5)
+                PositionNoise::from_sigma(f32::NAN, 1.5, 1.5),
+                Position::zero()
             ),
             GnssFusion::both(Fusion::NotFinite)
         );
         assert!(filter.state().position.is_finite());
         assert!(
             filter
-                .fuse_gnss_geodetic(filter.now(), zurich(), noise)
+                .fuse_gnss_geodetic(filter.now(), zurich(), noise, Position::zero())
                 .is_reset()
         );
     }
@@ -5540,7 +5760,8 @@ mod tests {
                 .fuse_gnss_position(
                     filter.now(),
                     Position::ned(nan, 0.0, 0.0),
-                    PositionNoise::horizontal_vertical(1.5, 1.5)
+                    PositionNoise::horizontal_vertical(1.5, 1.5),
+                    Position::zero()
                 )
                 .horizontal,
             Fusion::NotFinite
@@ -5549,7 +5770,8 @@ mod tests {
             filter.fuse_gnss_velocity(
                 filter.now(),
                 Velocity::ned(0.0, 0.0, 0.0),
-                VelocityNoise::from_speed_accuracy(nan)
+                VelocityNoise::from_speed_accuracy(nan),
+                Position::zero()
             ),
             Fusion::NotFinite
         );
@@ -5581,11 +5803,17 @@ mod tests {
         hold(&mut filter, 4.0, 20, |filter| {
             let now = filter.now();
             let noise = PositionNoise::horizontal_vertical(1.5, 1.5);
-            let _ = filter.fuse_gnss_position(now, Position::ned(nan, nan, nan), noise);
+            let _ = filter.fuse_gnss_position(
+                now,
+                Position::ned(nan, nan, nan),
+                noise,
+                Position::zero(),
+            );
             let _ = filter.fuse_gnss_velocity(
                 now,
                 Velocity::ned(nan, 0.0, 0.0),
                 VelocityNoise::from_speed_accuracy(0.3),
+                Position::zero(),
             );
             let _ = filter.fuse_baro_altitude(
                 now,
@@ -5619,6 +5847,7 @@ mod tests {
                 filter.now(),
                 Position::ned(1.0, 2.0, 3.0),
                 PositionNoise::<Ned>::from_variance(0.0, 1.0, -1.0),
+                Position::zero(),
             ),
             GnssFusion::both(Fusion::InvalidNoise),
             "zero variance claims a perfect measurement and makes S singular"
@@ -5628,6 +5857,7 @@ mod tests {
                 filter.now(),
                 Velocity::ned(0.0, 0.0, 0.0),
                 VelocityNoise::<Ned>::from_variance(1.0, -4.0, 1.0),
+                Position::zero(),
             ),
             Fusion::InvalidNoise
         );
@@ -5651,7 +5881,8 @@ mod tests {
             filter.fuse_gnss_geodetic(
                 filter.now(),
                 zurich(),
-                PositionNoise::<Ned>::from_variance(1.0, 1.0, 0.0)
+                PositionNoise::<Ned>::from_variance(1.0, 1.0, 0.0),
+                Position::zero()
             ),
             GnssFusion::both(Fusion::InvalidNoise)
         );
@@ -5674,7 +5905,8 @@ mod tests {
             filter.fuse_gnss_position(
                 filter.now(),
                 fix,
-                PositionNoise::<Ned>::from_variance(-1.0, -1.0, -1.0)
+                PositionNoise::<Ned>::from_variance(-1.0, -1.0, -1.0),
+                Position::zero()
             ),
             GnssFusion::both(Fusion::InvalidNoise)
         );
@@ -5685,7 +5917,8 @@ mod tests {
                 .fuse_gnss_position(
                     filter.now(),
                     fix,
-                    PositionNoise::horizontal_vertical(1.5, 1.5)
+                    PositionNoise::horizontal_vertical(1.5, 1.5),
+                    Position::zero()
                 )
                 .is_reset(),
             "the adoption is still owed to the first usable fix"
@@ -5740,6 +5973,7 @@ mod tests {
             filter.now(),
             zurich(),
             PositionNoise::horizontal_vertical(1.5, 1.5),
+            Position::zero(),
         );
 
         let origin = filter.origin().expect("placed");
@@ -5758,6 +5992,7 @@ mod tests {
             filter.now(),
             zurich(),
             PositionNoise::horizontal_vertical(1.5, 1.5),
+            Position::zero(),
         );
         assert_eq!(outcome, GnssFusion::both(Fusion::Reset));
         assert_eq!(filter.origin().map(|o| o.geodetic()), Some(zurich()));
@@ -5771,6 +6006,7 @@ mod tests {
             filter.now(),
             zurich(),
             PositionNoise::horizontal_vertical(1.5, 1.5),
+            Position::zero(),
         );
         // Position is established now, so this one is fused, not adopted.
         let north = Geodetic::from_degrees(47.3987, 8.5456, 488.0);
@@ -5779,7 +6015,8 @@ mod tests {
                 .fuse_gnss_geodetic(
                     filter.now(),
                     north,
-                    PositionNoise::horizontal_vertical(1.5, 1.5)
+                    PositionNoise::horizontal_vertical(1.5, 1.5),
+                    Position::zero()
                 )
                 .is_reset()
         );
@@ -5795,7 +6032,8 @@ mod tests {
             filter.fuse_gnss_geodetic(
                 filter.now(),
                 off_the_earth,
-                PositionNoise::horizontal_vertical(1.5, 1.5)
+                PositionNoise::horizontal_vertical(1.5, 1.5),
+                Position::zero()
             ),
             GnssFusion::both(Fusion::NoReference)
         );
@@ -5805,7 +6043,8 @@ mod tests {
                 .fuse_gnss_geodetic(
                     filter.now(),
                     zurich(),
-                    PositionNoise::horizontal_vertical(1.5, 1.5)
+                    PositionNoise::horizontal_vertical(1.5, 1.5),
+                    Position::zero()
                 )
                 .is_accepted()
         );
@@ -5819,6 +6058,7 @@ mod tests {
             filter.now(),
             zurich(),
             PositionNoise::horizontal_vertical(1.5, 1.5),
+            Position::zero(),
         );
         let before = filter.geodetic_position().expect("an origin is held");
         let variance = filter.covariance().variance(ErrorState::PositionNorth);
@@ -6058,7 +6298,8 @@ mod tests {
         // Rejected for everything short of `Recovery::gnss_position`, counted from
         // initialization since nothing was ever accepted.
         hold(&mut filter, 6.9, 100, |filter| {
-            let outcome = filter.fuse_gnss_position(filter.now(), far(), one_metre());
+            let outcome =
+                filter.fuse_gnss_position(filter.now(), far(), one_metre(), Position::zero());
             assert!(
                 matches!(outcome.horizontal, Fusion::Rejected { .. }),
                 "{outcome:?}"
@@ -6069,7 +6310,7 @@ mod tests {
         // Half a metre down: inside the height gate, and where an adoption of all three axes
         // would put the estimate exactly.
         let fix = Position::ned(1000.0, 0.0, 0.5);
-        let outcome = filter.fuse_gnss_position(filter.now(), fix, one_metre());
+        let outcome = filter.fuse_gnss_position(filter.now(), fix, one_metre(), Position::zero());
         assert_eq!(outcome.horizontal, Fusion::Reset);
         assert!(
             matches!(outcome.height, Fusion::Accepted { .. }),
@@ -6091,7 +6332,7 @@ mod tests {
         assert_eq!(d.gnss_height.recovered, 0);
 
         // Recovered, so the next fix is judged again rather than adopted.
-        let outcome = filter.fuse_gnss_position(filter.now(), far(), one_metre());
+        let outcome = filter.fuse_gnss_position(filter.now(), far(), one_metre(), Position::zero());
         assert!(
             matches!(outcome.horizontal, Fusion::Accepted { .. }),
             "{outcome:?}"
@@ -6103,7 +6344,12 @@ mod tests {
         // Past the timeout is not enough: only a measurement the gate rejects is a lockout.
         let mut filter = initialized();
         hold(&mut filter, 10.0, 1000, |_| {});
-        let outcome = filter.fuse_gnss_position(filter.now(), Position::zero(), one_metre());
+        let outcome = filter.fuse_gnss_position(
+            filter.now(),
+            Position::zero(),
+            one_metre(),
+            Position::zero(),
+        );
         assert!(
             matches!(outcome.horizontal, Fusion::Accepted { .. })
                 && matches!(outcome.height, Fusion::Accepted { .. }),
@@ -6130,7 +6376,12 @@ mod tests {
         hold(&mut filter, 8.0, 10, |filter| {
             step += 1;
             if step % 10 == 0 {
-                let _ = filter.fuse_gnss_position(filter.now(), Position::zero(), one_metre());
+                let _ = filter.fuse_gnss_position(
+                    filter.now(),
+                    Position::zero(),
+                    one_metre(),
+                    Position::zero(),
+                );
             }
             let outcome = filter.fuse_baro_altitude(
                 filter.now(),
@@ -6177,7 +6428,8 @@ mod tests {
         // Twice the timeout, and short of where dead reckoning alone grows `P` enough to
         // take a kilometre back in, which is about 30 s at rest.
         hold(&mut filter, 15.0, 100, |filter| {
-            let outcome = filter.fuse_gnss_position(filter.now(), far(), one_metre());
+            let outcome =
+                filter.fuse_gnss_position(filter.now(), far(), one_metre(), Position::zero());
             assert!(
                 matches!(outcome.horizontal, Fusion::Rejected { .. }),
                 "{outcome:?}"
@@ -6193,7 +6445,7 @@ mod tests {
         let nan = PositionNoise::from_sigma(f32::NAN, f32::NAN, f32::NAN);
         hold(&mut filter, 10.0, 100, |filter| {
             assert_eq!(
-                filter.fuse_gnss_position(filter.now(), far(), nan),
+                filter.fuse_gnss_position(filter.now(), far(), nan, Position::zero()),
                 GnssFusion::both(Fusion::NotFinite)
             );
         });
@@ -6201,7 +6453,7 @@ mod tests {
 
         // Nothing was accepted through all of that either, so the first fix the gate can
         // judge and rejects is a lockout already: PX4 counts from `time_last_fuse` too.
-        let outcome = filter.fuse_gnss_position(filter.now(), far(), one_metre());
+        let outcome = filter.fuse_gnss_position(filter.now(), far(), one_metre(), Position::zero());
         assert_eq!(outcome.horizontal, Fusion::Reset);
     }
 
@@ -6211,12 +6463,13 @@ mod tests {
         let velocity = Velocity::ned(20.0, 0.0, 0.0);
         let noise = VelocityNoise::from_speed_accuracy(0.3);
         hold(&mut filter, 6.9, 100, |filter| {
-            let outcome = filter.fuse_gnss_velocity(filter.now(), velocity, noise);
+            let outcome =
+                filter.fuse_gnss_velocity(filter.now(), velocity, noise, Position::zero());
             assert!(matches!(outcome, Fusion::Rejected { .. }), "{outcome:?}");
         });
         hold(&mut filter, 0.1, 10, |_| {});
         assert_eq!(
-            filter.fuse_gnss_velocity(filter.now(), velocity, noise),
+            filter.fuse_gnss_velocity(filter.now(), velocity, noise, Position::zero()),
             Fusion::Reset
         );
         assert_eq!(filter.state().velocity, velocity);
@@ -6230,12 +6483,12 @@ mod tests {
         let noise = VelocityNoise::from_speed_accuracy(0.3);
         assert!(
             filter
-                .fuse_gnss_velocity(filter.now(), velocity, noise)
+                .fuse_gnss_velocity(filter.now(), velocity, noise, Position::zero())
                 .is_reset()
         );
         assert!(
             matches!(
-                filter.fuse_gnss_velocity(filter.now(), velocity, noise),
+                filter.fuse_gnss_velocity(filter.now(), velocity, noise, Position::zero()),
                 Fusion::Accepted { .. }
             ),
             "once is once"
@@ -6258,7 +6511,8 @@ mod tests {
                 return;
             }
             if step % 10 == 0 {
-                let outcome = filter.fuse_gnss_position(filter.now(), fix, one_metre());
+                let outcome =
+                    filter.fuse_gnss_position(filter.now(), fix, one_metre(), Position::zero());
                 if outcome.height == Fusion::Reset {
                     adopted_at.get_or_insert(step);
                     assert_eq!(filter.state().position.vector()[2], -20.0);
@@ -6294,7 +6548,12 @@ mod tests {
         hold(&mut filter, 6.0, 10, |filter| {
             step += 1;
             if step % 10 == 0 {
-                let _ = filter.fuse_gnss_position(filter.now(), Position::zero(), one_metre());
+                let _ = filter.fuse_gnss_position(
+                    filter.now(),
+                    Position::zero(),
+                    one_metre(),
+                    Position::zero(),
+                );
             }
             if recovered {
                 return;
@@ -6345,7 +6604,12 @@ mod tests {
         hold(&mut filter, 20.0, 10, |filter| {
             step += 1;
             if step % 10 == 0 {
-                let _ = filter.fuse_gnss_position(filter.now(), Position::zero(), one_metre());
+                let _ = filter.fuse_gnss_position(
+                    filter.now(),
+                    Position::zero(),
+                    one_metre(),
+                    Position::zero(),
+                );
             }
             let outcome =
                 filter.fuse_mag_heading(filter.now(), turned, HeadingNoise::from_sigma(0.05));
@@ -6448,7 +6712,7 @@ mod tests {
 
     fn hold_velocity(filter: &mut Eskf, velocity: Velocity<Ned>) {
         let noise = VelocityNoise::from_speed_accuracy(0.3);
-        let outcome = filter.fuse_gnss_velocity(filter.now(), velocity, noise);
+        let outcome = filter.fuse_gnss_velocity(filter.now(), velocity, noise, Position::zero());
         assert!(outcome.is_accepted(), "{outcome:?}");
     }
 
@@ -6554,6 +6818,7 @@ mod tests {
                 filter.now(),
                 east,
                 VelocityNoise::from_speed_accuracy(0.3),
+                Position::zero(),
             );
             let outcome = filter.fuse_course(filter.now(), HeadingNoise::from_sigma(0.02));
             assert!(matches!(outcome, Fusion::Rejected { .. }), "{outcome:?}");

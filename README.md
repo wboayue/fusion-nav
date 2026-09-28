@@ -73,6 +73,9 @@ use fusion_nav::prelude::*;
 # let arrived = Timestamp::from_micros(12_500_000);
 
 let mut filter = Eskf::new(Config::default());
+// Where the GNSS antenna sits relative to the IMU, forward, right, down in metres: the fix
+// is the antenna's, and the filter refers it to the IMU with its own attitude and rate.
+let antenna = Position::body(0.05, 0.0, -0.12);
 
 // Initialize from samples taken while the vehicle sits still, folded in as they arrive
 // rather than buffered. A short or moving window still starts the filter, as
@@ -104,7 +107,7 @@ loop {
     // The time the fix describes, on the IMU's clock: when it arrived, less the receiver's
     // latency. PX4's EKF2_GPS_DELAY is that latency, 110 ms by default.
     let taken = arrived.before(Seconds::from_secs(0.110));
-    if !filter.fuse_gnss_geodetic(taken, fix, noise).is_accepted() {
+    if !filter.fuse_gnss_geodetic(taken, fix, noise, antenna).is_accepted() {
         /* diagnostics() has the detail */
     }
 
@@ -333,18 +336,25 @@ are integrated over their own intervals. The result is `#[must_use]`:
 
 | method | measurement |
 | ------ | ----------- |
-| `fuse_gnss_geodetic(time, fix, noise)` | latitude, longitude, height; converted about the filter's origin |
-| `fuse_gnss_position(time, position, noise)` | NED position about the filter's origin, for a caller that converts itself |
+| `fuse_gnss_geodetic(time, fix, noise, antenna)` | latitude, longitude, height; converted about the filter's origin |
+| `fuse_gnss_position(time, position, noise, antenna)` | NED position about the filter's origin, for a caller that converts itself |
 
 Both GNSS position calls return a `GnssFusion`, a `Fusion` for each half of the fix —
 `horizontal` and `height` — because the two are gated apart: a height the estimate disagrees with
 is rejected without costing the horizontal fix beside it, and `diagnostics()` carries each half
 as its own source, `gnss_position` and `gnss_height`. `is_accepted()` on it asks for both.
-| `fuse_gnss_velocity(time, velocity, noise)` | NED velocity |
+| `fuse_gnss_velocity(time, velocity, noise, antenna)` | NED velocity |
 | `fuse_baro_altitude(time, altitude, noise)` | altitude, relative to `α₀` |
 | `fuse_mag_heading(time, field, noise)` | body-frame field, reduced to a heading and fused as one scalar |
 | `fuse_gnss_heading(time, heading, noise)` | true heading from a dual-antenna receiver, the mounting angle already removed |
 | `fuse_course(time, sideslip)` | a constraint rather than a reading: the nose points along the estimated velocity, to within `sideslip`. Call it after `fuse_gnss_velocity`, with that fix's `time`. Fixed-wing and ground vehicles; never a multirotor |
+
+`antenna` is where the GNSS antenna sits relative to the IMU, in body axes, `Position::body(forward,
+right, down)` or `Position::flu(..)`, and `Position::zero()` for one on top of it. A fix measures
+the antenna, so the filter refers it to the IMU by its own attitude and, for a velocity, by the
+rate the vehicle was turning when the fix was taken, equations (28′) and (29′); from PX4 it is
+`SENS_GPS0_OFF*` less `EKF2_IMU_POS*`. An argument rather than a setting, as it is on PX4's GNSS
+message, because a second receiver sits somewhere else.
 
 `time` is when the measurement was taken, on the clock the IMU's samples are timed on, and it is
 an argument for the reason the noise is: a receiver's latency is a property of that receiver and
@@ -500,7 +510,7 @@ use fusion_nav::prelude::*;
 
 fn fuse(filter: &mut Eskf, log: &mut impl Write, at: Timestamp, fix: Geodetic) -> core::fmt::Result {
     let noise = PositionNoise::horizontal_vertical(1.5, 3.0);
-    let outcome = filter.fuse_gnss_geodetic(at, fix, noise);
+    let outcome = filter.fuse_gnss_geodetic(at, fix, noise, Position::zero());
     if !outcome.is_accepted() {
         writeln!(log, "gnss position {outcome}")?; // gnss position rejected, ratio 2.70
     }
@@ -622,10 +632,6 @@ Known, and stated here rather than discovered in flight. Some are deliberate; th
   with `Config::coast`'s two densities, set from one VTOL log's gaps at 30 m/s. A vehicle that
   manoeuvres harder than that inside a gap can still be turned down by the gate afterwards,
   until `Config::recovery` adopts a fix.
-* **No lever arms.** GNSS position and velocity are taken as the IMU's, so an uncorrected antenna
-  offset `r` reads rotation as velocity (`ω × r`), and the filter believes it. The caller corrects
-  it with `angular_rate()`, the bias-corrected `ω`, whose documentation writes the correction out;
-  PX4 applies it inside the filter. See [#25](https://github.com/wboayue/fusion-nav/issues/25).
 * **Local tangent plane.** Position is Cartesian NED about a fixed origin. The geodetic
   conversion is exact at any range ([equation (43)](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#geodetic-origin)), but a plane
   leaves a curved Earth: `d` from the origin it sits `d²/2R` above the surface, 8 cm at 1 km and

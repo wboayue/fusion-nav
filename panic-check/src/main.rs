@@ -152,9 +152,24 @@ fn drive() {
 
     let _ = black_box(filter.predict(black_box(rates)));
 
-    let _ = black_box(filter.fuse_gnss_position(black_box(time), position, position_noise));
-    let _ = black_box(filter.fuse_gnss_geodetic(black_box(time), fix, position_noise));
-    let _ = black_box(filter.fuse_gnss_velocity(black_box(time), velocity, velocity_noise));
+    let _ = black_box(filter.fuse_gnss_position(
+        black_box(time),
+        position,
+        position_noise,
+        Position::zero(),
+    ));
+    let _ = black_box(filter.fuse_gnss_geodetic(
+        black_box(time),
+        fix,
+        position_noise,
+        Position::zero(),
+    ));
+    let _ = black_box(filter.fuse_gnss_velocity(
+        black_box(time),
+        velocity,
+        velocity_noise,
+        Position::zero(),
+    ));
     let _ = black_box(filter.fuse_baro_altitude(
         black_box(time),
         Altitude::from_meters(black_box(60.0)),

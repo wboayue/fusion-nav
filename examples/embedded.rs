@@ -116,10 +116,20 @@ fn run(board: &mut impl Board) -> ! {
 
         let mut stepped = false;
         if let Some(fix) = board.gnss() {
-            let position = filter.fuse_gnss_geodetic(fix.time, fix.position, fix.position_noise);
+            let position = filter.fuse_gnss_geodetic(
+                fix.time,
+                fix.position,
+                fix.position_noise,
+                Position::zero(),
+            );
             stepped |= report(board, "gnss position", position.horizontal);
             stepped |= report(board, "gnss height", position.height);
-            let velocity = filter.fuse_gnss_velocity(fix.time, fix.velocity, fix.velocity_noise);
+            let velocity = filter.fuse_gnss_velocity(
+                fix.time,
+                fix.velocity,
+                fix.velocity_noise,
+                Position::zero(),
+            );
             stepped |= report(board, "gnss velocity", velocity);
         }
         if let Some((time, altitude)) = board.baro() {

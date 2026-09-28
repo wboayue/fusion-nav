@@ -560,9 +560,10 @@ macro_rules! framed {
 }
 
 framed!(
-    /// Position relative to the navigation origin, in meters.
+    /// Position relative to the navigation origin, in meters; or, in [`Body`] axes, where a
+    /// sensor sits relative to the IMU, which is what the GNSS `fuse_*` take as `antenna`.
     ///
-    /// See [`Eskf::origin`](crate::Eskf::origin) for where that is.
+    /// See [`Eskf::origin`](crate::Eskf::origin) for where the origin is.
     Position,
     unit = "meters"
 );
@@ -694,6 +695,7 @@ macro_rules! body {
     };
 }
 
+body!(Position, "Offset from the IMU");
 body!(Acceleration, "Specific force");
 body!(AngularRate, "Angular rate");
 body!(MagField, "Field");
