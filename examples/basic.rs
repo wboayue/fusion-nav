@@ -32,7 +32,7 @@ fn main() -> Result<(), InitError> {
 
     let mut window = StaticWindow::new();
     let mut samples = 0;
-    while window.span() < filter.config().init.min_duration {
+    while !window.is_long_enough(&filter.config().init) {
         window.push(stationary_sample(samples))?;
         samples += 1;
     }

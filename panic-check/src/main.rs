@@ -136,7 +136,7 @@ fn drive() {
         let _ = black_box(streamed.push(black_box(sample)));
     }
     let _ = black_box(streamed.span());
-    let _ = black_box(streamed.is_empty());
+    let _ = black_box(streamed.is_long_enough(black_box(&Initialization::default())));
     let _ = black_box(streamed.is_at_rest(black_box(&Initialization::default())));
     let _ = black_box(streamed.try_extend(black_box(window)));
     let _ = black_box(StaticWindow::try_from(black_box(&window[..])));

@@ -78,7 +78,7 @@ let mut filter = Eskf::new(Config::default());
 // rather than buffered. A short or moving window still starts the filter, as
 // `Alignment::Coarse`.
 let mut window = StaticWindow::new();
-while window.span() < filter.config().init.min_duration {
+while !window.is_long_enough(&filter.config().init) {
     window.push(next_still_sample())?;
 }
 if let Alignment::Coarse(_) = filter.initialize(&window)? {

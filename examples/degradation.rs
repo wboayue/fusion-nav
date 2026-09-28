@@ -48,7 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // the window's own.
     let mut samples = 0;
     let mut window = StaticWindow::new();
-    while window.span() < filter.config().init.min_duration {
+    while !window.is_long_enough(&filter.config().init) {
         window.push(stationary_sample(samples))?;
         samples += 1;
     }

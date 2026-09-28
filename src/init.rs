@@ -95,8 +95,8 @@ impl StaticSample {
 /// sums, peaks, the span, the barometer's scatter and the first and last GNSS velocity. So
 /// the samples are folded in as they arrive rather than buffered. A buffered window at the
 /// default [`Initialization::min_duration`] of 2 s is 800 [`StaticSample`]s at 400 Hz, 64 KB
-/// at 80 bytes each on `thumbv6m`, more RAM than a Cortex-M0 has; this is 736 bytes at any
-/// rate and any length.
+/// at 80 bytes each on `thumbv6m`, more RAM than a Cortex-M0 has; this is 744 bytes at any
+/// rate and any length (`the_window_is_the_size_its_documentation_quotes`).
 ///
 /// ```
 /// # use fusion_nav::prelude::*;
@@ -110,7 +110,7 @@ impl StaticSample {
 /// let init = filter.config().init;
 /// let mut window = StaticWindow::new();
 /// let mut i = 0;
-/// while window.span() < init.min_duration {
+/// while !window.is_long_enough(&init) {
 ///     i += 1;
 ///     window.push(sample(i))?;
 ///     // Waiting for stillness: a vehicle that moved starts the wait over.
@@ -122,28 +122,25 @@ impl StaticSample {
 /// # Ok::<(), InitError>(())
 /// ```
 ///
-/// A window only grows, so an application waiting for stillness restarts it rather than
-/// sliding it: once [`is_at_rest`](Self::is_at_rest) says no, the peak that caused it stays
-/// in the window. A slice of buffered samples can slide and keep the still tail, so it can
-/// align a little sooner, at the cost of the buffer; [`try_extend`](Self::try_extend) or
-/// [`TryFrom`] builds a window from one.
+/// Waiting for stillness restarts the window, as above; [`is_at_rest`](Self::is_at_rest) says
+/// why it cannot slide. A buffered slice can, at the cost of the buffer, and
+/// [`try_extend`](Self::try_extend) or [`TryFrom`] builds a window from one.
 ///
-/// Each [`push`](Self::push) runs 22 `f64` additions, 7 multiplications and 11 widenings
-/// (counted in its `thumbv6m` disassembly, less the merge a doubling adds), which on a core with no
-/// double-precision unit are library calls, inside the loop that is already reading the
-/// IMU. That is the price of not buffering, paid only until the window commits. Two of the
-/// sums need `f64`: `Σ f fᵀ`, differenced down to a scatter many orders under `γ²`, and the
-/// barometer's, in metres above mean sea level. For the averages it is precaution: summing a
-/// few thousand readings near `γ` in `f32` costs on the order of 10⁻⁵ rad of tilt, against a
-/// 0.02 rad prior.
+/// Each [`push`](Self::push) costs 22 `f64` additions, 7 multiplications, a subtraction and
+/// 11 widenings, the barometer's share only on a fresh reading, besides 7 `f32` divisions and
+/// 2 square roots (counted in its `thumbv6m` disassembly, less the merge a doubling adds).
+/// On a core with no floating-point unit those are library calls,
+/// inside the loop that is already reading the IMU: the price of not buffering, paid only
+/// until the window commits. `level_variance` and `Scatter` say why their sums need
+/// `f64`. For the averages it is precaution: summing a few thousand readings near `γ` in
+/// `f32` costs on the order of 10⁻⁵ rad of tilt, against a 0.02 rad prior.
 #[derive(Clone, Debug)]
 pub struct StaticWindow {
     /// `Σ f fᵀ`, for the window's scatter about `f̄`; see [`level_variance`].
     outer: Matrix3<f64>,
     /// `Σ ω`, the angular rate (7) takes as the gyroscope bias.
     rate: Vector3<f64>,
-    peak_gyro: f32,
-    peak_deviation: f32,
+    peaks: Peaks,
     /// The time the samples integrated; see [`span`](Self::span).
     span: f64,
     /// The last sample's time: the start of the filter's clock, and what the next sample's
@@ -168,8 +165,7 @@ impl StaticWindow {
         Self {
             outer: Matrix3::zeros(),
             rate: Vector3::zeros(),
-            peak_gyro: 0.0,
-            peak_deviation: 0.0,
+            peaks: Peaks::NONE,
             span: 0.0,
             end: None,
             sums: BlockSums::new(),
@@ -215,8 +211,7 @@ impl StaticWindow {
         let interval = f64::from(sample.imu.angle_interval.as_secs());
         self.outer += widen(accel) * widen(accel).transpose();
         self.rate += widen(gyro);
-        self.peak_gyro = self.peak_gyro.max(gyro.norm());
-        self.peak_deviation = self.peak_deviation.max((accel.norm() - GRAVITY).abs());
+        self.peaks.push(accel, gyro);
         self.span += interval;
         self.end = Some(sample.imu.time);
         self.sums.push(
@@ -231,8 +226,9 @@ impl StaticWindow {
     /// Push every sample `samples` yields, in order, stopping at the first one refused.
     ///
     /// The samples before it stay in the window, and the refused one and those after it are
-    /// not taken: a buffered window is one start, and a sample it cannot use says the buffer
-    /// is not the window the caller thought it was.
+    /// not taken. A caller building one start from a buffer discards the window on an error,
+    /// as [`TryFrom`] does: a sample the buffer cannot supply says it is not the window the
+    /// caller thought it was.
     ///
     /// # Errors
     ///
@@ -248,16 +244,25 @@ impl StaticWindow {
     ///
     /// The test [`Alignment::Static`] and the barometric reference rest on, asked of the
     /// peaks alone, so it is cheap after every sample where
-    /// [`alignment_of`](crate::Eskf::alignment_of) measures the whole window. Peaks do not
-    /// fall, so once this is false it stays false: the window to wait on is a new one. An
-    /// empty window has not moved.
+    /// [`alignment_of`](crate::Eskf::alignment_of) measures the whole window. An empty window
+    /// has not moved.
+    ///
+    /// A window only grows, and peaks do not fall, so once this is false it stays false: an
+    /// application waiting for stillness starts a new window rather than sliding this one.
     #[must_use]
     pub fn is_at_rest(&self, init: &Initialization) -> bool {
-        at_rest(
-            RadiansPerSecond::from_rad_per_s(self.peak_gyro),
-            MetersPerSecond2::from_m_per_s2(self.peak_deviation),
-            init,
-        )
+        at_rest(self.peaks, init)
+    }
+
+    /// Whether the window holds a sample and spans [`Initialization::min_duration`]: the
+    /// condition a collection loop runs until.
+    ///
+    /// The sample is asked for as well as the span, so that a `min_duration` of zero still
+    /// ends the loop on a window [`Eskf::initialize`](crate::Eskf::initialize) accepts rather
+    /// than on an empty one it refuses.
+    #[must_use]
+    pub fn is_long_enough(&self, init: &Initialization) -> bool {
+        self.end.is_some() && self.span() >= init.min_duration
     }
 
     /// The time the window's samples integrated: the sum of their angle intervals, and what
@@ -277,31 +282,21 @@ impl StaticWindow {
         Seconds::from_secs(self.span as f32)
     }
 
-    /// Whether the window holds no sample yet, which
-    /// [`Eskf::initialize`](crate::Eskf::initialize) refuses as [`InitError::NoSamples`].
-    ///
-    /// A window collected until its [`span`](Self::span) reaches a `min_duration` of zero is
-    /// one, so a collection loop tests this as well as the span.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.end.is_none()
-    }
-
     /// What the window measured, or [`InitError::NoSamples`] for a window with nothing in it.
     pub(crate) fn measured(&self) -> Result<Measured, InitError> {
         let end = self.end.ok_or(InitError::NoSamples)?;
-        let whole = self.sums.whole();
+        let (first, second) = self.sums.split();
+        let whole = first.merged(second);
         Ok(Measured {
             force: Acceleration::from_vector(mean(whole.force, whole.samples)),
             rate: AngularRate::from_vector(mean(self.rate, whole.samples)),
             field: (whole.fields > 0)
                 .then(|| MagField::from_vector(mean(whole.field, whole.fields))),
             inertial_accel: self.velocities.inertial_acceleration(),
-            peak_gyro: RadiansPerSecond::from_rad_per_s(self.peak_gyro),
-            peak_deviation: MetersPerSecond2::from_m_per_s2(self.peak_deviation),
+            peaks: self.peaks,
             span: self.span(),
             end,
-            halves: self.sums.halves(),
+            halves: Halves::of(first, second),
             level_variance: level_variance(self.outer, whole.force, whole.samples),
         })
     }
@@ -344,10 +339,8 @@ pub(crate) struct Measured {
     pub field: Option<MagField<Body>>,
     /// `ā_n` of equation (5′); see [`Velocities`].
     pub inertial_accel: Option<Acceleration<Ned>>,
-    /// Largest angular rate magnitude in the window.
-    pub peak_gyro: RadiansPerSecond,
-    /// Largest departure of the specific-force magnitude from gravity.
-    pub peak_deviation: MetersPerSecond2,
+    /// The window's largest motion, which [`at_rest`] judges.
+    pub peaks: Peaks,
     /// The time the window's samples integrated, [`StaticWindow::span`].
     pub span: Seconds,
     /// The last sample's time, where the filter's clock starts.
@@ -375,6 +368,49 @@ pub(crate) struct Halves {
     field: Option<[MagField<Body>; 2]>,
 }
 
+impl Halves {
+    /// The averages of two parts of the window, and `None` unless both hold a sample.
+    fn of(first: Block, second: Block) -> Option<Self> {
+        (first.samples > 0 && second.samples > 0).then(|| Self {
+            force: [
+                Acceleration::from_vector(mean(first.force, first.samples)),
+                Acceleration::from_vector(mean(second.force, second.samples)),
+            ],
+            field: (first.fields > 0 && second.fields > 0).then(|| {
+                [
+                    MagField::from_vector(mean(first.field, first.fields)),
+                    MagField::from_vector(mean(second.field, second.fields)),
+                ]
+            }),
+        })
+    }
+}
+
+/// The window's largest motion: what [`at_rest`] judges and
+/// [`Coarse::NotStationary`] reports.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Peaks {
+    /// Largest angular rate magnitude.
+    pub gyro: RadiansPerSecond,
+    /// Largest departure of the specific-force magnitude from gravity.
+    pub deviation: MetersPerSecond2,
+}
+
+impl Peaks {
+    /// No motion at all: what an empty window has seen.
+    const NONE: Self = Self {
+        gyro: RadiansPerSecond::from_rad_per_s(0.0),
+        deviation: MetersPerSecond2::from_m_per_s2(0.0),
+    };
+
+    fn push(&mut self, accel: Vector3<f32>, gyro: Vector3<f32>) {
+        let deviation = (accel.norm() - GRAVITY).abs();
+        self.gyro = RadiansPerSecond::from_rad_per_s(self.gyro.as_rad_per_s().max(gyro.norm()));
+        self.deviation =
+            MetersPerSecond2::from_m_per_s2(self.deviation.as_m_per_s2().max(deviation));
+    }
+}
+
 impl Measured {
     /// The direction equation (5) called down, `−f̄ / ‖f̄‖`: the axis the tilt bound and
     /// the dip are both measured about.
@@ -395,13 +431,18 @@ impl Measured {
 ///
 /// The split lands within half a block of the middle, and at least `BLOCKS / 2` blocks are
 /// full, so the halves are within `n / BLOCKS` samples of equal: 37.5 % to 62.5 % of the
-/// window at worst.
+/// window at worst. A steady turn is still charged exactly: the halves' centres sit half the
+/// window apart wherever the split falls.
 ///
 /// Measured against an exact split (4096 blocks, which no window the replay harness builds
-/// fills, reproduces every scenario and corpus output byte for byte): 8 blocks and 16 each
-/// move one corpus log, `7ce66f0d`, by one in the last printed digit of three innovation
-/// keys, and no scenario. The halves only reach [`coarse_sigmas`], and only where their
-/// disagreement is the largest bound.
+/// fills, and which reproduces every scenario and corpus output byte for byte). The halves'
+/// disagreement moves, exact to 8 blocks, on the coarse starts: `7ce66f0d` 26.50° → 22.45° of
+/// tilt and 26.27° → 27.13° of heading, `cd7e0001` 0.29° → 0.50° and 1.27° → 1.70°,
+/// `2c42096b` 0.19° → 0.18° and 0.13° → 0.09°, `moving_start` 12.23° → 11.94° of heading.
+/// The outputs barely do, because it reaches only
+/// [`coarse_sigmas`] and only where it is the largest bound: at 8 blocks and at 16, one corpus
+/// log, `7ce66f0d`, moves by one in the last printed digit of three innovation keys, and no
+/// scenario moves.
 const BLOCKS: usize = 8;
 
 /// The window's `Σ f` and `Σ m`, kept so that [`Halves`] can be taken from them in a window
@@ -410,10 +451,9 @@ const BLOCKS: usize = 8;
 /// The halves are the only statistic here a single pass cannot take exactly, because the
 /// middle of a window moves as it grows. So the window is kept as up to [`BLOCKS`] blocks of
 /// equal size, each summing its own samples; when the last fills, adjacent pairs merge and
-/// the size doubles. [`halves`](Self::halves) splits at the block boundary nearest the
-/// middle, not at the middle, and [`window_drift`] compares two averages that each still
-/// cover at least three eighths of the window. The whole window's sums are the blocks'
-/// total rather than a running total kept beside them, so the two cannot disagree.
+/// the size doubles. [`split`](Self::split) cuts at the block boundary nearest the middle,
+/// within the bound [`BLOCKS`] states. The whole window's sums are the two halves' total
+/// rather than a running total kept beside them, so the two cannot disagree.
 #[derive(Clone, Copy, Debug)]
 struct BlockSums {
     blocks: [Block; BLOCKS],
@@ -499,20 +539,10 @@ impl BlockSums {
         }
     }
 
-    /// The blocks filled so far.
-    fn filled(&self) -> &[Block] {
-        self.blocks.get(..=self.current).unwrap_or_default()
-    }
-
-    /// The whole window, as one block.
-    fn whole(&self) -> Block {
-        Block::total(self.filled())
-    }
-
-    /// The two halves, split at the block boundary nearest the middle, the earlier of two
-    /// equally near: for a window of `n` blocks of one sample, that is `n / 2`.
-    fn halves(&self) -> Option<Halves> {
-        let blocks = self.filled();
+    /// The window's two halves, split at the block boundary nearest the middle, the earlier
+    /// of two equally near: for a window of `n` blocks of one sample, that is `n / 2`.
+    fn split(&self) -> (Block, Block) {
+        let blocks = self.blocks.get(..=self.current).unwrap_or_default();
         let total: u64 = blocks.iter().map(|b| b.samples).sum();
         // Twice the distance from the middle, in samples, so an odd window stays integral.
         let (mut split, mut nearest, mut before) = (0, total, 0u64);
@@ -524,19 +554,7 @@ impl BlockSums {
             }
         }
         let (first, second) = blocks.split_at(split.min(blocks.len()));
-        let (first, second) = (Block::total(first), Block::total(second));
-        (first.samples > 0 && second.samples > 0).then(|| Halves {
-            force: [
-                Acceleration::from_vector(mean(first.force, first.samples)),
-                Acceleration::from_vector(mean(second.force, second.samples)),
-            ],
-            field: (first.fields > 0 && second.fields > 0).then(|| {
-                [
-                    MagField::from_vector(mean(first.field, first.fields)),
-                    MagField::from_vector(mean(second.field, second.fields)),
-                ]
-            }),
-        })
+        (Block::total(first), Block::total(second))
     }
 }
 
@@ -607,16 +625,22 @@ impl Velocities {
 /// converter substitutes. It assumes the readings independent; a correlated barometer
 /// averages down more slowly than this says.
 ///
-/// Welford's single pass, in `f64`: the textbook one-pass form, `Σa²/n − ā²`, differences
-/// two squares of metres above mean sea level down to a scatter of centimetres, which is
-/// the cancellation the running mean and `M₂` avoid.
+/// Summed about the first reading, in `f64`. The textbook one-pass form, `Σa² − (Σa)²/n`,
+/// differences two squares of metres above mean sea level down to a scatter of centimetres,
+/// and at 10 km over 400 readings 3 cm apart it is 5 × 10⁻⁴ out
+/// (`the_barometer_scatter_is_the_two_pass_one_at_any_altitude`); about the first reading
+/// the squares are of the scatter itself. Welford's running mean avoids the same loss at a
+/// division per reading.
 #[derive(Clone, Copy, Debug, Default)]
 struct Scatter {
     /// The previous sample's reading, fresh or held.
     previous: Option<Altitude>,
     count: u64,
-    mean: f64,
-    /// `Σ (a − ā)²`, Welford's `M₂`.
+    /// The first reading, which the sums below are taken about.
+    first: f64,
+    /// `Σ (a − a₁)`.
+    sum: f64,
+    /// `Σ (a − a₁)²`.
     squares: f64,
 }
 
@@ -626,10 +650,13 @@ impl Scatter {
         self.previous = baro;
         if let Some(altitude) = fresh {
             let a = f64::from(altitude.as_meters());
+            if self.count == 0 {
+                self.first = a;
+            }
+            let d = a - self.first;
             self.count += 1;
-            let before = a - self.mean;
-            self.mean += before / self.count as f64;
-            self.squares += before * (a - self.mean);
+            self.sum += d;
+            self.squares += d * d;
         }
     }
 
@@ -641,11 +668,9 @@ impl Scatter {
             return None;
         }
         let n = self.count as f64;
-        let scatter = self.squares / (n - 1.0);
-        Some((
-            Altitude::from_meters(self.mean as f32),
-            (scatter / n) as f32,
-        ))
+        let mean = self.first + self.sum / n;
+        let scatter = (self.squares - self.sum * self.sum / n) / (n - 1.0);
+        Some((Altitude::from_meters(mean as f32), (scatter / n) as f32))
     }
 }
 
@@ -885,8 +910,8 @@ impl core::error::Error for InitError {}
 /// Classify a measured window as a static or a coarse start.
 ///
 /// The test behind [`Eskf::alignment_of`](crate::Eskf::alignment_of): still enough, then
-/// long enough, against the tolerances in `init`. Total, because [`StaticWindow::push`] has already
-/// refused every window that can be refused.
+/// long enough, against the tolerances in `init`. Total, because [`StaticWindow::push`] has
+/// refused every sample that can be refused and [`StaticWindow::measured`] an empty window.
 ///
 /// Motion is tested first so that each coarse variant answers one question. A window that
 /// moved is [`Coarse::NotStationary`] whatever its length, and its `span` says how long it
@@ -895,10 +920,10 @@ impl core::error::Error for InitError {}
 /// window that had not yet reached `min_duration` could not tell from the outcome that it
 /// was still — which is what deciding to initialize at the onset of motion asks.
 pub(crate) fn classify(measured: &Measured, init: &Initialization) -> Alignment {
-    if !at_rest(measured.peak_gyro, measured.peak_deviation, init) {
+    if !at_rest(measured.peaks, init) {
         return Alignment::Coarse(Coarse::NotStationary {
-            peak_gyro: measured.peak_gyro,
-            peak_accel_deviation: measured.peak_deviation,
+            peak_gyro: measured.peaks.gyro,
+            peak_accel_deviation: measured.peaks.deviation,
             span: measured.span,
             inertial_accel: measured.inertial_accel,
         });
@@ -1025,9 +1050,9 @@ pub(crate) fn heading_from_mag(
 /// vehicle has already left.
 ///
 /// Vibration averages out of each half, which is what keeps this off a vehicle sitting
-/// with its props spinning: `2c42096b`'s window disagrees by 0.195° of tilt and 0.544° of
-/// heading, both under the configured priors, where integrating `‖ω_⊥‖` over the same
-/// window accumulates 5.50° — the peak's mistake in another coat, since a path length
+/// with its props spinning: `2c42096b`'s 0.80 s window disagrees by 0.18° of tilt and 0.09°
+/// of heading, both under the configured priors, where integrating `‖ω_⊥‖` over the same
+/// window accumulates 0.66° — the peak's mistake in another coat, since a path length
 /// does not average either.
 ///
 /// The heading is `None` unless both halves carried a field. Declination cancels in the
@@ -1251,7 +1276,7 @@ fn coarse_sigmas(
 /// measures no scatter, and keeps the whole of `σ_tilt²` independent instead.
 ///
 /// Writing the blocks after construction costs a copy of `P`: on `thumbv6m` this frame is
-/// 1120 bytes where a diagonal-only `P₀` inlined to 80, with `Eskf::initialize` at 2168
+/// 1120 bytes where a diagonal-only `P₀` inlined to 80, with `Eskf::initialize` at 1224
 /// above it. The initialization chain stays well under the 9.5 KB of `fuse_gnss_velocity`
 /// into `update::<3>`, so the crate's peak does not move.
 pub(crate) fn initial_covariance(
@@ -1325,12 +1350,8 @@ const UNKNOWN_HEADING_SIGMA: Radians = Radians::from_radians(1.813_799_4);
 ///
 /// It takes the peaks rather than a [`Measured`] so that [`StaticWindow::is_at_rest`] can ask
 /// it after every sample without measuring the window.
-pub(crate) fn at_rest(
-    peak_gyro: RadiansPerSecond,
-    peak_deviation: MetersPerSecond2,
-    init: &Initialization,
-) -> bool {
-    peak_gyro <= init.max_gyro_rate && peak_deviation <= init.max_accel_deviation
+pub(crate) fn at_rest(peaks: Peaks, init: &Initialization) -> bool {
+    peaks.gyro <= init.max_gyro_rate && peaks.deviation <= init.max_accel_deviation
 }
 
 #[cfg(test)]
@@ -1436,8 +1457,7 @@ pub(crate) mod tests {
     fn sigmas(window: &[StaticSample], dt: Seconds) -> (f32, f32) {
         let init = Initialization::default();
         let measured = measure(&spaced(window, dt)).expect("a usable window");
-        let settled = at_rest(measured.peak_gyro, measured.peak_deviation, &init);
-        let state = nominal_state(&measured, Radians::ZERO, settled);
+        let state = nominal_state(&measured, Radians::ZERO, at_rest(measured.peaks, &init));
         let (tilt, yaw) = attitude_sigmas(
             &init,
             classify(&measured, &init),
@@ -1933,10 +1953,7 @@ pub(crate) mod tests {
         let dt = Seconds::from_secs(0.2);
         let init = Initialization::default();
         let measured = measure(&spaced(&window, dt)).expect("a usable window");
-        assert!(
-            at_rest(measured.peak_gyro, measured.peak_deviation, &init),
-            "0.05 rad/s is inside 0.262"
-        );
+        assert!(at_rest(measured.peaks, &init), "0.05 rad/s is inside 0.262");
         let bias = nominal_state(&measured, Radians::ZERO, true)
             .gyro_bias
             .vector();
@@ -2190,11 +2207,12 @@ pub(crate) mod tests {
 
     #[test]
     fn the_barometer_scatter_is_the_two_pass_one_at_any_altitude() {
-        // Centimetres of scatter at 1000 m, each reading different from the one before.
+        // Centimetres of scatter at 10 km, on 101 levels, each reading different from the one
+        // before.
         let window: std::vec::Vec<_> = (0..400)
             .map(|i| StaticSample {
                 baro: Some(Altitude::from_meters(
-                    1000.0 + 0.03 * ((i * 7 % 11) as f32 - 5.0),
+                    10_000.0 + 0.001 * ((i * 37 % 101) as f32 - 50.0),
                 )),
                 ..still()
             })
@@ -2211,6 +2229,12 @@ pub(crate) mod tests {
             .map(|a| (a - mean) * (a - mean))
             .sum::<f64>()
             / (n - 1.0);
+        // The textbook one-pass form misses here by more than the tolerance below, so this
+        // test can tell a single pass that cancels from one that does not.
+        let squares = readings.iter().map(|a| a * a).sum::<f64>();
+        let naive = (squares - n * mean * mean) / (n - 1.0);
+        let lost = ((naive - scatter) / scatter).abs();
+        assert!(lost > 1e-5, "{lost}");
         let (reference, variance) = baro_reference(&window).expect("400 readings");
         assert_eq!(reference, Altitude::from_meters(mean as f32));
         let expected = (scatter / n) as f32;
@@ -2226,7 +2250,8 @@ pub(crate) mod tests {
         for &force in forces {
             sums.push(Vector3::new(force, 0.0, 0.0), None);
         }
-        sums.halves()
+        let (first, second) = sums.split();
+        Halves::of(first, second)
     }
 
     #[test]
@@ -2298,6 +2323,40 @@ pub(crate) mod tests {
             );
             assert_eq!(moved, !window.is_at_rest(&init), "after sample {index}");
         }
+    }
+
+    /// Measured on `thumbv6m` with `-Zprint-type-sizes`, where `u64` and `f64` align to 8 as
+    /// they do on the 64-bit hosts CI runs, so the host's `size_of` pins the same figure.
+    #[test]
+    fn the_window_is_the_size_its_documentation_quotes() {
+        assert_eq!(core::mem::size_of::<StaticWindow>(), 744);
+        assert_eq!(core::mem::size_of::<StaticSample>(), 80);
+    }
+
+    #[test]
+    fn a_window_is_long_enough_only_once_it_holds_a_sample() {
+        // A `min_duration` of zero is met by any span, the empty window's included, and an
+        // empty window is the one `initialize` refuses.
+        let init = Initialization {
+            min_duration: Seconds::from_secs(0.0),
+            ..Initialization::default()
+        };
+        let mut window = StaticWindow::new();
+        assert!(!window.is_long_enough(&init));
+        assert_eq!(window.push(spaced(&[still()], DT)[0]), Ok(()));
+        assert!(window.is_long_enough(&init));
+
+        let two_seconds = Initialization::default();
+        let mut window = StaticWindow::new();
+        let samples = spaced(&[still(); 8], Seconds::from_secs(0.25));
+        for (index, sample) in samples.into_iter().enumerate() {
+            assert!(
+                !window.is_long_enough(&two_seconds),
+                "after {index} samples"
+            );
+            assert_eq!(window.push(sample), Ok(()));
+        }
+        assert!(window.is_long_enough(&two_seconds), "8 samples of 0.25 s");
     }
 
     #[test]

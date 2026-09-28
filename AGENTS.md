@@ -786,8 +786,9 @@ off-by-default feature of the same name.
   `InitError`) and pure functions (`level_from_accel`, `heading_from_mag`, `nominal_state`,
   `classify`, `attitude_sigmas`, `initial_covariance`). `StaticWindow` folds each sample in as
   it is pushed, so a caller never buffers the window; its doc comment owns how each statistic
-  is taken in one pass. The `initialize*` methods on `Eskf` call these and commit the result. Tests for the pure
-  functions live here; tests of what the filter does with them stay in `eskf.rs`.
+  is taken in one pass. The `initialize*` methods on `Eskf` call these and commit the result.
+  Tests for the pure functions live here; tests of what the filter does with them stay in
+  `eskf.rs`.
 - `src/propagate.rs` — `ImuSample` and equations (9)–(22), in increments; `error_dynamics`, the
   `A` of (16)–(19) that (23′) carries `H` through.
 - `src/history.rs` — the recent past of the nominal state for (23′): 32 entries 10 ms apart,

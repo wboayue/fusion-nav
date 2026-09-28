@@ -302,7 +302,9 @@ averages sit from what a still vehicle reads — not how far the worst sample in
 with $`T`$ the window's span, $`\hat d = -\bar f / \lVert \bar f \rVert`$ the direction (5)
 levelled to, and the subscripts 1 and 2 the same averages taken over the first and the second
 **half** of the window — $`\psi_i`$ being the heading (6) yields from that half alone, so the
-declination cancels. The rotation charged is what (7) did *not* take,
+declination cancels. The code takes the window one sample at a time and cannot know its middle
+until it ends, so it splits at the nearest of the block boundaries it keeps, which leaves each
+half between 37.5 % and 62.5 % of the window (`init::BLOCKS`). The rotation charged is what (7) did *not* take,
 $`\bar\omega_r = \bar\omega - \hat\beta_{g,0}`$: a window at rest commits the whole average as
 gyroscope bias, and the same quantity cannot be both removed from the state and charged to the
 prior around it. Where (7) left the bias at zero, $`\bar\omega_r = \bar\omega`$.
