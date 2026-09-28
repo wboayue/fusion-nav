@@ -53,7 +53,8 @@ late are placed at the moment they describe, and cost nothing.
 ## [Agreement with EKF2](validation/ekf2.md): on real flights, does it match PX4?
 
 {{count @corpus/raw}} public PX4 flight logs, from quadrotors to fixed-wing and VTOL aircraft.
-On the log with the most precise receiver (RTK), velocity agrees to
+On the log with the most precise receiver (RTK), position agrees to
+{{agreement 89a498ce/raw pos_n_rms}} m RMS north, velocity to
 {{agreement 89a498ce/raw vel_n_rms}} m/s RMS north and tilt to
 {{agreement 89a498ce/raw tilt_diff_rms}}°. The largest disagreement is a hand-launched aircraft
 whose attitude this filter gets wrong at startup, a known gap (#59).

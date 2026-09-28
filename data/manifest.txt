@@ -787,8 +787,8 @@ b7c7c97eefc3bb421ceae6e50cac8bd5a4851b3f6f98dc2c5a7b91bb326930c9  eb799954-4743-
 #     out eight times for 1.0-3.1 s (coasted=8, the logger's, not the sensor's).
 #     With Config::coast off the filter refuses a step that long (StepTooLong),
 #     so for the gap it neither moves the state nor grows its covariance, and on
-#     a vehicle doing 30 m/s the state it keeps is tens of metres stale. Against EKF2, less the constant offset
-#     between their origins, it holds until the 1.18 s dropout at 275.4 s and is
+#     a vehicle doing 30 m/s the state it keeps is tens of metres stale. Against EKF2 (shifted by one origin
+#     offset, within 3 m at this range, #145), it holds until the 1.18 s dropout at 275.4 s and is
 #     ~25 m off by 300 s while sigma_pos_n has grown only to 7.6 m, so 881 of the
 #     1154 positions after are turned down. PX4's R floors leave 717 of them,
 #     so it is not the receiver.

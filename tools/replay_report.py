@@ -1299,14 +1299,14 @@ AGREEMENT_SECTIONS = [
 ]
 
 
-def reference_offset(notes):
-    """EKF2's origin in the replay frame, `(n, e, d)`, from the reference header."""
+def reference_axes(notes):
+    """The axes, of `"ned"`, whose EKF2 position the converter wrote in the replay
+    frame, from the reference header; `""` where it says none or says nothing."""
     for note in notes:
-        found = re.match(r"EKF2 origin in replay frame: (\S+) (\S+) (\S+) m", note)
+        found = re.match(r"EKF2 position in replay frame: (n e d|n e|none)\b", note)
         if found:
-            # `none` down is a fix with no MSL height: horizontal still aligns.
-            return tuple(math.nan if v == "none" else float(v) for v in found.groups())
-    return None
+            return "" if found.group(1) == "none" else found.group(1).replace(" ", "")
+    return ""
 
 
 def reference_estimator(notes):
@@ -1344,7 +1344,7 @@ def agreement_of(ours, reference, sources):
                  np.array([verdict == "rejected" for verdict in entry["outcome"]]))
         for source, entry in sources.items()
     }
-    values = agreement.compare(ours, ekf2, rejected, reference_offset(notes),
+    values = agreement.compare(ours, ekf2, rejected, reference_axes(notes),
                                reference_height(notes))
     # Not a statistic: which estimator every figure beside it is a distance from.
     return {"estimator": reference_estimator(notes), **values}
@@ -1487,11 +1487,6 @@ def build_report(args):
         reference_notes, local = read_series(
             args.reference, ["pos_n", "pos_e", "pos_d", "vel_n", "vel_e", "vel_d"],
             args.points, source="ekf2_local")
-        # Drawn where the statistics put it: at this filter's origin where the
-        # header gives EKF2's, and at its own where it gives none.
-        offset = reference_offset(reference_notes)
-        local = {name: (t, agreement.to_replay_frame(name, y, offset))
-                 for name, (t, y) in local.items()}
         # Every remaining reference column is read here, which is what makes a
         # wrong entry in EKF2_LAYOUTS visible: the bias *states* sit at the same
         # index in both eras, so only these sigmas exercise the era-specific map.
@@ -1599,17 +1594,13 @@ def build_report(args):
         if args.reference:
             reference_track = read_path(args.reference, "pos_n", "pos_e",
                                         args.points, source="ekf2_local")
-            if reference_track is not None:
-                offset = reference_offset(reference_notes)
-                reference_track = (agreement.to_replay_frame("pos_n", reference_track[0], offset),
-                                   agreement.to_replay_frame("pos_e", reference_track[1], offset))
         page.figure("track",
             track_figure(ours_track, reference_track, fixes),
             "Estimate, EKF2's own solution where the log carries one, and the raw "
-            "GNSS fixes the filter was offered. EKF2's track is moved to this "
-            "filter's origin by the offset its header reports, the shift the "
-            "agreement statistics make; two corpus logs report no origin, and "
-            "there it stays at its own. Every track here is sampled at a uniform stride, so "
+            "GNSS fixes the filter was offered. EKF2's track is in this filter's "
+            "frame, reprojected from PX4's by the converter, where the reference "
+            "header says so; two corpus logs report no origin, and there it stays "
+            "at its own. Every track here is sampled at a uniform stride, so "
             "each point is a position that was actually held &mdash; the "
             "min/max envelope the time series use pairs two columns from "
             "different epochs and draws a path nobody travelled.",
@@ -1853,13 +1844,15 @@ def self_test():
         if got != want:
             failures.append(f"{what}: got {got!r}, want {want!r}")
 
-    same("offset", reference_offset(["EKF2 origin in replay frame: 110.574 111.320 -9.998 m"]),
-         (110.574, 111.32, -9.998))
-    down = reference_offset(["EKF2 origin in replay frame: 0.000 0.000 none m"])
-    if down is None or down[:2] != (0.0, 0.0) or not math.isnan(down[2]):
-        failures.append(f"offset with no MSL height: got {down!r}")
-    same("no offset", reference_offset(["EKF2 origin in replay frame: none (EKF2 reports "
-                                        "no origin)"]), None)
+    same("placed", reference_axes(["EKF2 position in replay frame: n e d"]), "ned")
+    same("horizontal only", reference_axes(["EKF2 position in replay frame: n e (the fix "
+                                            "logs no MSL height)"]), "ne")
+    same("not placed", reference_axes(["EKF2 position in replay frame: none (xy_global "
+                                       "false)"]), "")
+    # A reference converted before the converter placed positions carries only
+    # the origin line, and its x/y are PX4's: nothing is compared.
+    same("old header", reference_axes(["EKF2 origin in replay frame: 1.000 2.000 3.000 m"]),
+         "")
     same("height reference", reference_height([
         "EKF2 aiding: height reference baro (EKF2_HGT_MODE 0); share of control_mode_flags "
         "samples: gnss_pos 1.00"]), "baro")

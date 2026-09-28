@@ -382,15 +382,22 @@ Four boundaries follow, and they are properties of the logs rather than of the c
   single tilt σ is deliberately *not* emitted — PX4's `getTiltVariance` sums the two horizontal
   variances where (36′) and `Validity` read each against the bar, and naming those alike would
   compare two different quantities.
+- **EKF2's position is written in the replay frame**, not as EKF2 logged it. PX4's local x/y are
+  its `MapProjection`, azimuthal equidistant on a 6371 km sphere (`src/lib/geo/geo.cpp:67-88` at
+  `c4e4ef98`), where the replay frame is the exact tangent plane of (43). The two differ in scale
+  as well as origin, by about 0.2 % of the distance out, so no single shift aligns them. Read as
+  one, EKF2 sat a median 3.6 m north of its own fixes on `89a498ce`, 4.07 km out. The converter
+  reprojects each row about that row's own EKF2 origin, which `093e806a` moves once mid-log, and
+  places it as it places a fix. `EKF2 position in replay frame:` says which axes it placed;
+  `EKF2 origin in replay frame: N E D m` still records where EKF2's first origin sits.
 - **Two of twelve logs report no origin** (`xy_global` false, the reference fields all zero), so
-  EKF2's `x,y,z` there are origin-relative with no origin and cannot be aligned to this filter's.
-  The origin is a `#` header line, not a column, since it is one geodetic point per log.
+  EKF2's `x,y,z` there are origin-relative with no origin, and stay in EKF2's frame.
 - **The two origins are on different vertical datums.** The replay input's origin is the first
   fix at its ellipsoidal height where the receiver logs one, and EKF2's `ref_alt` is MSL
-  (`msg/versioned/VehicleLocalPosition.msg:57` at `c4e4ef98`). The converter moves EKF2's origin
-  onto the ellipsoid by the first fix's own two heights and writes it as
-  `EKF2 origin in replay frame: N E D m`. Read without that shift, the geoid height is the whole
-  of the down offset: −25.41 m on `eb799954` in Oklahoma and +20.58 m on `89a498ce` in Korea, and
+  (`msg/versioned/VehicleLocalPosition.msg:57` at `c4e4ef98`). The converter moves EKF2's heights
+  onto the ellipsoid by the first fix's own two heights, and where the fix logs no MSL height it
+  places north and east only. Read without that shift, the geoid height is the whole of the down
+  offset: −25.41 m on `eb799954` in Oklahoma and +20.58 m on `89a498ce` in Korea, and
   `eb799954`'s `pos_d_rms` read 27 m where it reads 0.60.
 
 Three more header lines say what the rows came from rather than what they hold. `Estimator:`
