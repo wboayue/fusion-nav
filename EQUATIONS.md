@@ -1250,6 +1250,7 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | (42′) | diagonal variance floor | `math.rs` | `floor_diagonal`, `floor_offset` and `FLOOR`; applied by `Eskf::commit_covariance` |
 | (43) | local tangent plane | `geodetic.rs` | `LocalOrigin::to_ned`, `to_geodetic` |
 | (44) | origin placement | `geodetic.rs` | `LocalOrigin::placing`; committed by `Eskf::fuse_gnss_geodetic` |
+| (6), (35) `D_m` | declination from a magnetic model at the origin | `magnetic.rs`, `eskf.rs` | `declination_at` through `Geodetic::magnetic_declination`; applied by `Eskf::place_origin` |
 | — | skew, quaternion exponential, angle wrap | `math.rs` | `skew`, `exp_quat`, `wrap_pi` |
 
 ## References

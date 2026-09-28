@@ -83,11 +83,25 @@ use std::path::{Path, PathBuf};
 /// model under test, so agreeing on it is not an inverse crime; agreeing on a rotation would be.
 const GRAVITY: f64 = 9.806_65;
 
-/// Magnetic declination, rad, east-positive.
+/// Where every scenario flies, latitude and longitude in degrees and ellipsoidal height in
+/// metres: east of Champaign, Illinois, chosen as the point where WMM2025 at 2026.0 gives the
+/// [`DECLINATION`] the scenarios were first drawn at, so placing them on a map moved no
+/// ceiling. It needed choosing: `moving_start`'s `yaw` reads 1.71° rather than 1.47° with the
+/// field turned 7° east (at Zurich, PX4's SITL home), since the tilt that levels a first
+/// heading enters by (36′) through the field's direction in the body.
 ///
-/// Written into the log's header, which is where `examples/replay.rs` reads the declination it
-/// configures the filter with, so a heading fused from these logs is true heading whatever the
-/// constant says.
+/// Positions are NED about it, so nothing else reads it. It is written as the log's
+/// `# Navigation origin` line, which is what lets `examples/replay.rs --declination model` look
+/// the crate's magnetic model up at the site.
+const SITE: [f64; 3] = [40.1164, -88.3697, 200.0];
+
+/// Magnetic declination at [`SITE`], rad, east-positive: −3.4378°, WMM2025 at 2026.0 evaluated
+/// with `pygeomag` 1.1.0 rather than the crate's table, so a replay under
+/// `--declination model` scores the table's own error instead of agreeing with itself.
+///
+/// Also written into the log's header, which is where `examples/replay.rs` reads the
+/// declination it configures the filter with by default, so a heading fused from these logs
+/// is true heading whatever the constant says.
 const DECLINATION: f64 = -0.06;
 
 /// Magnetic inclination, rad, down-positive: mid-latitude, and the dip the corpus logs carry.
@@ -1750,6 +1764,7 @@ fn write_log_header(
         "# fusion-nav simulated flight - scenario `{name}`, seed {seed}\n\
          # {covers}\n\
          #\n\
+         # Navigation origin {latitude:.9} {longitude:.9} {height:.3} (lat deg, lon deg, height m; the simulated site)\n\
          # Magnetic declination {declination:.6} rad\n\
 {course}\
          #\n\
@@ -1769,6 +1784,9 @@ fn write_log_header(
         seed = scenario.seed,
         covers = scenario.covers,
         declination = DECLINATION,
+        latitude = SITE[0],
+        longitude = SITE[1],
+        height = SITE[2],
         course = scenario.course.map_or_else(String::new, |sigma| format!(
             "# Course sideslip {sigma:.6} rad\n"
         )),

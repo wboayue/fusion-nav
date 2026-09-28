@@ -545,6 +545,7 @@ def convert(path, baro_variance, mag_variance, heading_variance=DEFAULT_GNSS_HEA
     # Header lines the harness configures itself from: what EKF2 on this log used.
     delays, delays_note = measurement_delays(ulog.initial_parameters)
     parameters = [
+        origin_note(origin),
         declination_note(ulog.initial_parameters, origin and origin[:2]),
         gnss_noise_note(ulog.initial_parameters),
         delays_note,
@@ -1289,6 +1290,20 @@ def table_declination(latitude, longitude):
     return (lat_scale * (north - south) + south) * DECLINATION_SCALE
 
 
+def origin_note(origin):
+    """The header line naming where the replay's NED frame sits, which `examples/replay.rs`
+    reads to look its own magnetic model up at the site (`declination_model=`) and, under
+    `--declination model`, hands the filter as its origin.
+
+    `origin` is the first 3D fix as (lat, lon, height, MSL height), degrees and metres; the
+    height is on the datum the fixes were converted on. A log with no fix writes the line
+    anyway, as `none`, so its absence says the file predates it.
+    """
+    if origin is None:
+        return "Navigation origin none (no 3D fix)"
+    return f"Navigation origin {origin[0]:.9f} {origin[1]:.9f} {origin[2]:.3f} (lat deg, lon deg, height m; the first 3D fix)"
+
+
 def declination_note(params, origin):
     """The header line `examples/replay.rs` reads its magnetic declination from.
 
@@ -1692,6 +1707,9 @@ def self_test():
     expect("LPE", declination_note({"ATT_MAG_DECL": -2.0}, None).split(" rad")[0],
            "Magnetic declination -0.034907")
     expect("nothing", declination_note({}, None).split(" rad")[0], "Magnetic declination 0.000000")
+    expect("origin line", origin_note((56.41, 43.76, 150.0, None)),
+           "Navigation origin 56.410000000 43.760000000 150.000 (lat deg, lon deg, height m; the first 3D fix)")
+    expect("no origin", origin_note(None), "Navigation origin none (no 3D fix)")
     # A 2.5 ms burst inside a true 20 ms period, a299e722's shape: the median holds.
     burst = Fixture("sensor_combined", timestamp=[0, 20000, 40000, 42500, 60000, 80000, 100000])
     expect("imu rate through bursts", screen_imu_rate(burst), {"imu_hz": "50"})

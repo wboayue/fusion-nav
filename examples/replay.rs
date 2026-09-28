@@ -18,7 +18,8 @@
 //!
 //! The third argument is optional and turns on scoring against truth; see *Scoring* below.
 //! `--r-policy`, anywhere on the line, picks what GNSS rows are fused with: `raw`, the
-//! default, or `px4`; see [`RPolicy`].
+//! default, or `px4`; see [`RPolicy`]. `--declination model` ignores the header's declination
+//! and leaves the filter to read its own magnetic model at the origin; `header` is the default.
 //! It also writes `<out>.nees.csv`, `ε` per block per epoch, which `data/anees.sh` averages
 //! across seeds (#89), and `<out>.error.csv`, the truth error on navigation axes beside its σ,
 //! which `tools/replay_report.py` draws.
@@ -441,6 +442,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut policy = None;
     let mut course = None;
     let mut without = None;
+    let mut model_declination = false;
     let mut positional = Vec::new();
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -452,6 +454,12 @@ fn run() -> Result<(), Box<dyn Error>> {
                 .and_then(|value| value.parse().ok())
                 .ok_or("--course wants a sideslip sigma in degrees")?;
             course = Some(Radians::from_degrees(degrees));
+        } else if arg == "--declination" {
+            model_declination = match args.next().as_deref() {
+                Some("header") => false,
+                Some("model") => true,
+                _ => return Err("--declination wants `header` or `model`".into()),
+            };
         } else if arg == "--without" {
             let name = args.next().ok_or("--without wants an input source name")?;
             if !DROPPABLE.contains(&name.as_str()) {
@@ -503,7 +511,19 @@ fn run() -> Result<(), Box<dyn Error>> {
         return Err("the course sideslip is not a positive number".into());
     }
     replay.without = without;
-    if !replay
+    replay.site = origin_of(&text);
+    if model_declination {
+        // The header's declination is not read. The site is handed over as the origin before
+        // initializing, which is where the filter reads its own magnetic model, so the window
+        // levels at the model's value. A static start then clears the origin, and positions
+        // stay the file's NED about it; nothing else moves.
+        let site = replay
+            .site
+            .ok_or("--declination model needs a `# Navigation origin` header line")?;
+        if !replay.filter.set_origin(site) {
+            return Err("the `# Navigation origin` header is not a usable origin".into());
+        }
+    } else if !replay
         .filter
         .set_magnetic_declination(declination_of(&text))
     {
@@ -885,6 +905,9 @@ struct Replay {
     /// An input source whose rows are skipped, `--without mag`: a vehicle without that sensor,
     /// replayed from a log that has one.
     without: Option<String>,
+    /// The geodetic point the file's positions are relative to, from its `# Navigation
+    /// origin` line; see `origin_of`.
+    site: Option<Geodetic>,
     /// Most recent barometer reading, attached to static samples the same way. This is
     /// what fixes the reference the filter's altitudes are relative to, and a log whose
     /// barometer starts after initialization leaves it unset for the whole replay.
@@ -977,6 +1000,7 @@ impl Replay {
             last_mag: None,
             course: None,
             without: None,
+            site: None,
             last_baro: None,
             pending_velocity: None,
             previous_imu: None,
@@ -1908,7 +1932,7 @@ impl Replay {
         let (roll0, pitch0, yaw0) = self.angles_at_init();
         format!(
             "summary rate={:.0} window={} {} align={} an={} alpha0={} heading={} \
-             roll0={roll0:.2} pitch0={pitch0:.2} yaw0={yaw0:.2} declination={:.2} resets={} \
+             roll0={roll0:.2} pitch0={pitch0:.2} yaw0={yaw0:.2} declination={:.2} declination_model={} resets={} \
              recovered={} aligned_at={} attitude_lost={} r_policy={} course={} without={} rejected={}{} discarded={} coasted={} refused={} \
              invalid={} floored={} epochs={}{} \
              transitions={} status={:?}",
@@ -1958,6 +1982,15 @@ impl Replay {
             // Degrees, from the log's header (`declination_of`): a log converted before the
             // converter wrote one reads 0.00, which is a site nobody named.
             self.filter.magnetic_declination().as_radians().to_degrees(),
+            // The crate's magnetic model at the log's site, beside the header's value: on a log
+            // whose EKF2 read PX4's table at its first fix, the two are one table read by two
+            // ports at one point, and the manifest pins them equal. `none` without a site.
+            self.site
+                .and_then(Geodetic::magnetic_declination)
+                .map_or_else(
+                    || "none".to_string(),
+                    |d| format!("{:.2}", d.as_radians().to_degrees())
+                ),
             self.resets(),
             self.recoveries(),
             // When the filter first called its own attitude usable. It is what settled
@@ -2210,6 +2243,20 @@ impl TruthRow {
 /// is what notices it stop arriving.
 fn declination_of(text: &str) -> Radians {
     header_radians(text, "# Magnetic declination ").unwrap_or(Radians::ZERO)
+}
+
+/// The site a leading `# Navigation origin <lat> <lon> <height>` line names, degrees and
+/// metres: the geodetic point the file's NED positions are relative to. `None` for a file
+/// with no fix (`none`) or none of the line, which is a simulator's, whose positions were
+/// never geodetic.
+fn origin_of(text: &str) -> Option<Geodetic> {
+    let rest = text
+        .lines()
+        .take_while(|line| line.starts_with('#'))
+        .find_map(|line| line.strip_prefix("# Navigation origin "))?;
+    let mut numbers = rest.split_whitespace().map(|word| word.parse::<f64>().ok());
+    let (latitude, longitude, height) = (numbers.next()??, numbers.next()??, numbers.next()??);
+    Some(Geodetic::from_degrees(latitude, longitude, height))
 }
 
 /// The sideslip a leading `# Course sideslip <rad> rad` line names, which turns on the course
@@ -3334,6 +3381,21 @@ mod tests {
     }
 
     // ---- the verdict keys ----
+
+    #[test]
+    fn the_site_comes_from_the_origin_header_and_a_log_without_a_fix_has_none() {
+        let named = "# Navigation origin 56.410000000 43.760000000 150.000 (lat deg, ...)\nt_s\n";
+        let site = origin_of(named).expect("three numbers");
+        assert!((site.latitude_deg() - 56.41).abs() < 1e-9);
+        assert!((site.longitude_deg() - 43.76).abs() < 1e-9);
+        assert_eq!(site.height(), 150.0);
+        assert_eq!(
+            origin_of("# Navigation origin none (no 3D fix)\nt_s\n"),
+            None
+        );
+        assert_eq!(origin_of("t_s,source\n# Navigation origin 1 2 3\n"), None);
+        assert_eq!(origin_of("# nothing\n"), None);
+    }
 
     #[test]
     fn the_declination_comes_from_the_header_and_defaults_to_zero() {

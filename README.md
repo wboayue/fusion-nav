@@ -366,10 +366,12 @@ constructor instead, since it leaves that axis' σ alone where `clamped` would c
 measurement. The magnetometer must already be calibrated for hard and soft iron: `noise` is on
 the heading rather than on the field, and the filter widens it by the tilt it levelled with,
 equation (36′), but nothing in it can find a hard-iron offset. A dual-antenna heading is bounded
-the same way as a fix, `HeadingNoise::clamped` with PX4's or ArduPilot's floor. Heading is true only once
-`set_magnetic_declination` names the site's declination, zero until then; set it before
-initializing, since the window's heading reads it, and again when a first fix says where the
-vehicle is.
+the same way as a fix, `HeadingNoise::clamped` with PX4's or ArduPilot's floor. Heading is true once the
+declination is known. The filter reads it from PX4's World Magnetic Model table wherever it places
+its origin, at the first geodetic fix, and turns a heading only the magnetometer has referred to
+north by the difference (the `magnetic-model` feature, on by default, about 2.5 KB of flash).
+`set_magnetic_declination` overrides it for good, and `Geodetic::magnetic_declination` is the
+same lookup for a caller that knows its site before the first fix.
 
 Every measurement passes through an innovation gate first. The result carries the test ratio, so
 a rejection is diagnosable. Reading it is optional: `diagnostics()` keeps the ratio, the counts

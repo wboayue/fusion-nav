@@ -207,6 +207,8 @@ fn drive() {
         let _ = black_box(origin.to_geodetic(position));
     }
     let _ = black_box(LocalOrigin::placing(fix, position));
+    // The magnetic model's lookup indexes a table, the shape `Index` bounds-checks.
+    let _ = black_box(black_box(fix).magnetic_declination());
 
     // A receiver reports degrees, scaled integer degrees or radians, and an application
     // reads the fix back out in whichever of those it logs.

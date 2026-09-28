@@ -6,7 +6,9 @@ use crate::geodetic::{Geodetic, LocalOrigin};
 use crate::health::{Diagnostics, Fusion, GnssFusion, Propagation, SourceHealth, Status, Validity};
 use crate::history::History;
 use crate::init::{self, Alignment, Coarse, InitError, Measured, StaticSample, StaticWindow};
-use crate::math::{below_floor, correlation_inflation, exp_quat, floor_diagonal, floor_offset};
+use crate::math::{
+    below_floor, correlation_inflation, exp_quat, floor_diagonal, floor_offset, wrap_pi,
+};
 use crate::observation::{baro, gnss, heading, mag};
 use crate::propagate::{self, ImuSample, Propagated, project, propagate};
 use crate::state::{AttitudeVariance, Covariance, ErrorState, Offset, State};
@@ -136,6 +138,15 @@ pub struct Eskf {
     /// `D_m` of equations (6) and (35); see
     /// [`set_magnetic_declination`](Self::set_magnetic_declination).
     declination: Radians,
+    /// Whether the caller has set [`declination`](Self::declination), which the model the
+    /// filter reads at each origin then never overrides.
+    declination_set: bool,
+    /// Whether the heading held is referred to true north through the declination alone:
+    /// levelled from a window's magnetometer by (6) or adopted from `fuse_mag_heading`, with
+    /// no true heading (a seed, a GNSS heading, a course) accepted since. While it is, a
+    /// declination the filter learns turns the heading with it; see
+    /// [`place_origin`](Self::place_origin).
+    magnetic_north: bool,
     /// `ω` of equation (9) from the last step integrated from a sample; see
     /// [`angular_rate`](Self::angular_rate).
     angular_rate: Option<AngularRate<Body>>,
@@ -183,6 +194,8 @@ impl Eskf {
             offset: Offset::default(),
             origin: None,
             declination: Radians::ZERO,
+            declination_set: false,
+            magnetic_north: false,
             angular_rate: None,
             history: History::default(),
             earliest: Timestamp::ZERO,
@@ -523,8 +536,50 @@ impl Eskf {
                 ..self.state
             });
         }
-        self.origin = Some(new);
+        self.place_origin(new);
         true
+    }
+
+    /// Hold `origin` as the navigation origin, and read the site's declination from the
+    /// magnetic model there unless the caller has set one. Every placement comes through here:
+    /// [`set_origin`](Self::set_origin) and both of
+    /// [`fuse_gnss_geodetic`](Self::fuse_gnss_geodetic)'s.
+    ///
+    /// GOALS.md differentiator 7: the site is the one thing the model needs, and the origin is
+    /// the moment the filter learns it, as PX4 learns it from its first valid fix
+    /// (`updateWorldMagneticModel`, `EKF/aid_sources/magnetometer/mag_control.cpp:642-644` at
+    /// `c4e4ef98`).
+    ///
+    /// A heading referred to north through the declination alone is turned by the change,
+    /// about navigation down, since the heading (6) levelled or a magnetometer set was the
+    /// magnetic heading plus the old value and is that plus the new one. A static start is
+    /// the usual case: it levels before any fix names the site, and the first fix arrives a
+    /// declination later. Left alone, that is a standing innovation of the whole change on
+    /// every heading (13.8° at 56° N, 44° E), which the gate of (37) reads as a disturbed
+    /// magnetometer and turns away until [`Config::recovery`](crate::Config::recovery)
+    /// adopts one. The covariance is kept as it was: the turn composes on the left, so the
+    /// body-frame error `δθ` of (2) is the same error before and after it, and the tilt a
+    /// window levelled against its accelerometer bias by (8) keeps that correlation in the
+    /// body axes it was built in. A heading any true source has vouched for is not turned,
+    /// and the change arrives as an innovation, as a caller's does.
+    fn place_origin(&mut self, origin: LocalOrigin) {
+        self.origin = Some(origin);
+        if self.declination_set {
+            return;
+        }
+        let Some(declination) = model_declination(origin.geodetic()) else {
+            return;
+        };
+        let change = wrap_pi(declination.as_radians() - self.declination.as_radians());
+        self.declination = declination;
+        if self.initialized && self.magnetic_north && change != 0.0 {
+            let mut turned = exp_quat(Vector3::z() * change) * self.state.attitude.quaternion();
+            turned.renormalize();
+            self.commit_state(State {
+                attitude: Attitude::body_to_ned(turned),
+                ..self.state
+            });
+        }
     }
 
     /// The navigation origin: the point [`State::position`](crate::State::position) is
@@ -540,7 +595,14 @@ impl Eskf {
     }
 
     /// Set the magnetic declination at the operating site: `D_m` of equations (6) and (35),
-    /// east-positive, the angle that turns a magnetic heading into a true one. Zero until set.
+    /// east-positive, the angle that turns a magnetic heading into a true one.
+    ///
+    /// Optional where the `magnetic-model` feature is on, as it is by default: the filter
+    /// reads the declination from PX4's World Magnetic Model table wherever it places its
+    /// [`origin`](Self::origin), and turns a heading only the magnetometer has referred to
+    /// north along with it (see [`Geodetic::magnetic_declination`]). A value set here is the
+    /// caller's and the model never overrides it; that is the call for a site the table
+    /// describes badly or a date far from its epoch. Zero until one or the other.
     ///
     /// Held by the filter rather than [`Config`] because it is a property of where the vehicle
     /// is, like the [`origin`](Self::origin) and `α₀`, and a vehicle that powers on before a
@@ -564,6 +626,7 @@ impl Eskf {
             return false;
         }
         self.declination = declination;
+        self.declination_set = true;
         true
     }
 
@@ -1140,7 +1203,7 @@ impl Eskf {
             let Some(origin) = LocalOrigin::new(fix) else {
                 return self.refuse_gnss(Fusion::NoReference);
             };
-            self.origin = Some(origin);
+            self.place_origin(origin);
             return self.fuse_gnss_position(time, Position::zero(), noise);
         }
 
@@ -1150,7 +1213,7 @@ impl Eskf {
         let Some(origin) = LocalOrigin::placing(fix, past.position) else {
             return self.refuse_gnss(Fusion::NoReference);
         };
-        self.origin = Some(origin);
+        self.place_origin(origin);
         let placed = self.reset_position_to(self.state.position, noise);
         debug_assert!(
             placed,
@@ -1412,6 +1475,7 @@ impl Eskf {
             gate: self.config.gates.mag_heading,
             correlation: self.config.correlation.mag_heading,
             recovery,
+            magnetic: true,
         };
         self.fuse_heading(time, source, 0.0, |past, covariance| {
             mag::heading_observation(past, covariance, field, declination, noise)
@@ -1474,6 +1538,7 @@ impl Eskf {
             gate: self.config.gates.gnss_heading,
             correlation: self.config.correlation.gnss_heading,
             recovery: self.config.recovery.gnss_heading,
+            magnetic: false,
         };
         self.fuse_heading(time, source, 0.0, |past, _| {
             heading::gnss_observation(past, heading, noise)
@@ -1558,6 +1623,7 @@ impl Eskf {
             gate: self.config.gates.course,
             correlation: self.config.correlation.course,
             recovery,
+            magnetic: false,
         };
         self.fuse_heading(time, source, spread, |past, _| {
             heading::course_observation(past, sideslip)
@@ -1593,6 +1659,7 @@ impl Eskf {
             self.adopt_heading(&observation, spread);
             (source.health)(&mut self.diagnostics).record_adopted();
             self.note_alignment();
+            self.magnetic_north = source.magnetic;
             return Fusion::Reset;
         }
         let outcome = update(
@@ -1602,9 +1669,17 @@ impl Eskf {
             &observation,
             source.gate,
         );
-        self.apply_or_recover(outcome, source.health, source.recovery, |filter| {
+        let fused = self.apply_or_recover(outcome, source.health, source.recovery, |filter| {
             filter.adopt_heading(&observation, spread)
-        })
+        });
+        // An adoption replaces the heading with this source's; a true heading accepted means
+        // the estimate is no longer referred to north through the declination alone.
+        match fused {
+            Fusion::Reset => self.magnetic_north = source.magnetic,
+            Fusion::Accepted { .. } if !source.magnetic => self.magnetic_north = false,
+            _ => {}
+        }
+        fused
     }
 
     /// `recovery`, unless any of `arbiters` was accepted recently: a source that disagrees
@@ -2161,6 +2236,8 @@ impl Eskf {
         );
         let unestablished = Unestablished::after(settled, measured.field.is_some());
         self.start(state, covariance, unestablished, time, settled);
+        // (6) levelled the heading from the window's field with the declination it held.
+        self.magnetic_north = measured.field.is_some();
         if settled {
             self.origin = None;
         }
@@ -2186,6 +2263,7 @@ impl Eskf {
         self.diagnostics = Diagnostics::default();
         self.commit_covariance(covariance, self.surviving_offset());
         self.unestablished = unestablished;
+        self.magnetic_north = false;
         self.angular_rate = None;
         self.initialized = true;
         self.time = time;
@@ -2234,6 +2312,18 @@ impl Eskf {
     }
 }
 
+/// The declination the magnetic model gives at `site`, or `None` without the
+/// `magnetic-model` feature, which links no table.
+fn model_declination(site: Geodetic) -> Option<Radians> {
+    #[cfg(feature = "magnetic-model")]
+    return site.magnetic_declination();
+    #[cfg(not(feature = "magnetic-model"))]
+    {
+        let _ = site;
+        None
+    }
+}
+
 /// What distinguishes one heading source from another inside
 /// [`Eskf::fuse_heading`]: where its health is kept, and the gate, `τ` and recovery
 /// [`Config`] gives it.
@@ -2242,6 +2332,9 @@ struct HeadingSource {
     gate: Gate<1>,
     correlation: Option<Seconds>,
     recovery: Option<Seconds>,
+    /// Whether the heading is magnetic, referred to true north through the declination:
+    /// what [`Eskf::place_origin`] reads to decide whether a learned declination turns it.
+    magnetic: bool,
 }
 
 impl Unestablished {
@@ -5228,6 +5321,148 @@ mod tests {
             near(origin.to_ned(zurich()), filter.state().position),
             "the fix lands on the estimate, so nothing steps"
         );
+    }
+
+    /// A site whose declination is large, 13.8° east in PX4's table, so a heading that
+    /// missed it is far outside any gate.
+    fn east_of_moscow() -> Geodetic {
+        Geodetic::from_degrees(56.41, 43.76, 150.0)
+    }
+
+    fn yaw_of(filter: &Eskf) -> f32 {
+        filter.state().attitude.euler_angles().2
+    }
+
+    #[cfg(feature = "magnetic-model")]
+    #[test]
+    fn a_static_start_learns_its_declination_at_the_first_fix_and_turns_its_heading() {
+        let mut filter = Eskf::new(Config::default());
+        let _ = filter
+            .initialize_over(&window_with_mag(), Seconds::from_secs(0.25))
+            .expect("a 2 s window of stillness");
+        assert_eq!(yaw_of(&filter), 0.0, "levelled at declination zero");
+        let covariance = *filter.covariance();
+        let model = east_of_moscow()
+            .magnetic_declination()
+            .expect("a finite site");
+
+        let noise = PositionNoise::horizontal_vertical(1.5, 1.5);
+        let _ = filter.fuse_gnss_geodetic(filter.now(), east_of_moscow(), noise);
+        assert_eq!(filter.magnetic_declination(), model);
+        assert!((yaw_of(&filter) - model.as_radians()).abs() < 1e-6);
+        let attitude = |p: &Covariance| p.as_matrix().fixed_view::<3, 3>(6, 6).into_owned();
+        assert_eq!(
+            attitude(filter.covariance()),
+            attitude(&covariance),
+            "the body-frame error is the same error after the turn"
+        );
+
+        // The next heading from the same field agrees with the turned estimate. Unturned, it
+        // would carry the whole declination as its innovation.
+        let field = MagField::body(0.22, 0.0, 0.44);
+        let fusion = filter.fuse_mag_heading(filter.now(), field, HeadingNoise::from_sigma(0.05));
+        assert!(fusion.is_accepted(), "{fusion:?}");
+        let nu = filter
+            .diagnostics()
+            .mag_heading
+            .innovation
+            .expect("fused")
+            .values()[0];
+        assert!(nu.abs() < 1e-4, "ν {nu}");
+    }
+
+    #[cfg(feature = "magnetic-model")]
+    #[test]
+    fn a_declination_the_caller_set_is_never_replaced_by_the_model() {
+        let mut filter = Eskf::new(Config::default());
+        assert!(filter.set_magnetic_declination(Radians::from_radians(0.1)));
+        let _ = filter
+            .initialize_over(&window_with_mag(), Seconds::from_secs(0.25))
+            .expect("a 2 s window of stillness");
+        let yaw = yaw_of(&filter);
+        let noise = PositionNoise::horizontal_vertical(1.5, 1.5);
+        let _ = filter.fuse_gnss_geodetic(filter.now(), east_of_moscow(), noise);
+        assert_eq!(filter.magnetic_declination(), Radians::from_radians(0.1));
+        assert_eq!(yaw_of(&filter), yaw);
+    }
+
+    #[cfg(feature = "magnetic-model")]
+    #[test]
+    fn a_true_heading_is_not_turned_by_a_declination_learned_after_it() {
+        // No magnetometer in the window; a dual-antenna heading establishes yaw, and it is
+        // true heading, which no declination touches.
+        let mut filter = initialized();
+        let noise = HeadingNoise::from_sigma(0.02);
+        let heading = filter.fuse_gnss_heading(filter.now(), Radians::from_radians(0.5), noise);
+        assert!(heading.is_reset(), "{heading:?}");
+        let yaw = yaw_of(&filter);
+
+        let noise = PositionNoise::horizontal_vertical(1.5, 1.5);
+        let _ = filter.fuse_gnss_geodetic(filter.now(), east_of_moscow(), noise);
+        assert!(
+            filter.magnetic_declination().as_radians() > 0.2,
+            "the model was read"
+        );
+        assert_eq!(yaw_of(&filter), yaw);
+    }
+
+    #[cfg(feature = "magnetic-model")]
+    #[test]
+    fn a_true_heading_fused_over_a_magnetic_one_stops_the_turn() {
+        // Heading levelled from the window's magnetometer, then a dual-antenna heading
+        // accepted over it: the estimate is no longer the magnetometer's alone.
+        let mut filter = Eskf::new(Config::default());
+        let _ = filter
+            .initialize_over(&window_with_mag(), Seconds::from_secs(0.25))
+            .expect("a 2 s window of stillness");
+        let noise = HeadingNoise::from_sigma(0.02);
+        let heading = filter.fuse_gnss_heading(filter.now(), Radians::from_radians(0.0), noise);
+        assert!(heading.is_accepted(), "{heading:?}");
+        let yaw = yaw_of(&filter);
+
+        let noise = PositionNoise::horizontal_vertical(1.5, 1.5);
+        let _ = filter.fuse_gnss_geodetic(filter.now(), east_of_moscow(), noise);
+        assert!(
+            filter.magnetic_declination().as_radians() > 0.2,
+            "the model was read"
+        );
+        assert_eq!(yaw_of(&filter), yaw);
+    }
+
+    #[cfg(feature = "magnetic-model")]
+    #[test]
+    fn a_seed_vouches_for_its_heading_and_a_new_origin_rereads_the_site() {
+        let (state, covariance) = seed();
+        let mut filter = Eskf::new(Config::default());
+        let _ = filter.seed(state, covariance).expect("a sane seed");
+        let yaw = yaw_of(&filter);
+        assert!(filter.set_origin(east_of_moscow()));
+        assert_eq!(
+            yaw_of(&filter),
+            yaw,
+            "a seed's heading is the caller's claim"
+        );
+        let there = filter.magnetic_declination();
+
+        assert!(filter.set_origin(zurich()));
+        assert_ne!(
+            filter.magnetic_declination(),
+            there,
+            "a new site, a new value"
+        );
+    }
+
+    #[cfg(not(feature = "magnetic-model"))]
+    #[test]
+    fn without_the_model_declination_is_the_callers_alone() {
+        let mut filter = Eskf::new(Config::default());
+        let _ = filter
+            .initialize_over(&window_with_mag(), Seconds::from_secs(0.25))
+            .expect("a 2 s window of stillness");
+        let noise = PositionNoise::horizontal_vertical(1.5, 1.5);
+        let _ = filter.fuse_gnss_geodetic(filter.now(), east_of_moscow(), noise);
+        assert_eq!(filter.magnetic_declination(), Radians::ZERO);
+        assert_eq!(yaw_of(&filter), 0.0);
     }
 
     #[test]
