@@ -41,14 +41,17 @@ coarse (35575 rows refused → 4; 3825 rejected at `baro_offset_walk = 0`), and 
 #8 landed (#156): `data/fetch.sh --compare` replays every log `raw` and `px4` (`--r-policy px4`,
 EKF2's own GNSS floors from the log's parameters) and asserts 24 `agreement` lines against
 `data/ekf2.txt`; the statistics are `tools/agreement.py`'s, and `replay_report.py --corpus` draws
-the table #123 consumes. On `2c42096b`, horizontal agrees to 0.29 / 0.28 m RMS north / east once
-EKF2's origin (3.67 m S, 2.14 m E, 4.21 m below ours) is aligned, and height does not: `climb`,
+the table #123 consumes. On `2c42096b`, horizontal agrees to 0.30 / 0.27 m RMS north / east
+(EKF2's origin sits 3.67 m S, 2.14 m E, 4.21 m below ours), and height does not: `climb`,
 first 60 s mean to last, is +11.97 m for EKF2 on its barometer and −7.28 m for this filter on GNSS
 height's low frequencies (`height_reference_ekf2=baro`). The 24.2 m origin gap once quoted was
 mostly the geoid, the replay origin being ellipsoidal and `ref_alt` MSL; the converter now puts
 both on one datum. The `R` policy is most of the rejection disagreement (`093e806a` 278.8 s raw,
-27.1 px4, EKF2 304.9). One finding has no cause yet: on `89a498ce`, the RTK log, EKF2 sits a
-median 3.6 m north of its own receiver's fixes (`pos_n_rms` 4.73).
+27.1 px4, EKF2 304.9). `89a498ce`'s "EKF2 3.6 m north of its own fixes" was the converter (#167,
+#145 section 4): PX4's local x/y are `MapProjection`, azimuthal equidistant on a 6371 km sphere,
+not the tangent plane of (43), ~0.2 % apart in scale, so no origin shift aligns them. EKF2's
+position is now reprojected per row about its own origin and placed as a fix is; raw `pos_n_rms`
+4.67 → 0.130 m, and every log that flies far moved (`4b473e91` `pos_e_rms` 1.81 → 0.61).
 The sensor-boundary pass landed (#159): `clamped` takes a `SigmaBounds` per axis, so PX4's and
 ArduPilot's GNSS `R` rules are one call each and `RPolicy::Px4` holds no floor of its own (#157;
 `px4` replay byte-identical on all twelve logs); declination moved off `Config` onto `Eskf`,
@@ -71,8 +74,7 @@ scenario (`mission` 0.414° → 0.330); `7ce66f0d` recovers 28 times rather than
 a reader who has never computed a NEES. Every number and table comes through a placeholder in
 `validation/src/`, and every figure through `replay_report.py --figures`. `tools/validation.sh`
 regenerates them from the gates it runs, and `--check` re-derives them. The pages state the
-losses: `correlated` (#51) is overconfident, `7ce66f0d` levels wrong (#59), and `89a498ce`'s
-4.7 m north offset from EKF2 is open. Order: #47, which needs the *API frozen* milestone closed or
+losses: `correlated` (#51) is overconfident and `7ce66f0d` levels wrong (#59). Order: #47, which needs the *API frozen* milestone closed or
 each open issue deferred in writing; #41 needs a board.
 #21 and #52 landed together (#162), one time model for `predict` and `fuse_*`. `ImuSample` is
 PX4's `imuSample`: a `Timestamp` (u64 µs), delta angle and delta velocity, each with its own
@@ -433,9 +435,10 @@ index map is keyed on the pair `(n_states, covariance entries)`, because EKF2's 
 changed three times and neither count alone separates the eras: `n_states=24` is both the
 state-indexed layout and v1.15's error-state one, and no field spelling distinguishes them either.
 Three of the twelve corpus logs therefore supply no attitude σ at all, two supply no origin, and the
-LPE log's rows are LPE's, which its `Estimator:` header line says. EKF2's origin arrives already in
-the replay frame, moved from MSL onto the ellipsoidal datum the replay origin is on: unshifted, the
-geoid height is the whole of the down offset (−25.41 m on `eb799954`). `data/README.md`, "What `--reference` writes, and what it cannot", owns
+LPE log's rows are LPE's, which its `Estimator:` header line says. EKF2's position arrives already
+in the replay frame, reprojected out of PX4's spherical `MapProjection` and moved from MSL onto the
+ellipsoidal datum the replay origin is on; `EKF2 position in replay frame:` names the axes placed.
+`data/README.md`, "What `--reference` writes, and what it cannot", owns
 those boundaries and the bias-scaling factor; the map itself lives in `tools/ulog2replay.py` and
 nowhere else, so a consumer reads column names and never the layout.
 
@@ -616,8 +619,15 @@ exercises that section, before the work is called done.
 Opening them for #123 found three more, and all three were ways a figure can disagree with a
 number printed beside it:
 - **A figure must draw in the frame its statistic compares in.** The `4b473e91` track drew EKF2 at
-  its own origin, so it looked 60 m from this filter while `pos_e_rms` read 2.7 m. The shift now
-  lives once, in `agreement.to_replay_frame`, and both the statistic and the figure call it.
+  its own origin, so it looked 60 m from this filter while `pos_e_rms` read 2.7 m. The converter
+  now writes EKF2's position in the replay frame, so neither the statistic nor the figure shifts
+  anything.
+- **A frame is a projection, not only an origin.** One origin shift aligned EKF2 at its origin and
+  nowhere else: PX4's local x/y are on a sphere, ours on the ellipsoid's tangent plane, and the
+  0.2 % scale between them read as EKF2 sitting 3.6 m north of its own RTK fixes on `89a498ce`,
+  published as open for a release. EKF2's own innovations (millimetres) said it sat on its fixes;
+  checking them first would have named the cause. Before calling another estimator's disagreement
+  with its own sensor a finding, read that estimator's innovations for the sensor.
 - **An axis sized to the widest band hides the error.** `gnss_outage`'s ±250 m band drew a 10 m
   error as a flat line.
 - **Prose written before the figure is opened is a guess.** The robustness page said the outage
@@ -1024,8 +1034,8 @@ is what moves those columns.
 
 The converter's `#` header lines are the other coupling, and they are guarded less. Each is an
 f-string in `tools/ulog2replay.py` and a parser elsewhere: `# Magnetic declination` and
-`# GNSS noise parameters` read by `examples/replay.rs`, `Estimator:`, `EKF2 origin in replay frame:`
-and `EKF2 aiding:` by `tools/replay_report.py`, which also reads the bounds off
+`# GNSS noise parameters` read by `examples/replay.rs`, `Estimator:`, `EKF2 position in replay
+frame:` and `EKF2 aiding:` by `tools/replay_report.py`, which also reads the bounds off
 `tools/anees.py --series`'s `# fusion-nav anees for` line. Both sides carry fixtures on the same literal
 strings, so rewording one side fails a self-test; nothing stops the two sets of literals drifting
 apart together. A parser that finds nothing reads its absence (declination zero, no origin)
