@@ -106,9 +106,10 @@ impl Geodetic {
     /// number. Height is ignored.
     ///
     /// The value [`Eskf`](crate::Eskf) applies itself where it places its origin, unless
-    /// [`set_magnetic_declination`](crate::Eskf::set_magnetic_declination) has been called;
-    /// exposed for a caller that wants it earlier, before
-    /// [`initialize`](crate::Eskf::initialize) on a site it already knows. Behind the
+    /// [`set_magnetic_declination`](crate::Eskf::set_magnetic_declination) has been called.
+    /// A caller that knows its site before initializing hands the filter the site through
+    /// [`set_origin`](crate::Eskf::set_origin) instead, which reads this and leaves the model
+    /// in charge; passing this to `set_magnetic_declination` fixes it for good. Behind the
     /// `magnetic-model` feature, on by default.
     #[cfg(feature = "magnetic-model")]
     pub fn magnetic_declination(self) -> Option<crate::units::Radians> {

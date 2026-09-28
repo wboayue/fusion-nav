@@ -521,7 +521,11 @@ impl Eskf {
     /// the point being named, false anywhere else.
     ///
     /// Call it after initializing: a static start clears the origin, since it declares
-    /// position zero to be wherever the vehicle is.
+    /// position zero to be wherever the vehicle is. Called before, it still names the site,
+    /// which is where the magnetic model is read (see
+    /// [`set_magnetic_declination`](Self::set_magnetic_declination)): the window then levels
+    /// its heading at the site's declination, and a heading only the magnetometer set is
+    /// turned whenever a later origin changes it.
     ///
     /// Returns `false`, changing nothing, for an origin with a coordinate that is not a
     /// number or a latitude beyond ±90°.
@@ -541,9 +545,9 @@ impl Eskf {
     }
 
     /// Hold `origin` as the navigation origin, and read the site's declination from the
-    /// magnetic model there unless the caller has set one. Every placement comes through here:
-    /// [`set_origin`](Self::set_origin) and both of
-    /// [`fuse_gnss_geodetic`](Self::fuse_gnss_geodetic)'s.
+    /// magnetic model there unless the caller has set one. Every placement reads the model:
+    /// [`set_origin`](Self::set_origin) and the coarse start's through here, and (44) through
+    /// [`learn_declination`](Self::learn_declination) directly, at the fix.
     ///
     /// GOALS.md differentiator 7: the site is the one thing the model needs, and the origin is
     /// the moment the filter learns it, as PX4 learns it from its first valid fix
@@ -561,13 +565,22 @@ impl Eskf {
     /// body-frame error `δθ` of (2) is the same error before and after it, and the tilt a
     /// window levelled against its accelerometer bias by (8) keeps that correlation in the
     /// body axes it was built in. A heading any true source has vouched for is not turned,
-    /// and the change arrives as an innovation, as a caller's does.
+    /// and the change arrives as an innovation, as a caller's does. GNSS position and velocity
+    /// do not count as one, though they correct heading through the correlations while the
+    /// vehicle accelerates: a first origin arrives before that matters, and a caller moving
+    /// the origin mid-flight to a distant site sets the declination itself.
     fn place_origin(&mut self, origin: LocalOrigin) {
+        self.learn_declination(origin.geodetic());
         self.origin = Some(origin);
+    }
+
+    /// The declination half of [`place_origin`](Self::place_origin), at `site`: for (44),
+    /// which has to turn the heading before it reads the attitude it places the origin with.
+    fn learn_declination(&mut self, site: Geodetic) {
         if self.declination_set {
             return;
         }
-        let Some(declination) = model_declination(origin.geodetic()) else {
+        let Some(declination) = model_declination(site) else {
             return;
         };
         let change = wrap_pi(declination.as_radians() - self.declination.as_radians());
@@ -880,8 +893,8 @@ impl Eskf {
     ///
     /// Out of line for the reason [`observe`](Self::observe) is: inlined, the `Update` it takes
     /// sat in each `fuse_*` frame beneath `update::<3>`, `fuse_gnss_velocity` at 2384 bytes on
-    /// `thumbv6m-none-eabi` against 1400. That frame into `update::<3>` is the crate's
-    /// high-water mark, 9520.
+    /// `thumbv6m-none-eabi` against 1416. That frame into `update::<3>` is the crate's
+    /// high-water mark, 9504.
     #[inline(never)]
     fn apply_or_recover(
         &mut self,
@@ -976,6 +989,11 @@ impl Eskf {
         }
         self.diagnostics.gnss_position.note_arrival(time);
         self.diagnostics.gnss_height.note_arrival(time);
+        // An arm that is not a number spoils both halves, and an adoption would write it into
+        // the state.
+        if !antenna.is_finite() {
+            return self.refuse_gnss(Fusion::NotFinite);
+        }
         if self.unestablished.position {
             if !position.is_finite() || !noise.is_finite() {
                 return self.refuse_gnss(Fusion::NotFinite);
@@ -1106,9 +1124,9 @@ impl Eskf {
     /// at the mean rates over the age, which the same history gives.
     ///
     /// Out of line, so that it sits beside `update` rather than beneath it: `observe::<3>` is
-    /// 1408 bytes on `thumbv6m-none-eabi`, with `Observation::delayed` at 752 and
+    /// 1464 bytes on `thumbv6m-none-eabi`, with `Observation::delayed` at 752 and
     /// `error_dynamics` at 400 below it. Inlined into `fuse_gnss_velocity`, it sat beneath
-    /// `update::<3>` and put the crate's high-water mark at 10800 bytes against 9520.
+    /// `update::<3>` and put the crate's high-water mark at 10800 bytes against 9504.
     #[inline(never)]
     fn observe<const M: usize>(
         &self,
@@ -1165,7 +1183,8 @@ impl Eskf {
     }
 
     /// [`carried_position`](Self::carried_position) for a velocity, referred to the IMU by
-    /// (29′) at the rate the vehicle was turning then.
+    /// (29′) at the mean rate over the measurement's age, or the last sample's for one taken
+    /// now.
     fn carried_velocity(
         &self,
         taken: Velocity<Ned>,
@@ -1233,7 +1252,7 @@ impl Eskf {
         // Noted again by `fuse_gnss_position` when it delegates, which the same time ignores.
         self.diagnostics.gnss_position.note_arrival(time);
         self.diagnostics.gnss_height.note_arrival(time);
-        if !fix.is_finite() {
+        if !fix.is_finite() || !antenna.is_finite() {
             return self.refuse_gnss(Fusion::NotFinite);
         }
         if let Some(origin) = self.origin {
@@ -1256,13 +1275,15 @@ impl Eskf {
 
         // Equation (44): the origin under the estimate when the fix was taken, and the fix's
         // error as the position's. The estimate of the antenna's position, which is what the
-        // fix measures, (28′).
+        // fix measures, (28′), with the heading the site's declination turns it to first: read
+        // before, a 1 m arm under a 13.8° turn misplaces the origin by 0.24 m.
+        self.learn_declination(fix);
         let (past, _) = self.past(time);
         let antenna_then = past.position.vector() + past.attitude.quaternion() * antenna.vector();
         let Some(origin) = LocalOrigin::placing(fix, Position::from_vector(antenna_then)) else {
             return self.refuse_gnss(Fusion::NoReference);
         };
-        self.place_origin(origin);
+        self.origin = Some(origin);
         let placed = self.reset_position_to(self.state.position, noise);
         debug_assert!(
             placed,
@@ -1312,7 +1333,7 @@ impl Eskf {
             return refuse(&mut self.diagnostics.gnss_velocity, refusal);
         }
         self.diagnostics.gnss_velocity.note_arrival(time);
-        if !velocity.is_finite() || !noise.is_finite() {
+        if !velocity.is_finite() || !noise.is_finite() || !antenna.is_finite() {
             return refuse(&mut self.diagnostics.gnss_velocity, Fusion::NotFinite);
         }
         if !noise.is_positive() {
@@ -1694,10 +1715,10 @@ impl Eskf {
     /// too and whose adopted heading is only as good as the velocity it was taken along.
     ///
     /// Out of line for the reason [`observe`](Self::observe) is. On `thumbv6m-none-eabi` it is
-    /// 1224 bytes over `update::<1>`'s 6384, and the deepest caller above it, `fuse_course`, 264
-    /// with its screening on the past state: 7872 at the peak, against 7624 when
+    /// 1224 bytes over `update::<1>`'s 6368, and the deepest caller above it, `fuse_course`, 264
+    /// with its screening on the past state: 7856 at the peak, against 7624 when
     /// `fuse_mag_heading` did all of this in its own 1240-byte frame, and under
-    /// `fuse_gnss_velocity`'s 9520.
+    /// `fuse_gnss_velocity`'s 9504.
     #[inline(never)]
     fn fuse_heading(
         &mut self,
@@ -5647,6 +5668,43 @@ mod tests {
         assert!(adopted.is_reset(), "{adopted:?}");
         let imu = at_antenna.vector() - yaw * mast().vector();
         assert!(near(filter.state().position, Position::from_vector(imu)));
+    }
+
+    #[test]
+    fn an_antenna_that_is_not_a_number_is_refused_before_it_reaches_the_state() {
+        let broken = Position::body(f32::NAN, 0.0, 0.0);
+        let mut filter = coarse();
+        let before = filter.state();
+        let noise = PositionNoise::horizontal_vertical(0.5, 0.5);
+        let fused = filter.fuse_gnss_position(filter.now(), Position::zero(), noise, broken);
+        assert_eq!(fused, GnssFusion::both(Fusion::NotFinite));
+        let noise = VelocityNoise::from_speed_accuracy(0.3);
+        let fused = filter.fuse_gnss_velocity(filter.now(), Velocity::zero(), noise, broken);
+        assert_eq!(fused, Fusion::NotFinite);
+        let noise = PositionNoise::horizontal_vertical(0.5, 0.5);
+        let fused = filter.fuse_gnss_geodetic(filter.now(), zurich(), noise, broken);
+        assert_eq!(fused, GnssFusion::both(Fusion::NotFinite));
+        assert_eq!(filter.state().position, before.position);
+        assert_eq!(filter.state().velocity, before.velocity);
+        assert_eq!(filter.origin(), None);
+    }
+
+    #[cfg(feature = "magnetic-model")]
+    #[test]
+    fn the_origin_goes_under_the_antenna_the_turned_heading_puts() {
+        // A magnetometer-levelled heading turned 13.8° by the first fix: the arm has to be
+        // read after the turn, or the origin sits 0.24 m from where the estimate puts the
+        // antenna.
+        let mut filter = Eskf::new(Config::default());
+        let _ = filter
+            .initialize_over(&window_with_mag(), Seconds::from_secs(0.25))
+            .expect("a 2 s window of stillness");
+        let noise = PositionNoise::horizontal_vertical(1.5, 1.5);
+        let _ = filter.fuse_gnss_geodetic(filter.now(), east_of_moscow(), noise, mast());
+        let rotation = filter.state().attitude.quaternion();
+        let antenna = Position::from_vector(rotation * mast().vector());
+        let origin = filter.origin().expect("placed by the first fix");
+        assert!(near(origin.to_ned(east_of_moscow()), antenna));
     }
 
     #[test]

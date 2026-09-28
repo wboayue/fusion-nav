@@ -86,7 +86,7 @@ const GRAVITY: f64 = 9.806_65;
 /// Where every scenario flies, latitude and longitude in degrees and ellipsoidal height in
 /// metres: east of Champaign, Illinois, chosen as the point where WMM2025 at 2026.0 gives the
 /// [`DECLINATION`] the scenarios were first drawn at, so placing them on a map moved no
-/// ceiling. It needed choosing: `moving_start`'s `yaw` reads 1.71° rather than 1.47° with the
+/// ceiling. It needed choosing: `moving_start`'s `yaw` reads 1.71° rather than 1.46° with the
 /// field turned 7° east (at Zurich, PX4's SITL home), since the tilt that levels a first
 /// heading enters by (36′) through the field's direction in the body.
 ///
