@@ -20,17 +20,22 @@ fn main() -> Result<(), InitError> {
     // The site's declination, before initializing: the window's heading reads it.
     assert!(filter.set_magnetic_declination(Radians::from_radians(-0.06)));
 
-    // Quasi-static initialization: the vehicle sits still, the filter validates it.
-    // `Initialization::min_duration` is a span of time, so the sample count depends on the
-    // IMU rate — 2 s at 400 Hz here. An array length has to be const, so this 2 tracks the
-    // default by hand; raise that default and this window stops covering it.
+    // Quasi-static initialization: the vehicle sits still, the filter validates it. The
+    // window folds each sample in as it arrives rather than buffering it, and
+    // `Initialization::min_duration` is a span of time, so it is collected until it spans
+    // that: 800 samples at 400 Hz here.
     //
     // A window that is short or moving is not refused — it gives `Alignment::Coarse` and
     // the filter runs, reporting `Status::Aligning` until attitude converges. Checking
     // which you got is the point of the return value.
     println!("fusion-nav basic example\n");
 
-    let window: [StaticSample; (2 * IMU_HZ) as usize] = core::array::from_fn(stationary_sample);
+    let mut window = StaticWindow::new();
+    let mut samples = 0;
+    while window.span() < filter.config().init.min_duration {
+        window.push(stationary_sample(samples))?;
+        samples += 1;
+    }
     let alignment = filter.initialize(&window)?;
     println!("alignment {alignment:?}\n");
 
@@ -38,7 +43,7 @@ fn main() -> Result<(), InitError> {
         // Hot path: one propagation per IMU sample, timed by the caller's clock. The
         // outcome is `#[must_use]`: a step the filter cannot integrate is coasted or
         // refused, and a caller that ignores it would never know there was a gap.
-        let time = sample_time(2 * IMU_HZ + tick + 1);
+        let time = sample_time(samples as u32 + tick + 1);
         assert!(filter.predict(imu_sample(time)).is_propagated());
 
         if tick % (IMU_HZ / GNSS_HZ) == 0 {

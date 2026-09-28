@@ -44,10 +44,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Quasi-static initialization. A real window is captured from the IMU while the
     // vehicle sits still; the filter validates the stationarity assumption.
-    let window: [StaticSample; (2 * IMU_HZ) as usize] = core::array::from_fn(stationary_sample);
     // The IMU driver's sample count, which dates every sample after the window as it did
     // the window's own.
-    let mut samples = window.len() as u64;
+    let mut samples = 0;
+    let mut window = StaticWindow::new();
+    while window.span() < filter.config().init.min_duration {
+        window.push(stationary_sample(samples))?;
+        samples += 1;
+    }
     let alignment = filter.initialize(&window)?;
     println!("alignment:         {alignment:?}");
     println!("initialized:       {:?}\n", filter.state().status);
@@ -276,8 +280,8 @@ fn sample_time(n: u64) -> Timestamp {
 }
 
 /// The `i`th sample of a window on the ground.
-fn stationary_sample(i: usize) -> StaticSample {
-    let time = sample_time(i as u64 + 1);
+fn stationary_sample(i: u64) -> StaticSample {
+    let time = sample_time(i + 1);
     StaticSample {
         imu: ImuSample::from_rates(
             time,
