@@ -346,6 +346,11 @@ changes to "take the break once", or defer an API improvement to a version. Comp
 at #47's first published version, and the attributes and semver policy exist to protect *that*
 surface, not this one.
 
+Put a query on the type whose data it reads. `Eskf::noise_of` read nothing of the filter but its
+`Initialization`, and its purpose, deriving a `Config`, comes before any filter exists; it
+became `StaticWindow::noise(&init)`, beside `is_at_rest(&init)` (#178). A method that forwards
+one field of `self` to another type is the sign.
+
 **Sequencing hazard, and what it taught:** #31's stages were stacked branches while the
 signature-changing issues (#21, #25) changed the API underneath them, so an API change had to land
 *before* the stage that built on it. The hazard is rebase cost between branches, not users: the
@@ -551,6 +556,13 @@ and one described a corpus of a different size. Grep for `five logs`, `corpus` a
 and re-derive from `data/logs/*.csv`, before committing a new entry. Changing a `Config` default or the `summary` line requires updating the
 affected expectations.
 
+The same reasoning makes lost coverage a cost when no number worsens. #50 measured holding the
+barometric reference to nine readings: no rejection or transition count moved, and it would have
+left the corpus no real vehicle whose short still start sets its own reference, the claim #85 and
+#97 had shipped on harness fixtures and `2c42096b` then showed on a real vehicle. The rule was
+kept at two for that. When a change moves a manifest note's "what nothing else covers" line,
+that is the finding to weigh, not only the moved keys.
+
 Expectations are matched pair by pair as substrings, so **adding** a key to the `summary` line is
 safe and pinning new behavior there is cheap — `align=`, `resets=`, `alpha0=` and `heading=` were
 added that way, and each now guards a decision that would otherwise rot into a comment (`alpha0=`
@@ -652,6 +664,12 @@ Commit the test before mutating, and restore with `git checkout HEAD -- <file>`:
 uncommitted file wipes the test along with the mutation, and every later mutation then "passes"
 a test that no longer exists — which is how #122's first mutation pass reported three survivors.
 
+A fixture can fail to bite through symmetry as well as through a cancelling bug. The simulator's
+IMU axes are identical, so a harness reporting the best axis where the worst was asked for passed
+every scenario bound (#178); an asymmetric unit fixture, the worst axis in the middle, is what
+kills it. And a kill that rests on an exact floating-point tie, `0.025 × 2 == 0.05` in `f32`, is
+a property of the representation: pick values no boundary lands on.
+
 **An artifact nobody looked at is unverified, whatever the pipeline says.** The rule above, one
 level out: a passing test says nothing about a guard never exercised, and a passing pipeline says
 nothing about an output nobody opened. `tools/replay_report.py` landed with every guard
@@ -710,6 +728,20 @@ that averages across many score alike on every scenario. #52's extrapolation bac
 matched the state history everywhere in simulation, and on the corpus took `eb799954` from 2
 GNSS rejections to 917 and `2c42096b`, which never moves, from 0 to 94. Replay every finalist on
 the corpus before choosing, and prefer a quantity integrated over time to a raw sample.
+
+The same holds for a *statistic*, and for a plan's premise. The simulator's IMU noise is white;
+a real still window's is not, lag-one autocorrelation −0.98 to +0.96 across the corpus's axes.
+#50's plan read a noise density off one sample's scatter, which recovered the simulator's
+injected σ exactly and misread the corpus 6× high to 2.9× low, and the estimator became 50 ms
+blocks halfway through the implementation. Before building on a statistic that assumes
+independent samples, compute the corpus's lag-one autocorrelation for it: one line of Python, and
+the cheapest point to learn the plan is wrong.
+
+**Measure a claim on the rows the code reads.** A figure taken on a convenient proxy, "the first
+500 rows", is a claim about the proxy. On #50 two of them ran past a still window into flight
+(`4b473e91`'s window is 254 rows, `2c42096b`'s 160) and one read the opposite way on the window
+itself; a review re-measuring on the harness window found it. The harness knows which rows it
+used (`window=` on the `summary` line); take the evidence from those.
 
 **Set a new input to its neutral value and check the old pins come back.** #52 added a
 measurement time; replaying the corpus with every delay at zero reproduced the previous manifest
