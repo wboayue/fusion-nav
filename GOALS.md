@@ -185,15 +185,16 @@ Runtime self-tuning would contradict differentiator 1, because a filter that cha
 covariance growth has no worst-case timing or behaviour to publish, and it would contradict
 [rejection handling](#rejection-handling-recover-by-default-opt-out-per-source), where what the
 filter corrects on its own is fixed in advance and switched per source by the caller. Two
-channels, then: what the static window can honestly measure, handed back by `initialize`; and
+channels, then: what the static window can honestly measure, reported by `StaticWindow::noise`
+beside `initialize`; and
 everything else derived offline from a replay log by a tool that prints a `Config` the user
 reads and commits.
 
 | value | derived from | where |
 | ----- | ------------ | ----- |
 | `α₀`, barometric reference | mean of the window's barometer samples or, for a start that leaves none, the first altitude read against the estimate; then estimated as the offset of (30′) | `initialize` or the first `fuse_baro_altitude` seeds it and the filter refines it |
-| accelerometer and gyroscope white noise | sample variance over the static window | `initialize` |
-| barometer measurement noise | sample variance over the static window | `initialize` |
+| accelerometer and gyroscope white noise, as a floor | the scatter of the increments over 50 ms blocks of a still window; a still airframe's samples are not white, so one sample's scatter misreads the density, 6× high to 3× low on the corpus | `StaticWindow::noise`, reported and never applied |
+| barometer measurement noise, as a floor | the variance of a still window's distinct readings; fused as `R` it pushes `nis_baro` past 1 on five of six real logs | `StaticWindow::noise`, reported and never applied |
 | `max_predict_dt` | observed IMU interval | offline |
 | gate thresholds | chi-square quantile for a chosen percentile and dimension | a constructor, not a number |
 | a source's timeout | its mean interval between measurements, published as `SourceHealth::period`; it tunes no noise, reaches the estimate only through the recovery guards that ask whether a source is arriving and through the course, which is refused along a velocity no fresh GNSS velocity holds, and is a function of the measurement times alone, so a replay reproduces it | the filter, per arrival |

@@ -554,7 +554,11 @@ refused as too long or as not a step at all — propagation, not measurements), 
 (variances raised to the diagonal floor of equation (42′), pinned at zero on every log because
 that is the claim — the floor sits far below anything the filter reaches, so a non-zero says a
 covariance is being driven toward zero by something upstream and the floor is masking it), and
-`epochs=`, `transitions=` and `status=`, followed by four families of consistency statistic, one
+`epochs=`, then `noise_gyro=`, `noise_accel=` and `noise_baro=` (what `StaticWindow::noise` made of
+the window the filter started on: the worst axis's white-noise density in rad s⁻¹/√Hz and
+m s⁻²/√Hz, and the barometer readings' σ in metres, or `none` for a window that moved or held too
+few readings; floors under the noise to configure, not the noise itself), `transitions=` and
+`status=`, followed by four families of consistency statistic, one
 set per source: `nis_` (mean normalized innovation squared per degree of freedom, 1 when `S`
 describes its own innovations), `nis_over95_` (the fraction above the 95 % χ² quantile, 0.05 when
 it does), `nu_` per axis (mean innovation, 0 when nothing is biased) and `acf1_` (lag-1
@@ -571,8 +575,11 @@ figure they produce:
   on the real logs whose estimate held, conservative by 1.4–5.7× in σ for the barometer and
   1.1–19.6× for the magnetometer, stated separately because one range across both understates the
   magnetometer's low end. `data/manifest.txt` names the logs set aside.
-  Nothing here had ever tested them; that is the first measurement
-  [#50](https://github.com/wboayue/fusion-nav/issues/50) can argue from.
+  The window measures the barometer's floor, `noise_baro=`, at 0.015–1.14 m of σ on the six real
+  logs that report one, against the converter's 2 m, and fusing that floor in the constant's
+  place was measured and not kept: `nis_baro` goes past 1 on five of the six (1.54–34.56) and the
+  gate refuses 45–1976 readings on each of those five. An honest barometer `R` sits between the two, which is
+  why `StaticWindow::noise` calls its figure a floor.
 - For GNSS the statistic tests the receiver's own `eph`/`epv`/`s_variance_m_s`, which the harness
   passes through unfloored where both production estimators bound theirs. Horizontal position
   reads 0.0184–0.2251 on the real logs whose position gate stays quiet and height 0.0865–0.9207,

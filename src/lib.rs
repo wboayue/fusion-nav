@@ -100,7 +100,7 @@ pub mod prelude {
         SourceHealth, Status, Validity,
     };
     pub use crate::init::{
-        Alignment, Coarse, InitError, SampleRefusal, StaticSample, StaticWindow,
+        Alignment, Coarse, InitError, SampleRefusal, StaticSample, StaticWindow, WindowNoise,
     };
     pub use crate::propagate::ImuSample;
     pub use crate::state::{AttitudeVariance, Covariance, ErrorState, State};

@@ -8,8 +8,21 @@
 #
 # `key<=v` is a ceiling, `key>=v` a floor, `key=lo..hi` a two-sided bound; `data/expect.sh` owns
 # the syntax and the comparison, and `data/manifest.txt` writes its expectations in the same
-# language. Nothing here is two-sided yet: a ceiling is what an error wants, and the bound a
-# statistic wants is ANEES against chi-square, in `data/anees.txt` rather than on this line.
+# language. A ceiling is what an error wants, and the bound a statistic wants is ANEES against
+# chi-square, in `data/anees.txt` rather than on this line.
+#
+# The `noise_` keys are the one two-sided bound here, and the one not measured-plus-margin:
+# they are `StaticWindow::noise` read off each scenario's window, bounded about the density the
+# simulator injected (`IMU` 2.6e-4 and 2.0e-3, `HARSH_IMU` ten times that, the barometer's
+# 0.35 m), which truth fixes rather than a previous run. Each is the worst of three axes over
+# 40 blocks (33 on `flight`), each axis as precise as `WindowNoise::MIN_READINGS` says and the
+# largest biased up for being the largest, so the band is 0.8x to 1.3x the injected figure (0.8x to 1.25x for the barometer's 40
+# readings, 20 on `flight`); the runs read 1.10x the gyroscope's, 1.04x to 1.06x the
+# accelerometer's, 0.92x and 1.22x on `flight`'s 50 Hz, and 0.95x to 1.14x the barometer's.
+# A density reported without its sqrt(dt) reads 7x (`flight`) to 14x high and fails every
+# one. `harsh_imu` is `mission`'s draw at ten times the scale, so it checks the gate at that
+# noise rather than adding a draw. `moving_start` pins `none`: a moving window reports
+# nothing.
 #
 # Each bound is the measured value plus 1 %, rounded outward -- except `scored`, which is a count
 # of matched truth rows rather than a float comparison and is pinned exactly, because slack there
@@ -152,11 +165,11 @@
 # removes exactly that error and nothing else was changed to make it: `pos_v` 3.07 to 0.819,
 # `pos_h` 9.14 to 3.03, `yaw` 12.96 deg to 7.59. A heading the window observed, stage 8's, is
 # the other half -- this one corrects the consequence and leaves the 0.6 rad in place.
-static           1  pos_h<=0.522 pos_v<=0.350 vel<=0.142 pos_h_max<=0.932  tilt<=0.530 yaw<=0.639 ba<=0.07615 bg<=0.000898 in3s>=0.9900 nees_pos<=0.3324   nees_vel<=0.1083 nees_att<=0.0380 false_valid<=0   false_valid_att<=0   scored>=11600  recovered=0
-mission          2  pos_h<=0.295 pos_v<=0.173 vel<=0.140 pos_h_max<=0.775  tilt<=0.334 yaw<=0.292 ba<=0.03584 bg<=0.000339 in3s>=0.9900 nees_pos<=0.0905   nees_vel<=0.1054 nees_att<=0.0166 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
-harsh_imu        2  pos_h<=0.296 pos_v<=0.171 vel<=0.145 pos_h_max<=0.782  tilt<=0.837 yaw<=0.812 ba<=0.10916 bg<=0.002133 in3s>=0.9900 nees_pos<=0.0911   nees_vel<=0.1118 nees_att<=0.1056 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
+static           1  pos_h<=0.522 pos_v<=0.350 vel<=0.142 pos_h_max<=0.932  tilt<=0.530 yaw<=0.639 ba<=0.07615 bg<=0.000898 in3s>=0.9900 nees_pos<=0.3324   nees_vel<=0.1083 nees_att<=0.0380 false_valid<=0   false_valid_att<=0   scored>=11600  recovered=0 noise_gyro=0.000208..0.000338 noise_accel=0.001600..0.002600 noise_baro=0.2800..0.4400
+mission          2  pos_h<=0.295 pos_v<=0.173 vel<=0.140 pos_h_max<=0.775  tilt<=0.334 yaw<=0.292 ba<=0.03584 bg<=0.000339 in3s>=0.9900 nees_pos<=0.0905   nees_vel<=0.1054 nees_att<=0.0166 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0 noise_gyro=0.000208..0.000338 noise_accel=0.001600..0.002600 noise_baro=0.2800..0.4400
+harsh_imu        2  pos_h<=0.296 pos_v<=0.171 vel<=0.145 pos_h_max<=0.782  tilt<=0.837 yaw<=0.812 ba<=0.10916 bg<=0.002133 in3s>=0.9900 nees_pos<=0.0911   nees_vel<=0.1118 nees_att<=0.1056 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0 noise_gyro=0.002080..0.003380 noise_accel=0.016000..0.026000 noise_baro=0.2800..0.4400
 gnss_outage      2  pos_h<=1.651 pos_v<=0.099 vel<=0.213 pos_h_max<=11.074 tilt<=0.342 yaw<=0.329 ba<=0.03606 bg<=0.000341 in3s>=0.9900 nees_pos<=0.2101   nees_vel<=0.0960 nees_att<=0.0167 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
-moving_start     4  pos_h<=0.363 pos_v<=0.613 vel<=0.147 pos_h_max<=0.702  tilt<=1.571 yaw<=1.473 ba<=0.04096 bg<=0.002023 in3s>=0.9900 nees_pos<=0.1555   nees_vel<=0.1086 nees_att<=0.0338 false_valid<=0   false_valid_att<=0   scored>=15999  recovered=0
+moving_start     4  pos_h<=0.363 pos_v<=0.613 vel<=0.147 pos_h_max<=0.702  tilt<=1.571 yaw<=1.473 ba<=0.04096 bg<=0.002023 in3s>=0.9900 nees_pos<=0.1555   nees_vel<=0.1086 nees_att<=0.0338 false_valid<=0   false_valid_att<=0   scored>=15999  recovered=0 noise_gyro=none noise_accel=none noise_baro=none
 baro_drift       2  pos_h<=0.295 pos_v<=0.928 vel<=0.141 pos_h_max<=0.775  tilt<=0.333 yaw<=0.291 ba<=0.03579 bg<=0.000340 in3s>=0.9900 nees_pos<=0.4458   nees_vel<=0.1057 nees_att<=0.0165 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
 gnss_latency     2  pos_h<=0.298 pos_v<=0.160 vel<=0.146 pos_h_max<=0.797  tilt<=0.342 yaw<=0.294 ba<=0.03801 bg<=0.000337 in3s>=0.9900 nees_pos<=0.0850  nees_vel<=0.1028 nees_att<=0.0166 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
 correlated       2  pos_h<=1.164 pos_v<=1.155 vel<=0.234 pos_h_max<=2.414  tilt<=0.707 yaw<=2.330 ba<=0.03899 bg<=0.001501 in3s>=0.9882 nees_pos<=1.7329  nees_vel<=0.2913 nees_att<=0.2396 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
@@ -170,7 +183,7 @@ gnss_heading     2  pos_h<=0.295 pos_v<=0.173 vel<=0.140 pos_h_max<=0.775 tilt<=
 lever_arm        2  pos_h<=0.294 pos_v<=0.172 vel<=0.140 pos_h_max<=0.763 tilt<=0.339 yaw<=0.299 ba<=0.03665 bg<=0.000336 in3s>=0.9900 nees_pos<=0.0896 nees_vel<=0.1053 nees_att<=0.0170 false_valid<=0 false_valid_att<=0 scored>=36600 recovered=0
 no_mag           3  pos_h<=0.246 pos_v<=0.212 vel<=0.141 pos_h_max<=0.566 tilt<=0.738 yaw<=6.690 ba<=0.06189 bg<=0.001461 in3s>=0.9900 nees_pos<=0.0794 nees_vel<=0.1060 nees_att<=0.2153 false_valid<=0 false_valid_att<=0 scored>=23600 recovered=0
 logging_dropout  2  pos_h<=0.296 pos_v<=0.153 vel<=0.143 pos_h_max<=2.761  tilt<=0.411 yaw<=0.397 ba<=0.03713 bg<=0.000367 in3s>=0.9900 nees_pos<=0.0853   nees_vel<=0.1060 nees_att<=0.0187 false_valid<=0   false_valid_att<=0   scored>=36360  recovered=0
-flight           8  pos_h<=1.797 pos_v<=0.310 vel<=0.530 pos_h_max<=4.436  tilt<=0.595 yaw<=8.040 ba<=0.08422 bg<=0.001354 in3s>=0.9900 nees_pos<=0.1179   nees_vel<=0.0867 nees_att<=0.1062 false_valid<=0   false_valid_att<=0   scored>=600  recovered=0
+flight           8  pos_h<=1.797 pos_v<=0.310 vel<=0.530 pos_h_max<=4.436  tilt<=0.595 yaw<=8.040 ba<=0.08422 bg<=0.001354 in3s>=0.9900 nees_pos<=0.1179   nees_vel<=0.0867 nees_att<=0.1062 false_valid<=0   false_valid_att<=0   scored>=600  recovered=0 noise_gyro=0.000208..0.000338 noise_accel=0.001600..0.002600 noise_baro=0.2800..0.4400
 
 # (34)-(36) are what `yaw` reads now, and what it buys depends entirely on what the start knew.
 # Where yaw was never observed the magnetometer is the whole estimate: `moving_start` goes 3.228

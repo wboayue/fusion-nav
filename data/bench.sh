@@ -96,9 +96,10 @@ while read -r name seed expect || [ -n "$name" ]; do
         "$out/$name.csv" "$out/$name.replay.csv" "$out/$name.truth.csv") ||
         die "$name: replay failed"
     score=$(printf '%s\n' "$printed" | grep '^score ') || die "$name: replay printed no score line"
-    # `summary` too, for the one key a ceiling reads off it: `recovered`, pinned beside the
-    # accuracy it may have bought. A scenario that scores well only by recovering is a finding
-    # against the covariance (#116), and this is where it would show.
+    # `summary` too, for the keys a bound reads off it: `recovered`, pinned beside the accuracy
+    # it may have bought, since a scenario that scores well only by recovering is a finding
+    # against the covariance (#116); and the `noise_` keys, what the window measured against
+    # the density the simulator injected.
     summary=$(printf '%s\n' "$printed" | grep '^summary ') ||
         die "$name: replay printed no summary line"
 
@@ -107,7 +108,10 @@ while read -r name seed expect || [ -n "$name" ]; do
     else
         # The whole line, so re-measuring a ceiling that moved for a good reason is a copy
         # rather than a second run.
-        echo "    got ${score#score }  recovered=$(pair_value "$summary" recovered)" >&2
+        echo "    got ${score#score }  recovered=$(pair_value "$summary" recovered)" \
+            "noise_gyro=$(pair_value "$summary" noise_gyro)" \
+            "noise_accel=$(pair_value "$summary" noise_accel)" \
+            "noise_baro=$(pair_value "$summary" noise_baro)" >&2
         failed=1
     fi
 done < "$scenarios"

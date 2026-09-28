@@ -14,8 +14,8 @@ use crate::math::{skew, wrap_pi};
 use crate::propagate::ImuSample;
 use crate::state::{AttitudeVariance, Covariance, State};
 use crate::units::{
-    Acceleration, Altitude, AngularRate, Attitude, MagField, MetersPerSecond2, Position, Radians,
-    RadiansPerSecond, Seconds, Timestamp, Velocity,
+    Acceleration, Altitude, AltitudeNoise, AngularRate, Attitude, MagField, MetersPerSecond2,
+    Position, Radians, RadiansPerSecond, Seconds, Timestamp, Velocity,
 };
 
 /// One sample from the quasi-static initialization window.
@@ -95,7 +95,7 @@ impl StaticSample {
 /// sums, peaks, the span, the barometer's scatter and the first and last GNSS velocity. So
 /// the samples are folded in as they arrive rather than buffered. A buffered window at the
 /// default [`Initialization::min_duration`] of 2 s is 800 [`StaticSample`]s at 400 Hz, 64 KB
-/// at 80 bytes each on `thumbv6m`, more RAM than a Cortex-M0 has; this is 744 bytes at any
+/// at 80 bytes each on `thumbv6m`, more RAM than a Cortex-M0 has; this is 936 bytes at any
 /// rate and any length (`the_window_is_the_size_its_documentation_quotes`).
 ///
 /// ```
@@ -129,10 +129,12 @@ impl StaticSample {
 /// why it cannot slide. A buffered slice can, at the cost of the buffer, and
 /// [`try_extend`](Self::try_extend) or [`TryFrom`] builds a window from one.
 ///
-/// Each [`push`](Self::push) costs 22 `f64` additions, 7 multiplications, a subtraction and
-/// 11 widenings, the barometer's share only on a fresh reading, and 27 operations in `f32`:
-/// 7 divisions, 6 multiplications, 5 additions, 4 comparisons, 2 maxima, 2 square roots and
-/// a conversion (counted in its `thumbv6m` disassembly, less the merge a doubling adds). On a
+/// Each [`push`](Self::push) costs 32 `f64` additions, 9 multiplications, 2 comparisons, a
+/// subtraction and 18 widenings, the barometer's share only on a fresh reading, and 27
+/// operations in `f32`: 7 divisions, 6 multiplications, 5 additions, 4 comparisons, 2 maxima,
+/// 2 square roots and a conversion; and each [`WindowNoise::BLOCK`] closed costs
+/// its sensor 7 additions, 6 multiplications and a division more (counted in the `thumbv6m`
+/// disassembly, less the merge a doubling adds). On a
 /// core with no floating-point unit every one is a library call, inside the loop that is
 /// already reading the IMU: the price of not buffering, paid only until the window commits. `level_variance` and `BaroReadings` say why their sums need
 /// `f64`. For the averages it is precaution: summing a few thousand readings near `γ` in
@@ -153,6 +155,9 @@ pub struct StaticWindow {
     sums: BlockSums,
     velocities: Velocities,
     baro: BaroReadings,
+    /// The gyroscope's and the accelerometer's white noise; see [`Density`].
+    gyro_noise: Density,
+    accel_noise: Density,
 }
 
 impl Default for StaticWindow {
@@ -174,6 +179,8 @@ impl StaticWindow {
             sums: BlockSums::new(),
             velocities: Velocities::default(),
             baro: BaroReadings::default(),
+            gyro_noise: Density::EMPTY,
+            accel_noise: Density::EMPTY,
         }
     }
 
@@ -209,14 +216,20 @@ impl StaticWindow {
             sample.imu.specific_force().vector(),
             sample.imu.angular_rate().vector(),
         );
-        let interval = f64::from(sample.imu.angle_interval.as_secs());
-        self.outer += widen(accel) * widen(accel).transpose();
-        self.rate += widen(gyro);
         self.peaks.push(accel, gyro);
+        let interval = f64::from(sample.imu.angle_interval.as_secs());
+        let velocity_interval = f64::from(sample.imu.velocity_interval.as_secs());
+        let (accel, gyro) = (widen(accel), widen(gyro));
+        self.outer += accel * accel.transpose();
+        self.rate += gyro;
+        self.gyro_noise
+            .push(widen(sample.imu.delta_angle.vector()), interval);
+        self.accel_noise
+            .push(widen(sample.imu.delta_velocity.vector()), velocity_interval);
         self.span += interval;
         self.end = Some(sample.imu.time);
         self.sums.push(
-            widen(accel),
+            accel,
             sample.mag.map(|measurement| widen(measurement.vector())),
         );
         self.velocities.push(sample.velocity, interval);
@@ -307,6 +320,33 @@ impl StaticWindow {
     pub(crate) fn alpha0(&self) -> Option<(Altitude, f32)> {
         self.baro.reference()
     }
+
+    /// The white noise this window measured on each sensor, a floor under the noise the
+    /// filter should be told; [`WindowNoise`] says why a floor. Equation (8″).
+    ///
+    /// On the window rather than the filter, because the figure is for building a
+    /// [`Config`](crate::Config) and so comes before any filter exists; it reads the same
+    /// [`Initialization`] tolerances [`is_at_rest`](Self::is_at_rest) does. Measured and
+    /// reported, never applied: a figure changes the filter only if the caller writes it into
+    /// the `Config` (`GOALS.md` differentiator 7, where derived is not adaptive).
+    ///
+    /// `None` unless the window is at rest, the test the barometric reference rests on, and
+    /// spans [`WindowNoise::MIN_READINGS`] of the [`WindowNoise::BLOCK`]s the IMU's densities
+    /// are read over: a moving window's scatter is its motion. The barometer's figure takes
+    /// the same count of its own readings.
+    #[must_use]
+    pub fn noise(&self, init: &Initialization) -> Option<WindowNoise> {
+        if !self.is_at_rest(init) {
+            return None;
+        }
+        Some(WindowNoise {
+            gyro_white: self.gyro_noise.density()?,
+            accel_white: self.accel_noise.density()?,
+            baro: self.baro.noise(),
+            blocks: self.gyro_noise.blocks.min(self.accel_noise.blocks),
+            baro_readings: self.baro.count,
+        })
+    }
 }
 
 /// A window from samples already buffered, through [`StaticWindow::try_extend`]: the first
@@ -319,6 +359,131 @@ impl TryFrom<&[StaticSample]> for StaticWindow {
         let mut window = Self::new();
         window.try_extend(samples.iter().copied())?;
         Ok(window)
+    }
+}
+
+/// The white noise a still window measured on each sensor, as [`StaticWindow::noise`] reports
+/// it: a floor under the noise the filter should be told, never the noise itself.
+///
+/// A floor because the window is the quietest the sensors will be in the air. A vehicle sitting
+/// still sees no propeller wash on its static port and no dynamic pressure, and vibration only
+/// what its motors make at idle; several corpus windows carry some, from props spinning on the
+/// ground or aliased near the sample rate. In flight each of these grows. [`ImuNoise::default`]'s
+/// white noise is ten times PX4's density for that reason and others its doc comment measures,
+/// so a figure here copied into [`Config::imu`](crate::Config::imu) is the datasheet-grade `Q`
+/// that default exists to avoid. What the figure is for: a default below it is wrong, and a
+/// default far above it is a statement about the airframe rather than the sensor.
+///
+/// A density `N` is what [`ImuNoise`] takes: an increment over `Δt` carries `N √Δt` of noise,
+/// and (16)–(21) add `N² Δt` to `Q`, so a sample's rates scatter by `N / √Δt`, twenty times `N`
+/// at 400 Hz. Reading that scatter as the density is the mistake (8″) avoids.
+///
+/// Per axis, in body axes; [`ImuNoise`] takes the worst, which
+/// [`worst_gyro_white`](Self::worst_gyro_white) and
+/// [`worst_accel_white`](Self::worst_accel_white) give. The bias random walks and each source's
+/// correlation time are not here: both need hours of data rather than seconds, an Allan
+/// variance and a replay log's autocorrelation, and belong to the offline tool (#51). How well
+/// a figure is known is [`MIN_READINGS`](Self::MIN_READINGS)'s and [`BLOCK`](Self::BLOCK)'s to
+/// say, and the block length is the larger share.
+///
+/// [`ImuNoise`]: crate::ImuNoise
+/// [`ImuNoise::default`]: crate::ImuNoise#impl-Default-for-ImuNoise
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct WindowNoise {
+    /// Gyroscope white noise per body axis, rad s⁻¹ / √Hz: a floor under
+    /// [`ImuNoise::gyro_white`](crate::ImuNoise::gyro_white).
+    pub gyro_white: Vector3<f32>,
+    /// Accelerometer white noise per body axis, m s⁻² / √Hz: a floor under
+    /// [`ImuNoise::accel_white`](crate::ImuNoise::accel_white).
+    pub accel_white: Vector3<f32>,
+    /// The barometer readings' variance: a floor under the `R_m` a barometric altitude is
+    /// fused with, the white part (24′) multiplies by its correlation factor. `None` under
+    /// [`MIN_READINGS`](Self::MIN_READINGS) distinct readings, where the IMU's figures can
+    /// still be taken and the window can still have set `α₀`, which takes two.
+    ///
+    /// A held reading counts once, as it does for `α₀`, and two genuine readings that agree
+    /// are merged by the same test, so a barometer quantized coarsely enough to repeat itself
+    /// reads a variance larger than its own.
+    ///
+    /// Fused as `R_m` it is too small, which is what calling it a floor claims and the corpus
+    /// measured: in place of the 2 m the converter substitutes, it takes `nis_baro` past 1 on
+    /// five of the six real logs that report it (1.54 to 34.56, against 1 for an `R` the
+    /// residuals agree with), and the gate refuses 45 to 1976 readings on each of those five.
+    pub baro: Option<AltitudeNoise>,
+    /// The [`BLOCK`](Self::BLOCK)s the densities were taken over, the fewer of the two
+    /// sensors'.
+    pub blocks: u64,
+    /// The distinct barometer readings `baro` was taken over.
+    pub baro_readings: u64,
+}
+
+#[cfg(feature = "defmt")]
+impl defmt::Format for WindowNoise {
+    fn format(&self, f: defmt::Formatter<'_>) {
+        let (g, a) = (self.gyro_white, self.accel_white);
+        defmt::write!(
+            f,
+            "WindowNoise {{ gyro_white: ({=f32}, {=f32}, {=f32}), accel_white: ({=f32}, {=f32}, {=f32}), baro: {}, blocks: {=u64}, baro_readings: {=u64} }}",
+            g.x,
+            g.y,
+            g.z,
+            a.x,
+            a.y,
+            a.z,
+            self.baro.map(AltitudeNoise::variance),
+            self.blocks,
+            self.baro_readings
+        )
+    }
+}
+
+impl WindowNoise {
+    /// The fewest readings a sensor's figure is taken from, a barometer's readings or an IMU's
+    /// [`BLOCK`](Self::BLOCK)s: under it, [`StaticWindow::noise`] reports none for that sensor.
+    ///
+    /// A standard deviation taken from `n` readings is known to about `1/√(2(n − 1))` of itself,
+    /// so nine is ±25 % and a 2 s window's 40 blocks ±11 %, and a variance, the barometer's, to
+    /// twice that. Fewer is the two-sample variance a window too short to measure anything
+    /// would otherwise report as a measurement.
+    ///
+    /// The barometric reference `α₀` does not wait for it, and takes a variance from two
+    /// readings: that variance starts an estimate (30′) goes on refining, where a figure
+    /// reported here is final. Holding `α₀` to nine was measured: it moves `2c42096b` (six
+    /// readings in its 0.80 s), `4b473e91` (seven) and `eb799954` (four) to a reference read
+    /// from the estimate, moving no rejection or transition count, and leaves the corpus no
+    /// real vehicle whose short still start sets its own reference, where these three were all
+    /// of them.
+    pub const MIN_READINGS: u64 = 9;
+
+    /// The span an IMU's increments are summed over before their scatter is taken: the time
+    /// scale its white-noise density is read at, `T` of (8″).
+    ///
+    /// Long enough to average out what a still airframe adds near the sample rate, and short
+    /// enough that a 2 s window holds 40 blocks. At 25 ms the aliasing is still being read
+    /// (`093e806a`'s accelerometer 4.8e-3 m s⁻²/√Hz against 1.7e-3 at 50 ms). Past 50 ms the
+    /// figure is not settled either, and that is its real uncertainty, larger than the ±11 % of
+    /// its 40 blocks: across 50, 100 and 125 ms the worst-axis figures of the seven real logs
+    /// whose windows hold nine blocks at all three move by up to 2.3× (`4b473e91`'s
+    /// accelerometer), 2.2× (`f16771dd`'s gyroscope) and 1.8× (`285ee2e7`'s accelerometer),
+    /// the other eleven by under 1.5×: noise that is not white below 20 Hz either. A time
+    /// rather than a count, so the figure means the same at every IMU rate.
+    pub const BLOCK: Seconds = Seconds::from_secs(0.05);
+
+    /// The gyroscope's worst axis, the one density [`ImuNoise::gyro_white`] takes.
+    ///
+    /// [`ImuNoise::gyro_white`]: crate::ImuNoise::gyro_white
+    #[must_use]
+    pub fn worst_gyro_white(&self) -> f32 {
+        self.gyro_white.max()
+    }
+
+    /// The accelerometer's worst axis, the one density [`ImuNoise::accel_white`] takes.
+    ///
+    /// [`ImuNoise::accel_white`]: crate::ImuNoise::accel_white
+    #[must_use]
+    pub fn worst_accel_white(&self) -> f32 {
+        self.accel_white.max()
     }
 }
 
@@ -616,6 +781,90 @@ impl Velocities {
     }
 }
 
+/// One sensor's white-noise density per axis, equation (8″): the increments it integrated,
+/// summed into blocks of [`WindowNoise::BLOCK`], and their scatter weighted by each block's
+/// length.
+///
+/// Blocks rather than samples because a still airframe's samples are not white, and one
+/// sample's scatter then measures the noise at the sample rate rather than the density that
+/// integrates into attitude and velocity error. Taken on each real log's window, the rows the
+/// filter started on (`a299e722` aside, #177), the lag-one autocorrelation runs from −0.98 to
+/// +0.96 across the axes, and on the worst axis one sample's scatter reads `093e806a`'s
+/// accelerometer 6.0 times the blocks' figure and `4b473e91`'s 2.9 (vibration aliased near the
+/// sample rate, which cancels within a block), `89a498ce`'s gyroscope 2.9 times low (filtered
+/// or rocking noise, which accumulates). Correcting one sample's scatter by its lag-one
+/// autocorrelation, `(1 + ρ)/(1 − ρ)` as (24′) does for a source, misses the blocks' figure by
+/// up to 3.3× on the same windows (`89a498ce`'s accelerometer) and 6.5× on the simulated
+/// `3949f175`, whose `ρ` nears one.
+///
+/// About zero rather than about the first increment, unlike [`BaroReadings`]: the loss is at
+/// most `J ε γ² T / N²` of the scatter, under 10⁻⁷ in `f64` even at a datasheet
+/// accelerometer's 7 × 10⁻⁴ m s⁻²/√Hz, where the barometer's metres above sea level cost
+/// 5 × 10⁻⁴. A constant in the rate, the bias, gravity, the Earth's rotation, cancels in the
+/// scatter.
+#[derive(Clone, Copy, Debug)]
+struct Density {
+    /// The increment and interval of the block filling.
+    open: Vector3<f64>,
+    open_interval: f64,
+    /// `J`, the blocks closed.
+    blocks: u64,
+    /// `Σ T` over the closed blocks.
+    interval: f64,
+    /// `Σ B`.
+    sum: Vector3<f64>,
+    /// `Σ B² / T`.
+    squares: Vector3<f64>,
+}
+
+impl Density {
+    const EMPTY: Self = Self {
+        open: Vector3::new(0.0, 0.0, 0.0),
+        open_interval: 0.0,
+        blocks: 0,
+        interval: 0.0,
+        sum: Vector3::new(0.0, 0.0, 0.0),
+        squares: Vector3::new(0.0, 0.0, 0.0),
+    };
+
+    /// Add a sample's increment over its interval, closing the block at the sample boundary
+    /// nearest [`WindowNoise::BLOCK`], the earlier of two equally near: a boundary exactly half
+    /// an interval short of it closes. Whether a tie is exact depends on how the intervals
+    /// round: exact 20 ms steps would close at 40 ms, but `0.02` in `f32` sits just under, so
+    /// 20 ms samples close 60 ms blocks, while 25 ms ones close 50 ms blocks. The weighting
+    /// takes either as it comes. The last block, still filling, is left out of the figure.
+    fn push(&mut self, increment: Vector3<f64>, interval: f64) {
+        self.open += increment;
+        self.open_interval += interval;
+        if self.open_interval + interval / 2.0 >= f64::from(WindowNoise::BLOCK.as_secs()) {
+            let (block, length) = (self.open, self.open_interval);
+            self.blocks += 1;
+            self.interval += length;
+            self.sum += block;
+            // One division rather than three: each is a library call on a core with no FPU.
+            self.squares += block.component_mul(&block) * (1.0 / length);
+            (self.open, self.open_interval) = (Vector3::zeros(), 0.0);
+        }
+    }
+
+    /// `N` per axis, and `None` under [`WindowNoise::MIN_READINGS`] blocks.
+    fn density(&self) -> Option<Vector3<f32>> {
+        if self.blocks < WindowNoise::MIN_READINGS {
+            return None;
+        }
+        let j = self.blocks as f64;
+        let axis = |squares: f64, sum: f64| {
+            let variance = scatter(squares, sum, self.interval) / (j - 1.0);
+            ComplexField::sqrt(variance.max(0.0)) as f32
+        };
+        Some(Vector3::new(
+            axis(self.squares.x, self.sum.x),
+            axis(self.squares.y, self.sum.y),
+            axis(self.squares.z, self.sum.z),
+        ))
+    }
+}
+
 /// The barometer readings in the window, for `α₀` of equation (30) and the variance of that
 /// mean, `P_bb` of (30′).
 ///
@@ -677,9 +926,30 @@ impl BaroReadings {
         }
         let n = self.count as f64;
         let mean = self.first + self.sum / n;
-        let scatter = (self.squares - self.sum * self.sum / n) / (n - 1.0);
-        Some((Altitude::from_meters(mean as f32), (scatter / n) as f32))
+        Some((
+            Altitude::from_meters(mean as f32),
+            (self.variance() / n) as f32,
+        ))
     }
+
+    /// The readings' sample variance, the floor [`WindowNoise::baro`] reports, and `None`
+    /// under [`WindowNoise::MIN_READINGS`].
+    fn noise(&self) -> Option<AltitudeNoise> {
+        (self.count >= WindowNoise::MIN_READINGS)
+            .then(|| AltitudeNoise::from_variance(self.variance() as f32))
+    }
+
+    /// The readings' sample variance, for two or more.
+    fn variance(&self) -> f64 {
+        let n = self.count as f64;
+        scatter(self.squares, self.sum, n) / (n - 1.0)
+    }
+}
+
+/// `Σ w x² − (Σ w x)² / Σ w`, the weighted sum of squared deviations from the mean, for
+/// [`Density`] and [`BaroReadings`], each saying why its sums hold the precision.
+fn scatter(squares: f64, sum: f64, weight: f64) -> f64 {
+    squares - sum * sum / weight
 }
 
 /// [`Measured::level_variance`], from the window's `Σ f` and `Σ f fᵀ`.
@@ -2299,6 +2569,230 @@ pub(crate) mod tests {
         );
     }
 
+    /// What the window reports under the default tolerances.
+    fn noise(window: &[StaticSample]) -> Option<WindowNoise> {
+        StaticWindow::try_from(window)
+            .expect("a usable window")
+            .noise(&Initialization::default())
+    }
+
+    /// `n` samples of a still vehicle, the `i`th integrating `gyro(i)` over `angle` and
+    /// `accel(i)`, gravity added, over `velocity`.
+    fn built(
+        n: usize,
+        angle: f32,
+        velocity: f32,
+        gyro: impl Fn(usize) -> Vector3<f32>,
+        accel: impl Fn(usize) -> Vector3<f32>,
+    ) -> std::vec::Vec<StaticSample> {
+        let mut time = Timestamp::ZERO;
+        (0..n)
+            .map(|i| {
+                time = time.after(Seconds::from_secs(angle));
+                let force = accel(i) + Vector3::new(0.0, 0.0, -GRAVITY);
+                StaticSample {
+                    imu: ImuSample {
+                        time,
+                        delta_angle: crate::units::DeltaAngle::from_vector(gyro(i) * angle),
+                        angle_interval: Seconds::from_secs(angle),
+                        delta_velocity: crate::units::DeltaVelocity::from_vector(force * velocity),
+                        velocity_interval: Seconds::from_secs(velocity),
+                    },
+                    ..still()
+                }
+            })
+            .collect()
+    }
+
+    /// `+1` or `−1`, flipping every `every` samples.
+    fn flip(i: usize, every: usize) -> f32 {
+        if (i / every).is_multiple_of(2) {
+            1.0
+        } else {
+            -1.0
+        }
+    }
+
+    fn assert_close(got: Vector3<f32>, want: Vector3<f32>, tolerance: f32) {
+        for (g, w) in got.iter().zip(want.iter()) {
+            assert!(((g - w) / w).abs() < tolerance, "{got:?} against {want:?}");
+        }
+    }
+
+    #[test]
+    fn the_density_is_the_block_scatter_times_the_root_of_the_block() {
+        // Ten 50 ms blocks of five 10 ms samples, the rate ±a flipping block by block: each
+        // block's increment is ±a T, so N² = J a² T / (J − 1) and N = a √(T J / (J − 1)).
+        // Dropping the `1/T` reads 4.5× low, and J for J − 1 reads 5 % low.
+        let (gyro, accel) = (Vector3::new(0.01, 0.02, 0.03), Vector3::new(0.1, 0.2, 0.3));
+        let window = built(
+            50,
+            0.01,
+            0.01,
+            |i| gyro * flip(i, 5),
+            |i| accel * flip(i, 5),
+        );
+        let reported = noise(&window).expect("ten still blocks");
+        let factor = (0.05f32 * 10.0 / 9.0).sqrt();
+        assert_close(reported.gyro_white, gyro * factor, 1e-5);
+        assert_close(reported.accel_white, accel * factor, 1e-5);
+        assert_eq!(reported.blocks, 10);
+    }
+
+    #[test]
+    fn a_rate_alternating_sample_by_sample_cancels_within_a_block() {
+        // Vibration aliased to the sample rate, which integrates to nothing: every 50 ms block
+        // of ten 5 ms samples sums to zero. One sample's scatter would read it as a √Δt, 0.07 a.
+        let a = Vector3::new(0.01, 0.02, 0.03);
+        let window = built(
+            200,
+            0.005,
+            0.005,
+            |i| a * flip(i, 1),
+            |i| a * 10.0 * flip(i, 1),
+        );
+        let reported = noise(&window).expect("twenty still blocks");
+        assert!(
+            reported.gyro_white.max() < 1e-6,
+            "{:?}",
+            reported.gyro_white
+        );
+        assert!(
+            reported.accel_white.max() < 1e-5,
+            "{:?}",
+            reported.accel_white
+        );
+    }
+
+    #[test]
+    fn each_sensor_is_blocked_by_its_own_interval() {
+        // A gyroscope at 10 ms and an accelerometer at 30 ms, each flipping sign every block
+        // of its own: five gyroscope samples to a 50 ms block and two accelerometer ones to a
+        // 60 ms block, no boundary landing on a tie. Blocking the accelerometer by the angle
+        // interval puts five of its samples in a block that flips every two, and closing a
+        // block a whole interval early gives it 30 ms ones; both read it wrong.
+        let c = Vector3::new(1.0e-3, 2.0e-3, 3.0e-3);
+        let window = built(100, 0.01, 0.03, |i| c * flip(i, 5), |i| c * flip(i, 2));
+        let reported = noise(&window).expect("still");
+        assert_close(
+            reported.gyro_white,
+            c * (0.05f32 * 20.0 / 19.0).sqrt(),
+            1e-5,
+        );
+        // The increments are `f32`, and gravity's 0.3 m s⁻¹ rounds `c`'s 10⁻⁴ by that much.
+        assert_close(
+            reported.accel_white,
+            c * (0.06f32 * 50.0 / 49.0).sqrt(),
+            1e-3,
+        );
+        assert_eq!(reported.blocks, 20);
+    }
+
+    #[test]
+    fn the_worst_axis_is_the_largest_whichever_it_is() {
+        // What `ImuNoise` takes, one density per sensor for all three axes: the middle axis
+        // here, so neither the first nor the last is mistaken for it.
+        let (gyro, accel) = (Vector3::new(0.02, 0.03, 0.01), Vector3::new(0.3, 0.1, 0.2));
+        let window = built(
+            50,
+            0.01,
+            0.01,
+            |i| gyro * flip(i, 5),
+            |i| accel * flip(i, 5),
+        );
+        let reported = noise(&window).expect("ten still blocks");
+        assert_eq!(reported.worst_gyro_white(), reported.gyro_white.y);
+        assert_eq!(reported.worst_accel_white(), reported.accel_white.x);
+    }
+
+    /// `seconds` of white noise of density `n_gyro` and `n_accel` on every axis, as a sensor
+    /// integrating over `dt` would hand it over: each increment carries `N √Δt` of noise.
+    fn white(seconds: f32, dt: f32, n_gyro: f32, n_accel: f32) -> std::vec::Vec<StaticSample> {
+        // A 64-bit LCG and Box–Muller: deterministic, with no dependency.
+        let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut uniform = move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            ((state >> 11) as f64 + 0.5) / (1u64 << 53) as f64
+        };
+        let mut gaussian = move || {
+            let (u, v) = (uniform(), uniform());
+            ((-2.0 * u.ln()).sqrt() * (2.0 * core::f64::consts::PI * v).cos()) as f32
+        };
+        let noise: std::vec::Vec<_> = (0..(seconds / dt) as usize)
+            .map(|_| {
+                let mut draw = || Vector3::new(gaussian(), gaussian(), gaussian());
+                (draw() * n_gyro, draw() * n_accel)
+            })
+            .collect();
+        let scale = 1.0 / dt.sqrt();
+        built(
+            noise.len(),
+            dt,
+            dt,
+            |i| noise[i].0 * scale,
+            |i| noise[i].1 * scale,
+        )
+    }
+
+    #[test]
+    fn a_sensors_white_noise_density_is_recovered_at_any_rate() {
+        // Ten seconds at the simulator's IMU densities at 50, 100 and 400 Hz, where the
+        // per-sample noise differs by a factor of three and the density does not. At 50 Hz a block holds three
+        // samples, 60 ms, which the weighting takes as it is. 200 blocks read N to ±5 %.
+        let (n_gyro, n_accel) = (2.6e-4, 2.0e-3);
+        for rate in [50.0f32, 100.0, 400.0] {
+            let reported = noise(&white(10.0, 1.0 / rate, n_gyro, n_accel)).expect("still");
+            assert_close(reported.gyro_white, Vector3::repeat(n_gyro), 0.15);
+            assert_close(reported.accel_white, Vector3::repeat(n_accel), 0.15);
+        }
+    }
+
+    #[test]
+    fn the_barometer_floor_is_the_variance_of_its_distinct_readings() {
+        // Nine readings held three samples each: the variance of nine readings, 7.5 m² about
+        // their mean of 5 m, not of 27 samples.
+        let window: std::vec::Vec<_> = (0..27)
+            .map(|i| StaticSample {
+                baro: Some(Altitude::from_meters((i / 3) as f32 + 1.0)),
+                ..still()
+            })
+            .collect();
+        let reported = noise(&spaced(&window, WindowNoise::BLOCK)).expect("still");
+        assert_eq!(reported.baro, Some(AltitudeNoise::from_variance(7.5)));
+        assert_eq!(reported.baro_readings, 9);
+    }
+
+    #[test]
+    fn too_few_readings_report_nothing_for_that_sensor() {
+        // Seven barometer readings: the IMU's 27 blocks still report, the barometer does not.
+        let window: std::vec::Vec<_> = (0..27)
+            .map(|i| StaticSample {
+                baro: Some(Altitude::from_meters((i / 4) as f32)),
+                ..still()
+            })
+            .collect();
+        let reported = noise(&spaced(&window, WindowNoise::BLOCK)).expect("still");
+        assert_eq!((reported.baro, reported.baro_readings), (None, 7));
+
+        let few = [still(); (WindowNoise::MIN_READINGS - 1) as usize];
+        assert_eq!(noise(&spaced(&few, WindowNoise::BLOCK)), None);
+        let enough = [still(); WindowNoise::MIN_READINGS as usize];
+        assert!(noise(&spaced(&enough, WindowNoise::BLOCK)).is_some());
+    }
+
+    #[test]
+    fn a_window_that_moved_reports_no_noise() {
+        // Its scatter would be the motion.
+        let mut window = [still(); 20];
+        window[10].imu = ImuSample::reading(
+            AngularRate::body(0.0, 0.0, 1.0),
+            Acceleration::body(0.0, 0.0, -GRAVITY),
+        );
+        assert_eq!(noise(&spaced(&window, WindowNoise::BLOCK)), None);
+    }
+
     /// The window's halves over samples whose specific force is `forces` along body x.
     fn halves_of(forces: &[f64]) -> Option<Halves> {
         let mut sums = BlockSums::new();
@@ -2384,7 +2878,7 @@ pub(crate) mod tests {
     /// they do on the 64-bit hosts CI runs, so the host's `size_of` pins the same figure.
     #[test]
     fn the_window_is_the_size_its_documentation_quotes() {
-        assert_eq!(core::mem::size_of::<StaticWindow>(), 744);
+        assert_eq!(core::mem::size_of::<StaticWindow>(), 936);
         assert_eq!(core::mem::size_of::<StaticSample>(), 80);
     }
 
