@@ -34,11 +34,10 @@ pub(crate) fn altitude_jacobian() -> SMatrix<f32, 1, STATES> {
 /// the two disagree about height by exactly that amount. Writing `h(x) = p_D − (p_N² + p_E²)/2R`
 /// would remove it, with `H` unchanged to first order.
 ///
-/// It is not written yet. The corpus now travels far enough to see it: `89a498ce` flies
-/// 4.07 km from its origin, where the rise is 1.30 m, on an RTK receiver whose height is
-/// reported to centimetres — before it the farthest real excursion was 113 m on `a299e722`,
-/// worth 1 mm. The simulator still cannot, twice over: `circuit()` reaches 144 m, worth
-/// 1.6 mm, and `Baro::sample` generates its reading from `−p_D` on a flat plane, so truth
+/// It is not written yet. The corpus travels far enough to see it: `2b2ad123` flies 5.13 km
+/// from its origin, where the rise is 2.07 m, and `89a498ce` 4.07 km, where it is 1.30 m, both
+/// on RTK receivers whose height is reported to centimetres. The simulator still cannot, twice
+/// over: `circuit()` reaches 144 m, worth 1.6 mm, and `Baro::sample` generates its reading from `−p_D` on a flat plane, so truth
 /// carries no curvature for the term to recover. A correction with a real log to show it
 /// and no scenario to score it is #124's to measure, with the simulator generating `α` from
 /// a geodetic height rather than from `−p_D` — without that a scenario scores the term as

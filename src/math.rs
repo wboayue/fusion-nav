@@ -166,16 +166,15 @@ pub(crate) fn enforce_symmetry<const N: usize>(p: &mut SMatrix<f32, N, N>) {
 /// `AP_NavEKF3_core.h:84-85`.
 ///
 /// These are PX4's values, and the corpus says they sit below anything an honest source
-/// drives the filter to: across the twelve logs of `data/manifest.txt` and the nine scenarios
-/// of `examples/simulate.rs`, the smallest variance any state reaches at an epoch is
-/// 9.9e-5 m² of position on `89a498ce`, an RTK receiver, 1.7e-6 (rad/s)² of gyroscope bias
-/// on the same log, 2.4e-4 rad² of attitude on `harsh_imu`, 7.7e-4 (m s⁻²)² of accelerometer
-/// bias on `eb799954` and 5.5e-4 (m/s)² of velocity on `cd7e0001`. Two to six decades of
-/// headroom, so [`Diagnostics::floored`](crate::Diagnostics::floored) reads zero on eleven of
-/// the twelve — and 21 on `cd7e0001`, whose receiver reports a 0.43 mm/s velocity after
-/// touchdown and drives δv through the floor between epochs. That is the floor doing what
-/// it is for: a count that moves when an `R` far under what the measurement observes is
-/// fused raw.
+/// drives the filter to: across the thirteen logs of `data/manifest.txt` and the thirteen
+/// scenarios of `examples/simulate.rs`, the smallest variance any state reaches at an epoch
+/// is 1.9e-4 m² of position on `89a498ce`, an RTK receiver, 1.7e-6 (rad/s)² of gyroscope
+/// bias, the bias walk's steady state, reached on six logs, 9.0e-5 rad² of attitude on
+/// `gnss_heading`, 7.3e-4 (m s⁻²)² of accelerometer bias on `093e806a` and 5.6e-4 (m/s)² of
+/// velocity on `cd7e0001`. Two to six decades of headroom, so
+/// [`Diagnostics::floored`](crate::Diagnostics::floored) reads zero on all thirteen,
+/// `cd7e0001` included, whose receiver reports a 0.43 mm/s velocity after touchdown and is
+/// fused raw. Measured as σ² from the replay output's six-decimal σ columns.
 #[rustfmt::skip]
 const FLOOR: [f32; STATES] = [
     1e-6, 1e-6, 1e-6, // δp, m²

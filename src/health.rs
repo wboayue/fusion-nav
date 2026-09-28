@@ -603,7 +603,7 @@ fn seconds(value: Seconds) -> Fixed {
 ///
 /// Horizontal and vertical are separate because sources are: a vehicle with a barometer
 /// and no GNSS has a usable height and no horizontal position at all, which describes one
-/// of the twelve logs in the replay corpus. Another carries neither source, so it has no
+/// of the thirteen logs in the replay corpus. Another carries neither source, so it has no
 /// position of either kind.
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
