@@ -124,6 +124,11 @@ application, but an application that seeded through `flu_to_enu` publishes back 
 the inverse it writes `r_nav⁻¹ ⊗ q ⊗ r_body` by hand: the two-sided conversion the constructors exist
 to stop anyone writing, on an output where no residual will ever expose a half-applied one.
 
+The same edge applies to configuration. An integrator arrives holding `EKF2_*` or `EK3_*`
+parameters, and the README's
+[coming from PX4 or ArduPilot](https://github.com/wboayue/fusion-nav/blob/main/README.md#coming-from-px4-or-ardupilot)
+maps each onto what this crate takes, says which are not renames, and refuses the rest with a reason.
+
 ### 3. Readable mathematics
 
 PX4's fusion equations are SymForce-generated and effectively unauditable by hand.

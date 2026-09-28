@@ -550,8 +550,9 @@ impl Default for Recovery {
     /// horizontal aiding [`mag_heading`](Self::mag_heading) keeps — with one departure.
     ///
     /// PX4 resets height only when every height source is failing (`ekf_helper.cpp:48-57`),
-    /// and otherwise stops fusing the one that disagrees, because its barometer is the height
-    /// reference. Here GNSS height is the absolute and the barometer's offset is estimated,
+    /// and otherwise stops fusing the one that disagrees, whichever `EKF2_HGT_REF` names the
+    /// reference (GNSS by default, `module.yaml:87-106`). Here GNSS height is always the
+    /// absolute and the barometer's offset is estimated,
     /// equation (30′), so a GNSS height rejected for 5 s is adopted even while the barometer
     /// is accepted, and a barometer rejected for 5 s has its reference read again: the
     /// absolute wins either way.

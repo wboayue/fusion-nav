@@ -52,9 +52,12 @@ PX4_EARTH_RADIUS = 6_371_000.0
 # rather than a shortcut. Read at PX4-Autopilot c4e4ef98 (v1.18.0-beta1) and
 # ardupilot 368dc0c4.
 #
-# Barometer, sigma = 2.0 m: what both platforms use for the common vehicle. PX4
-# ekf2_baro_noise{2.0f} (EKF/common.h:346), squared at
-# EKF/aid_sources/barometer/baro_height_control.cpp:62; ArduPilot _baroAltNoise,
+# Barometer, sigma = 2.0 m: ArduPilot's for the common vehicle, and PX4's library
+# default, ekf2_baro_noise{2.0f} (EKF/common.h:346), squared at
+# EKF/aid_sources/barometer/baro_height_control.cpp:62. PX4 firmware binds the
+# parameter over it, and EKF2_BARO_NOISE defaults to 3.5
+# (src/modules/ekf2/params_barometer.yaml:33-41), so a log's EKF2 fused 3.5 unless
+# its airframe set otherwise. ArduPilot _baroAltNoise,
 # squared at AP_NavEKF3_PosVelFusion.cpp:1416, whose default is vehicle-dependent
 # (AP_NavEKF3.cpp:20-151) -- 2.0 m for copter, Rover and the fallback, 3.0 m for
 # Plane, 0.01 m for Sub. The multirotor number, not a universal one.
