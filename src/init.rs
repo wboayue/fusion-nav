@@ -112,7 +112,10 @@ impl StaticSample {
 /// let mut i = 0;
 /// while !window.is_long_enough(&init) {
 ///     i += 1;
-///     window.push(sample(i))?;
+///     // A refused sample leaves the window as it was: drop it and go on.
+///     if window.push(sample(i)).is_err() {
+///         continue;
+///     }
 ///     // Waiting for stillness: a vehicle that moved starts the wait over.
 ///     if !window.is_at_rest(&init) {
 ///         window = StaticWindow::new();
@@ -127,11 +130,11 @@ impl StaticSample {
 /// [`try_extend`](Self::try_extend) or [`TryFrom`] builds a window from one.
 ///
 /// Each [`push`](Self::push) costs 22 `f64` additions, 7 multiplications, a subtraction and
-/// 11 widenings, the barometer's share only on a fresh reading, besides 7 `f32` divisions and
-/// 2 square roots (counted in its `thumbv6m` disassembly, less the merge a doubling adds).
-/// On a core with no floating-point unit those are library calls,
-/// inside the loop that is already reading the IMU: the price of not buffering, paid only
-/// until the window commits. `level_variance` and `Scatter` say why their sums need
+/// 11 widenings, the barometer's share only on a fresh reading, and 27 operations in `f32`:
+/// 7 divisions, 6 multiplications, 5 additions, 4 comparisons, 2 maxima, 2 square roots and
+/// a conversion (counted in its `thumbv6m` disassembly, less the merge a doubling adds). On a
+/// core with no floating-point unit every one is a library call, inside the loop that is
+/// already reading the IMU: the price of not buffering, paid only until the window commits. `level_variance` and `BaroReadings` say why their sums need
 /// `f64`. For the averages it is precaution: summing a few thousand readings near `γ` in
 /// `f32` costs on the order of 10⁻⁵ rad of tilt, against a 0.02 rad prior.
 #[derive(Clone, Debug)]
@@ -149,7 +152,7 @@ pub struct StaticWindow {
     /// `Σ f` and `Σ m`, the sums (5) and (6) average, kept in blocks for the halves.
     sums: BlockSums,
     velocities: Velocities,
-    baro: Scatter,
+    baro: BaroReadings,
 }
 
 impl Default for StaticWindow {
@@ -170,7 +173,7 @@ impl StaticWindow {
             end: None,
             sums: BlockSums::new(),
             velocities: Velocities::default(),
-            baro: Scatter::default(),
+            baro: BaroReadings::default(),
         }
     }
 
@@ -185,20 +188,18 @@ impl StaticWindow {
     ///
     /// # Errors
     ///
-    /// [`InitError::NotFinite`] if the sample carries a value that is not a number,
-    /// [`InitError::InvalidInterval`] for an integration interval under a microsecond, and
-    /// [`InitError::InvalidStep`] for a sample timed no later than the one before it.
-    pub fn push(&mut self, sample: StaticSample) -> Result<(), InitError> {
+    /// [`SampleRefusal`], naming which check the sample failed.
+    pub fn push(&mut self, sample: StaticSample) -> Result<(), SampleRefusal> {
         if !sample.is_finite() {
-            return Err(InitError::NotFinite);
+            return Err(SampleRefusal::NotFinite);
         }
         if let Some(interval) = sample.imu.unusable_interval() {
-            return Err(InitError::InvalidInterval { interval });
+            return Err(SampleRefusal::InvalidInterval { interval });
         }
         if let Some(end) = self.end {
             let dt = sample.imu.time.since(end);
             if !dt.is_usable_step() {
-                return Err(InitError::InvalidStep { dt });
+                return Err(SampleRefusal::InvalidStep { dt });
             }
         }
 
@@ -236,7 +237,7 @@ impl StaticWindow {
     pub fn try_extend(
         &mut self,
         samples: impl IntoIterator<Item = StaticSample>,
-    ) -> Result<(), InitError> {
+    ) -> Result<(), SampleRefusal> {
         samples.into_iter().try_for_each(|sample| self.push(sample))
     }
 
@@ -262,7 +263,7 @@ impl StaticWindow {
     /// than on an empty one it refuses.
     #[must_use]
     pub fn is_long_enough(&self, init: &Initialization) -> bool {
-        self.end.is_some() && self.span() >= init.min_duration
+        self.end.is_some() && long_enough(self.span(), init)
     }
 
     /// The time the window's samples integrated: the sum of their angle intervals, and what
@@ -301,8 +302,9 @@ impl StaticWindow {
         })
     }
 
-    /// `α₀` of equation (30) and the variance of that mean, `P_bb` of (30′); see [`Scatter`].
-    pub(crate) fn baro_reference(&self) -> Option<(Altitude, f32)> {
+    /// `α₀` of equation (30) and the variance of that mean, `P_bb` of (30′), as the window's
+    /// barometer readings give them; see [`BaroReadings`].
+    pub(crate) fn alpha0(&self) -> Option<(Altitude, f32)> {
         self.baro.reference()
     }
 }
@@ -311,9 +313,9 @@ impl StaticWindow {
 /// refused refuses the window. An empty slice is an empty window, which
 /// [`Eskf::initialize`](crate::Eskf::initialize) refuses as [`InitError::NoSamples`].
 impl TryFrom<&[StaticSample]> for StaticWindow {
-    type Error = InitError;
+    type Error = SampleRefusal;
 
-    fn try_from(samples: &[StaticSample]) -> Result<Self, InitError> {
+    fn try_from(samples: &[StaticSample]) -> Result<Self, SampleRefusal> {
         let mut window = Self::new();
         window.try_extend(samples.iter().copied())?;
         Ok(window)
@@ -438,7 +440,7 @@ impl Measured {
 /// fills, and which reproduces every scenario and corpus output byte for byte). The halves'
 /// disagreement moves, exact to 8 blocks, on the coarse starts: `7ce66f0d` 26.50° → 22.45° of
 /// tilt and 26.27° → 27.13° of heading, `cd7e0001` 0.29° → 0.50° and 1.27° → 1.70°,
-/// `2c42096b` 0.19° → 0.18° and 0.13° → 0.09°, `moving_start` 12.23° → 11.94° of heading.
+/// `moving_start` 0.00° → 0.02° and 12.23° → 11.94°.
 /// The outputs barely do, because it reaches only
 /// [`coarse_sigmas`] and only where it is the largest bound: at 8 blocks and at 16, one corpus
 /// log, `7ce66f0d`, moves by one in the last printed digit of three innovation keys, and no
@@ -512,21 +514,7 @@ impl BlockSums {
             if self.current + 1 < BLOCKS {
                 self.current += 1;
             } else {
-                // In place, since pair `i` is read from `2i` and `2i + 1`, never from below
-                // `i`: a copy of the blocks is 512 bytes of stack.
-                for pair in 0..BLOCKS / 2 {
-                    if let (Some(&first), Some(&second)) =
-                        (self.blocks.get(2 * pair), self.blocks.get(2 * pair + 1))
-                        && let Some(merged) = self.blocks.get_mut(pair)
-                    {
-                        *merged = first.merged(second);
-                    }
-                }
-                for empty in self.blocks.iter_mut().skip(BLOCKS / 2) {
-                    *empty = Block::EMPTY;
-                }
-                self.size *= 2;
-                self.current = BLOCKS / 2;
+                self.halve();
             }
         }
         if let Some(block) = self.blocks.get_mut(self.current) {
@@ -537,6 +525,26 @@ impl BlockSums {
                 block.fields += 1;
             }
         }
+    }
+
+    /// Merge adjacent pairs, which halves the blocks in use and doubles their size, and start
+    /// filling the first block the merge left empty.
+    fn halve(&mut self) {
+        // In place, since pair `i` is read from `2i` and `2i + 1`, never from below `i`: a copy
+        // of the blocks is 512 bytes of stack.
+        for pair in 0..BLOCKS / 2 {
+            if let (Some(&first), Some(&second)) =
+                (self.blocks.get(2 * pair), self.blocks.get(2 * pair + 1))
+                && let Some(merged) = self.blocks.get_mut(pair)
+            {
+                *merged = first.merged(second);
+            }
+        }
+        for empty in self.blocks.iter_mut().skip(BLOCKS / 2) {
+            *empty = Block::EMPTY;
+        }
+        self.size *= 2;
+        self.current = BLOCKS / 2;
     }
 
     /// The window's two halves, split at the block boundary nearest the middle, the earlier
@@ -632,7 +640,7 @@ impl Velocities {
 /// the squares are of the scatter itself. Welford's running mean avoids the same loss at a
 /// division per reading.
 #[derive(Clone, Copy, Debug, Default)]
-struct Scatter {
+struct BaroReadings {
     /// The previous sample's reading, fresh or held.
     previous: Option<Altitude>,
     count: u64,
@@ -644,7 +652,7 @@ struct Scatter {
     squares: f64,
 }
 
-impl Scatter {
+impl BaroReadings {
     fn push(&mut self, baro: Option<Altitude>) {
         let fresh = baro.filter(|altitude| Some(*altitude) != self.previous);
         self.previous = baro;
@@ -807,6 +815,18 @@ pub enum Coarse {
 
 /// What was measured, in the units [`Initialization`](crate::Initialization) is tuned in.
 /// `inertial_accel` is left out while (5′) only reports it.
+impl Coarse {
+    /// The coarse start a window that moved gives, reporting what it measured.
+    pub(crate) fn not_stationary(measured: &Measured) -> Self {
+        Self::NotStationary {
+            peak_gyro: measured.peaks.gyro,
+            peak_accel_deviation: measured.peaks.deviation,
+            span: measured.span,
+            inertial_accel: measured.inertial_accel,
+        }
+    }
+}
+
 impl core::fmt::Display for Coarse {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let three = |value| Fixed::new(value, Decimals::Three);
@@ -907,6 +927,47 @@ impl core::fmt::Display for InitError {
 
 impl core::error::Error for InitError {}
 
+/// Why [`StaticWindow::push`] refused a sample.
+///
+/// The three of [`InitError`]'s variants a sample can cause, so a caller handling a refused
+/// sample matches on what a sample can be wrong about and not on an empty window or a bad
+/// seed. It converts into [`InitError`], so `?` carries it out of a function that initializes
+/// the filter.
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SampleRefusal {
+    /// The sample carried a value that is not finite: [`InitError::NotFinite`].
+    NotFinite,
+    /// Its integration interval was under a microsecond: [`InitError::InvalidInterval`].
+    InvalidInterval {
+        /// The interval offered.
+        interval: Seconds,
+    },
+    /// It was timed no later than the sample before it: [`InitError::InvalidStep`].
+    InvalidStep {
+        /// The time from the previous sample to this one.
+        dt: Seconds,
+    },
+}
+
+impl From<SampleRefusal> for InitError {
+    fn from(refusal: SampleRefusal) -> Self {
+        match refusal {
+            SampleRefusal::NotFinite => Self::NotFinite,
+            SampleRefusal::InvalidInterval { interval } => Self::InvalidInterval { interval },
+            SampleRefusal::InvalidStep { dt } => Self::InvalidStep { dt },
+        }
+    }
+}
+
+impl core::fmt::Display for SampleRefusal {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        InitError::from(*self).fmt(f)
+    }
+}
+
+impl core::error::Error for SampleRefusal {}
+
 /// Classify a measured window as a static or a coarse start.
 ///
 /// The test behind [`Eskf::alignment_of`](crate::Eskf::alignment_of): still enough, then
@@ -921,21 +982,22 @@ impl core::error::Error for InitError {}
 /// was still — which is what deciding to initialize at the onset of motion asks.
 pub(crate) fn classify(measured: &Measured, init: &Initialization) -> Alignment {
     if !at_rest(measured.peaks, init) {
-        return Alignment::Coarse(Coarse::NotStationary {
-            peak_gyro: measured.peaks.gyro,
-            peak_accel_deviation: measured.peaks.deviation,
-            span: measured.span,
-            inertial_accel: measured.inertial_accel,
-        });
+        return Alignment::Coarse(Coarse::not_stationary(measured));
     }
-    let required = init.min_duration;
-    if measured.span < required {
+    if !long_enough(measured.span, init) {
         return Alignment::Coarse(Coarse::WindowTooShort {
-            required,
+            required: init.min_duration,
             provided: measured.span,
         });
     }
     Alignment::Static
+}
+
+/// Whether a window spanning `span` is long enough to align from: the half of [`classify`]
+/// that [`StaticWindow::is_long_enough`] asks too, so a collection loop stops on the window
+/// `classify` calls long enough and no other.
+fn long_enough(span: Seconds, init: &Initialization) -> bool {
+    span >= init.min_duration
 }
 
 /// The nominal state a window yields. Equation (7), from the attitude of (5)–(6).
@@ -1368,10 +1430,10 @@ pub(crate) mod tests {
     }
 
     /// `α₀` and its variance over `window`, each sample `DT` after the last.
-    fn baro_reference(window: &[StaticSample]) -> Option<(Altitude, f32)> {
+    fn alpha0(window: &[StaticSample]) -> Option<(Altitude, f32)> {
         StaticWindow::try_from(spaced(window, DT).as_slice())
             .expect("a usable window")
-            .baro_reference()
+            .alpha0()
     }
 
     /// `ā_n` over a window already spaced.
@@ -2152,8 +2214,7 @@ pub(crate) mod tests {
                 baro: Some(Altitude::from_meters(altitude)),
                 ..still()
             });
-        let (reference, variance) =
-            baro_reference(&window).expect("the window carried barometer samples");
+        let (reference, variance) = alpha0(&window).expect("the window carried barometer samples");
         // Squared deviations sum to 2.58 m², over 7 degrees of freedom and then 8 readings.
         assert!((variance - 2.58 / 7.0 / 8.0).abs() < 1e-6, "{variance}");
         assert!(
@@ -2170,10 +2231,7 @@ pub(crate) mod tests {
         let mut window = [still(); 8];
         window[0].baro = Some(Altitude::from_meters(10.0));
         window[7].baro = Some(Altitude::from_meters(20.0));
-        assert_eq!(
-            baro_reference(&window),
-            Some((Altitude::from_meters(15.0), 25.0))
-        );
+        assert_eq!(alpha0(&window), Some((Altitude::from_meters(15.0), 25.0)));
     }
 
     #[test]
@@ -2185,24 +2243,21 @@ pub(crate) mod tests {
                 baro: Some(Altitude::from_meters(altitude)),
                 ..still()
             });
-        assert_eq!(
-            baro_reference(&window),
-            Some((Altitude::from_meters(15.0), 25.0))
-        );
+        assert_eq!(alpha0(&window), Some((Altitude::from_meters(15.0), 25.0)));
 
         // One reading held across the window is one reading, however many samples carry it.
         let held = [StaticSample {
             baro: Some(Altitude::from_meters(10.0)),
             ..still()
         }; 8];
-        assert_eq!(baro_reference(&held), None);
+        assert_eq!(alpha0(&held), None);
     }
 
     #[test]
     fn one_reading_is_no_reference_because_it_has_no_scatter_to_measure() {
         let mut window = [still(); 8];
         window[3].baro = Some(Altitude::from_meters(10.0));
-        assert_eq!(baro_reference(&window), None);
+        assert_eq!(alpha0(&window), None);
     }
 
     #[test]
@@ -2235,7 +2290,7 @@ pub(crate) mod tests {
         let naive = (squares - n * mean * mean) / (n - 1.0);
         let lost = ((naive - scatter) / scatter).abs();
         assert!(lost > 1e-5, "{lost}");
-        let (reference, variance) = baro_reference(&window).expect("400 readings");
+        let (reference, variance) = alpha0(&window).expect("400 readings");
         assert_eq!(reference, Altitude::from_meters(mean as f32));
         let expected = (scatter / n) as f32;
         assert!(
@@ -2368,7 +2423,7 @@ pub(crate) mod tests {
         let mut window = StaticWindow::new();
         assert_eq!(
             window.try_extend(samples.clone()),
-            Err(InitError::NotFinite)
+            Err(SampleRefusal::NotFinite)
         );
         // The two before it are in, and the two after it, usable as they are, are not.
         assert_eq!(window.measured(), measure(&samples[..2]));
@@ -2376,7 +2431,12 @@ pub(crate) mod tests {
 
     #[test]
     fn a_refused_sample_leaves_the_window_as_it_was() {
-        let good = spaced(&[still(); 4], DT);
+        // With a barometer, whose readings a refused sample must not reach either: `measured`
+        // does not read them.
+        let mut good = spaced(&[still(); 4], DT);
+        for (index, sample) in good.iter_mut().enumerate() {
+            sample.baro = Some(Altitude::from_meters(100.0 + index as f32));
+        }
         let mut window = StaticWindow::new();
         assert_eq!(window.push(good[0]), Ok(()));
         assert_eq!(window.push(good[1]), Ok(()));
@@ -2384,20 +2444,23 @@ pub(crate) mod tests {
         // refused time and the last accepted is still behind the window.
         assert!(matches!(
             window.push(good[0]),
-            Err(InitError::InvalidStep { .. })
+            Err(SampleRefusal::InvalidStep { .. })
         ));
         assert!(matches!(
             window.push(good[1]),
-            Err(InitError::InvalidStep { .. })
+            Err(SampleRefusal::InvalidStep { .. })
         ));
         let mut poisoned = good[1];
         poisoned.imu = poisoned
             .imu
             .with_accel(Acceleration::body(f32::NAN, 0.0, 0.0));
-        assert_eq!(window.push(poisoned), Err(InitError::NotFinite));
+        poisoned.baro = Some(Altitude::from_meters(500.0));
+        assert_eq!(window.push(poisoned), Err(SampleRefusal::NotFinite));
         assert_eq!(window.push(good[2]), Ok(()));
         assert_eq!(window.push(good[3]), Ok(()));
-        assert_eq!(window.measured(), measure(&good));
+        let clean = StaticWindow::try_from(good.as_slice()).expect("usable");
+        assert_eq!(window.measured(), clean.measured());
+        assert_eq!(window.alpha0(), clean.alpha0());
     }
 
     /// A window whose GNSS reports the vehicle gaining 4 m/s of north velocity over the

@@ -1262,16 +1262,16 @@ impl Replay {
         }
     }
 
-    /// `self.window[range]` as the filter takes it, every sample standing for `dt`: the
-    /// interval the rate estimator fixed rather than each row's own step, which on a burst
-    /// log is zero as often as not.
-    /// `self.window[range]` as the filter reads it. The harness slides a buffered window,
-    /// which a `StaticWindow` cannot do, so each candidate is folded in anew.
+    /// `self.window[range]` as the filter takes it, every sample standing for `dt`.
+    ///
+    /// `dt` is the interval the rate estimator fixed rather than each row's own step, which
+    /// on a burst log is zero as often as not. The harness slides a buffered window, which a
+    /// `StaticWindow` cannot do, so each candidate is folded in anew.
     fn window(
         &self,
         range: core::ops::Range<usize>,
         dt: Seconds,
-    ) -> Result<StaticWindow, InitError> {
+    ) -> Result<StaticWindow, SampleRefusal> {
         let mut window = StaticWindow::new();
         window.try_extend(self.window[range].iter().map(|held| held.sample(dt)))?;
         Ok(window)

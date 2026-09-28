@@ -97,7 +97,9 @@ pub mod prelude {
         Diagnostics, Fusion, GnssFusion, Innovation, Propagation, PropagationHealth, Refusal,
         SourceHealth, Status, Validity,
     };
-    pub use crate::init::{Alignment, Coarse, InitError, StaticSample, StaticWindow};
+    pub use crate::init::{
+        Alignment, Coarse, InitError, SampleRefusal, StaticSample, StaticWindow,
+    };
     pub use crate::propagate::ImuSample;
     pub use crate::state::{AttitudeVariance, Covariance, ErrorState, State};
     pub use crate::units::{

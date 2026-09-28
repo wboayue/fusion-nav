@@ -286,7 +286,7 @@ impl Eskf {
         if at_rest {
             self.establish_reference(
                 window
-                    .baro_reference()
+                    .alpha0()
                     .map(|(reference, variance)| (reference, Offset::independent(variance))),
             );
         }
@@ -333,7 +333,7 @@ impl Eskf {
     pub fn initialize_coarse(&mut self, imu: ImuSample) -> Result<Alignment, InitError> {
         // Treated as a window of one, so the same finiteness, motion and averaging
         // measures apply — an average of one sample being that sample. The window is most
-        // of this frame (2016 bytes on `thumbv6m`), well under `update`'s.
+        // of this frame (1984 bytes on `thumbv6m`), well under `update`'s.
         let mut window = StaticWindow::new();
         window.push(StaticSample {
             imu,
@@ -343,12 +343,7 @@ impl Eskf {
         // velocity to difference against — a caller with GNSS in hand has a window, not
         // this entry point.
         let measured = window.measured()?;
-        let alignment = Alignment::Coarse(Coarse::NotStationary {
-            peak_gyro: measured.peaks.gyro,
-            peak_accel_deviation: measured.peaks.deviation,
-            span: measured.span,
-            inertial_accel: measured.inertial_accel,
-        });
+        let alignment = Alignment::Coarse(Coarse::not_stationary(&measured));
         // The same rule `initialize` applies: the gyroscope bias is worth taking only
         // where the sample says the vehicle was on the ground, and one reading of a
         // stationary gyroscope is a noisier bias than a window's average but a better
@@ -4302,21 +4297,14 @@ mod tests {
         );
     }
 
+    /// An empty window is the one `initialize` can refuse: a sample nothing can be made of
+    /// never reaches the filter, because the window refuses it as it is pushed.
     #[test]
-    fn a_refused_window_leaves_the_filter_uninitialized() {
+    fn an_empty_window_leaves_the_filter_uninitialized() {
         let mut filter = Eskf::new(Config::default());
-        assert_eq!(
-            filter.initialize_over(&[], Seconds::from_secs(0.25)),
-            Err(InitError::NoSamples)
-        );
-        let mut poisoned = [still(); 8];
-        poisoned[2].imu = poisoned[2]
-            .imu
-            .with_accel(Acceleration::body(f32::NAN, 0.0, 0.0));
-        assert_eq!(
-            filter.initialize_over(&poisoned, Seconds::from_secs(0.25)),
-            Err(InitError::NotFinite)
-        );
+        let empty = StaticWindow::new();
+        assert_eq!(filter.alignment_of(&empty), Err(InitError::NoSamples));
+        assert_eq!(filter.initialize(&empty), Err(InitError::NoSamples));
         assert!(!filter.is_initialized());
     }
 

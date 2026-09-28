@@ -79,7 +79,9 @@ let mut filter = Eskf::new(Config::default());
 // `Alignment::Coarse`.
 let mut window = StaticWindow::new();
 while !window.is_long_enough(&filter.config().init) {
-    window.push(next_still_sample())?;
+    // A refused sample (not a number, a clock that did not advance) leaves the window as
+    // it was, so it is dropped and the window goes on without it.
+    if let Err(_refusal) = window.push(next_still_sample()) { /* log it */ }
 }
 if let Alignment::Coarse(_) = filter.initialize(&window)? {
     /* running, but reports `Status::Aligning` until attitude converges */

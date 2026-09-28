@@ -315,6 +315,9 @@ fn surface(state: State, diagnostics: Diagnostics, covariance: &Covariance) {
     show::<InitError>(InitError::InvalidInterval {
         interval: Seconds::from_secs(black_box(-0.5)),
     });
+    show::<SampleRefusal>(SampleRefusal::InvalidStep {
+        dt: Seconds::from_secs(black_box(-0.01)),
+    });
     show::<InitError>(InitError::InvalidStep {
         dt: Seconds::from_secs(black_box(-0.5)),
     });
