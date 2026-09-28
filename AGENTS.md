@@ -39,7 +39,7 @@ coarse (35575 rows refused → 4; 3825 rejected at `baro_offset_walk = 0`), and 
 `short` it reads `alpha0=window`, so `cd7e0001` and `7ce66f0d` are the logs that cover the seed;
 `moving_start` `nees_pos` 1.0877.
 #8 landed (#156): `data/fetch.sh --compare` replays every log `raw` and `px4` (`--r-policy px4`,
-EKF2's own GNSS floors from the log's parameters) and asserts 24 `agreement` lines against
+EKF2's own GNSS floors from the log's parameters) and asserts 26 `agreement` lines against
 `data/ekf2.txt`; the statistics are `tools/agreement.py`'s, and `replay_report.py --corpus` draws
 the table #123 consumes. On `2c42096b`, horizontal agrees to 0.30 / 0.27 m RMS north / east
 (EKF2's origin sits 3.67 m S, 2.14 m E, 4.21 m below ours), and height does not: `climb`,
@@ -153,8 +153,14 @@ heading fused, the first `rejected_baro` at back-transitions), `4b473e91` (VTOL 
 1.18 s logging dropout, #116's acceptance line), `7ce66f0d` (hand launch levelled 12° wrong, (5′)'s
 first real check) and `093e806a` (fixed-wing, 1.14 km, a receiver PX4's R floors would correct).
 Declination now follows EKF2's own rule, PX4's table at the first fix. What #86 left open is #145:
-`2b2ad123`'s RTK lockout (not replayed since recovery landed), `9eb08bdb`'s unexplained position
-rejections, and a heavy-lift log pairing vibration with a magnetometer glitch.
+`9eb08bdb`'s unexplained position rejections and a heavy-lift log pairing vibration with a
+magnetometer glitch. Its `2b2ad123` entered in #168, the thirteenth log: its old lockout was the
+IMU gaps, which coasting removes, and it is the corpus's second RTK receiver, 5.13 km out. Its 18
+raw rejections split evenly. Nine are right, fixes stepping metres beyond the receiver's own
+velocity and returning, held through while EKF2 under its floor is pulled toward them. Nine are
+this filter lagging a hard acceleration after a GNSS velocity rejection and refusing fixes EKF2
+agrees with until recovery (#169). The review of #168 found the first draft had called all 18
+right; comparing each refusal with EKF2 at the fix's own time is what split them.
 
 **Every source the crate publishes is fused; no `fuse_*` is a stub.** Initialization is real —
 equations (5)–(8), so the filter starts at the attitude and biases the window yields — `predict`
@@ -215,7 +221,7 @@ it, `static` 2.04 → 1.02 once the offset walks. `baro_drift` was the same at f
 257 → 1.19 under (30′). **What stage 9 added.** (42′), a per-group diagonal variance floor, applied at
 `Eskf::commit_covariance` so the invariant belongs to the filter — *every covariance it commits
 has been floored* — and reaches the ones no product built: an adoption, a `reset_*_to`, the (8) a
-window commits. An honest source never reaches it, and that is measured: `floored=0` on all twelve
+window commits. An honest source never reaches it, and that is measured: `floored=0` on all thirteen
 corpus logs, 1.4 M epochs on the 2 h one. `cd7e0001`, whose receiver claims 0.43 mm/s after
 touchdown and is fused raw, read 21 until (23′)'s carried-back `H` spread each velocity fix over
 attitude and bias. `math.rs`'s `FLOOR` owns the headroom figures and every other mention cites it.
@@ -434,7 +440,7 @@ uv run tools/replay_report.py in.csv out.csv [truth.csv] \
 index map is keyed on the pair `(n_states, covariance entries)`, because EKF2's covariance layout
 changed three times and neither count alone separates the eras: `n_states=24` is both the
 state-indexed layout and v1.15's error-state one, and no field spelling distinguishes them either.
-Three of the twelve corpus logs therefore supply no attitude σ at all, two supply no origin, and the
+Three of the thirteen corpus logs therefore supply no attitude σ at all, two supply no origin, and the
 LPE log's rows are LPE's, which its `Estimator:` header line says. EKF2's position arrives already
 in the replay frame, reprojected out of PX4's spherical `MapProjection` and moved from MSL onto the
 ellipsoidal datum the replay origin is on; `EKF2 position in replay frame:` names the axes placed.
