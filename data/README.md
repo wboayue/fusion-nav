@@ -368,7 +368,7 @@ map lives, with the PX4 commits that moved it cited above it. What it means per 
 
 Four boundaries follow, and they are properties of the logs rather than of the converter:
 
-- **The quaternion era supplies no attitude σ**, on three of the twelve corpus logs. Four quaternion
+- **The quaternion era supplies no attitude σ**, on three of the thirteen corpus logs. Four quaternion
   variances become a rotation-vector σ only through the full 4×4 block, and the log carries the
   diagonal alone. The cells are blank rather than filled.
 - **Where there is one, it is in NED.** PX4 stores the error-state attitude covariance in the
@@ -391,7 +391,7 @@ Four boundaries follow, and they are properties of the logs rather than of the c
   `093e806a` moves once mid-log and `7ce66f0d` moves in height, and places it as it places a
   fix. `EKF2 position in replay frame:` says which axes it placed;
   `EKF2 origin in replay frame: N E D m` still records where EKF2's first origin sits.
-- **Two of twelve logs report no origin** (`xy_global` false, the reference fields all zero), so
+- **Two of thirteen logs report no origin** (`xy_global` false, the reference fields all zero), so
   EKF2's `x,y,z` there are origin-relative with no origin, and stay in EKF2's frame.
 - **The two origins are on different vertical datums.** The replay input's origin is the first
   fix at its ellipsoidal height where the receiver logs one, and EKF2's `ref_alt` is MSL

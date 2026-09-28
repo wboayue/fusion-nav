@@ -780,7 +780,7 @@ $`p_D - (p_N^2 + p_E^2) / 2R`$ to second order — so both sides are heights; $`
 first order.
 
 `altitude_observation` does not write it, and its doc comment carries the measurements behind
-that: the corpus reaches the term (`89a498ce` flies 4.07 km out, where it is 1.30 m), but the
+that: the corpus reaches the term (`2b2ad123` flies 5.13 km out, where it is 2.07 m), but the
 simulator generates its reading from $`-p_D`$ on a flat plane, so no scenario could score the
 correction. That comment owns the numbers, and #124 owns the change.
 
