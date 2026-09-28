@@ -381,8 +381,8 @@ impl Default for Timeouts {
 /// Equation (24) treats each measurement's error as independent of the last, and almost no
 /// source in the corpus is. Fused as white, the lag-1 autocorrelation of every real log's
 /// innovations (the `acf1_` keys of the replay `summary` line) is positive on GNSS position on
-/// every log but the RTK receiver's, and on the barometer and magnetometer on nearly every
-/// one. A filter that fuses such measurements as white averages down an error it cannot
+/// every log but `89a498ce`'s, an RTK receiver, and on the barometer and magnetometer on
+/// nearly every one. A filter that fuses such measurements as white averages down an error it cannot
 /// observe, and its covariance claims the averaging worked. (24′) fuses each at the variance
 /// that makes a run of them carry what they actually carry, which is less the shorter the
 /// interval is against `τ`.
@@ -433,8 +433,8 @@ impl Correlation {
 impl Default for Correlation {
     /// The corpus's: `τ = −T / ln ρ` from each real log's `acf1_` for the source, read with
     /// every measurement fused as white, at that log's own sample interval, and the median over
-    /// the real logs whose autocorrelation is positive (the SITL log excluded, and the RTK
-    /// log's GNSS, a receiver whose innovations alternate):
+    /// the real logs whose autocorrelation is positive (the SITL log excluded, and `89a498ce`'s
+    /// GNSS, an RTK receiver whose innovations alternate), on the twelve logs before `2b2ad123`:
     ///
     /// | source | logs | range, s | median, s |
     /// | ------ | ---- | -------- | --------- |
@@ -448,6 +448,11 @@ impl Default for Correlation {
     ///
     /// Three receivers' velocity innovations and one magnetometer's alternate in sign, which no
     /// `τ` describes, and are left out rather than read as white.
+    ///
+    /// `2b2ad123`, the second RTK log, reads a GNSS-position `τ` of 0.51 s, under the range
+    /// above, and alternates on height and velocity. Taken into the medians it would move GNSS
+    /// position's from 4.2 s toward 3 s; whether the defaults follow the corpus as it grows, or
+    /// become per-sensor, is #51's.
     ///
     /// GNSS heading rests on one log, `a299e722`, the only one whose EKF2 fused a dual-antenna
     /// yaw: `acf1_gnss_yaw` 0.6696 at 10 Hz. The course constraint rests on one too,
@@ -850,7 +855,7 @@ pub struct Config {
     /// stopped, and the filter cannot tell which. The default passes normal operation on
     /// every log in `data/manifest.txt` — IMU rates of 50 Hz to 250 Hz, whose longest
     /// interval short of a dropout is 90.5 ms, twice in the 2 h log's 1.4 M samples —
-    /// while catching real SD-card dropouts of 0.34 s and up. The margin at that worst
+    /// while catching dropouts of 0.12 s and up (`2b2ad123`). The margin at that worst
     /// case is 10 ms, so a slower log than any in the corpus would need this raised.
     ///
     /// The same bound holds a measurement timed after the state, which is carried forward to

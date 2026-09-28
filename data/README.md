@@ -348,9 +348,9 @@ EKF2 its regime and this filter is told nothing, so a reader of a VTOL log needs
 changed; it goes in the reference, never the replay input, so the filter cannot read it. It is
 taken from MAVLink's `MAV_VTOL_STATE` and `MAV_TYPE`, never from `vehicle_status.vehicle_type`,
 whose constants were renumbered under one field name — `3949f175` logs its quadrotor as 0
-(AGENTS.md, "A ULog field name does not pin its meaning"). Four corpus logs read `mc`;
-`a299e722` reports `MAV_TYPE` 202, outside MAVLink's enum, and reads `other` rather than a guess.
-None is a VTOL.
+(AGENTS.md, "A ULog field name does not pin its meaning"). Eight corpus logs read only `mc` and
+two only `fw`; `285ee2e7` and `4b473e91` are VTOLs and read all four regimes; `a299e722` reports
+`MAV_TYPE` 202, outside MAVLink's enum, and reads `other` rather than a guess.
 
 EKF2's state vector has been laid out the same way in every version that logs one, but **its
 covariance has not**, three times, and neither count alone says which: `n_states=24` is both the
@@ -575,22 +575,27 @@ for three measured reasons:
 
 - **A floor erases the figure rather than bounding it.** The `EKF2_GPS_V_NOISE` each log flew,
   0.25–0.3 m/s (the 0.5 in `EKF/common.h:370` is an initializer the parameter overrides), sits
-  above 8643 of the corpus's 13676 velocity solutions: every one on `093e806a`, `4b473e91`,
-  `89a498ce` and `a299e722`, 98.9 % or more on `285ee2e7`, `cd7e0001` and `eb799954`, 55.9 % on
+  above 9988 of the corpus's 15021 velocity solutions: every one on `093e806a`, `2b2ad123`,
+  `4b473e91`, `89a498ce` and `a299e722`, 98.9 % or more on `285ee2e7`, `cd7e0001` and `eb799954`, 55.9 % on
   `7ce66f0d`, 12.4 % on `2c42096b` and none on the SITL log. Honest receivers included, it is the
-  operative value on most logs rather than a backstop. The position floors bind on three receivers: reported
-  σ_h falls to 0.297 m on `093e806a` and 0.436 m on `4b473e91` against a 0.5 m bound, and
-  `89a498ce`'s RTK receiver reports 0.014 m horizontally and 0.01 m vertically on every fix; σ_h
+  operative value on most logs rather than a backstop. The position floors bind on four receivers:
+  reported σ_h falls to 0.297 m on `093e806a` and 0.436 m on `4b473e91` against a 0.5 m bound,
+  `89a498ce`'s RTK receiver reports 0.014 m horizontally and 0.01 m vertically on every fix, and
+  `2b2ad123`'s 0.014-0.020 m; σ_h
   is 0.622 m and up on the rest, and σ_v averages 0.51–6.26 m against 0.75 where there is no
   RTK. Since the barometer and the magnetometer already carry
   converter constants, flooring would leave almost no receiver-reported variance in the corpus.
-- **It costs most or all of the only GNSS rejection the multirotors have.** `rejected_gnss_vel=266`
-  on `a299e722` is the single non-zero GNSS count across the eight multirotor and SITL logs. (Of
+- **It costs most or all of the only GNSS rejections the multirotors have.** `a299e722` (314
+  velocities, 70 positions) and `2b2ad123` (18 positions, 1 velocity) are the only non-zero GNSS
+  counts across the nine multirotor and SITL logs, and under their own floors they read 40 and 0.
+  `2b2ad123`'s show what that erases in both directions: nine refuse fixes that step and revert,
+  which the floors would fuse, and nine are this filter lagging an acceleration (#169), which the
+  floors would have prevented (its manifest entry). (Of
   the four airframe logs, measured at `Recovery::OFF` with every fix fused as white, the floors
   correct one: `093e806a`'s 860 position rejections read 92 under them, where recovery alone read
   291, and 278 with (24′). They leave `4b473e91`'s
   lockout, which recovery removes, and `7ce66f0d`'s divergence, which neither removes.) Replayed with the floors applied,
-  the 278 it read before #137 read 0 under PX4's treatment — the 0.5 m/s floor *and* the separate `sq(1.5f)` vertical
+  the 278 `a299e722` read before #137 read 0 under PX4's treatment — the 0.5 m/s floor *and* the separate `sq(1.5f)` vertical
   widening — 2 under that floor alone, and 44 under ArduPilot's per-axis 0.3/0.5, which is the one
   policy that would leave the gate of (37)–(38) still exercised by real data. `transitions=` went
   4 to 2 under all three in that measurement (#113), so this is not the only key a floor would move.

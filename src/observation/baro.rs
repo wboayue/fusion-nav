@@ -36,8 +36,8 @@ pub(crate) fn altitude_jacobian() -> SMatrix<f32, 1, STATES> {
 ///
 /// It is not written yet. The corpus travels far enough to see it: `2b2ad123` flies 5.13 km
 /// from its origin, where the rise is 2.07 m, and `89a498ce` 4.07 km, where it is 1.30 m, both
-/// on RTK receivers whose height is reported to centimetres. The simulator still cannot, twice over: `circuit()` reaches 144 m, worth
-/// 1.6 mm, and `Baro::sample` generates its reading from `−p_D` on a flat plane, so truth
+/// on RTK receivers whose height is reported to centimetres. The simulator still cannot, twice
+/// over: `circuit()` reaches 144 m, worth 1.6 mm, and `Baro::sample` generates its reading from `−p_D` on a flat plane, so truth
 /// carries no curvature for the term to recover. A correction with a real log to show it
 /// and no scenario to score it is #124's to measure, with the simulator generating `α` from
 /// a geodetic height rather than from `−p_D` — without that a scenario scores the term as

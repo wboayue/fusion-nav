@@ -517,7 +517,7 @@ start that leaves no reference, and `Config::baro_reference_from_estimate` turns
 
 Equation (24) assumes each measurement's error is independent of the last, and almost no source in
 the corpus satisfies it. Fused as white, every real log's GNSS position innovations are positively
-autocorrelated except the RTK receiver's, which alternate, and so are the barometer's and the
+autocorrelated except `89a498ce`'s RTK receiver's, which alternate, and so are the barometer's and the
 magnetometer's on nearly every log. A filter that fuses such measurements as white averages down an
 error it cannot observe: on `2c42096b` it held σ_pos_n under the receiver's own `eph` at 4003 of
 4614 fixes. Neither production estimator models it; both floor `R` and say so with a constant.

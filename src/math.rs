@@ -169,7 +169,7 @@ pub(crate) fn enforce_symmetry<const N: usize>(p: &mut SMatrix<f32, N, N>) {
 /// drives the filter to: across the thirteen logs of `data/manifest.txt` and the thirteen
 /// scenarios of `examples/simulate.rs`, the smallest variance any state reaches at an epoch
 /// is 1.9e-4 m² of position on `89a498ce`, an RTK receiver, 1.7e-6 (rad/s)² of gyroscope
-/// bias on the same log and on `2b2ad123`, the other RTK log, 4.8e-5 rad² of attitude on
+/// bias, the bias walk's steady state, reached on six logs, 9.0e-5 rad² of attitude on
 /// `gnss_heading`, 7.3e-4 (m s⁻²)² of accelerometer bias on `093e806a` and 5.6e-4 (m/s)² of
 /// velocity on `cd7e0001`. Two to six decades of headroom, so
 /// [`Diagnostics::floored`](crate::Diagnostics::floored) reads zero on all thirteen,

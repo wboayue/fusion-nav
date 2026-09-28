@@ -192,7 +192,7 @@
 #
 # recovered= counts the adoptions of resets= that recovered from gate lockout
 # (Config::recovery, #116) rather than establishing a quantity a start left
-# unobserved. Zero on eight logs, and the other four are why the key is
+# unobserved. Zero on eight logs, and the other five are why the key is
 # pinned apart: each names a cause the recovery does not remove.
 # 4b473e91's 12, which followed its logging dropouts, went to 0 when (22')
 # coasted them (#144). 093e806a's 26 positions, with no IMU gap, are
@@ -201,7 +201,9 @@
 # the same kind of receiver, its entry says when. 7ce66f0d's 36
 # are an attitude levelled wrong that no position or velocity reset can fix,
 # which it goes on getting wrong between them. 285ee2e7's one is a GNSS height
-# its barometer held 4 m away (the (24') paragraph below). A recovery
+# its barometer held 4 m away (the (24') paragraph below). 2b2ad123's one is
+# the finding this key exists for: a state that lagged an acceleration refused
+# fixes EKF2 agreed with until it adopted one (#169). A recovery
 # on a log whose sources are honest is a finding against the covariance
 # rather than a working filter, which is what a zero here guards. With
 # Config::recovery off and Correlation::WHITE, every entry reads as it did before #116, byte for
@@ -297,21 +299,20 @@
 # quoted here is what the run printed; the bounds beside each entry carry the
 # margin, and reading them back would flatter the claim by 1 %.
 #
-# GNSS position reads 0.0184-0.2251 horizontally on the four real logs whose
-# position gate stays quiet and 0.0865-0.9207 in height, so S is 2.1-7.4x too
-# wide in sigma horizontally -- and mostly R, since an aided filter's H P H'
-# sits well under a several-metre eph. 89a498ce's RTK receiver reads 0.1139;
-# 2b2ad123's, the other RTK log, reads 0.4503 and 0.0479 in height, its 18
-# rejections being fixes that jump rather than an R that is wrong (its entry);
-# and SITL 3949f175's 0.0034 and 0.0171 are a simulated receiver, not evidence
-# about one. The four whose position gate turns fixes down read 0.59-45.45,
-# and that is no claim about R: 093e806a's receiver is dishonest, 4b473e91's
-# estimate went stale in a dropout, 7ce66f0d's was levelled wrong and
-# 285ee2e7's barometer pulls its height away, and each entry says which. The two halves are gated and reported
+# GNSS position reads 0.0180-0.0828 horizontally on the four real logs with no
+# RTK whose position gate stays quiet and 0.0885-0.9283 in height, so S is
+# 3.5-7.5x too wide in sigma horizontally -- and mostly R, since an aided
+# filter's H P H' sits well under a several-metre eph. 89a498ce's RTK receiver
+# reads 0.1037, and SITL 3949f175's 0.0039 and 0.0164 are a simulated
+# receiver, not evidence about one. The five whose position gate turns fixes
+# down read 0.45-8.21, and that is no claim about R: 093e806a's receiver is
+# dishonest, a299e722's velocities contradict its positions, 7ce66f0d's was
+# levelled wrong, 285ee2e7's barometer pulls its height away and 2b2ad123's
+# RTK fixes step, and each entry says which. The two halves are gated and reported
 # apart (GnssFusion), so each reads against its own degrees of freedom.
-# 285ee2e7's height, the least conservative at 1.79, and 2c42096b's at 0.92
+# 285ee2e7's height, the least conservative at 1.91, and 2c42096b's at 0.93
 # are receivers measured against a height their barometer holds. a299e722's
-# velocity is the one that reads the other way, 6.6705, its sigma_v about 2.6x
+# velocity is the one that reads the other way, 7.7166, its sigma_v about 2.8x
 # too tight; smaller than the 6x its own differenced positions suggest (#105)
 # because S is H P H' + R and the state's own uncertainty dilutes a too-small
 # R. The same receiver-diluted reading applies to every ratio above.
@@ -375,15 +376,18 @@
 #
 # acf1_<source>= is the lag-1 autocorrelation of the normalized innovation,
 # averaged over the source's axes. 0 for the white sequence (24) assumes, and
-# it is white nowhere: 0.62-0.99 on GNSS horizontal position, 0.78-0.99 on
-# GNSS height, 0.15-0.97 on the barometer and 0.16-0.99 on the magnetometer,
-# with two that read the other way -- 89a498ce's RTK receiver, -0.28
-# horizontally and -0.17 in height, and eb799954's two-stream magnetometer,
-# -0.04. It is a statistic of the innovation rather than of the source, so
-# the gain moves it: fusing every fix as white, GNSS read 0.62-0.99 and
-# 0.67-0.99, the barometer 0.11-0.95, the magnetometer 0.09-0.99, the RTK
+# it is white nowhere: 0.65-0.99 on GNSS horizontal position and 0.90-1.00 on
+# GNSS height on the real logs with no RTK, 0.14-0.96 on the barometer and
+# 0.14-0.98 on the magnetometer. The RTK receivers read lower: 89a498ce's
+# -0.36 horizontally and -0.06 in height, 2b2ad123's 0.18 and 0.23; and
+# eb799954's two-stream magnetometer reads -0.04. It is a statistic of the
+# innovation rather than of the source, so the gain moves it: fusing every fix
+# as white, on the twelve logs before 2b2ad123, GNSS read 0.62-0.99 and
+# 0.67-0.99, the barometer 0.11-0.95, the magnetometer 0.09-0.99, 89a498ce's
 # receiver -0.34 and -0.23, and that is what Config::correlation's defaults
-# were derived from. Expected and not chased -- a 1 Hz
+# were derived from; 2b2ad123 reads 0.14 horizontally, -0.05 in height and
+# -0.05 on velocity (src/config.rs, Correlation's Default, says what it would
+# move). Expected and not chased -- a 1 Hz
 # receiver filters its own solution in time, and a 250 Hz magnetometer is
 # sampled far faster than the field it reads changes. It is pinned so that a
 # change in that character is visible, not because 0 is reachable. The split
@@ -886,21 +890,27 @@ b7c7c97eefc3bb421ceae6e50cac8bd5a4851b3f6f98dc2c5a7b91bb326930c9  eb799954-4743-
 
 # 1358 s quadrotor (SYS_AUTOSTART 4001) on CUAV_X7PRO, PX4 v1.15.2, EKF2, flying
 # 5.1 km from its origin at up to 10.6 m/s on an RTK receiver that reports fix
-# type 6 with a 1.5-1.8 cm sigma on every message. What nothing else here covers:
-#   - A receiver whose rejections are demonstrably right. Its fixes step 0.5-2 m
-#     fifteen times where its own velocity says the vehicle did not move, some
-#     stepping back: -1.75 N, +1.37 E at 277.8 s, and +1.63, -1.24 at 281.8 s.
-#     rejected_gnss_pos=18, every one on a step (63.7-68.8, 95.8-117.8,
-#     162.8-166.7, 277.8-280.8 s), and the 277.8 s step reverts within 4 s.
-#     PX4's R floors accept all of them (px4 rejects none in data/ekf2.txt) and
-#     so does EKF2, which is 2.1 m from the fix at 277.8 s. 89a498ce, the other
-#     RTK log, never jumps. The one step that persists, at 63.7 s, is adopted by
-#     recovery at 69.8 s (recovered=1).
+# type 6 with a 1.41-2.04 cm sigma on every message. What nothing else here covers:
+#   - Rejections whose correctness the data shows, both ways. Fifteen fixes step
+#     0.55-2.23 m more than the receiver's own velocity accounts for (a step
+#     being the fix-to-fix change less the mean velocity times the interval),
+#     some stepping back: -1.75 N, +1.37 E at 277.8 s, then +1.63, -1.24 at
+#     281.8 s. Of rejected_gnss_pos=18, nine are right: the single-fix steps at
+#     95.8, 100.7, 101.8, 117.8 and 162.8 s, and 277.8-280.8 s, where the state
+#     holds and the returning fix at 281.8 s is accepted at 0.10 m while EKF2,
+#     under its 0.5 m floor, is pulled to 0.40 m of the stepped fixes. Nine are
+#     wrong, this filter's lag: at 61.7 s a GNSS velocity is rejected during a
+#     1.7-2.0 m/s^2 acceleration, the state falls 1.84 m behind EKF2, and 63.7-68.8 s
+#     refuses fixes EKF2 converges onto (0.01 m by 67.7 s) until recovery adopts
+#     one at 69.8 s (recovered=1, #169); 164.7-166.7 s is the same shape after
+#     a half-reverted fix is accepted at 163.8 s. PX4's floors accept all 18.
+#     89a498ce, the other RTK log, steps no more than 0.70 m.
 #   - A second lockout on real data that coasting removes, on a slow vehicle
 #     under a centimetre R. Ten IMU gaps past max_predict_dt, 0.12-2.37 s
 #     (coasted=10); with Config::coast and Config::recovery off and every fix
 #     fused as white, 1106 positions are turned down, 1087 of them from the
-#     0.66 s gap at 257.7 s to the end of the log, which ends Degraded. Coasting alone takes it to 23, recovery alone to 55 (10 resets).
+#     0.66 s gap at 257.7 s to the end of the log, which ends Degraded.
+#     Coasting alone takes it to 23, recovery alone to 55 (10 resets).
 #   - The corpus's longest range, 5.1 km, where the tangent plane of (43) sits
 #     2.07 m above the surface (#124); 89a498ce reaches 4.07 km.
 # Source: PX4 Flight Review (CC BY 4.0).
