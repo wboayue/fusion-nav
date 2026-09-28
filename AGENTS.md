@@ -128,12 +128,24 @@ on six logs, each noted; `2c42096b` 888 → 48, since its mean interval is 1.54 
 reaches the estimate through the recovery guards and the course's `NoReference`, which GOALS'
 derived-configuration row records. `diagnostics()` and `sources()` return references
 (`Eskf::state`'s frame 688 → 56 bytes on `thumbv6m`).
+#155 landed (#166): the initialization window is folded in as it arrives. `StaticWindow` (744 B
+on `thumbv6m`, where a buffered 2 s window at 400 Hz is 64 KB of 80-byte `StaticSample`s) takes
+`push`, `try_extend` or `TryFrom<&[StaticSample]>`, refuses a sample with `SampleRefusal` and
+leaves the window as it was, and answers `is_long_enough` and `is_at_rest` per sample;
+`initialize` and `alignment_of` take it and can refuse only an empty one. `examples/embedded.rs`
+collects at 400 Hz. The halves `window_drift` compares split at the nearest of 8 block
+boundaries, since a stream does not know its middle: exact at 4096 blocks, every output is
+byte-identical to main, and at 8 only `7ce66f0d` moves, in a last digit, while the drift itself
+moves up to 4° (`BLOCKS` owns the table). That last figure is why the outputs alone were not the
+evidence: the drift reaches `coarse_sigmas` only where it is the largest bound, so an unchanged
+line could not have shown the approximation. The barometer's scatter is summed about the first
+reading; the naive one-pass form is 5 × 10⁻⁴ out at 10 km, and the first fixture, 11 levels,
+squared exactly and could not tell the two apart. `push`'s cost on a board is #41's.
 #48 and #49 landed (#154): `Display` on every outcome, an optional `defmt` feature, and
 `examples/embedded.rs`, built for both thumb targets in CI. `Display` prints numbers through
 `src/display.rs`'s `Fixed`, because core's `f32` formatting reaches `core::panicking` (the
-existing `InitError` impl did, unguarded). `panic-check` now formats every `Display` impl. The
-example collects its window at 50 Hz because a 400 Hz one is 51 KB; #155 owns that. #86's tailsitter is no
-longer blocked: #131 (#133) reads tilt and heading on navigation axes, `diag(R P_θθ Rᵀ)` through
+existing `InitError` impl did, unguarded). `panic-check` now formats every `Display` impl. #86's
+tailsitter is no longer blocked: #131 (#133) reads tilt and heading on navigation axes, `diag(R P_θθ Rᵀ)` through
 `AttitudeVariance`, in `Validity`, the latch, the heading adoption and (8)'s prior, and the
 `tilt`/`yaw`/`false_valid` score keys moved with it — tilt² + yaw² unchanged, the body split had
 booked heading error as tilt (`gnss_latency` `false_valid_att` 120 → 50). #134 (#135) made (36′)
