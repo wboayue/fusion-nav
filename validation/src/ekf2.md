@@ -1,11 +1,11 @@
 # Agreement with EKF2
 
 **On real flights, does it agree with the estimator PX4 flies?** Mostly, and closely. On the log
-with the most precise receiver (RTK), velocity agrees to {{agreement 89a498ce/raw vel_n_rms}}
-m/s RMS north and tilt to {{agreement 89a498ce/raw tilt_diff_rms}}° RMS. Where the two differ,
-the log usually shows why: a receiver that overstates its accuracy, a hand launch this filter
-levels wrong, and a barometer the two filters trust differently. One offset has no explanation
-yet, and is marked as open.
+with the most precise receiver (RTK), position agrees to {{agreement 89a498ce/raw pos_n_rms}} m
+RMS north, velocity to {{agreement 89a498ce/raw vel_n_rms}} m/s RMS north and tilt to
+{{agreement 89a498ce/raw tilt_diff_rms}}° RMS. Where the two differ, the log usually shows why: a
+receiver that overstates its accuracy, a hand launch this filter levels wrong, and a barometer
+the two filters trust differently.
 
 {{stamp}}
 
@@ -38,8 +38,8 @@ Replayed `px4`:
 {{table agreement @corpus/px4 pos_n_rms,pos_e_rms,pos_d_rms,vel_n_rms,tilt_diff_rms,heading_diff_med,rej_s_gnss_pos,rej_s_gnss_pos_ekf2}}
 
 Columns, each a difference between EKF2 and this filter:
-- `pos_n_rms`, `pos_e_rms` and `pos_d_rms`: position north, east and down, in metres RMS, after
-  both are put on the same origin.
+- `pos_n_rms`, `pos_e_rms` and `pos_d_rms`: position north, east and down, in metres RMS, with
+  EKF2's position converted into this filter's frame.
 - `vel_n_rms`: velocity north, in m/s RMS.
 - `tilt_diff_rms`: tilt, in degrees RMS.
 - `heading_diff_med`: heading, the median difference in degrees.
@@ -71,10 +71,14 @@ with the one where this filter clearly does worse.
 ## The precise receiver: `89a498ce`
 
 A quadrotor mission with an RTK receiver, flying {{summary 89a498ce/raw extent}} m out at up to
-{{summary 89a498ce/raw speed_max}} m/s. Velocity and attitude agree closely. Position does not,
-in one direction: EKF2 sits {{agreement 89a498ce/raw pos_n_rms}} m RMS north of this filter,
-and north of its own receiver's fixes too, which this filter follows. Nothing found so far
-explains that offset, so it is listed as open rather than blamed on either filter.
+{{summary 89a498ce/raw speed_max}} m/s. The two agree closely on everything: position to
+{{agreement 89a498ce/raw pos_n_rms}} m RMS north and {{agreement 89a498ce/raw pos_e_rms}} m east,
+both following the same centimetre fixes.
+
+Comparing positions needs the two filters in one frame. PX4 measures its local north and east on
+a sphere, while this filter uses the exact tangent plane of the WGS 84 ellipsoid, and the two
+differ by about 0.2 % of the distance from the origin, so EKF2's position is converted into this
+filter's frame before any figure here is computed.
 
 {{figure 89a498ce/raw track}}
 

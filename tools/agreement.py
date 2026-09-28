@@ -274,14 +274,15 @@ def change(t, values, start, end):
     return float(np.mean(last) - np.mean(first))
 
 
-def compare(ours, ekf2, rejected, offset, height_reference):
+def compare(ours, ekf2, rejected, placed, height_reference):
     """Every agreement statistic for one log, as an ordered `{key: value}`.
 
     `ours` is `(t, {column: array})` from the epoch file; `ekf2` is
     `{"local"|"att"|"states"|"ratio": (t, {column: array})}` from the reference,
     a kind absent where the log carries none, blanks as NaN; `rejected` is
-    `{source: (t, rejected_flag)}` from the fusion file; `offset` is EKF2's
-    origin in this filter's frame, `(n, e, d)`, or None; `height_reference` is
+    `{source: (t, rejected_flag)}` from the fusion file; `placed` is the axes,
+    of `"ned"`, whose EKF2 position the reference header says is already in this
+    filter's frame; `height_reference` is
     EKF2's, as the reference header names it. A value of None is a hole: a
     quantity this log cannot supply, printed as `none` rather than dropped.
 
@@ -291,7 +292,7 @@ def compare(ours, ekf2, rejected, offset, height_reference):
     calls that one.
     """
     return {
-        **position_velocity(ours, ekf2.get("local"), ekf2.get("states"), offset),
+        **position_velocity(ours, ekf2.get("local"), ekf2.get("states"), placed),
         **biases(ours, ekf2.get("states")),
         **height(ours, ekf2.get("local"), height_reference),
         **attitude(ours, ekf2.get("att"), ekf2.get("states")),
@@ -300,22 +301,14 @@ def compare(ours, ekf2, rejected, offset, height_reference):
     }
 
 
-def to_replay_frame(name, values, offset):
-    """EKF2's `values` of `name` in this filter's frame: its local position plus
-    its origin's offset from ours (`offset`, `(n, e, d)` from the reference
-    header). Velocity, and anything else, is frame-free and returned as it is.
+def position_velocity(ours, local, states, placed):
+    """`pos_*`/`vel_*` `_rms`, `_max` and `_nd2` per NED axis. Position is
+    compared on the axes in `placed` alone; velocity needs no frame.
 
-    The one place the shift is made, so the statistics and the figures the
-    report draws beside them put EKF2 in the same place.
+    The converter places EKF2's position, since PX4's local frame differs from
+    this filter's in scale as well as origin (`ulog2replay.reference_local`), so
+    nothing here shifts it.
     """
-    if name.startswith("pos_") and offset is not None:
-        return values + offset["ned".index(name[-1])]
-    return values
-
-
-def position_velocity(ours, local, states, offset):
-    """`pos_*`/`vel_*` `_rms`, `_max` and `_nd2` per NED axis. Position needs an
-    origin; velocity does not."""
     t, our = ours
     out = {}
     if local is not None:
@@ -329,17 +322,13 @@ def position_velocity(ours, local, states, offset):
         here = nearest(t_ref, t_s[keep_s], tolerance_of(t_ref))
         good = here >= 0
     for kind in ("pos", "vel"):
-        usable = local is not None and (kind == "vel" or offset is not None)
         for axis in "ned":
             name = f"{kind}_{axis}"
             rms = peak = nd2 = None
-            if usable:
-                rms, peak, _ = distance(our[name][pick],
-                                        to_replay_frame(name, ref[name][keep], offset))
+            if local is not None and (kind == "vel" or axis in placed):
+                rms, peak, _ = distance(our[name][pick], ref[name][keep])
                 if states is not None:
-                    _, _, nd2 = distance(our[name][pick_s[good]],
-                                         to_replay_frame(name, ref[name][here[good]],
-                                                         offset),
+                    _, _, nd2 = distance(our[name][pick_s[good]], ref[name][here[good]],
                                          our[f"sigma_{name}"][pick_s[good]],
                                          st[f"sigma_{name}"][keep_s][good])
             out[f"{name}_rms"], out[f"{name}_max"], out[f"{name}_nd2"] = rms, peak, nd2
@@ -367,9 +356,10 @@ def biases(ours, states):
 def height(ours, local, height_reference):
     """`climb`, `climb_ekf2` and the reference EKF2 converged to.
 
-    As change, never as a gap: the two `pos_d` columns are relative to origins
-    tens of metres apart, and each filter converges to its own reference. Over
-    the span both cover, climb positive.
+    As change, never as a gap: each filter converges to its own height
+    reference, so where those disagree (`2c42096b`, EKF2 on its barometer) a gap
+    measures the references rather than either estimate. Over the span both
+    cover, climb positive.
     """
     t, our = ours
     climb = climb_ekf2 = None
@@ -620,8 +610,7 @@ def self_test():
          tuple(height((t, {"pos_d": d}), (t, {"pos_d": level_d}), "gps")[k]
                for k in ("climb", "climb_ekf2")), (-10.0, 0.0))
 
-    # compare(): EKF2's origin 3 m north of ours, both filters at one place, so
-    # EKF2's own position reads -3 m north and aligns to zero. Its velocity
+    # compare(): EKF2 3 m south of this filter, placed on every axis. Its velocity
     # differs by 0.5 m/s east, and each sigma pair sums to a variance of 4, so an
     # nd2 is a squared difference over 4. One of our rejections at 2 s, EKF2 over its gate
     # from 1 to 3 s (held one sample at most).
@@ -658,17 +647,17 @@ def self_test():
                           "r_baro": np.full(m, 2.0)}),
     }
     rejected = {"gnss_pos": (np.array([1.0, 2.0, 3.0]), np.array([False, True, False]))}
-    got = compare(ours, ekf2, rejected, (3.0, 0.0, 0.0), "gps")
-    near("aligned north", got["pos_n_rms"], 0.0)
-    # Unaligned, 3 m over a variance of 1 + 3 is 9 / 4.
-    near("aligned north in sigma too", got["pos_n_nd2"], 0.0)
+    got = compare(ours, ekf2, rejected, "ned", "gps")
+    # 3 m over a variance of 1 + 3 is 9 / 4. A shift applied here as well as in
+    # the converter reads 0 on both.
+    near("placed north", (got["pos_n_rms"], got["pos_n_nd2"]), (3.0, 2.25))
     near("velocity east", (got["vel_e_rms"], got["vel_e_max"], got["vel_e_nd2"]),
          (0.5, 0.5, 0.0625))
     near("bias", (got["bg_x_rms"], got["bg_x_nd2"]), (0.1, 0.0025))
     # EKF2 reporting a zero sigma is not estimating the state: no nd2 from it.
     unestimated = {**ekf2, "states": (t_ref, {**ekf2["states"][1],
                                               "sigma_bg_x": np.zeros(m)})}
-    near("zero EKF2 sigma", compare(ours, unestimated, rejected, (3.0, 0.0, 0.0),
+    near("zero EKF2 sigma", compare(ours, unestimated, rejected, "ned",
                                     "gps")["bg_x_nd2"], None)
     near("heading", got["heading_diff_med"], 10.0, 1e-6)
     near("tilt", got["tilt_diff_rms"], 0.0, 1e-6)
@@ -677,7 +666,7 @@ def self_test():
     # (pi/18)^2 / 4.
     traced = {**ekf2, "states": (t_ref, {**ekf2["states"][1],
                                          "sigma_att_total": np.ones(m)})}
-    near("att_nd2", compare(ours, traced, rejected, (3.0, 0.0, 0.0), "gps")["att_nd2"],
+    near("att_nd2", compare(ours, traced, rejected, "ned", "gps")["att_nd2"],
          (math.pi / 18) ** 2 / 4, 1e-9)
     # EKF2 at 90 deg of heading until a reset at 6 s, 10 deg after, and a second
     # reset on the last sample: the median over the whole log would read 90, and
@@ -690,7 +679,7 @@ def self_test():
     resetting = {**ekf2, "att": (t_ref, {**dict(zip(QUATERNION, stepped)),
                                          "att_reset": counter})}
     near("heading after the first reset",
-         compare(ours, resetting, rejected, (3.0, 0.0, 0.0), "gps")["heading_diff_med"],
+         compare(ours, resetting, rejected, "ned", "gps")["heading_diff_med"],
          10.0, 1e-6)
     near("our rejection", got["rej_s_gnss_pos"], 1.0)
     near("EKF2 over its gate", got["rej_s_gnss_pos_ekf2"], 2.0, 1e-9)
@@ -699,10 +688,13 @@ def self_test():
     near("resets", tuple(got[f"ekf2_{c}_resets"] for c in ("xy", "vxy", "vz", "att")),
          (1, 2, 0, 0))
     near("z resets never logged", got["ekf2_z_resets"], None)
-    near("no origin, no position", compare(ours, ekf2, rejected, None, "gps")["pos_n_rms"],
+    near("no origin, no position", compare(ours, ekf2, rejected, "", "gps")["pos_n_rms"],
          None)
     near("velocity needs no origin",
-         compare(ours, ekf2, rejected, None, "gps")["vel_e_rms"], 0.5)
+         compare(ours, ekf2, rejected, "", "gps")["vel_e_rms"], 0.5)
+    horizontal = compare(ours, ekf2, rejected, "ne", "gps")
+    near("horizontal placed", horizontal["pos_n_rms"], 3.0)
+    near("down not placed", horizontal["pos_d_rms"], None)
     return failures
 
 
