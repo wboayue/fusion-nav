@@ -1443,8 +1443,8 @@ def build_corpus(directory):
     origins = "".join(
         f"<tr><th>{html.escape(name[:8])}</th><td>"
         + "<br>".join(html.escape(n) for n in notes
-                      if n.startswith(("Estimator", "EKF2 origin", "EKF2 aiding",
-                                       "EKF2 layout")))
+                      if n.startswith(("Estimator", "EKF2 origin", "EKF2 position",
+                                       "EKF2 aiding", "EKF2 layout")))
         + "</td></tr>"
         for name, notes in notes_rows
     )

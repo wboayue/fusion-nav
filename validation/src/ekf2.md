@@ -75,10 +75,10 @@ A quadrotor mission with an RTK receiver, flying {{summary 89a498ce/raw extent}}
 {{agreement 89a498ce/raw pos_n_rms}} m RMS north and {{agreement 89a498ce/raw pos_e_rms}} m east,
 both following the same centimetre fixes.
 
-The frames had to be matched first. PX4 measures its local north and east on a sphere, while this
-filter uses the exact tangent plane of the WGS 84 ellipsoid. The two differ by about 0.2 % of the
-distance from the origin, several metres at the far end of this flight. Compared without
-converting between them, EKF2 appeared to sit metres north of its own receiver.
+Comparing positions needs the two filters in one frame. PX4 measures its local north and east on
+a sphere, while this filter uses the exact tangent plane of the WGS 84 ellipsoid, and the two
+differ by about 0.2 % of the distance from the origin, so EKF2's position is converted into this
+filter's frame before any figure here is computed.
 
 {{figure 89a498ce/raw track}}
 

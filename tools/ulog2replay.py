@@ -42,9 +42,8 @@ from pathlib import Path
 WGS84_A = 6_378_137.0
 WGS84_E2 = 6.694_379_990_141e-3
 
-# PX4's local x/y are its `MapProjection`, azimuthal equidistant on a sphere of
-# this radius (`src/lib/geo/geo.h:55`, `geo.cpp:67-111` at c4e4ef98), not the
-# tangent plane above. `px4_reproject` undoes it.
+# The sphere PX4's local x/y are projected on (`src/lib/geo/geo.h:55` at
+# c4e4ef98); `px4_reproject` owns the rest.
 PX4_EARTH_RADIUS = 6_371_000.0
 
 # PX4 publishes no barometer or magnetic-heading variance, so the converter
@@ -201,10 +200,14 @@ def ecef(lat, lon, alt):
 def px4_reproject(x, y, lat0, lon0):
     """Degrees of the point PX4's local (x, y) names about (lat0, lon0).
 
-    `MapProjection::reproject` (`src/lib/geo/geo.cpp:90-111` at c4e4ef98), term
-    for term. Reading EKF2's x/y as tangent-plane metres instead is wrong by the
-    sphere's scale against the ellipsoid's, about 0.2 % of the distance from its
-    origin at mid-latitudes: 3.7 m north on `89a498ce`, which flies 4.07 km out.
+    PX4's local x/y are its `MapProjection`, azimuthal equidistant on a sphere
+    (`project` at `src/lib/geo/geo.cpp:67-88` at c4e4ef98, and still how
+    `EstimatorInterface::getPosition` forms x/y since the state became lat/lon,
+    `estimator_interface.cpp:613-625`); this is `reproject` (`geo.cpp:90-111`),
+    term for term. Reading EKF2's x/y as tangent-plane metres instead is wrong
+    by the sphere's scale against the ellipsoid's, about 0.2 % of the distance
+    from its origin at mid-latitudes: 3.7 m north on `89a498ce`, which flies
+    4.07 km out. The one place in this repository that cites these lines.
     """
     x_rad, y_rad = x / PX4_EARTH_RADIUS, y / PX4_EARTH_RADIUS
     c = math.hypot(x_rad, y_rad)
@@ -657,18 +660,13 @@ def position_axes(local, origin):
     """Which of EKF2's position axes can be written in the replay frame, as
     `("ned" | "ne" | "", reason)`.
 
-    Horizontal needs an EKF2 origin and a replay one. Down also needs the fix's
-    MSL height, since EKF2's `ref_alt` is MSL and the replay origin ellipsoidal,
-    and the first fix's difference between the two is what moves one onto the
-    other: read raw, it is the whole of the down offset (-25.41 m on `eb799954`
-    in Oklahoma, +20.58 on `89a498ce` in Korea).
+    Horizontal needs an EKF2 origin (`ekf2_origin_of`) and a replay one. Down
+    also needs the fix's MSL height, which `place` moves EKF2's heights onto the
+    ellipsoid by.
     """
-    if local is None:
-        return "", "no vehicle_local_position"
-    if "xy_global" not in local.data or "ref_lat" not in local.data:
-        return "", "vehicle_local_position carries no reference fields"
-    if not any(local.data["xy_global"]):
-        return "", "xy_global false"
+    ekf2_origin, missing = ekf2_origin_of(local)
+    if ekf2_origin is None:
+        return "", missing
     if origin is None:
         return "", "the replay input has no GNSS fix"
     if origin[3] is None:
@@ -676,12 +674,29 @@ def position_axes(local, origin):
     return "ned", None
 
 
+def place(x, y, z, ref_lat, ref_lon, ref_alt, origin):
+    """PX4's local (x, y, z) about EKF2's origin, as north, east, down in the
+    replay frame about `origin`, `(lat, lon, height, MSL height)`.
+
+    Reprojected by `px4_reproject` and placed by `geodetic_to_ned`, exactly as a
+    fix is. Height is `ref_alt - z` (`estimator_interface.cpp:628` at c4e4ef98),
+    MSL, moved onto the ellipsoid by the first fix's own difference between its
+    two heights, the geoid height there; data/README.md, "What `--reference`
+    writes", gives what it is worth. With no MSL height the shift is zero and
+    down is not a replay-frame height, which `position_axes` reports.
+    """
+    lat0, lon0, height0, msl0 = origin
+    geoid = 0.0 if msl0 is None else height0 - msl0
+    lat, lon = px4_reproject(x, y, ref_lat, ref_lon)
+    return geodetic_to_ned(lat, lon, ref_alt - z + geoid, lat0, lon0, height0)
+
+
 def reference_local(local, rows, origin):
     """EKF2's position and velocity, from `vehicle_local_position`, and its reset counters.
 
-    Position is written in the replay frame wherever `position_axes` allows: each
-    row's x/y reprojected about that row's own EKF2 origin, which `093e806a` moves
-    once mid-log, and then placed by `geodetic_to_ned` exactly as a fix is. The
+    Position is written in the replay frame wherever `position_axes` allows, each
+    row placed about that row's own EKF2 origin, which `093e806a` moves once
+    mid-log and `7ce66f0d` moves in height. The
     alternative, EKF2's x/y plus one offset between the two origins, is not a
     rigid shift, because the two frames differ in scale. A row without an origin
     (`xy_global` false) has no position here. With no axes placed, x/y/z are
@@ -694,21 +709,16 @@ def reference_local(local, rows, origin):
     columns = [column(local, f) for f in ("x", "y", "z", "vx", "vy", "vz")]
     resets = [(n, local.data[f]) for n, f in LOCAL_RESETS if f in local.data]
     if axes:
-        lat0, lon0, height0, msl0 = origin
-        geoid = 0.0 if msl0 is None else height0 - msl0
         refs = [column(local, f) for f in ("xy_global", "z_global", "ref_lat", "ref_lon",
                                            "ref_alt")]
     for k in range(len(t)):
         values = {n: c[k] for n, c in zip(names, columns)}
         if axes:
-            xy_global, z_global, ref_lat, ref_lon, ref_alt = (c[k] for c in refs)
+            xy_global, z_global, *ref = (c[k] for c in refs)
             values["pos_n"] = values["pos_e"] = values["pos_d"] = None
             if xy_global:
-                lat, lon = px4_reproject(float(columns[0][k]), float(columns[1][k]),
-                                         float(ref_lat), float(ref_lon))
-                # `z = -(alt - ref_alt)`, MSL (`estimator_interface.cpp:628` at c4e4ef98).
-                height = float(ref_alt) - float(columns[2][k]) + geoid
-                north, east, down = geodetic_to_ned(lat, lon, height, lat0, lon0, height0)
+                north, east, down = place(*(float(c[k]) for c in columns[:3]),
+                                          *map(float, ref), origin)
                 values["pos_n"], values["pos_e"] = north, east
                 if axes == "ned" and z_global:
                     values["pos_d"] = down
@@ -1039,8 +1049,9 @@ def reference_note(local, attitude, states, layout, key, period, provenance,
                 "carries. Compare sigma_att_total, a trace being invariant."
             )
     note.append(estimator_note(params))
-    ekf2_origin, origin_note = ekf2_origin_of(local)
-    note.append(origin_note)
+    ekf2_origin, missing = ekf2_origin_of(local)
+    note.append("EKF2 origin: " + (f"none ({missing})" if ekf2_origin is None
+                                   else "{:.9g} {:.9g} {:.9g}".format(*ekf2_origin)))
     note.append(origin_offset_note(ekf2_origin, origin))
     note.append(position_note(local, origin))
     note.append(ekf2_aiding_note(status, params))
@@ -1049,7 +1060,7 @@ def reference_note(local, attitude, states, layout, key, period, provenance,
 
 
 def ekf2_origin_of(local):
-    """EKF2's local-position origin as (lat, lon, alt) or None, and its header line.
+    """EKF2's first local-position origin as `(lat, lon, alt)`, or None and why.
 
     A `#` line rather than a column because it does not move: it is one geodetic
     point per log, and the replay harness already parses a `#` header for the
@@ -1058,14 +1069,13 @@ def ekf2_origin_of(local):
     origin -- which is a fact about those logs and has to be said, not filled in.
     """
     if local is None:
-        return None, "EKF2 origin: none (no vehicle_local_position)"
+        return None, "no vehicle_local_position"
     if "xy_global" not in local.data or "ref_lat" not in local.data:
-        return None, "EKF2 origin: none (vehicle_local_position carries no reference fields)"
+        return None, "vehicle_local_position carries no reference fields"
     if not any(local.data["xy_global"]):
-        return None, "EKF2 origin: none (xy_global false)"
+        return None, "xy_global false"
     index = next(k for k, flag in enumerate(local.data["xy_global"]) if flag)
-    origin = tuple(float(local.data[f][index]) for f in ("ref_lat", "ref_lon", "ref_alt"))
-    return origin, "EKF2 origin: {:.9g} {:.9g} {:.9g}".format(*origin)
+    return tuple(float(local.data[f][index]) for f in ("ref_lat", "ref_lon", "ref_alt")), None
 
 
 def origin_offset_note(ekf2_origin, origin):
@@ -1075,21 +1085,16 @@ def origin_offset_note(ekf2_origin, origin):
     position itself, since the two frames differ in scale as well as origin. The
     two origins are both first fixes, but of different runs of the receiver: on
     `2c42096b` EKF2's was set 770 s before logging began, 3.67 m south and
-    2.14 m east of the first fix the log holds. Down moves EKF2's MSL `ref_alt`
-    onto the ellipsoid the way `position_axes` says, and is `none` where the fix
-    logs no MSL height.
+    2.14 m east of the first fix the log holds. It is `place` at (0, 0, 0), so
+    down is `none` where the fix logs no MSL height.
     """
     if ekf2_origin is None:
         return "EKF2 origin in replay frame: none (EKF2 reports no origin)"
     if origin is None:
         return "EKF2 origin in replay frame: none (the replay input has no GNSS fix)"
-    lat0, lon0, height0, msl0 = origin
-    lat, lon, ref_alt = ekf2_origin
-    shift = 0.0 if msl0 is None else height0 - msl0
-    north, east, down = geodetic_to_ned(lat, lon, ref_alt + shift, lat0, lon0, height0)
     # `+ 0.0` turns a rounded -0.0 into 0.0, which prints without its sign.
-    north, east, down = (round(v, 3) + 0.0 for v in (north, east, down))
-    down_text = "none" if msl0 is None else f"{down:.3f}"
+    north, east, down = (round(v, 3) + 0.0 for v in place(0.0, 0.0, 0.0, *ekf2_origin, origin))
+    down_text = "none" if origin[3] is None else f"{down:.3f}"
     return f"EKF2 origin in replay frame: {north:.3f} {east:.3f} {down_text} m"
 
 
@@ -1708,15 +1713,15 @@ def self_test():
            [1.0, 2.0, 3.0])
     # PX4's x at the equator is arc on a 6371 km sphere, so 0.001 deg of latitude
     # is 6371e3 pi/180e3 = 111.195 m of x, where the ellipsoid's tangent plane puts
-    # the same point 110.575 m north. Reading x as metres, as the converter once
-    # did, is the 0.62 m gap; a swapped x/y lands the point east.
+    # the same point 110.575 m north. Reading x as tangent-plane metres is the
+    # 0.62 m gap; a swapped x/y lands the point east.
     arc = PX4_EARTH_RADIUS * math.radians(0.001)
     expect("reproject north", tuple(round(v, 12) for v in px4_reproject(arc, 0.0, 0.0, 0.0)),
            (0.001, 0.0))
     expect("reproject east", tuple(round(v, 12) for v in px4_reproject(0.0, arc, 0.0, 0.0)),
            (0.0, 0.001))
-    # Off the equator, back through `MapProjection::project` (`geo.cpp:67-88`),
-    # written out here: at latitude 0 every term carrying sin(lat0) vanishes, so
+    # Off the equator, back through `MapProjection::project` (cited at
+    # `px4_reproject`), written out here: at latitude 0 every term carrying sin(lat0) vanishes, so
     # a sign error in one survives the two cases above.
     lat, lon = px4_reproject(3000.0, -1000.0, 36.37, 126.42)
     phi, phi0, dlam = math.radians(lat), math.radians(36.37), math.radians(lon - 126.42)
@@ -1727,17 +1732,24 @@ def self_test():
     expect("reproject round trip", tuple(round(v, 6) for v in back), (3000.0, -1000.0))
     # The same point 2 m up from an EKF2 origin at 5 m MSL, against a replay origin
     # at 30 m ellipsoidal, 5 m MSL: 110.575 m north and 1.999 m up (the tangent
-    # plane rises 1 mm over 110 m). A row with no origin has no position, and one
-    # whose fix logs no MSL height places horizontal only.
+    # plane rises 1 mm over 110 m). The second row's EKF2 origin has moved 0.001
+    # deg north and 10 m up with no height reference (`z_global` false): placed
+    # about its own origin it is 221.150 m north with no down, where the first
+    # row's origin would put it back at 110.575. A row with no origin has no
+    # position, and a fix with no MSL height places horizontal only.
     rows = []
-    local = Fixture("vehicle_local_position", timestamp=[0, 1], x=[arc, arc], y=[0.0, 0.0],
-                    z=[-2.0, -2.0], vx=[0.0, 0.0], vy=[0.0, 0.0], vz=[0.0, 0.0],
-                    xy_global=[1, 0], z_global=[1, 0], ref_lat=[0.0, 0.0],
-                    ref_lon=[0.0, 0.0], ref_alt=[5.0, 5.0])
+    local = Fixture("vehicle_local_position", timestamp=[0, 1, 2], x=[arc, arc, arc],
+                    y=[0.0, 0.0, 0.0], z=[-2.0, -2.0, -2.0], vx=[0.0] * 3, vy=[0.0] * 3,
+                    vz=[0.0] * 3, xy_global=[1, 1, 0], z_global=[1, 0, 0],
+                    ref_lat=[0.0, 0.001, 0.0], ref_lon=[0.0] * 3, ref_alt=[5.0, 15.0, 5.0])
     reference_local(local, rows, (0.0, 0.0, 30.0, 5.0))
     expect("placed", [round(rows[0][2][k], 3) for k in ("pos_n", "pos_e", "pos_d")],
            [110.575, 0.0, -1.999])
-    expect("row with no origin", [rows[1][2][k] for k in ("pos_n", "pos_e", "pos_d")],
+    expect("each row about its own origin", [None if rows[1][2][k] is None
+                                            else round(rows[1][2][k], 3)
+                                            for k in ("pos_n", "pos_e", "pos_d")],
+           [221.15, 0.0, None])
+    expect("row with no origin", [rows[2][2][k] for k in ("pos_n", "pos_e", "pos_d")],
            [None, None, None])
     expect("placement note", position_note(local, (0.0, 0.0, 30.0, 5.0)),
            "EKF2 position in replay frame: n e d")

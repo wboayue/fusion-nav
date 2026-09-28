@@ -787,16 +787,16 @@ b7c7c97eefc3bb421ceae6e50cac8bd5a4851b3f6f98dc2c5a7b91bb326930c9  eb799954-4743-
 #     out eight times for 1.0-3.1 s (coasted=8, the logger's, not the sensor's).
 #     With Config::coast off the filter refuses a step that long (StepTooLong),
 #     so for the gap it neither moves the state nor grows its covariance, and on
-#     a vehicle doing 30 m/s the state it keeps is tens of metres stale. Against EKF2 (shifted by one origin
-#     offset, within 3 m at this range, #145), it holds until the 1.18 s dropout at 275.4 s and is
-#     ~25 m off by 300 s while sigma_pos_n has grown only to 7.6 m, so 881 of the
-#     1154 positions after are turned down. PX4's R floors leave 717 of them,
+#     a vehicle doing 30 m/s the state it keeps is tens of metres stale. Against EKF2,
+#     it holds until the 1.18 s dropout at 275.4 s and is 36.6 m off (east) by
+#     300 s while sigma_pos_e has grown only to 7.0 m, so 879 of the 882
+#     positions after are turned down. PX4's R floors turn down the same 879,
 #     so it is not the receiver.
 #   - Recovery from it. PX4 clamps an overlong IMU step too
 #     (estimator_interface.cpp:102-108 at c4e4ef98) and sits as stale; it then
 #     resets to GNSS after 7 s of failed fusion, and so does Config::recovery
-#     (#116): 12 recoveries, 8 positions and 4 velocities, each within 13 s of
-#     a dropout, rejected_gnss_pos 881 -> 39 and Degraded -> Healthy. With
+#     (#116): 11 recoveries, 7 positions and 4 velocities, each within 16 s of
+#     a dropout, rejected_gnss_pos 879 -> 37 and Degraded -> Healthy. With
 #     recovery off and every fix fused as white it reads as above and ends Degraded.
 #   - Coasting, which is what sets Config::coast's defaults. Coasted by (22'),
 #     the first fix after every gap is accepted and nothing is recovered:

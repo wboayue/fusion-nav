@@ -356,9 +356,10 @@ def biases(ours, states):
 def height(ours, local, height_reference):
     """`climb`, `climb_ekf2` and the reference EKF2 converged to.
 
-    As change, never as a gap: the two `pos_d` columns are relative to origins
-    tens of metres apart, and each filter converges to its own reference. Over
-    the span both cover, climb positive.
+    As change, never as a gap: each filter converges to its own height
+    reference, so where those disagree (`2c42096b`, EKF2 on its barometer) a gap
+    measures the references rather than either estimate. Over the span both
+    cover, climb positive.
     """
     t, our = ours
     climb = climb_ekf2 = None

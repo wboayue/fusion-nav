@@ -383,12 +383,13 @@ Four boundaries follow, and they are properties of the logs rather than of the c
   variances where (36′) and `Validity` read each against the bar, and naming those alike would
   compare two different quantities.
 - **EKF2's position is written in the replay frame**, not as EKF2 logged it. PX4's local x/y are
-  its `MapProjection`, azimuthal equidistant on a 6371 km sphere (`src/lib/geo/geo.cpp:67-88` at
-  `c4e4ef98`), where the replay frame is the exact tangent plane of (43). The two differ in scale
-  as well as origin, by about 0.2 % of the distance out, so no single shift aligns them. Read as
-  one, EKF2 sat a median 3.6 m north of its own fixes on `89a498ce`, 4.07 km out. The converter
-  reprojects each row about that row's own EKF2 origin, which `093e806a` moves once mid-log, and
-  places it as it places a fix. `EKF2 position in replay frame:` says which axes it placed;
+  its `MapProjection`, azimuthal equidistant on a 6371 km sphere (cited at `px4_reproject` in
+  `tools/ulog2replay.py`), where the replay frame is the exact tangent plane of (43). The two
+  differ in scale as well as origin, by about 0.2 % of the distance out, so no single shift
+  aligns them: shifted by one, EKF2 reads a median 3.7 m north of its own fixes on `89a498ce`,
+  4.07 km out. The converter reprojects each row about that row's own EKF2 origin, which
+  `093e806a` moves once mid-log and `7ce66f0d` moves in height, and places it as it places a
+  fix. `EKF2 position in replay frame:` says which axes it placed;
   `EKF2 origin in replay frame: N E D m` still records where EKF2's first origin sits.
 - **Two of twelve logs report no origin** (`xy_global` false, the reference fields all zero), so
   EKF2's `x,y,z` there are origin-relative with no origin, and stay in EKF2's frame.
