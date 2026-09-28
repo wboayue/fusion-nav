@@ -33,6 +33,18 @@ defmt = { version = "1", optional = true }
 # `defmt::Format` on the outcomes, the state and the diagnostics, for a target that logs through
 # `defmt` rather than `core::fmt`. Optional, so the default build keeps its one dependency.
 [features]
+default = ["magnetic-model"]
 defmt = ["dep:defmt"]
+# Magnetic declination from PX4's World Magnetic Model table (`src/magnetic.rs`), applied where
+# the filter places its origin. On by default, since a declination nobody set is a standing bias
+# on every magnetic heading; off, the table's flash is not linked and declination is the
+# caller's alone. No dependency either way.
+magnetic-model = []
 
 [dev-dependencies]
+
+# The harness reports the crate's magnetic model beside a log's own declination
+# (`declination_model=`), so it needs the model built in.
+[[example]]
+name = "replay"
+required-features = ["magnetic-model"]

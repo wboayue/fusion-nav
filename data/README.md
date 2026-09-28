@@ -247,6 +247,15 @@ real moving-baseline yaw within 0.010 rad of EKF2's at rest; it logs no `heading
 variance is PX4's 0.1 rad floor, the value its EKF2 fused at, and a header line says so. It is
 dated by the GNSS delay, as its fix is.
 
+Every fix is the antenna's, and a `# GNSS antenna <forward> <right> <down> m` header line says where
+the antenna sat relative to the IMU, as the log's own EKF2 applied it: `SENS_GPS0_OFF*` (or
+`EKF2_GPS_POS_*` before the rename) less `EKF2_IMU_POS_*`, or the per-message `antenna_offset_*`
+where the build logs one. The harness hands it to every GNSS `fuse_*` as `antenna`, and
+`--antenna zero` replays the fixes as the IMU's. Four corpus logs carry a non-zero arm:
+`2c42096b`, `a299e722`, `cd7e0001` and `eb799954`. A `# Navigation origin` line names the geodetic
+point the NED rows are relative to, the first 3D fix, which is where `declination_model=` looks the
+crate's magnetic model up and what `--declination model` hands the filter as its origin.
+
 ### Finding a candidate
 
 An entry exists because it covers something no other log does, and #86 names the gaps. A
@@ -523,7 +532,10 @@ only a moving start reports — and where the barometric reference came from: `w
 once a fix has established position, or `none`), `heading=` (`Validity::heading` **as initialization left it** — not as the
 log ended, which would only restate `transitions=`), `declination=` (the magnetic declination
 the harness configured, in degrees, read from the log's `# Magnetic declination` header line —
-zero where it has none), `resets=` (adoptions, per source, so a GNSS fix adopted whole counts in both its halves),
+zero where it has none), `declination_model=` (the crate's own magnetic model at the log's
+`# Navigation origin`, which agrees with `declination=` wherever that line says PX4's table was
+read at the first fix, since the two are one table; `none` without an origin), `antenna=` (the
+lever arm every GNSS fix was fused with, forward, right, down in metres), `resets=` (adoptions, per source, so a GNSS fix adopted whole counts in both its halves),
 `aligned_at=` (seconds from the end of the window to the first epoch `Eskf::is_aligned` read true,
 or `never`), `attitude_lost=` (seconds to the first epoch at or after it where `Validity::attitude`
 read false against `Config::accuracy` — the mission's bar, where `aligned_at=` reads the fixed

@@ -73,6 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             now,
             Position::ned(50.0, 0.0, 0.0),
             PositionNoise::horizontal_vertical(1.5, 3.0),
+            Position::zero(),
         ),
     );
     println!();
@@ -183,7 +184,12 @@ fn run(filter: &mut Eskf, samples: &mut u64, ticks: u32, sources: Sources) {
             let fix = Position::ned(0.0, 0.0, 0.0);
             check_gnss(
                 "gnss position",
-                filter.fuse_gnss_position(time, fix, PositionNoise::horizontal_vertical(1.5, 3.0)),
+                filter.fuse_gnss_position(
+                    time,
+                    fix,
+                    PositionNoise::horizontal_vertical(1.5, 3.0),
+                    Position::zero(),
+                ),
             );
             check(
                 "gnss velocity",
@@ -191,6 +197,7 @@ fn run(filter: &mut Eskf, samples: &mut u64, ticks: u32, sources: Sources) {
                     time,
                     Velocity::ned(0.0, 0.0, 0.0),
                     VelocityNoise::from_speed_accuracy(0.3),
+                    Position::zero(),
                 ),
             );
         }

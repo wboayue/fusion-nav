@@ -276,6 +276,13 @@ impl AttitudeVariance {
         }
     }
 
+    /// The three variances about east, north and up, the axes ROS's ENU frame orders a
+    /// `nav_msgs/Odometry` orientation covariance in: the horizontal pair swapped, and the
+    /// sign of an axis, which a variance does not carry, dropped.
+    pub fn to_enu(self) -> [f32; 3] {
+        [self.tilt_east, self.tilt_north, self.heading]
+    }
+
     /// The body-frame attitude block whose navigation-frame covariance is these three
     /// variances and nothing correlated between them: `R(q̂)ᵀ diag(·) R(q̂)`, the inverse of
     /// [`of`](Self::of). Equation (8).
@@ -362,6 +369,16 @@ mod tests {
 
     fn attitude_of(roll: f32, pitch: f32, yaw: f32) -> Attitude {
         Attitude::body_to_ned(UnitQuaternion::from_euler_angles(roll, pitch, yaw))
+    }
+
+    #[test]
+    fn enu_order_swaps_the_tilts_and_keeps_heading_last() {
+        let variance = AttitudeVariance {
+            tilt_north: 1.0,
+            tilt_east: 2.0,
+            heading: 3.0,
+        };
+        assert_eq!(variance.to_enu(), [2.0, 1.0, 3.0]);
     }
 
     fn with_attitude_block(block: Matrix3<f32>) -> Covariance {

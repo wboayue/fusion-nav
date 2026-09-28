@@ -694,6 +694,19 @@ zero because the new error is the measurement's and has nothing to do with what 
 Applies to a quantity never established, once, and to a source locked out past its
 `Config::recovery` timeout; see [gate lockout](#gate-lockout).
 
+**(28′)** At the antenna. A receiver measures where its antenna is, and the antenna sits at
+$`r`$ from the IMU in body axes. With the body-frame attitude error of (2),
+$`R = \hat{R}(I + [\delta\theta]_\times)`$, so $`R r \approx \hat{R} r - \hat{R}[r]_\times \delta\theta`$:
+
+```math
+h(x) = p + R r, \qquad H = \begin{bmatrix} I_3 & 0 & -\hat{R}[r]_\times & 0 & 0 \end{bmatrix}
+```
+
+A zero arm is (28). PX4 subtracts $`\hat{R} r`$ from the fix and keeps (28)'s $`H`$; this one
+carries the attitude term, so a fix observes attitude through a long mast. The adoption above
+writes $`z - \hat{R} r`$, and (44) places the origin under the estimate of the antenna rather
+than of the IMU.
+
 ### GNSS velocity
 
 **(29)**
@@ -708,6 +721,18 @@ covariance.
 
 The same adoption applies to the first velocity solution after a coarse start, and matters more
 there: a static initialization knows the vehicle is at rest, a coarse one knows nothing at all.
+
+**(29′)** At the antenna, which moves about the IMU as the vehicle turns. With
+$`\omega = \omega_m - \beta_g`$ from (9), $`\omega \times r = -[r]_\times \omega`$, and the attitude
+error entering as in (28′):
+
+```math
+h(x) = v + R(\omega \times r), \qquad
+H = \begin{bmatrix} 0 & I_3 & -\hat{R}[\omega \times r]_\times & 0 & \hat{R}[r]_\times \end{bmatrix}
+```
+
+$`\omega`$ is the rate over the solution's age, the attitude's own turn between the history's
+state at the fix's time and now, (23′), rather than the last sample's. A zero arm is (29).
 
 ### Barometric altitude
 
@@ -1233,7 +1258,9 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | (23′) | delayed measurements | `eskf.rs`, `history.rs`, `update.rs`, `propagate.rs` | `Eskf::observe`, `Eskf::carried`, `Eskf::age_of`; `History`; `Observation::delayed`; `error_dynamics` |
 | (24′) | correlated measurements | `math.rs`, `update.rs`, `health.rs`, `eskf.rs` | `correlation_inflation`; `Observation::correlated` and `r_gain`; `SourceHealth::since_measured` for `Δt`; each `fuse_*` |
 | (28) | GNSS position, as a horizontal and a height half | `observation/gnss.rs` | `horizontal_jacobian`, `horizontal_observation`, `height_jacobian`, `height_observation` |
+| (28′) | GNSS position at the antenna | `observation/gnss.rs`, `eskf.rs` | `arm`, within `horizontal_observation` and `height_observation`; `Eskf::carried_position` for an adoption |
 | (29) | GNSS velocity | `observation/gnss.rs` | `velocity_jacobian`, `velocity_observation` |
+| (29′) | GNSS velocity at the antenna | `observation/gnss.rs`, `eskf.rs` | `velocity_observation`; `Eskf::mean_rate` for `ω`, `Eskf::carried_velocity` for an adoption |
 | (30) | barometric altitude | `observation/baro.rs` | `altitude_jacobian`, `altitude_observation` |
 | (30′) | barometric offset | `state.rs`, `update.rs`, `propagate.rs` | `Offset`; `update`'s blocks; `propagate_offset`; `Eskf::establish_reference` |
 | (31)–(33) | magnetometer, three-axis | — | unbuilt and [out of scope](GOALS.md#magnetometer-without-magnetic-field-states); no `field_jacobian` exists |
@@ -1250,6 +1277,7 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | (42′) | diagonal variance floor | `math.rs` | `floor_diagonal`, `floor_offset` and `FLOOR`; applied by `Eskf::commit_covariance` |
 | (43) | local tangent plane | `geodetic.rs` | `LocalOrigin::to_ned`, `to_geodetic` |
 | (44) | origin placement | `geodetic.rs` | `LocalOrigin::placing`; committed by `Eskf::fuse_gnss_geodetic` |
+| (6), (35) `D_m` | declination from a magnetic model at the origin | `magnetic.rs`, `eskf.rs` | `declination_at` through `Geodetic::magnetic_declination`; applied by `Eskf::place_origin` |
 | — | skew, quaternion exponential, angle wrap | `math.rs` | `skew`, `exp_quat`, `wrap_pi` |
 
 ## References

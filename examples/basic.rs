@@ -58,6 +58,7 @@ fn main() -> Result<(), InitError> {
                 time,
                 Geodetic::from_degrees(47.397_742, 8.545_594, 488.0),
                 PositionNoise::horizontal_vertical(1.5, 3.0),
+                Position::zero(),
             );
             // Two verdicts: the horizontal half and the height are gated apart.
             for half in [outcome.horizontal, outcome.height] {
@@ -70,6 +71,7 @@ fn main() -> Result<(), InitError> {
                 time,
                 Velocity::ned(14.0, 0.5, -0.2),
                 VelocityNoise::from_speed_accuracy(0.3),
+                Position::zero(),
             );
         }
 

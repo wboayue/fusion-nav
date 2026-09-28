@@ -101,6 +101,21 @@ impl Geodetic {
         self.height
     }
 
+    /// The magnetic declination here, east-positive, from PX4's World Magnetic Model table
+    /// (WMM-2020 at epoch 2024.41, 10° grid, bilinear): `None` for a coordinate that is not a
+    /// number. Height is ignored.
+    ///
+    /// The value [`Eskf`](crate::Eskf) applies itself where it places its origin, unless
+    /// [`set_magnetic_declination`](crate::Eskf::set_magnetic_declination) has been called.
+    /// A caller that knows its site before initializing hands the filter the site through
+    /// [`set_origin`](crate::Eskf::set_origin) instead, which reads this and leaves the model
+    /// in charge; passing this to `set_magnetic_declination` fixes it for good. Behind the
+    /// `magnetic-model` feature, on by default.
+    #[cfg(feature = "magnetic-model")]
+    pub fn magnetic_declination(self) -> Option<crate::units::Radians> {
+        crate::magnetic::declination_at(self)
+    }
+
     /// Whether every coordinate is a number, neither NaN nor infinite.
     pub(crate) fn is_finite(self) -> bool {
         self.latitude.is_finite() && self.longitude.is_finite() && self.height.is_finite()

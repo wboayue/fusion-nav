@@ -125,8 +125,8 @@ pub(crate) enum Update {
 /// exactly that. Formed here, it cost 4168 bytes more of stack on `thumbv6m` — a 1024-byte
 /// 16 × 16 for each 900-byte temporary, and a copy in and out of it.
 ///
-/// The frame is the largest in the crate: `update::<3>` is 8120 bytes on `thumbv6m-none-eabi`
-/// and 8000 on `thumbv7em-none-eabihf` at `opt-level = 3`, against 2832 for
+/// The frame is the largest in the crate: `update::<3>` is 8088 bytes on `thumbv6m-none-eabi`
+/// and 7960 on `thumbv7em-none-eabihf` at `opt-level = 3`, against 2832 for
 /// `propagate_covariance`, the largest single frame propagation reaches. Most of it is (27),
 /// whose `A_xx`, its two products and `K R Kᵀ` are each a 900-byte 15 × 15; the offset's blocks
 /// are vectors, and cost 968 bytes over the fifteen-state update. That is comfortable on the

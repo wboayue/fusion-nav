@@ -128,9 +128,33 @@ impl Attitude {
         Self(r_nav * q * r_body.inverse())
     }
 
-    /// The underlying quaternion, body to NED.
+    /// The underlying quaternion, body to NED: the convention
+    /// [`body_to_ned`](Self::body_to_ned) takes, and what PX4 and ArduPilot publish.
     pub const fn quaternion(self) -> UnitQuaternion<f32> {
         self.0
+    }
+
+    /// The quaternion that rotates NED to body FRD: the inverse of
+    /// [`ned_to_body`](Self::ned_to_body), for a consumer that stores the direction-cosine
+    /// matrix taking navigation vectors into the body.
+    pub fn as_ned_to_body(self) -> UnitQuaternion<f32> {
+        self.0.inverse()
+    }
+
+    /// The quaternion that rotates body FLU to ENU, for ROS (`nav_msgs/Odometry`,
+    /// `sensor_msgs/Imu`): the inverse of [`flu_to_enu`](Self::flu_to_enu).
+    ///
+    /// Two-sided on the way out for the reason it is on the way in,
+    /// `q = r_nav⁻¹ ⊗ q_{NED←FRD} ⊗ r_body`; rotating the navigation frame alone publishes
+    /// the right heading and the vehicle upside down.
+    pub fn as_flu_to_enu(self) -> UnitQuaternion<f32> {
+        ned_from_enu().inverse() * self.0 * frd_from_flu()
+    }
+
+    /// The quaternion that rotates body FLU to NWU, as Madgwick-family filters report it:
+    /// the inverse of [`flu_to_nwu`](Self::flu_to_nwu).
+    pub fn as_flu_to_nwu(self) -> UnitQuaternion<f32> {
+        ned_from_nwu().inverse() * self.0 * frd_from_flu()
     }
 
     /// Roll, pitch, yaw in radians, from the ZYX sequence
@@ -536,9 +560,10 @@ macro_rules! framed {
 }
 
 framed!(
-    /// Position relative to the navigation origin, in meters.
+    /// Position relative to the navigation origin, in meters; or, in [`Body`] axes, where a
+    /// sensor sits relative to the IMU, which is what the GNSS `fuse_*` take as `antenna`.
     ///
-    /// See [`Eskf::origin`](crate::Eskf::origin) for where that is.
+    /// See [`Eskf::origin`](crate::Eskf::origin) for where the origin is.
     Position,
     unit = "meters"
 );
@@ -599,7 +624,7 @@ framed!(
     unit = "meters per second"
 );
 
-/// Constructors that name the navigation frame, and the ENU conversion into it.
+/// Constructors that name the navigation frame, and the ENU conversions into and out of it.
 ///
 /// ENU to NED swaps the horizontal axes and flips the vertical: `(n, e, d) = (y, x, -z)`.
 /// An exact signed permutation, so nothing is lost.
@@ -625,6 +650,15 @@ macro_rules! navigation {
                 $name::ned(enu.y, enu.x, -enu.z)
             }
         }
+
+        impl $name<Ned> {
+            /// The same vector in east, north, up, for a consumer in ROS's navigation frame:
+            /// the inverse of `to_ned`.
+            pub fn to_enu(self) -> $name<Enu> {
+                let ned = self.value;
+                $name::enu(ned.y, ned.x, -ned.z)
+            }
+        }
     };
 }
 
@@ -632,7 +666,7 @@ navigation!(Position);
 navigation!(Velocity);
 navigation!(Acceleration);
 
-/// Constructors that name the body frame, and the FLU conversion into it.
+/// Constructors that name the body frame, and the FLU conversions into and out of it.
 ///
 /// The body frame is forward-right-down. ROS REP 103 bodies, and many IMU breakouts, are
 /// forward-left-up: the same forward axis, with the other two negated. An exact signed
@@ -650,10 +684,18 @@ macro_rules! body {
             pub fn flu(forward: f32, left: f32, up: f32) -> Self {
                 Self::body(forward, -left, -up)
             }
+
+            /// Forward, left, up components: the inverse of [`flu`](Self::flu). An array
+            /// rather than a framed vector, since FLU is converted at the edge and no
+            /// quantity in the filter is held in it.
+            pub fn to_flu(self) -> [f32; 3] {
+                [self.value.x, -self.value.y, -self.value.z]
+            }
         }
     };
 }
 
+body!(Position, "Offset from the IMU");
 body!(Acceleration, "Specific force");
 body!(AngularRate, "Angular rate");
 body!(MagField, "Field");
@@ -1136,6 +1178,29 @@ mod tests {
     }
 
     #[test]
+    fn every_convention_leaves_as_it_arrived() {
+        let [ned_from_frd, enu_from_flu, nwu_from_flu] = nose_east_rolled_right();
+        let attitude = Attitude::body_to_ned(ned_from_frd);
+
+        assert_same_rotation(attitude.as_flu_to_enu(), enu_from_flu);
+        assert_same_rotation(attitude.as_flu_to_nwu(), nwu_from_flu);
+        assert_same_rotation(attitude.as_ned_to_body(), ned_from_frd.inverse());
+        assert_same_rotation(
+            Attitude::flu_to_enu(attitude.as_flu_to_enu()).quaternion(),
+            ned_from_frd,
+        );
+        assert_same_rotation(
+            Attitude::flu_to_nwu(attitude.as_flu_to_nwu()).quaternion(),
+            ned_from_frd,
+        );
+
+        // The half-applied way out, the navigation frame alone, is a whole rotation off
+        // at this attitude.
+        let half_applied = ned_from_enu().inverse() * ned_from_frd;
+        assert!(half_applied.angle_to(&enu_from_flu) > 1.0);
+    }
+
+    #[test]
     fn a_stored_inverse_is_inverted_rather_than_wrapped() {
         let [ned_from_frd, ..] = nose_east_rolled_right();
         let frd_from_ned = ned_from_frd.inverse();
@@ -1155,6 +1220,23 @@ mod tests {
         assert_eq!(ned, Position::ned(2.0, 1.0, -3.0));
         let ned = Velocity::enu(-4.0, 5.0, -6.0).to_ned();
         assert_eq!(ned, Velocity::ned(5.0, -4.0, 6.0));
+    }
+
+    #[test]
+    fn ned_converts_back_to_enu_by_the_same_permutation() {
+        let enu = Position::ned(2.0, 1.0, -3.0).to_enu();
+        assert_eq!(enu, Position::enu(1.0, 2.0, 3.0));
+        let velocity = Velocity::enu(-4.0, 5.0, -6.0);
+        assert_eq!(velocity.to_ned().to_enu(), velocity);
+        let acceleration = Acceleration::ned(0.1, -0.2, 0.3);
+        assert_eq!(acceleration.to_enu().to_ned(), acceleration);
+    }
+
+    #[test]
+    fn frd_converts_back_to_flu() {
+        assert_eq!(AngularRate::flu(0.1, 0.2, 0.3).to_flu(), [0.1, 0.2, 0.3]);
+        assert_eq!(Acceleration::body(0.0, 0.0, -9.8).to_flu(), [0.0, 0.0, 9.8]);
+        assert_eq!(MagField::flu(1.0, -2.0, 3.0).to_flu(), [1.0, -2.0, 3.0]);
     }
 
     #[test]

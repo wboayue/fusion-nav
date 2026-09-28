@@ -83,11 +83,25 @@ use std::path::{Path, PathBuf};
 /// model under test, so agreeing on it is not an inverse crime; agreeing on a rotation would be.
 const GRAVITY: f64 = 9.806_65;
 
-/// Magnetic declination, rad, east-positive.
+/// Where every scenario flies, latitude and longitude in degrees and ellipsoidal height in
+/// metres: east of Champaign, Illinois, chosen as the point where WMM2025 at 2026.0 gives the
+/// [`DECLINATION`] the scenarios were first drawn at, so placing them on a map moved no
+/// ceiling. It needed choosing: `moving_start`'s `yaw` reads 1.71° rather than 1.46° with the
+/// field turned 7° east (at Zurich, PX4's SITL home), since the tilt that levels a first
+/// heading enters by (36′) through the field's direction in the body.
 ///
-/// Written into the log's header, which is where `examples/replay.rs` reads the declination it
-/// configures the filter with, so a heading fused from these logs is true heading whatever the
-/// constant says.
+/// Positions are NED about it, so nothing else reads it. It is written as the log's
+/// `# Navigation origin` line, which is what lets `examples/replay.rs --declination model` look
+/// the crate's magnetic model up at the site.
+const SITE: [f64; 3] = [40.1164, -88.3697, 200.0];
+
+/// Magnetic declination at [`SITE`], rad, east-positive: −3.4378°, WMM2025 at 2026.0 evaluated
+/// with `pygeomag` 1.1.0 rather than the crate's table, so a replay under
+/// `--declination model` scores the table's own error instead of agreeing with itself.
+///
+/// Also written into the log's header, which is where `examples/replay.rs` reads the
+/// declination it configures the filter with by default, so a heading fused from these logs
+/// is true heading whatever the constant says.
 const DECLINATION: f64 = -0.06;
 
 /// Magnetic inclination, rad, down-positive: mid-latitude, and the dip the corpus logs carry.
@@ -583,6 +597,9 @@ struct GnssErrors {
     /// rad: a dual-antenna heading's σ, reported with every fix, or `None` for a receiver with
     /// one antenna.
     sigma_heading: Option<f64>,
+    /// m, forward, right, down: where the antenna sits relative to the IMU. Every fix is the
+    /// antenna's, `p + C r` and `v + C (ω × r)`, and the log's `# GNSS antenna` line names it.
+    antenna: [f64; 3],
 }
 
 /// A good 5 Hz receiver under open sky.
@@ -602,6 +619,7 @@ const GNSS: GnssErrors = GnssErrors {
     available: Window::ALWAYS,
     outage: None,
     sigma_heading: None,
+    antenna: [0.0; 3],
 };
 
 /// One fix: position and velocity, each with the variance the log reports.
@@ -725,10 +743,24 @@ impl Gnss {
         }
 
         let was = flight.at(described);
+        // The antenna, not the IMU: its offset turned into navigation axes, and the velocity it
+        // sweeps about the IMU as the vehicle turns.
+        let c = body_to_nav(was.euler);
+        let r = self.errors.antenna;
+        let [w0, w1, w2] = body_rate(&was);
+        let swept = [
+            w1 * r[2] - w2 * r[1],
+            w2 * r[0] - w0 * r[2],
+            w0 * r[1] - w1 * r[0],
+        ];
+        let navigation =
+            |v: [f64; 3]| std::array::from_fn(|i| c[i][0] * v[0] + c[i][1] * v[1] + c[i][2] * v[2]);
+        let antenna = add(was.position, navigation(r));
+        let moving = add(was.velocity, navigation(swept));
         Some(Fix {
             taken: described,
-            position: add(was.position, position_noise),
-            velocity: add(was.velocity, velocity_noise),
+            position: add(antenna, position_noise),
+            velocity: add(moving, velocity_noise),
             position_variance: sigma.map(|sigma| sigma * sigma),
             velocity_variance: [self.errors.sigma_velocity.powi(2); 3],
             heading: heading_noise.map(|(noise, sigma)| {
@@ -1297,6 +1329,21 @@ fn scenarios() -> Vec<Scenario> {
             },
             ..base
         },
+        // The antenna on a mast rather than on the IMU: 0.5 m forward, 0.3 m right and 0.8 m up,
+        // so every fix carries `C r`, which turns with heading, and `C (ω × r)`, which the
+        // circuit's turns make visible. One variable on `mission`'s seed: the noise draws are
+        // `mission`'s, and only where they land moves. Replayed with `--antenna zero`, the
+        // uncorrected filter reads the arm as position error.
+        Scenario {
+            name: "lever_arm",
+            covers: "the baseline with the GNSS antenna on a mast 1 m from the IMU: the lever \
+                     arm of (28') and (29'), and the only scenario whose fixes are not the IMU's",
+            gnss: GnssErrors {
+                antenna: [0.5, 0.3, -0.8],
+                ..GNSS
+            },
+            ..base
+        },
         // A fixed-wing with no magnetometer, the vehicle #53 is for: nothing observes yaw until
         // it moves, and then only the course does. The sideslip the harness allows, 0.05 rad, is
         // wider than the truth's, 0.02 ± 0.035, as a caller who knows the airframe would state it.
@@ -1750,7 +1797,9 @@ fn write_log_header(
         "# fusion-nav simulated flight - scenario `{name}`, seed {seed}\n\
          # {covers}\n\
          #\n\
+         # Navigation origin {latitude:.9} {longitude:.9} {height:.3} (lat deg, lon deg, height m; the simulated site)\n\
          # Magnetic declination {declination:.6} rad\n\
+         # GNSS antenna {ax:.3} {ay:.3} {az:.3} m (forward, right, down from the IMU)\n\
 {course}\
          #\n\
          # Generated by `cargo run --example simulate -- {name} <dir>`; truth in\n\
@@ -1769,6 +1818,12 @@ fn write_log_header(
         seed = scenario.seed,
         covers = scenario.covers,
         declination = DECLINATION,
+        ax = scenario.gnss.antenna[0],
+        ay = scenario.gnss.antenna[1],
+        az = scenario.gnss.antenna[2],
+        latitude = SITE[0],
+        longitude = SITE[1],
+        height = SITE[2],
         course = scenario.course.map_or_else(String::new, |sigma| format!(
             "# Course sideslip {sigma:.6} rad\n"
         )),

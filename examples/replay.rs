@@ -18,7 +18,9 @@
 //!
 //! The third argument is optional and turns on scoring against truth; see *Scoring* below.
 //! `--r-policy`, anywhere on the line, picks what GNSS rows are fused with: `raw`, the
-//! default, or `px4`; see [`RPolicy`].
+//! default, or `px4`; see [`RPolicy`]. `--declination model` ignores the header's declination
+//! and leaves the filter to read its own magnetic model at the origin; `header` is the default.
+//! `--antenna zero` fuses every GNSS row as the IMU's rather than at the header's antenna.
 //! It also writes `<out>.nees.csv`, `ε` per block per epoch, which `data/anees.sh` averages
 //! across seeds (#89), and `<out>.error.csv`, the truth error on navigation axes beside its σ,
 //! which `tools/replay_report.py` draws.
@@ -26,11 +28,13 @@
 //! # Input
 //!
 //! One row per measurement, sorted by time. `#` comments and the header are skipped, and
-//! blank cells are those not applicable to that source. One comment is read: a leading
-//! `# Magnetic declination <rad> rad` line sets `Eskf::set_magnetic_declination`, since the site
-//! and not the harness decides it, and a log without one is replayed at zero. A
-//! `# GNSS noise parameters` line is read only under `--r-policy px4`, which refuses a log
-//! without one.
+//! blank cells are those not applicable to that source. Leading comments that describe the
+//! vehicle and its site are read, since those and not the harness decide them: a
+//! `# Magnetic declination <rad> rad` line sets `Eskf::set_magnetic_declination` (a log without
+//! one is replayed at zero), a `# GNSS antenna <forward> <right> <down> m` line is every GNSS
+//! fix's `antenna` (zero without one), and `# Navigation origin <lat> <lon> <height>` names the
+//! site the magnetic model is looked up at. A `# GNSS noise parameters` line is read only under
+//! `--r-policy px4`, which refuses a log without one.
 //!
 //! ```text
 //! t_s,source,v0,v1,v2,v3,v4,v5,var0,var1,var2,t_meas_s
@@ -441,6 +445,8 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut policy = None;
     let mut course = None;
     let mut without = None;
+    let mut model_declination = false;
+    let mut antenna_from_header = true;
     let mut positional = Vec::new();
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -452,6 +458,18 @@ fn run() -> Result<(), Box<dyn Error>> {
                 .and_then(|value| value.parse().ok())
                 .ok_or("--course wants a sideslip sigma in degrees")?;
             course = Some(Radians::from_degrees(degrees));
+        } else if arg == "--declination" {
+            model_declination = match args.next().as_deref() {
+                Some("header") => false,
+                Some("model") => true,
+                _ => return Err("--declination wants `header` or `model`".into()),
+            };
+        } else if arg == "--antenna" {
+            antenna_from_header = match args.next().as_deref() {
+                Some("header") => true,
+                Some("zero") => false,
+                _ => return Err("--antenna wants `header` or `zero`".into()),
+            };
         } else if arg == "--without" {
             let name = args.next().ok_or("--without wants an input source name")?;
             if !DROPPABLE.contains(&name.as_str()) {
@@ -503,7 +521,25 @@ fn run() -> Result<(), Box<dyn Error>> {
         return Err("the course sideslip is not a positive number".into());
     }
     replay.without = without;
-    if !replay
+    replay.site = origin_of(&text);
+    if antenna_from_header {
+        replay.antenna = antenna_of(&text).unwrap_or_default();
+        if !replay.antenna.vector().iter().all(|v| v.is_finite()) {
+            return Err("the `# GNSS antenna` header is not a finite offset".into());
+        }
+    }
+    if model_declination {
+        // The header's declination is not read. The site is handed over as the origin before
+        // initializing, which is where the filter reads its own magnetic model, so the window
+        // levels at the model's value. A static start then clears the origin, and positions
+        // stay the file's NED about it; nothing else moves.
+        let site = replay
+            .site
+            .ok_or("--declination model needs a `# Navigation origin` header line")?;
+        if !replay.filter.set_origin(site) {
+            return Err("the `# Navigation origin` header is not a usable origin".into());
+        }
+    } else if !replay
         .filter
         .set_magnetic_declination(declination_of(&text))
     {
@@ -885,6 +921,12 @@ struct Replay {
     /// An input source whose rows are skipped, `--without mag`: a vehicle without that sensor,
     /// replayed from a log that has one.
     without: Option<String>,
+    /// The geodetic point the file's positions are relative to, from its `# Navigation
+    /// origin` line; see `origin_of`.
+    site: Option<Geodetic>,
+    /// Where the GNSS antenna sits relative to the IMU, from the `# GNSS antenna` line, or
+    /// zero under `--antenna zero` or for a file with none; see `antenna_of`.
+    antenna: Position<Body>,
     /// Most recent barometer reading, attached to static samples the same way. This is
     /// what fixes the reference the filter's altitudes are relative to, and a log whose
     /// barometer starts after initialization leaves it unset for the whole replay.
@@ -977,6 +1019,8 @@ impl Replay {
             last_mag: None,
             course: None,
             without: None,
+            site: None,
+            antenna: Position::zero(),
             last_baro: None,
             pending_velocity: None,
             previous_imu: None,
@@ -1063,6 +1107,7 @@ impl Replay {
                     Position::ned(r.value(0)?, r.value(1)?, r.value(2)?),
                     self.policy
                         .position([r.variance(0)?, r.variance(1)?, r.variance(2)?]),
+                    self.antenna,
                 );
                 self.observe(r.t, GNSS_POS, outcome.horizontal, out)?;
                 self.observe(r.t, GNSS_HGT, outcome.height, out)?;
@@ -1078,6 +1123,7 @@ impl Replay {
                     velocity,
                     self.policy
                         .velocity([r.variance(0)?, r.variance(1)?, r.variance(2)?]),
+                    self.antenna,
                 );
                 self.observe(r.t, GNSS_VEL, outcome, out)?;
                 if let Some(sideslip) = self.course {
@@ -1908,7 +1954,7 @@ impl Replay {
         let (roll0, pitch0, yaw0) = self.angles_at_init();
         format!(
             "summary rate={:.0} window={} {} align={} an={} alpha0={} heading={} \
-             roll0={roll0:.2} pitch0={pitch0:.2} yaw0={yaw0:.2} declination={:.2} resets={} \
+             roll0={roll0:.2} pitch0={pitch0:.2} yaw0={yaw0:.2} declination={:.2} declination_model={} antenna={} resets={} \
              recovered={} aligned_at={} attitude_lost={} r_policy={} course={} without={} rejected={}{} discarded={} coasted={} refused={} \
              invalid={} floored={} epochs={}{} \
              transitions={} status={:?}",
@@ -1958,6 +2004,22 @@ impl Replay {
             // Degrees, from the log's header (`declination_of`): a log converted before the
             // converter wrote one reads 0.00, which is a site nobody named.
             self.filter.magnetic_declination().as_radians().to_degrees(),
+            // The crate's magnetic model at the log's site, beside the header's value: on a log
+            // whose EKF2 read PX4's table at its first fix, the two are one table read by two
+            // ports at one point, and the manifest pins them equal. `none` without a site.
+            self.site
+                .and_then(Geodetic::magnetic_declination)
+                .map_or_else(
+                    || "none".to_string(),
+                    |d| format!("{:.2}", d.as_radians().to_degrees())
+                ),
+            // The lever arm every GNSS fix was fused with, forward, right, down in metres: a
+            // header that stopped reaching the filter reads `0.00,0.00,0.00` here and moves
+            // nothing else a reader would think to check.
+            {
+                let [forward, right, down] = self.antenna.to_array();
+                format!("{forward:.2},{right:.2},{down:.2}")
+            },
             self.resets(),
             self.recoveries(),
             // When the filter first called its own attitude usable. It is what settled
@@ -2210,6 +2272,35 @@ impl TruthRow {
 /// is what notices it stop arriving.
 fn declination_of(text: &str) -> Radians {
     header_radians(text, "# Magnetic declination ").unwrap_or(Radians::ZERO)
+}
+
+/// The antenna offset a leading `# GNSS antenna <forward> <right> <down> m` line names: where
+/// the receiver's antenna sits relative to the IMU in body axes, metres, which every GNSS
+/// `fuse_*` takes as `antenna`. `tools/ulog2replay.py` writes the one the log's EKF2 applied
+/// (`SENS_GPS0_OFF*` less `EKF2_IMU_POS*`), and `examples/simulate.rs` the one its fixes were
+/// generated at. `None` for a file with none, replayed at zero.
+fn antenna_of(text: &str) -> Option<Position<Body>> {
+    let rest = text
+        .lines()
+        .take_while(|line| line.starts_with('#'))
+        .find_map(|line| line.strip_prefix("# GNSS antenna "))?;
+    let mut numbers = rest.split_whitespace().map(|word| word.parse::<f32>().ok());
+    let (forward, right, down) = (numbers.next()??, numbers.next()??, numbers.next()??);
+    Some(Position::body(forward, right, down))
+}
+
+/// The site a leading `# Navigation origin <lat> <lon> <height>` line names, degrees and
+/// metres: the geodetic point the file's NED positions are relative to. `None` for a file
+/// with no fix (`none`) or none of the line, which is a simulator's, whose positions were
+/// never geodetic.
+fn origin_of(text: &str) -> Option<Geodetic> {
+    let rest = text
+        .lines()
+        .take_while(|line| line.starts_with('#'))
+        .find_map(|line| line.strip_prefix("# Navigation origin "))?;
+    let mut numbers = rest.split_whitespace().map(|word| word.parse::<f64>().ok());
+    let (latitude, longitude, height) = (numbers.next()??, numbers.next()??, numbers.next()??);
+    Some(Geodetic::from_degrees(latitude, longitude, height))
 }
 
 /// The sideslip a leading `# Course sideslip <rad> rad` line names, which turns on the course
@@ -3334,6 +3425,29 @@ mod tests {
     }
 
     // ---- the verdict keys ----
+
+    #[test]
+    fn the_antenna_comes_from_its_header_line_in_body_axes() {
+        let named = "# GNSS antenna 0.100 -0.300 -0.057 m (forward, right, down)\nt_s\n";
+        assert_eq!(antenna_of(named), Some(Position::body(0.1, -0.3, -0.057)));
+        assert_eq!(antenna_of("# GNSS antenna 1 2\nt_s\n"), None);
+        assert_eq!(antenna_of("t_s,source\n# GNSS antenna 1 2 3\n"), None);
+    }
+
+    #[test]
+    fn the_site_comes_from_the_origin_header_and_a_log_without_a_fix_has_none() {
+        let named = "# Navigation origin 56.410000000 43.760000000 150.000 (lat deg, ...)\nt_s\n";
+        let site = origin_of(named).expect("three numbers");
+        assert!((site.latitude_deg() - 56.41).abs() < 1e-9);
+        assert!((site.longitude_deg() - 43.76).abs() < 1e-9);
+        assert_eq!(site.height(), 150.0);
+        assert_eq!(
+            origin_of("# Navigation origin none (no 3D fix)\nt_s\n"),
+            None
+        );
+        assert_eq!(origin_of("t_s,source\n# Navigation origin 1 2 3\n"), None);
+        assert_eq!(origin_of("# nothing\n"), None);
+    }
 
     #[test]
     fn the_declination_comes_from_the_header_and_defaults_to_zero() {

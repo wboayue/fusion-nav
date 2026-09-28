@@ -14,6 +14,8 @@ mod geodetic;
 mod health;
 mod history;
 mod init;
+#[cfg(feature = "magnetic-model")]
+mod magnetic;
 mod math;
 mod observation;
 mod propagate;
