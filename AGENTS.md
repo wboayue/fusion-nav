@@ -55,9 +55,9 @@ position is now reprojected per row about its own origin and placed as a fix is;
 The sensor-boundary pass landed (#159): `clamped` takes a `SigmaBounds` per axis, so PX4's and
 ArduPilot's GNSS `R` rules are one call each and `RPolicy::Px4` holds no floor of its own (#157;
 `px4` replay byte-identical on all twelve logs); declination moved off `Config` onto `Eskf`,
-`set_magnetic_declination`, a site property like the origin (#125 part 1; #125 is now the model);
+`set_magnetic_declination`, a site property like the origin (#125 part 1; the model landed in #170);
 `Eskf::angular_rate` is the bias-corrected `ω`, committed with the state through `Propagated`, so a
-caller can correct an antenna offset (#25 option 1; #25 is now the filter applying it); and #27's
+caller can move the estimate to another point (the filter applies the antenna itself since #170); and #27's
 two boundary notes. No corpus or scenario output moved.
 #89 landed (#151): `data/anees.sh` gates per-epoch ensemble NEES on 50 seeds against χ² in CI,
 and asserts failures by cause: `correlated` (#117's residual) on position; `gnss_latency`'s
@@ -75,7 +75,21 @@ a reader who has never computed a NEES. Every number and table comes through a p
 `validation/src/`, and every figure through `replay_report.py --figures`. `tools/validation.sh`
 regenerates them from the gates it runs, and `--check` re-derives them. The pages state the
 losses: `correlated` (#51) is overconfident and `7ce66f0d` levels wrong (#59). Order: #47, which needs the *API frozen* milestone closed or
-each open issue deferred in writing; #41 needs a board.
+each open issue deferred in writing (#50 is the last open one); #41 needs a board.
+#81, #125, #25 and #62 landed together (#170), the sensor boundary. The edge converts both ways
+(`as_flu_to_enu`, `to_enu`, `to_flu`). The filter reads PX4's WMM table (`src/magnetic.rs`, the
+`magnetic-model` feature, 2.5 KB) where it places its origin unless the caller set a declination,
+and turns a heading only the magnetometer set; fixed epoch, since the table is within 0.26° and
+drifts 0.42° in five years at the corpus origins, against a 3.1° heading σ (GOALS). Every GNSS
+`fuse_*` takes `antenna: Position<Body>`, (28′) and (29′), with the arm's attitude and gyro-bias
+terms in `H` where PX4 corrects the fix alone: `a299e722` px4 `pos_e_rms` to EKF2 0.650 → 0.408 m
+(PX4's form 0.448), `cd7e0001` heading gap 1.61° → 0.81 (0.85). Four logs carry an arm, and replayed
+`--antenna zero` each reproduces the old manifest; `eb799954` moves away from EKF2 (0.213 → 0.262 m),
+unexplained. `lever_arm` is the one scenario whose fixes are not the IMU's. The README's "Coming
+from PX4 or ArduPilot" maps every parameter; its audit found PX4 firmware's `EKF2_BARO_NOISE` is
+3.5 m, that PX4 gates GNSS height apart too, and that commander's `COM_POS_FS_EPH`/`COM_VEL_FS_EVH`
+are `Accuracy`'s counterparts. The review found a NaN `antenna` reaching the state on adoption and
+(44) placing the origin before the declination turn; both are tested.
 #21 and #52 landed together (#162), one time model for `predict` and `fuse_*`. `ImuSample` is
 PX4's `imuSample`: a `Timestamp` (u64 µs), delta angle and delta velocity, each with its own
 interval; `predict(imu)` differences timestamps for the step the timers and the gap test read,
@@ -110,7 +124,7 @@ velocity's own accuracy. A course with no fresh GNSS velocity is
 out to be a real dual-antenna log (`EKF2_AID_MASK` bit 7, 0.010 rad from EKF2's yaw at rest): the
 converter writes `gnss_yaw` rows only where the log's own EKF2 enables GNSS yaw, and fusing them
 took its heading gap to EKF2 4.86° → 1.03° and `nu_mag_yaw` −0.127 → −0.002 rad, while px4
-`pos_e_rms` went 0.33 → 0.66 m, open under #25 (a 0.30 m antenna lever arm, unverified). #53's bar
+`pos_e_rms` went 0.33 → 0.66 m, most of it the 0.30 m antenna lever arm #170 applied (0.41). #53's bar
 was met on the simulator's `no_mag` (heading 0.8 s after takeoff, 1.82° against 1.83), which
 measures the simulated sideslip as much as the filter; `093e806a --without mag --course 3` aligns
 where it never did, and the VTOL `4b473e91` shows the multirotor case it is not for. GOALS records
@@ -319,8 +333,8 @@ surface, not this one.
 **Sequencing hazard, and what it taught:** #31's stages were stacked branches while the
 signature-changing issues (#21, #25) changed the API underneath them, so an API change had to land
 *before* the stage that built on it. The hazard is rebase cost between branches, not users: the
-stages are done and #21 has landed, but #25 is still open, and a branch stacked on a surface
-another branch is changing inherits it. It
+stages are done and #21 and #25 have landed, but a branch stacked on a surface
+another branch is changing still inherits it. It
 held throughout: #58 landed before stage 5, the first code to read
 `Config::gates`, so the gate reads a `Gate<M>` typed by its degrees of freedom rather than a bare
 `f32`, and stage 5 then decided the default percentile from replay (`P999`) in the diff that first
@@ -781,8 +795,10 @@ ArduPilot `AP_NavEKF3_core.cpp` (`InitialiseFilterBootstrap`). Baro reference: P
 `EKF/aid_sources/barometer/`, ArduPilot `AP_NavEKF3_Measurements.cpp`. GNSS `R` floors: PX4
 `EKF/aid_sources/gnss/gps_control.cpp`, ArduPilot `AP_NavEKF3_PosVelFusion.cpp`. Status models:
 PX4 `filter_control_status_u` in `common.h` plus `msg/versioned/VehicleLocalPosition.msg`,
-ArduPilot `libraries/AP_NavEKF/AP_Nav_Common.h`. Published figures drift — PX4's barometer noise
-default is 2.0 m in current source, not the 3.5 m widely quoted.
+ArduPilot `libraries/AP_NavEKF/AP_Nav_Common.h`. Read the firmware default, not the library's:
+`EKF2.cpp` binds every `EKF2_*` parameter over `EKF/common.h`'s initialisers, so PX4's barometer
+noise is the 3.5 m of `params_barometer.yaml`, not `common.h`'s 2.0, and its default height
+reference is GNSS.
 
 Cite `file:line` at the sha you read; `~/projects/PX4-Autopilot` and `~/projects/ardupilot` are
 current checkouts, and a bare path rots as the tree moves. Cite it in **one** place — the document
@@ -802,7 +818,8 @@ look at what those two publish before inventing something.
 
 One published crate, `no_std`, `forbid(unsafe_code)`, `deny(missing_docs)`, allocation-free,
 edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`), plus `defmt` behind an
-off-by-default feature of the same name.
+off-by-default feature of the same name. `magnetic-model`, on by default, pulls no crate: it links
+the declination table, and CI builds and tests without it too.
 
 - `src/eskf.rs` — `Eskf`, the whole public filter: `initialize`, `initialize_from`, `predict`,
   `fuse_*`, `state`, `reset_*_to`. `initialize_from` is stage 1
@@ -829,13 +846,13 @@ off-by-default feature of the same name.
   is tested against a synthetic `H`. One Cholesky factorization of `S` serves the gate and the
   gain, and the gate runs first, so a rejection computes nothing it could commit. `Eskf::apply` is
   the one path that commits what it returns and records it. Its stack frame is the largest in the
-  crate — `update::<3>`, 8120 bytes on `thumbv6m`, `Eskf::apply` itself
-  inlining away, and the high-water mark is `fuse_gnss_velocity` into it at 9520, with `observe`
+  crate — `update::<3>`, 8088 bytes on `thumbv6m`, `Eskf::apply` itself
+  inlining away, and the high-water mark is `fuse_gnss_velocity` into it at 9504, with `observe`
   and `apply_or_recover` kept out of line beside it rather than beneath (inlined, 10800) — which is why `reparameterize` applies `G P Gᵀ` block-wise and (30′)'s offset
   enters (27) in blocks rather than as a 16 × 16 (+4168 bytes measured); the figure
   and the #41 that would revisit it are in the doc comments.
 - `src/observation/` — one module per sensor, each forming `y`, `H` and diagonal `R_m` and
-  nothing else. `gnss.rs` holds (28) and (29), `baro.rs` holds (30), `mag.rs` holds (34), (35)
+  nothing else. `gnss.rs` holds (28) and (29) at the antenna, (28′) and (29′), `baro.rs` holds (30), `mag.rs` holds (34), (35)
   and the levelling variance (36′), and `heading.rs` holds (36), which every heading source
   shares, with (35′) and (35″); (31)–(33), the three-axis magnetometer, are deliberately unbuilt.
 - `src/math.rs` — the primitives the equations share: `skew`, `exp_quat`, `wrap_pi`,
@@ -858,7 +875,9 @@ off-by-default feature of the same name.
 - `src/frames.rs` — `Ned`, `Enu`, `Body` as sealed zero-sized type parameters on quantities.
 - `src/geodetic.rs` — `Geodetic` (f64 lat/lon/height) and `LocalOrigin`, the tangent plane of
   equations (43)–(44), exact via ECEF (fixed-iteration inverse, no data-dependent loops). The filter owns the origin: `fuse_gnss_geodetic` places it on the first
-  fix (under the estimate, or at the fix after a coarse start), a static start clears it.
+  fix (under the estimate of the antenna, or at the fix after a coarse start), a static start clears it.
+- `src/magnetic.rs` — PX4's WMM declination table and its lookup, behind the `magnetic-model`
+  feature; `Eskf::place_origin` reads it at every origin placement.
 - `src/config.rs` — tuning. Defaults are **placeholders** except the three listed under "How
   defaults get decided"; each doc comment records why. Preserve that habit: a default
   justified by data says so.
