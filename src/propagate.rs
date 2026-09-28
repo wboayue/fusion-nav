@@ -271,7 +271,7 @@ pub(crate) fn corrected_imu(imu: ImuSample, state: &State) -> Corrected {
 /// [`Propagation::StateNotFinite`](crate::Propagation::StateNotFinite).
 pub(crate) fn propagate_nominal(state: State, imu: Corrected) -> State {
     let dt = imu.velocity_interval.as_secs();
-    let rotation = state.attitude.quaternion();
+    let rotation = state.attitude.body_to_ned();
 
     // (11), times `Δt`: the velocity increment into the navigation frame, gravity's added.
     // A level vehicle at rest gains (0, 0, -γ Δt) and this is zero, which is the sign
@@ -291,7 +291,7 @@ pub(crate) fn propagate_nominal(state: State, imu: Corrected) -> State {
     attitude.renormalize();
 
     State {
-        attitude: Attitude::body_to_ned(attitude),
+        attitude: Attitude::from_body_to_ned(attitude),
         position: Position::from_vector(position),
         velocity: Velocity::from_vector(velocity),
         ..state
@@ -411,7 +411,7 @@ fn transition_matrix(state: &State, imu: Corrected) -> Transition {
         imu.velocity_interval.as_secs(),
         imu.angle_interval.as_secs(),
     );
-    let rotation = state.attitude.quaternion().to_rotation_matrix();
+    let rotation = state.attitude.body_to_ned().to_rotation_matrix();
     let r = rotation.matrix();
 
     // The identity supplies (16)'s and (19)'s diagonal blocks, and the `I` on the velocity
@@ -446,7 +446,7 @@ fn transition_matrix(state: &State, imu: Corrected) -> Transition {
 /// `A`, the continuous error dynamics (16)–(19) as a matrix: `δẋ = A δx` with the noise left
 /// out. What (20) discretizes, taken here at the rates `ω` and `a_b` rather than a sample.
 pub(crate) fn error_dynamics(state: &State, omega: Vector3<f32>, a_b: Vector3<f32>) -> Transition {
-    let rotation = state.attitude.quaternion().to_rotation_matrix();
+    let rotation = state.attitude.body_to_ned().to_rotation_matrix();
     let r = rotation.matrix();
     let mut a = Transition::zeros();
     let (p, v, theta, beta_a, beta_g) = (
@@ -820,7 +820,7 @@ fn projection_steps(horizon: Seconds) -> usize {
 /// [`project`] and the measurement behind [`PROJECTION_STEP`] have to use the same one for the
 /// comparison between them to mean anything.
 fn unaccelerated_sample(state: &State, dt: Seconds) -> Corrected {
-    let rotation = state.attitude.quaternion().to_rotation_matrix();
+    let rotation = state.attitude.body_to_ned().to_rotation_matrix();
     Corrected {
         delta_angle: DeltaAngle::from_vector(Vector3::zeros()),
         angle_interval: dt,
@@ -901,7 +901,7 @@ mod tests {
         let mut state = at_rest();
         for _ in 0..steps {
             state = step(state, imu, DT);
-            let q = state.attitude.quaternion().into_inner();
+            let q = state.attitude.body_to_ned().into_inner();
             assert!((q.norm() - 1.0).abs() < 1e-6, "{q:?}");
         }
 
@@ -986,7 +986,7 @@ mod tests {
     #[test]
     fn specific_force_is_rotated_out_of_the_body_frame() {
         let state = State {
-            attitude: Attitude::body_to_ned(UnitQuaternion::from_euler_angles(
+            attitude: Attitude::from_body_to_ned(UnitQuaternion::from_euler_angles(
                 core::f32::consts::FRAC_PI_2,
                 0.0,
                 0.0,
@@ -1007,7 +1007,7 @@ mod tests {
     /// zero, so no block of (20) can be checked against an accidental zero.
     fn tilted_and_moving() -> State {
         State {
-            attitude: Attitude::body_to_ned(UnitQuaternion::from_euler_angles(0.2, -0.3, 0.7)),
+            attitude: Attitude::from_body_to_ned(UnitQuaternion::from_euler_angles(0.2, -0.3, 0.7)),
             position: Position::ned(0.5, -0.25, 0.1),
             velocity: Velocity::ned(3.0, -1.0, 0.5),
             accel_bias: Acceleration::body(0.05, -0.08, 0.03),
@@ -1033,7 +1033,7 @@ mod tests {
         State {
             position: Position::from_vector(state.position.vector() + part(0)),
             velocity: Velocity::from_vector(state.velocity.vector() + part(3)),
-            attitude: Attitude::body_to_ned(state.attitude.quaternion() * exp_quat(part(6))),
+            attitude: Attitude::from_body_to_ned(state.attitude.body_to_ned() * exp_quat(part(6))),
             accel_bias: Acceleration::from_vector(state.accel_bias.vector() + part(9)),
             gyro_bias: AngularRate::from_vector(state.gyro_bias.vector() + part(12)),
             ..state
@@ -1042,7 +1042,8 @@ mod tests {
 
     /// `x ⊟ x̂`, the inverse of [`perturb`]: the error state between two nominal states.
     fn error_between(reference: &State, perturbed: &State) -> [f32; STATES] {
-        let attitude = reference.attitude.quaternion().inverse() * perturbed.attitude.quaternion();
+        let attitude =
+            reference.attitude.body_to_ned().inverse() * perturbed.attitude.body_to_ned();
         let parts = [
             perturbed.position.vector() - reference.position.vector(),
             perturbed.velocity.vector() - reference.velocity.vector(),

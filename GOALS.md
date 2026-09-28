@@ -108,17 +108,17 @@ honest answer to "why Rust".
 `[f32; 4]` cannot carry the frame it is expressed in, so the commitment is not that a family of
 crates agrees on one convention. It is that this crate converts at its own edge and names the
 convention it expects, in the type where that is possible and in the doc comment where it is not.
-The two conventions that matter most already agree with it, and `Attitude::body_to_ned` is where
+The two conventions that matter most already agree with it, and `Attitude::from_body_to_ned` is where
 that is stated and cited: seeding from PX4's `vehicle_attitude.q` or ArduPilot's
 `get_quat_body_to_ned` converts nothing, because both publish
 [the convention fixed here](EQUATIONS.md#states-and-measurements). Everything else converts
 explicitly and names both frames while doing it: `Position::enu(..).to_ned()`,
-`AngularRate::flu`, `Attitude::flu_to_enu` for a ROS attitude and `Attitude::flu_to_nwu` for a
+`AngularRate::flu`, `Attitude::from_flu_to_enu` for a ROS attitude and `Attitude::from_flu_to_nwu` for a
 Madgwick-family one. A quaternion takes no `From` impl at all, since `.into()` would claim
 body-to-NED for whatever arrived.
 
 The edge is symmetric. Every conversion in has its inverse out, named with the same two frames:
-`attitude.as_flu_to_enu()` for a ROS publisher, `Position::to_enu`, `AngularRate::to_flu`. The
+`attitude.flu_to_enu()` for a ROS publisher, `Position::to_enu`, `AngularRate::to_flu`. The
 filter's outputs are NED by definition, and re-expressing them could have been left to the
 application, but an application that seeded through `flu_to_enu` publishes back to ROS, and without
 the inverse it writes `r_nav⁻¹ ⊗ q ⊗ r_body` by hand: the two-sided conversion the constructors exist

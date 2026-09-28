@@ -391,8 +391,8 @@ impl Eskf {
     ///
     /// `state.attitude` names its own convention, through whichever
     /// [`Attitude`](crate::Attitude) constructor built it — PX4 and ArduPilot quaternions
-    /// through [`body_to_ned`](crate::Attitude::body_to_ned), a ROS one through
-    /// [`flu_to_enu`](crate::Attitude::flu_to_enu), which is where the conventions and
+    /// through [`body_to_ned`](crate::Attitude::from_body_to_ned), a ROS one through
+    /// [`flu_to_enu`](crate::Attitude::from_flu_to_enu), which is where the conventions and
     /// what a wrong one costs are written down. It is the one error on this path no check
     /// downstream can reach.
     ///
@@ -586,10 +586,10 @@ impl Eskf {
         let change = wrap_pi(declination.as_radians() - self.declination.as_radians());
         self.declination = declination;
         if self.initialized && self.magnetic_north && change != 0.0 {
-            let mut turned = exp_quat(Vector3::z() * change) * self.state.attitude.quaternion();
+            let mut turned = exp_quat(Vector3::z() * change) * self.state.attitude.body_to_ned();
             turned.renormalize();
             self.commit_state(State {
-                attitude: Attitude::body_to_ned(turned),
+                attitude: Attitude::from_body_to_ned(turned),
                 ..self.state
             });
         }
@@ -1142,7 +1142,7 @@ impl Eskf {
         if tau == 0.0 {
             return build(&past, omega);
         }
-        let now = self.state.attitude.quaternion();
+        let now = self.state.attitude.body_to_ned();
         // Mean rates over the age, rather than the last sample's: one sample's specific force
         // carries the airframe's vibration, which the velocities either side of it average out.
         let a_n = (self.state.velocity.vector() - past.velocity.vector()) / tau;
@@ -1161,7 +1161,10 @@ impl Eskf {
         if tau == 0.0 {
             return self.angular_rate.unwrap_or_default();
         }
-        let (now, then) = (self.state.attitude.quaternion(), past.attitude.quaternion());
+        let (now, then) = (
+            self.state.attitude.body_to_ned(),
+            past.attitude.body_to_ned(),
+        );
         AngularRate::from_vector((then.inverse() * now).scaled_axis() / tau)
     }
 
@@ -1177,7 +1180,7 @@ impl Eskf {
         time: Timestamp,
     ) -> Position<Ned> {
         let (past, _) = self.past(time);
-        let arm = past.attitude.quaternion() * antenna.vector();
+        let arm = past.attitude.body_to_ned() * antenna.vector();
         let moved = self.state.position.vector() - past.position.vector();
         Position::from_vector(taken.vector() - arm + moved)
     }
@@ -1193,7 +1196,7 @@ impl Eskf {
     ) -> Velocity<Ned> {
         let (past, age) = self.past(time);
         let omega = self.mean_rate(&past, age.as_secs());
-        let turning = past.attitude.quaternion() * omega.vector().cross(&antenna.vector());
+        let turning = past.attitude.body_to_ned() * omega.vector().cross(&antenna.vector());
         let moved = self.state.velocity.vector() - past.velocity.vector();
         Velocity::from_vector(taken.vector() - turning + moved)
     }
@@ -1279,7 +1282,7 @@ impl Eskf {
         // before, a 1 m arm under a 13.8° turn misplaces the origin by 0.24 m.
         self.learn_declination(fix);
         let (past, _) = self.past(time);
-        let antenna_then = past.position.vector() + past.attitude.quaternion() * antenna.vector();
+        let antenna_then = past.position.vector() + past.attitude.body_to_ned() * antenna.vector();
         let Some(origin) = LocalOrigin::placing(fix, Position::from_vector(antenna_then)) else {
             return self.refuse_gnss(Fusion::NoReference);
         };
@@ -1787,7 +1790,7 @@ impl Eskf {
         // through the error dynamics: a course's gains a tilt component from its velocity block,
         // `∇χᵀR[a_b]× τ`, about 0.06 at 18 m/s and 110 ms, and stops being the unit vector
         // `reset_attitude_direction` needs.
-        let down = self.state.attitude.quaternion().inverse() * Vector3::z();
+        let down = self.state.attitude.body_to_ned().inverse() * Vector3::z();
         self.reset_heading_by(observation.y[0], observation.r_m[0] + spread, down);
     }
 
@@ -1833,11 +1836,11 @@ impl Eskf {
     /// roll-error/gyro-bias-x correlation is read afterwards as roll-error/gyro-bias-y and
     /// the next velocity update pushes the correction into the wrong axis.
     fn reset_heading_by(&mut self, y: f32, variance: f32, down: Vector3<f32>) {
-        let before = self.state.attitude.quaternion().to_rotation_matrix();
-        let mut corrected = exp_quat(Vector3::z() * y) * self.state.attitude.quaternion();
+        let before = self.state.attitude.body_to_ned().to_rotation_matrix();
+        let mut corrected = exp_quat(Vector3::z() * y) * self.state.attitude.body_to_ned();
         corrected.renormalize();
         self.commit_state(State {
-            attitude: Attitude::body_to_ned(corrected),
+            attitude: Attitude::from_body_to_ned(corrected),
             ..self.state
         });
 
@@ -1902,7 +1905,7 @@ impl Eskf {
     /// // vehicle turned.
     /// if let Some(omega) = filter.angular_rate() {
     ///     let state = filter.state();
-    ///     let rotation = state.attitude.quaternion();
+    ///     let rotation = state.attitude.body_to_ned();
     ///     let position = state.position.vector() + rotation * r;
     ///     let velocity = state.velocity.vector() + rotation * omega.vector().cross(&r);
     ///     // Yawing at 0.5 rad/s, a point 0.2 m aft swings sideways at 0.1 m/s.
@@ -4389,7 +4392,7 @@ mod tests {
         assert!(filter.step(imu, DT).is_propagated());
 
         let r = Vector3::new(1.0, 0.0, 0.0);
-        let rotation = filter.state().attitude.quaternion();
+        let rotation = filter.state().attitude.body_to_ned();
         let omega = filter.angular_rate().expect("a step was integrated");
         // To within the 5 mrad the one step turned it.
         let arm = rotation * r;
@@ -5661,7 +5664,7 @@ mod tests {
     #[test]
     fn an_adopted_fix_is_referred_to_the_imu() {
         let mut filter = coarse();
-        let yaw = filter.state().attitude.quaternion();
+        let yaw = filter.state().attitude.body_to_ned();
         let at_antenna = Position::ned(10.0, 20.0, -5.0);
         let noise = PositionNoise::horizontal_vertical(0.5, 0.5);
         let adopted = filter.fuse_gnss_position(filter.now(), at_antenna, noise, mast());
@@ -5701,7 +5704,7 @@ mod tests {
             .expect("a 2 s window of stillness");
         let noise = PositionNoise::horizontal_vertical(1.5, 1.5);
         let _ = filter.fuse_gnss_geodetic(filter.now(), east_of_moscow(), noise, mast());
-        let rotation = filter.state().attitude.quaternion();
+        let rotation = filter.state().attitude.body_to_ned();
         let antenna = Position::from_vector(rotation * mast().vector());
         let origin = filter.origin().expect("placed by the first fix");
         assert!(near(origin.to_ned(east_of_moscow()), antenna));
@@ -5715,7 +5718,7 @@ mod tests {
             Acceleration::body(0.0, 0.0, -GRAVITY),
         );
         assert!(filter.step(imu, DT).is_propagated());
-        let rotation = filter.state().attitude.quaternion();
+        let rotation = filter.state().attitude.body_to_ned();
         let omega = filter
             .angular_rate()
             .expect("a step was integrated")
@@ -6292,9 +6295,9 @@ mod tests {
         let mut filter = on_its_tail();
         let before = filter.attitude_variance();
         // The same vehicle turned 1.1 rad about down: a heading, and nothing else, differs.
-        let truth = Attitude::body_to_ned(
+        let truth = Attitude::from_body_to_ned(
             nalgebra::UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 1.1)
-                * filter.state().attitude.quaternion(),
+                * filter.state().attitude.body_to_ned(),
         );
         let field = measured(truth, 0.0);
         let noise = HeadingNoise::from_sigma(0.05);

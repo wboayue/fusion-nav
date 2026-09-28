@@ -35,7 +35,7 @@ impl Entry {
             time,
             position: state.position.vector(),
             velocity: state.velocity.vector(),
-            attitude: state.attitude.quaternion(),
+            attitude: state.attitude.body_to_ned(),
         }
     }
 }
@@ -118,7 +118,7 @@ impl History {
     pub(crate) fn shift(&mut self, before: &State, after: &State) {
         let dp = after.position.vector() - before.position.vector();
         let dv = after.velocity.vector() - before.velocity.vector();
-        let dq = after.attitude.quaternion() * before.attitude.quaternion().inverse();
+        let dq = after.attitude.body_to_ned() * before.attitude.body_to_ned().inverse();
         // The ring fills from index zero, so the entries held are the first `len` until it wraps.
         for entry in self.entries.iter_mut().take(self.len) {
             entry.position += dp;
@@ -150,8 +150,8 @@ impl History {
                 position: Position::from_vector(
                     current.position.vector() + current.velocity.vector() * lead,
                 ),
-                attitude: Attitude::body_to_ned(
-                    current.attitude.quaternion() * exp_quat(omega.vector() * lead),
+                attitude: Attitude::from_body_to_ned(
+                    current.attitude.body_to_ned() * exp_quat(omega.vector() * lead),
                 ),
                 ..*current
             };
@@ -209,7 +209,7 @@ fn with(current: &State, entry: Entry) -> State {
     State {
         position: Position::from_vector(entry.position),
         velocity: Velocity::from_vector(entry.velocity),
-        attitude: Attitude::body_to_ned(entry.attitude),
+        attitude: Attitude::from_body_to_ned(entry.attitude),
         ..*current
     }
 }
@@ -281,16 +281,18 @@ mod tests {
     fn a_turn_about_down_reaches_the_past_about_down() {
         let mut history = History::default();
         let rolled = |angle: f32| State {
-            attitude: Attitude::body_to_ned(UnitQuaternion::from_euler_angles(angle, 0.0, 0.0)),
+            attitude: Attitude::from_body_to_ned(UnitQuaternion::from_euler_angles(
+                angle, 0.0, 0.0,
+            )),
             ..State::default()
         };
         history.record(Timestamp::ZERO, &rolled(0.0));
         let now = Timestamp::from_micros(100_000);
         let before = rolled(core::f32::consts::FRAC_PI_2);
         let turned =
-            UnitQuaternion::from_euler_angles(0.0, 0.0, 1.0) * before.attitude.quaternion();
+            UnitQuaternion::from_euler_angles(0.0, 0.0, 1.0) * before.attitude.body_to_ned();
         let after = State {
-            attitude: Attitude::body_to_ned(turned),
+            attitude: Attitude::from_body_to_ned(turned),
             ..before
         };
         history.shift(&before, &after);

@@ -42,7 +42,7 @@ const COURSE_SIGMA_MAX: f32 = 0.258_819;
 /// Every heading source uses this row: the magnetometer's (35), the GNSS heading of (35′) and
 /// the course constraint of (35″), which adds a velocity block of its own.
 pub(crate) fn heading_jacobian(state: &State) -> SMatrix<f32, 1, STATES> {
-    let rotation = state.attitude.quaternion().to_rotation_matrix();
+    let rotation = state.attitude.body_to_ned().to_rotation_matrix();
     let mut h = SMatrix::<f32, 1, STATES>::zeros();
     h.fixed_view_mut::<1, 3>(0, ErrorState::AttitudeX.index())
         .copy_from(&rotation.matrix().row(2));
@@ -51,7 +51,7 @@ pub(crate) fn heading_jacobian(state: &State) -> SMatrix<f32, 1, STATES> {
 
 /// Body x in navigation axes, `R(q̂) e₁`: the axis a heading is the direction of.
 fn forward(state: &State) -> Vector3<f32> {
-    state.attitude.quaternion() * Vector3::x()
+    state.attitude.body_to_ned() * Vector3::x()
 }
 
 /// Whether the forward axis is far enough from vertical to have a heading. See
@@ -198,9 +198,9 @@ mod tests {
         let estimate = state(0.3, -0.2, 1.1, [0.0; 3]);
         let measured = Radians::from_radians(2.9);
         let y = gnss_observation(&estimate, measured, HeadingNoise::from_sigma(0.1)).y[0];
-        let turned = crate::math::exp_quat(Vector3::z() * y) * estimate.attitude.quaternion();
+        let turned = crate::math::exp_quat(Vector3::z() * y) * estimate.attitude.body_to_ned();
         let after = State {
-            attitude: crate::units::Attitude::body_to_ned(turned),
+            attitude: crate::units::Attitude::from_body_to_ned(turned),
             ..estimate
         };
         let left = gnss_observation(&after, measured, HeadingNoise::from_sigma(0.1)).y[0];

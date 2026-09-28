@@ -258,20 +258,24 @@ fn drive() {
 /// the reason to skip it — `Covariance::get` indexes the same `nalgebra` matrix that
 /// `Index` bounds-checks, and `Attitude::euler_angles` is two `atan2` calls and an `asin`.
 fn surface(state: State, diagnostics: Diagnostics, covariance: &Covariance) {
-    let _ = black_box(state.attitude.quaternion());
+    let _ = black_box(state.attitude.body_to_ned());
     let _ = black_box(state.attitude.euler_angles());
     let _ = black_box(Attitude::level());
-    let _ = black_box(Attitude::body_to_ned(black_box(
-        state.attitude.quaternion(),
+    let _ = black_box(Attitude::from_body_to_ned(black_box(
+        state.attitude.body_to_ned(),
     )));
-    let _ = black_box(Attitude::ned_to_body(black_box(
-        state.attitude.quaternion(),
+    let _ = black_box(Attitude::from_ned_to_body(black_box(
+        state.attitude.body_to_ned(),
     )));
-    let _ = black_box(Attitude::flu_to_enu(black_box(state.attitude.quaternion())));
-    let _ = black_box(Attitude::flu_to_nwu(black_box(state.attitude.quaternion())));
-    let _ = black_box(black_box(state.attitude).as_ned_to_body());
-    let _ = black_box(black_box(state.attitude).as_flu_to_enu());
-    let _ = black_box(black_box(state.attitude).as_flu_to_nwu());
+    let _ = black_box(Attitude::from_flu_to_enu(black_box(
+        state.attitude.body_to_ned(),
+    )));
+    let _ = black_box(Attitude::from_flu_to_nwu(black_box(
+        state.attitude.body_to_ned(),
+    )));
+    let _ = black_box(black_box(state.attitude).ned_to_body());
+    let _ = black_box(black_box(state.attitude).flu_to_enu());
+    let _ = black_box(black_box(state.attitude).flu_to_nwu());
 
     let _ = black_box(state.position.x());
     let _ = black_box(state.position.y());

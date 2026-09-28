@@ -268,10 +268,10 @@ with no residual to expose a wrong one.
 
 | the convention | in | out |
 | -------------- | -- | --- |
-| body FRD to NED — PX4 `vehicle_attitude.q`, ArduPilot `get_quat_body_to_ned`, `fusion-ahrs` on `Convention::Ned` | `Attitude::body_to_ned(q)`, which converts nothing | `attitude.quaternion()` |
-| NED to body FRD, the stored inverse | `Attitude::ned_to_body(q)` | `attitude.as_ned_to_body()` |
-| body FLU to ENU — ROS REP 103 | `Attitude::flu_to_enu(q)` | `attitude.as_flu_to_enu()` |
-| body FLU to NWU — Madgwick-family, `fusion-ahrs` on its default | `Attitude::flu_to_nwu(q)` | `attitude.as_flu_to_nwu()` |
+| body FRD to NED — PX4 `vehicle_attitude.q`, ArduPilot `get_quat_body_to_ned`, `fusion-ahrs` on `Convention::Ned` | `Attitude::from_body_to_ned(q)`, which converts nothing | `attitude.body_to_ned()` |
+| NED to body FRD, the stored inverse | `Attitude::from_ned_to_body(q)` | `attitude.ned_to_body()` |
+| body FLU to ENU — ROS REP 103 | `Attitude::from_flu_to_enu(q)` | `attitude.flu_to_enu()` |
+| body FLU to NWU — Madgwick-family, `fusion-ahrs` on its default | `Attitude::from_flu_to_nwu(q)` | `attitude.flu_to_nwu()` |
 
 The edge is symmetric: whatever enters in a convention can leave in it. Vectors go the same way,
 `Position::enu(..).to_ned()` in and `position.to_enu()` out, `AngularRate::flu(..)` in and
@@ -295,7 +295,7 @@ let q = UnitQuaternion::from_euler_angles(0.0, 0.05, 1.1);
 // PX4's `vehicle_attitude.q` and ArduPilot's `get_quat_body_to_ned` are body FRD to NED
 // already, which is this crate's convention too, so this constructor converts nothing.
 let state = State {
-    attitude: Attitude::body_to_ned(q),
+    attitude: Attitude::from_body_to_ned(q),
     ..State::default()
 };
 

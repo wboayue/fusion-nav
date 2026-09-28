@@ -52,7 +52,7 @@ impl State {
     ///
     /// The quaternion is unit by construction, so only its finiteness is in question.
     pub(crate) fn is_finite(&self) -> bool {
-        let q = self.attitude.quaternion();
+        let q = self.attitude.body_to_ned();
         [q.w, q.i, q.j, q.k].iter().all(|v| v.is_finite())
             && self.position.is_finite()
             && self.velocity.is_finite()
@@ -265,7 +265,7 @@ impl AttitudeVariance {
     /// covariance projected forward, which the nominal attitude it was projected from
     /// still describes.
     pub(crate) fn of(attitude: &Attitude, covariance: &Covariance) -> Self {
-        let r = attitude.quaternion().to_rotation_matrix().into_inner();
+        let r = attitude.body_to_ned().to_rotation_matrix().into_inner();
         let theta = ErrorState::AttitudeX.index();
         let p_theta = covariance.as_matrix().fixed_view::<3, 3>(theta, theta);
         let ned = r * p_theta * r.transpose();
@@ -287,7 +287,7 @@ impl AttitudeVariance {
     /// variances and nothing correlated between them: `R(q̂)ᵀ diag(·) R(q̂)`, the inverse of
     /// [`of`](Self::of). Equation (8).
     pub(crate) fn in_body(self, attitude: &Attitude) -> Matrix3<f32> {
-        let r = attitude.quaternion().to_rotation_matrix().into_inner();
+        let r = attitude.body_to_ned().to_rotation_matrix().into_inner();
         let ned =
             Matrix3::from_diagonal(&Vector3::new(self.tilt_north, self.tilt_east, self.heading));
         r.transpose() * ned * r
@@ -368,7 +368,7 @@ mod tests {
     use nalgebra::UnitQuaternion;
 
     fn attitude_of(roll: f32, pitch: f32, yaw: f32) -> Attitude {
-        Attitude::body_to_ned(UnitQuaternion::from_euler_angles(roll, pitch, yaw))
+        Attitude::from_body_to_ned(UnitQuaternion::from_euler_angles(roll, pitch, yaw))
     }
 
     #[test]
