@@ -74,8 +74,9 @@ scenario (`mission` 0.414° → 0.330); `7ce66f0d` recovers 28 times rather than
 a reader who has never computed a NEES. Every number and table comes through a placeholder in
 `validation/src/`, and every figure through `replay_report.py --figures`. `tools/validation.sh`
 regenerates them from the gates it runs, and `--check` re-derives them. The pages state the
-losses: `correlated` (#51) is overconfident and `7ce66f0d` levels wrong (#59). Order: #47, which needs the *API frozen* milestone closed or
-each open issue deferred in writing (#174 is the last open one); #41 needs a board.
+losses: `correlated` (#51) is overconfident and `7ce66f0d` levels wrong (#59). Order: #47, whose *API frozen* milestone has no open issue: #174 became bad vertical-accelerometer
+detection, internal and reported through `Diagnostics`, so it left the milestone (clipping, its first
+shape, is 22 samples on the corpus); #41 needs a board.
 #50 landed (#178): `StaticWindow::noise(&init)` reports the white noise a still window measured,
 per axis, as `WindowNoise`: a **floor** under `Config::imu` and a barometer's `R`, never applied,
 and asked of the window so a `Config` can be derived before any filter exists. The IMU densities
