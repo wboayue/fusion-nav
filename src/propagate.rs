@@ -644,8 +644,8 @@ pub(crate) fn project(
     // A horizon that is not a positive duration projects nothing rather than projecting
     // backwards. `Q` of (21) is linear in `dt`, so a negative one *subtracts* process noise
     // and lands variances below zero, which `Validity` reads as an estimate better than any
-    // the filter could have — the covariance is the only thing it consults. Nothing in the
-    // crate checks `Accuracy::horizon`, and this is the one place a bad one would be used.
+    // the filter could have — the covariance is the only thing it consults. `Config::validate`
+    // refuses a negative or NaN `Accuracy::horizon`; zero, which it allows, arrives here.
     let seconds = horizon.as_secs();
     if seconds.is_nan() || seconds <= 0.0 {
         return covariance;

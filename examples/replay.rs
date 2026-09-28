@@ -512,7 +512,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     write_header(&mut epoch_out)?;
     write_fusion_header(&mut fusion_out, config.gates)?;
 
-    let mut replay = Replay::new(config, policy, scoring);
+    let mut replay = Replay::new(config, policy, scoring)?;
     replay.course = course.or_else(|| sideslip_of(&text));
     if replay
         .course
@@ -1004,10 +1004,10 @@ struct Replay {
 }
 
 impl Replay {
-    fn new(config: Config, policy: RPolicy, scoring: Option<Scoring>) -> Self {
-        Self {
+    fn new(config: Config, policy: RPolicy, scoring: Option<Scoring>) -> Result<Self, ConfigError> {
+        Ok(Self {
             consistency: Consistency::new(config.gates),
-            filter: Eskf::new(config),
+            filter: Eskf::new(config)?,
             window: [Held::default(); WINDOW],
             filled: 0,
             still_since_start: true,
@@ -1045,7 +1045,7 @@ impl Replay {
             transitions: Vec::new(),
             scoring,
             policy,
-        }
+        })
     }
 
     fn row(&mut self, line: &str, out: &mut Sinks) -> Result<(), Box<dyn Error>> {
@@ -3216,7 +3216,7 @@ mod tests {
         policy: RPolicy,
         scoring: Option<Scoring>,
     ) -> Result<(Replay, String), String> {
-        let mut replay = Replay::new(config, policy, scoring);
+        let mut replay = Replay::new(config, policy, scoring).map_err(|e| e.to_string())?;
         assert!(
             replay
                 .filter
@@ -3681,8 +3681,8 @@ mod tests {
     #[test]
     fn a_source_named_by_without_is_never_offered() {
         let log = still_start().mag(2.0).mag(2.1);
-        let mut kept = Replay::new(Config::default(), RPolicy::Raw, None);
-        let mut dropped = Replay::new(Config::default(), RPolicy::Raw, None);
+        let mut kept = Replay::new(Config::default(), RPolicy::Raw, None).unwrap();
+        let mut dropped = Replay::new(Config::default(), RPolicy::Raw, None).unwrap();
         dropped.without = Some("mag".to_string());
         for replay in [&mut kept, &mut dropped] {
             let mut sinks = Sinks {
@@ -5206,7 +5206,7 @@ mod tests {
         // still do.
         let mut out = Vec::new();
         write_header(&mut out).expect("header");
-        let mut replay = Replay::new(Config::default(), RPolicy::Raw, None);
+        let mut replay = Replay::new(Config::default(), RPolicy::Raw, None).unwrap();
         let log = still_start().run(2.0, 1, DT, STILL);
         {
             let mut sinks = Sinks {

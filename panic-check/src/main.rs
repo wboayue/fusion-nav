@@ -44,10 +44,12 @@ fn drive() {
     if let Some(gate) = Gate::new(black_box(gates.baro_altitude.threshold())) {
         gates.baro_altitude = gate;
     }
-    let mut filter = Eskf::new(black_box(Config {
+    let Ok(mut filter) = Eskf::new(black_box(Config {
         gates,
         ..Config::default()
-    }));
+    })) else {
+        return;
+    };
     let dt = Seconds::from_secs(black_box(0.0025));
     // Every `Timestamp` conversion, since each one saturates or rounds a float into integers.
     let start = Timestamp::from_secs_f64(black_box(12.5));
@@ -341,6 +343,11 @@ fn surface(state: State, diagnostics: Diagnostics, covariance: &Covariance) {
     let _ = black_box(Propagation::Propagated.is_propagated());
     let _ = black_box(Alignment::Static.is_static());
 
+    show::<ConfigError>(ConfigError {
+        field: "baro_offset_walk",
+        bound: ConfigBound::NonNegative,
+    });
+    let _ = black_box(black_box(Config::default()).validate());
     show::<InitError>(InitError::InvalidInterval {
         interval: Seconds::from_secs(black_box(-0.5)),
     });

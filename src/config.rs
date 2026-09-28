@@ -941,6 +941,232 @@ impl Default for Config {
     }
 }
 
+impl Config {
+    /// Check every value the filter would otherwise take on trust; [`Eskf::new`] calls it.
+    ///
+    /// `Config` is plain data, built as `Config { field, ..Config::default() }`, so the bound
+    /// on each value is checked once where it enters the filter rather than by a type per
+    /// field. A value outside its bound is not a tuning the filter can honour: each one reads
+    /// as something else downstream, silently. A NaN [`Recovery`] timeout never compares true,
+    /// so that source's recovery is off; a zero one adopts on the first rejection, so its gate
+    /// is off. A NaN density in [`ImuNoise`], [`Coast`] or
+    /// [`baro_offset_walk`](Self::baro_offset_walk) enters `P` on the next step, and a NaN
+    /// [`Accuracy`] bound makes every quantity invalid for good. `None` is how an optional
+    /// value says off, so an infinite one is refused rather than taken as a second spelling of
+    /// it.
+    ///
+    /// [`Gates`] needs no check here: a [`Gate`] is valid by construction.
+    ///
+    /// [`Eskf::new`]: crate::Eskf::new
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        use ConfigBound::{NonNegative, Positive};
+        let (imu, init, accuracy) = (&self.imu, &self.init, &self.accuracy);
+        let (recovery, correlation) = (&self.recovery, &self.correlation);
+        let coast = self.coast;
+        let secs = |value: Option<Seconds>| value.map(Seconds::as_secs);
+        let checks: [(&'static str, Option<f32>, ConfigBound); 37] = [
+            ("imu.gyro_white", Some(imu.gyro_white), NonNegative),
+            ("imu.accel_white", Some(imu.accel_white), NonNegative),
+            ("imu.gyro_bias_walk", Some(imu.gyro_bias_walk), NonNegative),
+            (
+                "imu.accel_bias_walk",
+                Some(imu.accel_bias_walk),
+                NonNegative,
+            ),
+            (
+                "timeouts.dead_reckoning_after",
+                Some(self.timeouts.dead_reckoning_after.as_secs()),
+                Positive,
+            ),
+            (
+                "recovery.gnss_position",
+                secs(recovery.gnss_position),
+                Positive,
+            ),
+            ("recovery.gnss_height", secs(recovery.gnss_height), Positive),
+            (
+                "recovery.gnss_velocity",
+                secs(recovery.gnss_velocity),
+                Positive,
+            ),
+            (
+                "recovery.baro_altitude",
+                secs(recovery.baro_altitude),
+                Positive,
+            ),
+            ("recovery.mag_heading", secs(recovery.mag_heading), Positive),
+            (
+                "recovery.gnss_heading",
+                secs(recovery.gnss_heading),
+                Positive,
+            ),
+            ("recovery.course", secs(recovery.course), Positive),
+            (
+                "correlation.gnss_position",
+                secs(correlation.gnss_position),
+                Positive,
+            ),
+            (
+                "correlation.gnss_height",
+                secs(correlation.gnss_height),
+                Positive,
+            ),
+            (
+                "correlation.gnss_velocity",
+                secs(correlation.gnss_velocity),
+                Positive,
+            ),
+            (
+                "correlation.baro_altitude",
+                secs(correlation.baro_altitude),
+                Positive,
+            ),
+            (
+                "correlation.mag_heading",
+                secs(correlation.mag_heading),
+                Positive,
+            ),
+            (
+                "correlation.gnss_heading",
+                secs(correlation.gnss_heading),
+                Positive,
+            ),
+            ("correlation.course", secs(correlation.course), Positive),
+            (
+                "init.min_duration",
+                Some(init.min_duration.as_secs()),
+                NonNegative,
+            ),
+            (
+                "init.max_gyro_rate",
+                Some(init.max_gyro_rate.as_rad_per_s()),
+                NonNegative,
+            ),
+            (
+                "init.max_accel_deviation",
+                Some(init.max_accel_deviation.as_m_per_s2()),
+                NonNegative,
+            ),
+            (
+                "init.sigma_position",
+                Some(init.sigma_position.as_meters()),
+                Positive,
+            ),
+            (
+                "init.sigma_velocity",
+                Some(init.sigma_velocity.as_m_per_s()),
+                Positive,
+            ),
+            (
+                "init.sigma_tilt",
+                Some(init.sigma_tilt.as_radians()),
+                Positive,
+            ),
+            (
+                "init.sigma_yaw",
+                Some(init.sigma_yaw.as_radians()),
+                Positive,
+            ),
+            (
+                "init.sigma_accel_bias",
+                Some(init.sigma_accel_bias.as_m_per_s2()),
+                Positive,
+            ),
+            (
+                "init.sigma_gyro_bias",
+                Some(init.sigma_gyro_bias.as_rad_per_s()),
+                Positive,
+            ),
+            ("accuracy.tilt", Some(accuracy.tilt.as_radians()), Positive),
+            (
+                "accuracy.heading",
+                Some(accuracy.heading.as_radians()),
+                Positive,
+            ),
+            (
+                "accuracy.position",
+                Some(accuracy.position.as_meters()),
+                Positive,
+            ),
+            (
+                "accuracy.velocity",
+                Some(accuracy.velocity.as_m_per_s()),
+                Positive,
+            ),
+            (
+                "accuracy.horizon",
+                Some(accuracy.horizon.as_secs()),
+                NonNegative,
+            ),
+            (
+                "max_predict_dt",
+                Some(self.max_predict_dt.as_secs()),
+                Positive,
+            ),
+            (
+                "coast.acceleration",
+                coast.map(|c| c.acceleration),
+                NonNegative,
+            ),
+            ("coast.rotation", coast.map(|c| c.rotation), NonNegative),
+            ("baro_offset_walk", Some(self.baro_offset_walk), NonNegative),
+        ];
+        for (field, value, bound) in checks {
+            if let Some(value) = value
+                && !bound.holds(value)
+            {
+                return Err(ConfigError { field, bound });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Why [`Config::validate`] refused a configuration: the first field outside its bound.
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConfigError {
+    /// The field's path from [`Config`], as it is written in a struct literal:
+    /// `"recovery.gnss_height"`.
+    pub field: &'static str,
+    /// The bound it failed.
+    pub bound: ConfigBound,
+}
+
+/// The bound a [`Config`] value must meet. Both refuse NaN and ±∞.
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfigBound {
+    /// Greater than zero: a duration the filter waits for or divides by, a standard
+    /// deviation, or an accuracy bar.
+    Positive,
+    /// Zero or more: a noise density, where zero is a claim (no noise of that kind), not a
+    /// fault.
+    NonNegative,
+}
+
+impl ConfigBound {
+    fn holds(self, value: f32) -> bool {
+        value.is_finite()
+            && match self {
+                Self::Positive => value > 0.0,
+                Self::NonNegative => value >= 0.0,
+            }
+    }
+}
+
+impl core::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let bound = match self.bound {
+            ConfigBound::Positive => "finite and positive",
+            ConfigBound::NonNegative => "finite and not negative",
+        };
+        write!(f, "config {} must be {bound}", self.field)
+    }
+}
+
+impl core::error::Error for ConfigError {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1009,5 +1235,249 @@ mod tests {
             Gates::default().baro_altitude,
             Gate::<1>::at(Percentile::P999)
         );
+    }
+
+    /// Every field [`Config::validate`] checks, with a way to write a value into it and the
+    /// bound it must meet. Written out as the struct literal names them, so a path that
+    /// `validate` misspells is a failure here rather than a message nobody can act on.
+    #[allow(clippy::type_complexity)]
+    const FIELDS: [(&str, fn(&mut Config, f32), ConfigBound); 37] = {
+        use ConfigBound::{NonNegative, Positive};
+        [
+            ("imu.gyro_white", |c, v| c.imu.gyro_white = v, NonNegative),
+            ("imu.accel_white", |c, v| c.imu.accel_white = v, NonNegative),
+            (
+                "imu.gyro_bias_walk",
+                |c, v| c.imu.gyro_bias_walk = v,
+                NonNegative,
+            ),
+            (
+                "imu.accel_bias_walk",
+                |c, v| c.imu.accel_bias_walk = v,
+                NonNegative,
+            ),
+            (
+                "timeouts.dead_reckoning_after",
+                |c, v| c.timeouts.dead_reckoning_after = Seconds::from_secs(v),
+                Positive,
+            ),
+            (
+                "recovery.gnss_position",
+                |c, v| c.recovery.gnss_position = Some(Seconds::from_secs(v)),
+                Positive,
+            ),
+            (
+                "recovery.gnss_height",
+                |c, v| c.recovery.gnss_height = Some(Seconds::from_secs(v)),
+                Positive,
+            ),
+            (
+                "recovery.gnss_velocity",
+                |c, v| c.recovery.gnss_velocity = Some(Seconds::from_secs(v)),
+                Positive,
+            ),
+            (
+                "recovery.baro_altitude",
+                |c, v| c.recovery.baro_altitude = Some(Seconds::from_secs(v)),
+                Positive,
+            ),
+            (
+                "recovery.mag_heading",
+                |c, v| c.recovery.mag_heading = Some(Seconds::from_secs(v)),
+                Positive,
+            ),
+            (
+                "recovery.gnss_heading",
+                |c, v| c.recovery.gnss_heading = Some(Seconds::from_secs(v)),
+                Positive,
+            ),
+            (
+                "recovery.course",
+                |c, v| c.recovery.course = Some(Seconds::from_secs(v)),
+                Positive,
+            ),
+            (
+                "correlation.gnss_position",
+                |c, v| c.correlation.gnss_position = Some(Seconds::from_secs(v)),
+                Positive,
+            ),
+            (
+                "correlation.gnss_height",
+                |c, v| c.correlation.gnss_height = Some(Seconds::from_secs(v)),
+                Positive,
+            ),
+            (
+                "correlation.gnss_velocity",
+                |c, v| c.correlation.gnss_velocity = Some(Seconds::from_secs(v)),
+                Positive,
+            ),
+            (
+                "correlation.baro_altitude",
+                |c, v| c.correlation.baro_altitude = Some(Seconds::from_secs(v)),
+                Positive,
+            ),
+            (
+                "correlation.mag_heading",
+                |c, v| c.correlation.mag_heading = Some(Seconds::from_secs(v)),
+                Positive,
+            ),
+            (
+                "correlation.gnss_heading",
+                |c, v| c.correlation.gnss_heading = Some(Seconds::from_secs(v)),
+                Positive,
+            ),
+            (
+                "correlation.course",
+                |c, v| c.correlation.course = Some(Seconds::from_secs(v)),
+                Positive,
+            ),
+            (
+                "init.min_duration",
+                |c, v| c.init.min_duration = Seconds::from_secs(v),
+                NonNegative,
+            ),
+            (
+                "init.max_gyro_rate",
+                |c, v| c.init.max_gyro_rate = RadiansPerSecond::from_rad_per_s(v),
+                NonNegative,
+            ),
+            (
+                "init.max_accel_deviation",
+                |c, v| c.init.max_accel_deviation = MetersPerSecond2::from_m_per_s2(v),
+                NonNegative,
+            ),
+            (
+                "init.sigma_position",
+                |c, v| c.init.sigma_position = Meters::from_meters(v),
+                Positive,
+            ),
+            (
+                "init.sigma_velocity",
+                |c, v| c.init.sigma_velocity = MetersPerSecond::from_m_per_s(v),
+                Positive,
+            ),
+            (
+                "init.sigma_tilt",
+                |c, v| c.init.sigma_tilt = Radians::from_radians(v),
+                Positive,
+            ),
+            (
+                "init.sigma_yaw",
+                |c, v| c.init.sigma_yaw = Radians::from_radians(v),
+                Positive,
+            ),
+            (
+                "init.sigma_accel_bias",
+                |c, v| c.init.sigma_accel_bias = MetersPerSecond2::from_m_per_s2(v),
+                Positive,
+            ),
+            (
+                "init.sigma_gyro_bias",
+                |c, v| c.init.sigma_gyro_bias = RadiansPerSecond::from_rad_per_s(v),
+                Positive,
+            ),
+            (
+                "accuracy.tilt",
+                |c, v| c.accuracy.tilt = Radians::from_radians(v),
+                Positive,
+            ),
+            (
+                "accuracy.heading",
+                |c, v| c.accuracy.heading = Radians::from_radians(v),
+                Positive,
+            ),
+            (
+                "accuracy.position",
+                |c, v| c.accuracy.position = Meters::from_meters(v),
+                Positive,
+            ),
+            (
+                "accuracy.velocity",
+                |c, v| c.accuracy.velocity = MetersPerSecond::from_m_per_s(v),
+                Positive,
+            ),
+            (
+                "accuracy.horizon",
+                |c, v| c.accuracy.horizon = Seconds::from_secs(v),
+                NonNegative,
+            ),
+            (
+                "max_predict_dt",
+                |c, v| c.max_predict_dt = Seconds::from_secs(v),
+                Positive,
+            ),
+            (
+                "coast.acceleration",
+                |c, v| c.coast.get_or_insert_default().acceleration = v,
+                NonNegative,
+            ),
+            (
+                "coast.rotation",
+                |c, v| c.coast.get_or_insert_default().rotation = v,
+                NonNegative,
+            ),
+            (
+                "baro_offset_walk",
+                |c, v| c.baro_offset_walk = v,
+                NonNegative,
+            ),
+        ]
+    };
+
+    #[test]
+    fn the_defaults_and_every_switch_off_validate() {
+        assert_eq!(Config::default().validate(), Ok(()));
+        let off = Config {
+            recovery: Recovery::OFF,
+            correlation: Correlation::WHITE,
+            coast: None,
+            ..Config::default()
+        };
+        assert_eq!(off.validate(), Ok(()));
+    }
+
+    #[test]
+    fn each_field_outside_its_bound_is_refused_by_name() {
+        for (field, set, bound) in FIELDS {
+            let bad = [
+                f32::NAN,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                -1.0,
+                -f32::MIN_POSITIVE,
+                0.0,
+                -0.0,
+            ];
+            // Zero is a claim for a density, not a fault.
+            for value in bad
+                .into_iter()
+                .filter(|v| *v != 0.0 || bound == ConfigBound::Positive)
+            {
+                let mut config = Config::default();
+                set(&mut config, value);
+                assert_eq!(
+                    config.validate(),
+                    Err(ConfigError { field, bound }),
+                    "{field} = {value}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn each_field_inside_its_bound_is_accepted() {
+        // The smallest value each bound admits, and a large one: the bound is the check, not
+        // a range someone thought plausible.
+        for (field, set, bound) in FIELDS {
+            let least = match bound {
+                ConfigBound::Positive => f32::MIN_POSITIVE,
+                ConfigBound::NonNegative => 0.0,
+            };
+            for value in [least, 1.0e6] {
+                let mut config = Config::default();
+                set(&mut config, value);
+                assert_eq!(config.validate(), Ok(()), "{field} = {value}");
+            }
+        }
     }
 }

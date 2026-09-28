@@ -1,6 +1,6 @@
 //! The filter itself.
 
-use crate::config::{ALIGNED_HEADING, ALIGNED_TILT, Config, Gate, LATENCY_HORIZON};
+use crate::config::{ALIGNED_HEADING, ALIGNED_TILT, Config, ConfigError, Gate, LATENCY_HORIZON};
 use crate::frames::{Body, Ned};
 use crate::geodetic::{Geodetic, LocalOrigin};
 use crate::health::{Diagnostics, Fusion, GnssFusion, Propagation, SourceHealth, Status, Validity};
@@ -41,7 +41,7 @@ use nalgebra::Vector3;
 /// ```
 /// use fusion_nav::prelude::*;
 ///
-/// let mut filter = Eskf::new(Config::default());
+/// let mut filter = Eskf::default();
 ///
 /// // A vehicle sitting still: no rotation, gravity the only specific force, read by a
 /// // 400 Hz rate IMU whose clock counts microseconds.
@@ -181,10 +181,24 @@ struct Unestablished {
     heading: bool,
 }
 
+impl Default for Eskf {
+    /// A filter on [`Config::default`], which validates (a test holds it to that).
+    fn default() -> Self {
+        Self::with(Config::default())
+    }
+}
+
 impl Eskf {
-    /// Create an uninitialized filter. Measurements are refused with
-    /// [`Fusion::NotInitialized`] until [`initialize`](Self::initialize) succeeds.
-    pub fn new(config: Config) -> Self {
+    /// Create an uninitialized filter, or refuse a [`Config`] with a value outside its bound
+    /// ([`Config::validate`]). Measurements are refused with [`Fusion::NotInitialized`] until
+    /// [`initialize`](Self::initialize) succeeds.
+    pub fn new(config: Config) -> Result<Self, ConfigError> {
+        config.validate()?;
+        Ok(Self::with(config))
+    }
+
+    /// The filter [`new`](Self::new) returns, for a `config` already known to be valid.
+    fn with(config: Config) -> Self {
         Self {
             config,
             state: State::default(),
@@ -1884,7 +1898,7 @@ impl Eskf {
     ///
     /// ```
     /// use fusion_nav::prelude::*;
-    /// # let mut filter = Eskf::new(Config::default());
+    /// # let mut filter = Eskf::default();
     /// # let dt = Seconds::from_secs(0.0025);
     /// # let (level, gravity) = (AngularRate::zero(), Acceleration::body(0.0, 0.0, -GRAVITY));
     /// # let at = |i: u64| Timestamp::from_micros(2_500 * i);
@@ -2541,7 +2555,7 @@ mod tests {
     /// A window of exactly `Initialization::min_duration`: 8 samples at 4 Hz is 2 s.
     /// No barometer, so no reference is established.
     fn initialized() -> Eskf {
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         let alignment = filter
             .initialize_over(&[still(); 8], Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
@@ -2581,7 +2595,7 @@ mod tests {
 
     /// [`aided`] under another configuration.
     fn aided_with(config: Config) -> Eskf {
-        let mut filter = Eskf::new(config);
+        let mut filter = Eskf::new(config).unwrap();
         let _ = filter
             .initialize_over(&window_at(100.0), Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
@@ -2604,6 +2618,26 @@ mod tests {
     /// anything a filter that is propagating and fusing reaches is measured in `math.rs`'s
     /// `FLOOR` — a count here means the floor is masking a collapse rather than preventing
     /// one, and the `sigma_*` columns of `examples/replay.rs` say which state.
+    #[test]
+    fn a_config_outside_its_bounds_builds_no_filter() {
+        // A NaN timeout never compares true: built, this filter would never recover GNSS height.
+        let config = Config {
+            recovery: Recovery {
+                gnss_height: Some(Seconds::from_secs(f32::NAN)),
+                ..Recovery::default()
+            },
+            ..Config::default()
+        };
+        assert_eq!(
+            Eskf::new(config).err(),
+            Some(ConfigError {
+                field: "recovery.gnss_height",
+                bound: crate::config::ConfigBound::Positive,
+            })
+        );
+        assert_eq!(Eskf::default().config(), &Config::default());
+    }
+
     #[test]
     fn an_ordinary_run_never_reaches_the_floor() {
         let mut filter = aided();
@@ -2654,7 +2688,7 @@ mod tests {
     /// change a bar or a density and this says by how much the margin moved.
     #[test]
     fn an_unaided_start_holds_its_attitude_for_the_margin_the_defaults_buy() {
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         assert_eq!(
             filter.initialize_over(&window_with_mag(), Seconds::from_secs(0.25)),
             Ok(Alignment::Static)
@@ -2685,7 +2719,7 @@ mod tests {
 
     #[test]
     fn predict_before_initialize_is_refused() {
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         assert_eq!(
             filter.step(ImuSample::default(), DT),
             Propagation::NotInitialized
@@ -2740,7 +2774,7 @@ mod tests {
     /// (11)–(14) already had.
     #[test]
     fn an_overflowing_covariance_commits_neither_half() {
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         let seed = State {
             velocity: Velocity::ned(1.0, 2.0, 3.0),
             ..State::default()
@@ -3001,9 +3035,10 @@ mod tests {
 
     #[test]
     fn a_coast_discarded_as_non_finite_still_measures_the_gap() {
+        // Finite, so `Config::validate` passes it, and squared into `P` it overflows.
         let mut filter = flying(Config {
             coast: Some(Coast {
-                acceleration: f32::INFINITY,
+                acceleration: f32::MAX,
                 rotation: 0.1,
             }),
             ..Config::default()
@@ -3243,7 +3278,7 @@ mod tests {
             "a missing reference is a different problem from a bad number"
         );
 
-        let mut fresh = Eskf::new(Config::default());
+        let mut fresh = Eskf::default();
         assert_eq!(
             fresh.fuse_baro_altitude(
                 fresh.now(),
@@ -3400,7 +3435,8 @@ mod tests {
         let mut filter = Eskf::new(Config {
             baro_reference_from_estimate: false,
             ..Config::default()
-        });
+        })
+        .unwrap();
         let _ = filter
             .initialize_over(&[still(); 8], Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
@@ -3446,7 +3482,7 @@ mod tests {
 
     #[test]
     fn an_altitude_above_the_reference_pulls_the_estimate_up_and_moves_nothing_sideways() {
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         let _ = filter
             .initialize_over(&window_at(100.0), Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
@@ -3477,7 +3513,7 @@ mod tests {
 
     #[test]
     fn an_altitude_the_gate_turns_down_leaves_the_estimate_where_it_was() {
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         let _ = filter
             .initialize_over(&window_at(100.0), Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
@@ -3553,7 +3589,7 @@ mod tests {
         // alignment cannot answer this: a vehicle sitting on the ground with 0.8 s of
         // samples has an honest reference, and reading "coarse" as "moving" would have
         // cost it barometric aiding for the whole flight with nothing saying so.
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         let alignment = filter
             .initialize_over(&window_at(112.0), Seconds::from_secs(0.1))
             .expect("short, so coarse");
@@ -3589,7 +3625,7 @@ mod tests {
     #[test]
     fn an_old_fix_is_judged_against_where_the_vehicle_was() {
         let flying = || {
-            let mut filter = Eskf::new(Config::default());
+            let mut filter = Eskf::default();
             let state = State {
                 velocity: Velocity::ned(20.0, 0.0, 0.0),
                 ..State::default()
@@ -3632,7 +3668,7 @@ mod tests {
         let noise = PositionNoise::horizontal_vertical(0.5, 0.5);
         let before = Seconds::from_secs(0.05);
 
-        let mut seeded = Eskf::new(Config::default());
+        let mut seeded = Eskf::default();
         let (state, covariance) = seed();
         let start = Timestamp::from_micros(1_000_000);
         let _ = seeded
@@ -3659,7 +3695,7 @@ mod tests {
     /// the first had already narrowed: 1.33 against 0.12, where this reads 0.08.
     #[test]
     fn a_correction_reaches_the_history_the_next_old_fix_is_judged_against() {
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         let _ = filter
             .seed(State::default(), Covariance::from_sigmas([2.0; STATES]))
             .expect("a sane seed");
@@ -3685,7 +3721,7 @@ mod tests {
     /// on the velocity rather than taken as current.
     #[test]
     fn a_fix_ahead_of_the_state_is_judged_against_where_the_vehicle_will_be() {
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         let state = State {
             velocity: Velocity::ned(20.0, 0.0, 0.0),
             ..State::default()
@@ -3731,7 +3767,7 @@ mod tests {
         ] {
             sigmas[axis.index()] = 0.001;
         }
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         let _ = filter
             .seed(State::default(), Covariance::from_sigmas(sigmas))
             .expect("a sane seed");
@@ -3777,7 +3813,7 @@ mod tests {
 
     #[test]
     fn a_seed_becomes_the_state_and_the_covariance() {
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         let (state, covariance) = seed();
         let _ = filter.seed(state, covariance).expect("a sane seed");
         assert!(filter.is_initialized());
@@ -3788,7 +3824,7 @@ mod tests {
 
     #[test]
     fn a_seed_takes_its_baro_reference_from_the_first_altitude() {
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         let (state, covariance) = seed();
         let _ = filter.seed(state, covariance).expect("a sane seed");
         assert_eq!(filter.baro_reference(), None);
@@ -3828,7 +3864,7 @@ mod tests {
 
     #[test]
     fn a_window_at_rest_measures_its_own_reference_variance() {
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         let window = window_at(100.0);
         let _ = filter
             .initialize_over(&window, Seconds::from_secs(0.25))
@@ -4105,7 +4141,7 @@ mod tests {
             position: Position::ned(f32::NAN, 0.0, 0.0),
             ..state
         };
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         assert_eq!(filter.seed(poisoned, covariance), Err(InitError::NotFinite));
         assert!(!filter.is_initialized(), "a refused seed leaves no state");
 
@@ -4139,7 +4175,7 @@ mod tests {
         // ever corrects it, and `validity`'s `variance <= sigma^2` calls it good on the
         // first read.
         let (state, _) = seed();
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         assert_eq!(
             filter.seed(state, Covariance::zero()),
             Err(InitError::InvalidVariance)
@@ -4168,7 +4204,7 @@ mod tests {
         let mut matrix = *covariance.as_matrix();
         matrix[(ErrorState::GyroBiasZ.index(), ErrorState::GyroBiasZ.index())] = 1e-30;
 
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         assert_eq!(
             filter.seed(state, Covariance::from_matrix(matrix)),
             Err(InitError::InvalidVariance)
@@ -4217,7 +4253,7 @@ mod tests {
 
     #[test]
     fn with_no_window_at_all_one_sample_still_starts_the_filter() {
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         let alignment = filter
             .initialize_coarse(still().imu)
             .expect("a finite sample");
@@ -4228,7 +4264,7 @@ mod tests {
 
     #[test]
     fn a_coarse_start_reports_aligning_once_horizontal_aiding_arrives() {
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         let _ = filter
             .initialize_over(&window_at(100.0), Seconds::from_secs(0.1))
             .expect("short, not unusable");
@@ -4266,7 +4302,7 @@ mod tests {
     #[test]
     fn a_coarse_window_still_starts_the_filter_with_its_tilt_widened() {
         // Classification itself is tested in `init`; this is what the filter does with it.
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         let alignment = filter
             .initialize_over(&[still(); 8], Seconds::from_secs(0.1))
             .expect("a short window is a coarse start, not a refusal");
@@ -4300,7 +4336,7 @@ mod tests {
     fn a_static_window_commits_the_attitude_it_levelled() {
         // Equations (5)–(7) are `init`'s to test; this is that the filter starts at the
         // attitude they computed rather than level.
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         assert_eq!(
             filter
                 .initialize_over(&window_tilted(0.25, -0.1), Seconds::from_secs(0.25))
@@ -4321,7 +4357,7 @@ mod tests {
         // The wiring no test in `init` can see. A level vehicle reading a field with no
         // east component is pointing at magnetic north, so its true heading is the
         // declination and nothing else.
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         assert!(filter.set_magnetic_declination(Radians::from_radians(-0.06)));
         let _ = filter
             .initialize_over(&window_with_mag(), Seconds::from_secs(0.25))
@@ -4333,7 +4369,7 @@ mod tests {
 
     /// [`seed`] at `attitude`, with gyroscope bias `bias`.
     fn seeded(attitude: Attitude, bias: AngularRate<Body>) -> Eskf {
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         let (state, covariance) = seed();
         let state = State {
             attitude,
@@ -4417,7 +4453,7 @@ mod tests {
     fn a_declination_change_moves_the_next_heading_innovation_by_exactly_itself() {
         // Established heading, so both headings fuse rather than adopt, from the same state:
         // the declination is the only difference between the two filters.
-        let mut charted = Eskf::new(Config::default());
+        let mut charted = Eskf::default();
         let _ = charted
             .initialize_over(&window_with_mag(), Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
@@ -4466,7 +4502,7 @@ mod tests {
             sample.imu = sample.imu.with_gyro(offset);
         }
 
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         assert_eq!(
             filter
                 .initialize_over(&window, Seconds::from_secs(0.25))
@@ -4491,7 +4527,7 @@ mod tests {
 
     #[test]
     fn one_sample_is_levelled_like_a_window_of_one() {
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         let _ = filter
             .initialize_coarse(still().imu.with_accel(gravity_at(0.0, 0.35, 0.0)))
             .expect("a finite sample");
@@ -4507,7 +4543,7 @@ mod tests {
     /// never reaches the filter, because the window refuses it as it is pushed.
     #[test]
     fn an_empty_window_leaves_the_filter_uninitialized() {
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         let empty = StaticWindow::new();
         assert_eq!(filter.alignment_of(&empty), Err(InitError::NoSamples));
         assert_eq!(filter.initialize(&empty), Err(InitError::NoSamples));
@@ -4516,7 +4552,7 @@ mod tests {
 
     /// A filter that started while moving: it knows neither where it is nor how fast.
     fn coarse() -> Eskf {
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         let mut window = turning(0.0, 0.4, 0.0);
         // No magnetometer, so heading stays a prior whatever the covariance says.
         for sample in &mut window {
@@ -4774,7 +4810,7 @@ mod tests {
     #[test]
     fn a_seed_is_trusted_and_is_never_overwritten_by_a_fix() {
         let (state, covariance) = seed();
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         let _ = filter.seed(state, covariance).expect("a sane seed");
         let outcome = filter.fuse_gnss_velocity(
             filter.now(),
@@ -4803,7 +4839,7 @@ mod tests {
             mag: Some(MagField::body(0.22, 0.0, 0.44)),
             ..sample
         });
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         assert_eq!(
             filter.initialize_over(&window, Seconds::from_secs(0.25)),
             Ok(Alignment::Static)
@@ -4853,7 +4889,7 @@ mod tests {
 
     #[test]
     fn a_static_start_is_valid_in_every_part() {
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         let alignment = filter
             .initialize_over(&window_with_mag(), Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
@@ -5144,7 +5180,7 @@ mod tests {
 
     #[test]
     fn a_magnetometer_in_the_window_establishes_heading_at_once() {
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         let _ = filter
             .initialize_over(&window_with_mag(), Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
@@ -5157,7 +5193,7 @@ mod tests {
         // of yaw — half as much again as `Accuracy::heading`, so the start is worth no
         // heading at all. The first field is adopted rather than fused: a prior nothing
         // measured is replaced, not averaged with.
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         let alignment = filter
             .initialize_over(&turning(0.0, 0.4, 0.0), Seconds::from_secs(0.25))
             .expect("moving, not unusable");
@@ -5202,7 +5238,7 @@ mod tests {
     fn a_still_short_window_calls_its_heading_valid_at_once() {
         // #85. The same field, the same stillness, and the only thing wrong with the
         // window is its length.
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         let alignment = filter
             .initialize_over(&window_with_mag(), Seconds::from_secs(0.1))
             .expect("short, so coarse");
@@ -5222,7 +5258,7 @@ mod tests {
         // The other half of #85, on the same evidence: a vehicle that held still was
         // where the origin says and was not moving, so there is an estimate for the first
         // fix to be gated against rather than adopted over.
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         let _ = filter
             .initialize_over(&window_with_mag(), Seconds::from_secs(0.1))
             .expect("short, so coarse");
@@ -5243,7 +5279,7 @@ mod tests {
 
     #[test]
     fn an_uninitialized_filter_claims_nothing() {
-        let filter = Eskf::new(Config::default());
+        let filter = Eskf::default();
         assert_eq!(filter.validity(), Validity::NONE);
         assert_eq!(filter.predicted_validity(), Validity::NONE);
     }
@@ -5329,7 +5365,7 @@ mod tests {
 
     #[test]
     fn a_vehicle_with_only_a_barometer_has_height_and_nothing_horizontal() {
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         // Moving, so that nothing but the barometer has established anything: a window
         // taken at rest establishes its own position, short or not. A moving one
         // establishes no barometric reference either, so the application names it.
@@ -5376,7 +5412,7 @@ mod tests {
                 },
                 ..Config::default()
             };
-            let mut filter = Eskf::new(config);
+            let mut filter = Eskf::new(config).unwrap();
             let _ = filter
                 .initialize_over(&window_with_mag(), Seconds::from_secs(0.25))
                 .expect("a 2 s window of stillness");
@@ -5402,7 +5438,7 @@ mod tests {
         };
 
         // With nothing being accepted, the two do agree: there is no aiding to widen by.
-        let mut quiet = Eskf::new(zero_horizon);
+        let mut quiet = Eskf::new(zero_horizon).unwrap();
         let _ = quiet
             .initialize_over(&window_with_mag(), Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
@@ -5413,7 +5449,7 @@ mod tests {
         // With a source being accepted they do not, however short the horizon. A heading at
         // σ 0.6 rad is wider than `Accuracy::heading` (0.5236), so it establishes yaw without
         // making it good: invalid now, and predicted valid because the magnetometer is there.
-        let mut aided = Eskf::new(zero_horizon);
+        let mut aided = Eskf::new(zero_horizon).unwrap();
         let _ = aided
             .initialize_over(&moving_window_at(100.0), Seconds::from_secs(0.25))
             .expect("moving, not unusable");
@@ -5473,7 +5509,7 @@ mod tests {
     #[cfg(feature = "magnetic-model")]
     #[test]
     fn a_static_start_learns_its_declination_at_the_first_fix_and_turns_its_heading() {
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         let _ = filter
             .initialize_over(&window_with_mag(), Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
@@ -5511,7 +5547,7 @@ mod tests {
     #[cfg(feature = "magnetic-model")]
     #[test]
     fn a_declination_the_caller_set_is_never_replaced_by_the_model() {
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         assert!(filter.set_magnetic_declination(Radians::from_radians(0.1)));
         let _ = filter
             .initialize_over(&window_with_mag(), Seconds::from_secs(0.25))
@@ -5548,7 +5584,7 @@ mod tests {
     fn a_true_heading_fused_over_a_magnetic_one_stops_the_turn() {
         // Heading levelled from the window's magnetometer, then a dual-antenna heading
         // accepted over it: the estimate is no longer the magnetometer's alone.
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         let _ = filter
             .initialize_over(&window_with_mag(), Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
@@ -5570,7 +5606,7 @@ mod tests {
     #[test]
     fn a_seed_vouches_for_its_heading_and_a_new_origin_rereads_the_site() {
         let (state, covariance) = seed();
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         let _ = filter.seed(state, covariance).expect("a sane seed");
         let yaw = yaw_of(&filter);
         assert!(filter.set_origin(east_of_moscow()));
@@ -5592,7 +5628,7 @@ mod tests {
     #[cfg(not(feature = "magnetic-model"))]
     #[test]
     fn without_the_model_declination_is_the_callers_alone() {
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         let _ = filter
             .initialize_over(&window_with_mag(), Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
@@ -5698,7 +5734,7 @@ mod tests {
         // A magnetometer-levelled heading turned 13.8° by the first fix: the arm has to be
         // read after the turn, or the origin sits 0.24 m from where the estimate puts the
         // antenna.
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         let _ = filter
             .initialize_over(&window_with_mag(), Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
@@ -6028,7 +6064,7 @@ mod tests {
     fn an_origin_placed_after_moving_accounts_for_the_move() {
         let (mut state, covariance) = seed();
         state.position = Position::ned(40.0, -15.0, -3.0);
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         let _ = filter.seed(state, covariance).expect("a sane seed");
         let _ = filter.fuse_gnss_geodetic(
             filter.now(),
@@ -6188,7 +6224,8 @@ mod tests {
                 ..Accuracy::default()
             },
             ..Config::default()
-        });
+        })
+        .unwrap();
         assert_eq!(
             filter.initialize_over(&window_with_mag(), Seconds::from_secs(0.25)),
             Ok(Alignment::Static)
@@ -6205,7 +6242,7 @@ mod tests {
     #[test]
     fn a_confident_seed_is_aligned_and_a_vague_one_is_not() {
         let (state, _) = seed();
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
 
         let _ = filter
             .seed(state, Covariance::from_sigmas([0.001; STATES]))
@@ -6222,7 +6259,7 @@ mod tests {
     /// points up, so the body diagonal of the attitude block is heading, one tilt and the
     /// other tilt, in that order.
     fn on_its_tail() -> Eskf {
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         let alignment = filter
             .initialize_over(
                 &window_tilted(0.0, core::f32::consts::FRAC_PI_2),
@@ -6250,7 +6287,7 @@ mod tests {
         let theta = ErrorState::AttitudeX.index();
         p.fixed_view_mut::<3, 3>(theta, theta).copy_from(&block);
 
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         let _ = filter
             .seed(
                 State {
@@ -6426,7 +6463,8 @@ mod tests {
         let mut filter = Eskf::new(Config {
             baro_reference_from_estimate: false,
             ..Config::default()
-        });
+        })
+        .unwrap();
         let _ = filter
             .initialize_over(&[still(); 8], Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
@@ -6482,7 +6520,8 @@ mod tests {
         let mut filter = Eskf::new(Config {
             recovery: Recovery::OFF,
             ..Config::default()
-        });
+        })
+        .unwrap();
         let _ = filter
             .initialize_over(&[still(); 8], Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
@@ -6930,7 +6969,7 @@ mod tests {
             mag: Some(MagField::body(0.22, 0.0, 0.44)),
             ..sample
         });
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         assert_eq!(
             filter.initialize_over(&window, Seconds::from_secs(0.25)),
             Ok(Alignment::Static)
@@ -7062,7 +7101,7 @@ mod tests {
     fn a_forward_axis_near_vertical_refuses_both_gnss_heading_and_course() {
         // A tailsitter hovering: body x 25° from the sky, moving at 15 m/s with its velocity
         // held, so nothing but the geometry refuses the course.
-        let mut filter = Eskf::new(Config::default());
+        let mut filter = Eskf::default();
         let state = State {
             attitude: attitude_of(0.0, 1.134, 0.0),
             velocity: Velocity::ned(15.0, 0.0, 0.0),

@@ -72,7 +72,7 @@ use fusion_nav::prelude::*;
 # let (lat_e7, lon_e7, height_mm, h_acc_mm, v_acc_mm) = (473_977_420, 85_455_940, 488_000, 1_500, 3_000);
 # let arrived = Timestamp::from_micros(12_500_000);
 
-let mut filter = Eskf::new(Config::default());
+let mut filter = Eskf::default();
 // Where the GNSS antenna sits relative to the IMU, forward, right, down in metres: the fix
 // is the antenna's, and the filter refers it to the IMU with its own attitude and rate.
 let antenna = Position::body(0.05, 0.0, -0.12);
@@ -287,7 +287,7 @@ a wrong one costs.
 use fusion_nav::prelude::*;
 use nalgebra::UnitQuaternion;
 
-let mut filter = Eskf::new(Config::default());
+let mut filter = Eskf::default();
 
 // What a companion AHRS published: 2.9° nose up, heading 63°.
 let q = UnitQuaternion::from_euler_angles(0.0, 0.05, 1.1);
@@ -549,10 +549,17 @@ let config = Config {
     },
     ..Config::default()
 };
-# let _ = config;
+let filter = Eskf::new(config)?;
+# let _ = filter;
 let everything_off = Config { recovery: Recovery::OFF, ..Config::default() };
 # let _ = everything_off;
+# Ok::<(), ConfigError>(())
 ```
+
+`Eskf::new` checks every value in a `Config` against its bound and returns a `ConfigError` naming
+the first field outside it (`Config::validate` is the same check on its own). A NaN timeout would
+otherwise never expire, switching that source's recovery off without a word, and a zero one would
+adopt on the first rejection, switching its gate off. `None` is how a timeout says off.
 
 `reset_position_to(fix, noise)` and `reset_velocity_to(fix, noise)` are that application's
 tools. Both return `false`, changing nothing, for a fix or a noise a `fuse_*` would have refused:

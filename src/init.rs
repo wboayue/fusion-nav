@@ -106,7 +106,7 @@ impl StaticSample {
 /// #     imu: ImuSample::from_rates(Timestamp::from_micros(2_500 * i), AngularRate::zero(), gravity, dt),
 /// #     ..StaticSample::default()
 /// # };
-/// let mut filter = Eskf::new(Config::default());
+/// let mut filter = Eskf::default();
 /// let init = filter.config().init;
 /// let mut window = StaticWindow::new();
 /// let mut i = 0;
