@@ -128,6 +128,13 @@ the difference is the kind that costs a day.
   friends. They look odd because the noise is continuous-time: variance accumulates linearly with
   time, so the σ over an interval `Δt` is the density times `√Δt`. Doubling the sample rate does
   not double the drift.
+* **Noise floor**, **window noise** — the white noise a still initialization window measured on
+  each sensor, as `StaticWindow::noise` reports it (`WindowNoise`), by
+  [equation (8″)](EQUATIONS.md#what-a-still-window-measures-of-its-sensors): a lower bound on `Q`
+  and `R`, since a vehicle on the ground is quieter than in flight, with no airflow and vibration
+  only from motors at idle. Not the **floor** of
+  [equation (42′)](EQUATIONS.md#numerical-conditioning), which bounds a variance in `P` from below
+  to keep it a covariance.
 * **Kalman gain**, `K` — how much of a measurement's disagreement to believe, set by the ratio of
   the filter's uncertainty to the total. Confident filter, ignored measurement; uncertain filter,
   adopted measurement.

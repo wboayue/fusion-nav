@@ -951,6 +951,8 @@ struct Replay {
     /// from: a window taken at rest, or the first altitude read against the estimate once
     /// position was established. The filter reports only that it holds one.
     alpha0_from_window: bool,
+    /// What `StaticWindow::noise` made of the window the filter initialized on.
+    noise: Option<WindowNoise>,
     /// When `Eskf::is_aligned` first read true, in log time.
     ///
     /// The filter's own latch rather than `Validity::attitude`: the two read different bars
@@ -1030,6 +1032,7 @@ impl Replay {
             alignment: None,
             mag_at_init: false,
             alpha0_from_window: false,
+            noise: None,
             aligned_at: None,
             attitude_lost: None,
             heading_at_init: false,
@@ -1275,6 +1278,7 @@ impl Replay {
         self.window_samples = range.len();
         let window = self.window(range.clone(), dt)?;
         let alignment = self.filter.initialize(&window)?;
+        self.noise = window.noise(&self.filter.config().init);
         self.alignment = Some(alignment);
         self.initialized_at = Some(t);
         // The filter's own rule: one magnetometer sample anywhere in the window observes
@@ -1531,6 +1535,27 @@ impl Replay {
             .zip(self.filter.diagnostics().sources())
             .map(|(name, (_, health))| format!(" rejected_{name}={}", health.rejected))
             .collect()
+    }
+
+    /// What the static window measured, `StaticWindow::noise` of the window the filter started
+    /// on: `noise_gyro=` and `noise_accel=` the worst axis's white-noise density, rad s⁻¹/√Hz
+    /// and m s⁻²/√Hz, and `noise_baro=` the barometer readings' σ in metres.
+    ///
+    /// Floors, not the noise to configure (`WindowNoise`), and pinned to say how far below
+    /// `ImuNoise::default()` each airframe's still sensors sit. The simulator's scenarios
+    /// check the other way: `data/scenarios.txt` bounds them about the densities the
+    /// simulator injected. `none` for a window that moved or held too few readings, the
+    /// `alpha0=none` convention. Fixed decimals, for `data/expect.sh`.
+    fn noise_keys(&self) -> String {
+        let noise = self.noise.as_ref();
+        format!(
+            "noise_gyro={} noise_accel={} noise_baro={}",
+            noise.map_or("none".into(), |n| format!("{:.7}", n.worst_gyro_white())),
+            noise.map_or("none".into(), |n| format!("{:.6}", n.worst_accel_white())),
+            noise
+                .and_then(|n| n.baro)
+                .map_or("none".into(), |b| format!("{:.4}", b.variance().sqrt())),
+        )
     }
 
     /// The innovation-consistency keys of #5, as ` key=value` pairs.
@@ -1956,7 +1981,7 @@ impl Replay {
             "summary rate={:.0} window={} {} align={} an={} alpha0={} heading={} \
              roll0={roll0:.2} pitch0={pitch0:.2} yaw0={yaw0:.2} declination={:.2} declination_model={} antenna={} resets={} \
              recovered={} aligned_at={} attitude_lost={} r_policy={} course={} without={} rejected={}{} discarded={} coasted={} refused={} \
-             invalid={} floored={} epochs={}{} \
+             invalid={} floored={} epochs={}{} {} \
              transitions={} status={:?}",
             self.interval.map_or(0.0, |interval| 1.0 / interval),
             self.window_samples,
@@ -2070,6 +2095,7 @@ impl Replay {
             // and nothing about whether the `R` it was judging against is the size the
             // residuals say it is. See `consistency_keys`.
             self.consistency_keys(),
+            self.noise_keys(),
             self.transitions.len(),
             state.status,
         )

@@ -132,12 +132,12 @@ compare_pairs() {
 #
 # The inverse of compare_pairs: expectations for a `summary` line, by the rule the header of
 # data/manifest.txt states, so a new entry's forty-odd pairs are derived rather than typed.
-# Exact for every key, except the measured statistics -- the four consistency families and
-# what the vehicle did -- which get a range: the value plus or minus the larger of 1 % and one
-# unit in its last printed place, rounded outward to that place. A zero or a word stays
-# exact, and a mean innovation inside a thousandth is pinned to +/-0.001, since what it
-# claims is the absence of an offset. `epochs=` is left out: it counts rows, so it would
-# pin the converter's output rather than the filter's.
+# Exact for every key, except the measured statistics -- the four consistency families, what
+# the vehicle did and what its static window measured -- which get a range: the value plus or
+# minus the larger of 1 % and one unit in its last printed place, rounded outward to that
+# place. A zero or a word stays exact, and a mean innovation inside a thousandth is pinned to
+# +/-0.001, since what it claims is the absence of an offset. `epochs=` is left out: it counts
+# rows, so it would pin the converter's output rather than the filter's.
 #
 # `--decimal` bands every number printed with a decimal point, for a line whose writer prints
 # statistics that way and counts without one: `data/fetch.sh --compare` passes it for the
@@ -168,7 +168,7 @@ pin_pairs() {
         }
         BEGIN {
             number = "^-?[0-9]+([.][0-9]+)?$"
-            statistic = "^(nis_|nu_|acf1_)|^(extent|speed_max|tilt_max)$"
+            statistic = "^(nis_|nu_|acf1_|noise_)|^(extent|speed_max|tilt_max)$"
             n = split(line, words, " ")
             out = ""
             for (i = 1; i <= n; i++) {
@@ -315,6 +315,9 @@ self_test() {
     p 'exact keys, whole names' 'summary yaw0=-107.33 attitude_lost=3.84 extent_max=5.0 status=Healthy' \
         'yaw0=-107.33 attitude_lost=3.84 extent_max=5.0 status=Healthy'
     p 'what the vehicle did'    'summary extent=112.6 tilt_max=41.1' 'extent=111.4..113.8 tilt_max=40.6..41.6'
+    # What the static window measured is a statistic of the log too, and `none` stays exact.
+    p 'what the window measured' 'summary noise_gyro=0.0005314 noise_baro=none' \
+        'noise_gyro=0.0005260..0.0005368 noise_baro=none'
     p 'epochs is not pinned'    'summary rate=250 epochs=16079 status=Healthy' 'rate=250 status=Healthy'
     # `--decimal` bands what prints a decimal point and leaves a count exact, and only on
     # its own call: without it `pos_n_rms` is a word to pin.

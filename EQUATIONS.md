@@ -326,6 +326,35 @@ observed the window, where its field has no horizontal part, or where the bound 
 more spread than a circle holds. The dip $`\delta`$ is read off the same averaged field (6) takes
 its heading from, and is the rate at which a tilt error turns that heading.
 
+### What a still window measures of its sensors
+
+A window at rest also measures each sensor's white noise, which the filter reports and never
+applies: a floor under $`Q`$ and $`R_m`$, since a vehicle on the ground is quieter than one in
+the air. A white-noise density $`N`$ on a rate gives an increment of variance $`N^2 T`$ over any
+interval $`T`$, so the rates of samples $`\Delta t`$ apart scatter by $`N/\sqrt{\Delta t}`$, and
+(21) adds $`N^2 \Delta t`$ per step. The window sums each IMU's increments into blocks $`B_j`$ of
+length $`T_j \approx T`$ and weights each squared deviation by $`1/T_j`$, which makes blocks of
+unequal length count alike:
+
+**(8″)**
+
+```math
+\hat N^2 = \frac{1}{J - 1}\left( \sum_j \frac{B_j^2}{T_j} - \frac{\bigl(\sum_j B_j\bigr)^2}{\sum_j T_j} \right)
+```
+
+per axis, over $`J`$ closed blocks. With $`B_j = c\,T_j + e_j`$ for a constant rate $`c`$ (a
+bias, gravity, the Earth's rotation) and $`\operatorname{Var} e_j = N^2 T_j`$, the first sum's
+expectation is $`c^2 \sum T + J N^2`$ and the second's $`c^2 \sum T + N^2`$, so $`\hat N^2`$ is
+unbiased and $`c`$ cancels. For blocks of one sample it is $`N = s\sqrt{\Delta t}`$, with $`s`$
+the rates' standard deviation.
+
+Blocks of $`T = 50`$ ms rather than single samples, because a still airframe's samples are not
+white: vibration aliased near the sample rate cancels within a block, and filtered noise
+accumulates across it, where one sample's scatter would read the first as noise and miss the
+second. `WindowNoise::BLOCK` carries the corpus figures. The barometer's floor is the plain
+sample variance of its distinct readings, the scatter (30) already takes for $`\alpha_0`$ before
+dividing by their count.
+
 ## Nominal state propagation
 
 The IMU supplies **increments**: a rotation $`\Delta\theta_m`$ integrated over $`\Delta t_\theta`$
@@ -1245,8 +1274,9 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | (1)–(4) | state definitions | `state.rs` | `State`, `ErrorState` |
 | (5)–(8) | static initialization | `init.rs` | `StaticWindow::push` and `measured`, `level_from_accel`, `heading_from_mag`, `nominal_state`, `classify`, `attitude_sigmas`, `initial_covariance`, with `state.rs`'s `AttitudeVariance::in_body` and `Covariance::set_attitude_accel_bias_block` |
 | (8′) | what a coarse window supports | `init.rs` | `coarse_sigmas`, `window_drift`, `heading_sensitivity` — `tan δ` shared with (36′) |
+| (8″) | white noise a still window measures | `init.rs` | `Density`, `BaroReadings::noise`; reported by `StaticWindow::noise` as `WindowNoise` |
 | (5′) `ā_n` | in-motion levelling | `init.rs` | `Velocities::inertial_acceleration`; the correction itself is unbuilt — #59 |
-| (30) `α₀` | barometric reference and its variance | `init.rs` | `Scatter::reference`, through `StaticWindow::baro_reference` |
+| (30) `α₀` | barometric reference and its variance | `init.rs` | `BaroReadings::reference`, through `StaticWindow::alpha0` |
 | (9)–(11) | bias correction, gravity | `propagate.rs` | `ImuSample`, `corrected_imu` |
 | (12)–(15) | nominal propagation | `propagate.rs` | `propagate_nominal` |
 | (16)–(19) | error dynamics | `propagate.rs` | carried as the derivation on `transition_matrix`; (20) is what the filter computes |

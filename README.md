@@ -236,6 +236,9 @@ so it costs under a kilobyte at any IMU rate; a slice of buffered samples conver
 without touching the filter, for an application that would rather wait for stillness than start
 coarsely. A window only grows, so one that moved is started over, and `window.is_at_rest(&init)`
 says after every sample whether it has; `try_extend` folds in any iterator of samples.
+`window.noise(&init)` reports the white noise a still window measured on each sensor, a floor
+under what `Config::imu` and a barometer's `R` should be, never a replacement for them; it asks
+for no filter and changes nothing unless the application writes it into a `Config`.
 
 A **seed** is checked where a window is not, because it crosses a boundary the filter does not
 control — another estimator, or storage that may be stale. `initialize_from` returns

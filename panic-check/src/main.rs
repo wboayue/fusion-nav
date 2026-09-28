@@ -141,6 +141,8 @@ fn drive() {
     let _ = black_box(streamed.try_extend(black_box(window)));
     let _ = black_box(StaticWindow::try_from(black_box(&window[..])));
     let _ = black_box(filter.alignment_of(black_box(&streamed)));
+    let noise = black_box(streamed.noise(black_box(&Initialization::default())));
+    let _ = black_box(noise.map(|n| (n.worst_gyro_white(), n.worst_accel_white())));
     let _ = black_box(filter.initialize(black_box(&streamed)));
     let _ = black_box(filter.initialize_coarse(black_box(sample.imu)));
     let _ = black_box(filter.initialize_from(

@@ -129,6 +129,17 @@ impl Default for ImuNoise {
     /// estimators put under a receiver's reported accuracy (#105), and vibration, which PX4
     /// meets only by inflating accelerometer noise on clipping (`covariance.cpp:125-133`). A
     /// change that models either is the moment to measure this again.
+    ///
+    /// What the sensors themselves measure, still, is the floor
+    /// [`StaticWindow::noise`](crate::StaticWindow::noise) reports, and on the corpus it sits far below
+    /// these figures: on the worst axis of the nine real logs whose window is still, less
+    /// `a299e722`, whose rows each average 2.5 ms while standing for 20 ms and so read `√8` high
+    /// (#177), gyroscopes read 8.4e-5 to 1.6e-3 rad s⁻¹/√Hz and accelerometers 1.5e-3 to
+    /// 5.6e-2 m s⁻²/√Hz, so the default is 9 to 180 times the one and 6 to 230 times the
+    /// other. That is the factor this comment argues for, measured from below; a default
+    /// under the floor would be the error. Against PX4's own densities, a tenth of these, the
+    /// floor comes within reach: `2c42096b`'s accelerometer, a grounded airframe with its
+    /// props spinning, reads 1.6 times PX4's, and `f16771dd`'s gyroscope 1.1 times.
     fn default() -> Self {
         Self {
             gyro_white: 1.5e-2,
