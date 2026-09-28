@@ -2191,28 +2191,50 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_halves_are_within_an_eighth_of_the_window_of_equal_at_every_length() {
+        // Sample `i` reads `i`, so a first half of `k` samples averages `(k − 1) / 2`: the
+        // count comes back out of the mean. Blocks left unequal by a merge would let the
+        // first half grow past the bound `BLOCKS` sets.
+        for n in 2..=300u32 {
+            let forces: std::vec::Vec<f64> = (0..n).map(f64::from).collect();
+            let halves = halves_of(&forces).expect("two halves");
+            let first = 2.0 * halves.force[0].vector().x + 1.0;
+            let n = n as f32;
+            assert!(
+                first >= 3.0 * n / 8.0 - 0.5 && first <= 5.0 * n / 8.0 + 0.5,
+                "a first half of {first} samples in {n}"
+            );
+        }
+    }
+
+    #[test]
     fn a_window_of_one_has_no_halves() {
         assert_eq!(halves_of(&[1.0]), None);
     }
 
     #[test]
     fn a_refused_sample_leaves_the_window_as_it_was() {
-        let good = spaced(&[still(); 3], DT);
+        let good = spaced(&[still(); 4], DT);
         let mut window = StaticWindow::new();
         assert_eq!(window.push(good[0]), Ok(()));
+        assert_eq!(window.push(good[1]), Ok(()));
+        // Refused for being earlier, and the clock stays where it was: a sample between the
+        // refused time and the last accepted is still behind the window.
+        assert!(matches!(
+            window.push(good[0]),
+            Err(InitError::InvalidStep { .. })
+        ));
+        assert!(matches!(
+            window.push(good[1]),
+            Err(InitError::InvalidStep { .. })
+        ));
         let mut poisoned = good[1];
         poisoned.imu = poisoned
             .imu
             .with_accel(Acceleration::body(f32::NAN, 0.0, 0.0));
         assert_eq!(window.push(poisoned), Err(InitError::NotFinite));
-        // Refused for its time, and the next sample's step is still read from the last
-        // one accepted.
-        assert!(matches!(
-            window.push(good[0]),
-            Err(InitError::InvalidStep { .. })
-        ));
-        assert_eq!(window.push(good[1]), Ok(()));
         assert_eq!(window.push(good[2]), Ok(()));
+        assert_eq!(window.push(good[3]), Ok(()));
         assert_eq!(window.measured(), measure(&good));
     }
 
