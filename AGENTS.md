@@ -102,6 +102,18 @@ and fusing the barometer's as `R` took `nis_baro` to 1.54 to 34.56 on five of si
 `data/scenarios.txt` about the simulator's injected densities, the one two-sided truth bound
 there. `a299e722`'s rows average 2.5 ms while standing for 20 ms, so its figures read about √8
 high and are left out of the quoted ranges until #177 carries the converter's integral intervals.
+#60 landed (#180): UrbanNav Medium-Urban-1 is the gate benchmark, the one source with hostile GNSS
+*and* truth. It states no licence, so `data/urbannav.txt` is its own manifest
+(`data/fetch.sh --manifest`), nothing drawn from it is committed, and the pages publish scalars.
+`tools/urbannav2replay.py` reads the IMU CSV, each u-blox `$PUBX,00` and SPAN-CPT text, no rosbag.
+The harness judges each GNSS fix against truth (`Judged`: the gate's own test at P999 on the row's
+`R`, fixed whatever the run's gates, policy or `--recovery`), and the `score` line carries
+`bad_`, `rejected_bad_`, `rejected_good_`, `accepted_far_`, `adopted_bad_`,
+`recovered_after_{bad,lockout}_` and `unjudged_` per half; truth may leave bias columns blank and
+be sparser than the IMU. The F9P rejects none of its 654 good fixes. The M8T, 200–470 m out while
+claiming 5–25 m, captures the filter: 32 of 338 bad fixes rejected, 59 good ones, 258 m RMS,
+heading lost; 12 of 16 position recoveries end lockouts, and `--recovery off` is 61 km. No gate
+percentile helps, so P999 and recovery-on stand; the persistent-error failure is on #10, unowned.
 #81, #125, #25 and #62 landed together (#170), the sensor boundary. The edge converts both ways
 (`flu_to_enu`, `to_enu`, `to_flu`). The filter reads PX4's WMM table (`src/magnetic.rs`, the
 `magnetic-model` feature, 2.5 KB) where it places its origin unless the caller set a declination,
