@@ -114,6 +114,20 @@ be sparser than the IMU. The F9P rejects none of its 654 good fixes. The M8T, 20
 claiming 5–25 m, captures the filter: 32 of 338 bad fixes rejected, 59 good ones, 258 m RMS,
 heading lost; 12 of 16 position recoveries end lockouts, and `--recovery off` is 61 km. No gate
 percentile helps, so P999 and recovery-on stand; the persistent-error failure is #181.
+#9 landed (#182): INSANE is the accuracy benchmark on a real UAV for position, height and
+velocity, **not attitude**. `data/insane.txt` is its own manifest (BSD-2 with a no-Sell
+condition and a citation requirement), three sequences, scalars published. The dataset's truth
+pipeline fits attitude to the RTK baseline *and the PX4 magnetometer the filter fuses*: yaw truth
+is the dual-RTK baseline, so `fuse_gnss_heading` cannot be scored there. At rest the truth tilts
+gravity 5–17° from vertical, and its timeline lags the IMU by 80–170 ms, which
+`tools/insane2replay.py` measures per sequence and removes. It fuses the PX4 receiver,
+barometer and magnetometer (on its logged axes: the calibration's extrinsic made heading
+worse), no GNSS velocity (horizontal only, no accuracy). The finding is (24′)'s: `nees_pos`
+0.47 / 0.35 / 0.44, where fused white reads 39.2 / 11.6 / 16.1, at 0.05–0.37 m of horizontal
+RMS over the fixes' own error. That comparison is hand-computed until #184 makes it a key.
+`tools/replay_format.py` is the one replay/truth writer for all three converters,
+`tools/rotations.py` their geometry, and `data/truth-runs.sh` the runner `urbannav.sh` and
+`insane.sh` share.
 #81, #125, #25 and #62 landed together (#170), the sensor boundary. The edge converts both ways
 (`flu_to_enu`, `to_enu`, `to_flu`). The filter reads PX4's WMM table (`src/magnetic.rs`, the
 `magnetic-model` feature, 2.5 KB) where it places its origin unless the caller set a declination,
@@ -503,6 +517,9 @@ data/fetch.sh --compare [--pin]   # every log beside EKF2, raw and px4, against 
 data/fetch.sh --manifest data/urbannav.txt   # UrbanNav's segment into data/urbannav; no licence, never commit
 data/urbannav.sh [--pin]          # both receivers against truth, raw and px4 (M8T also recovery off)
 uv run tools/urbannav2replay.py --self-test   # the UrbanNav converter's fixtures (stdlib)
+data/fetch.sh --manifest data/insane.txt     # INSANE's three sequences into data/insane; never commit
+data/insane.sh [--pin]            # each sequence against truth, raw, --declination model
+uv run tools/insane2replay.py --self-test     # the INSANE converter's fixtures (stdlib)
 uv run tools/ulog2replay.py log.ulg --screen   # what a candidate could cover; data/README.md
 uv run tools/ulog2replay.py log.ulg -o log.csv [--reference]   # ULog -> replay CSV
 uv run tools/replay_report.py in.csv out.csv [truth.csv] \
@@ -607,16 +624,16 @@ comparison against EKF2 (`data/ekf2.txt`) runs under both.
 Renaming or removing a key breaks every
 entry at once.
 
-**Two corpora, two licences, two manifests.** The PX4 logs are CC BY 4.0 and could be redistributed;
+**One manifest per licence.** The PX4 logs are CC BY 4.0 and could be redistributed;
 they are fetched rather than committed for size, not for terms. INSANE is BSD-2 with a
-non-commercial rider, so it cannot be bundled into an MIT crate at all and needs its own manifest
-rather than riding the default fetch (GOALS.md, Validation). UrbanNav states no licence at all,
+condition forbidding sale of what derives from it, so it cannot be bundled into an MIT crate at
+all: `data/insane.txt`, fetched only when named (GOALS.md, Validation). UrbanNav states no licence at all,
 which is stricter still: `data/urbannav.txt`, fetched only when named, and only scalars
 published. Adding a data source means saying which behavior it uniquely covers **and** under
 what licence — and for a restricted one, that measured scalars are publishable while converted
 CSVs and plots stay out of the repository.
 
-**A third corpus is generated rather than fetched.** `examples/simulate.rs` writes seeded flights
+**One corpus is generated rather than fetched.** `examples/simulate.rs` writes seeded flights
 with analytic truth, so it needs no licence, no manifest and no network — and it is the only
 source that can say how *accurate* the filter is rather than how self-consistent. The same rule
 still applies: a scenario exists because it covers something no other one does, and it says so in
@@ -853,9 +870,17 @@ state a scenario's parameters in prose, never a result.
 the log's. That check exists because the obvious guard does not work: an epoch counter that fails
 to match truth rows catches nothing when a 50 Hz log lands on every fourth row of 200 Hz truth, so
 the wrong file scored cleanly and published a figure with nothing tying it to what produced it.
-Any later source that pairs two generated files — INSANE (#9), UrbanNav (#60) — needs the same
-kind of check, and a file carrying no marker is taken on trust because there is nothing in it to
-check.
+UrbanNav's and INSANE's converters write the same kind of marker, a `source` digest of their
+inputs, and any later source that pairs two generated files needs one too; a file carrying no
+marker is taken on trust because there is nothing in it to check.
+
+**A dataset's truth is a pipeline: read it before choosing what to score.** INSANE's paper
+promises sub-degree attitude; its `gps_mag_orientation.m` builds that attitude partly from the
+magnetometer the filter fuses, and at rest it tilts gravity 17° off vertical. Its sync step left
+the truth 80–170 ms behind the IMU. Neither shows in a score line, which reads a coarse or late
+truth as filter error; both showed in a check that could fail, truth rotation over one second
+against the integrated gyroscope, and truth against the accelerometer at rest. Run those before
+the first score, and state what the truth cannot judge.
 
 ## How defaults get decided
 
