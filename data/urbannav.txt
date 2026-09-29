@@ -1,0 +1,19 @@
+# UrbanNav-HK-Medium-Urban-1 (PolyU IPNL, https://github.com/IPNL-POLYU/UrbanNavDataset),
+# the gate benchmark of #60: urban-canyon GNSS with SPAN-CPT truth.
+#
+# terms: UrbanNav states no licence (no LICENSE file; the README's "License" heading holds
+# terms: contact addresses only, at b9d4b9c0). Nothing is granted, so these files are
+# terms: fetched for local measurement and never committed or redistributed, converted
+# terms: or not. Only measured scalars are published. Ask PolyU IPNL for terms before
+# terms: any other use.
+#
+# Fetched into data/urbannav by `data/fetch.sh --manifest data/urbannav.txt`, and replayed
+# by data/urbannav.sh. Lines are <sha256>  <name>  <url>, as in data/manifest.txt.
+#
+# The IMU as the dataset publishes it for non-ROS users: `rostopic echo -p` of /imu/data,
+# an Xsens MTi-10 at 400 Hz, header stamps UTC.
+6a3e0ab0209e032296dc750a491e27a4919473c875c5ec8f2dcd1bd3d796537d  xsense_imu_medium_urban1.csv  https://www.dropbox.com/s/2rh1rs15ihpf63u/xsense_imu_medium_urban1.csv?dl=1
+# Every receiver's RINEX and NMEA; the converter reads the u-blox NMEA out of the zip.
+b265d9983533b2c038ba2ec46c90a4c078bef5119fef128e6b843af3a1bc5fe2  gnss_medium_urban1.zip  https://www.dropbox.com/sh/2haoy68xekg95zl/AAAkcN4FwhFxkPY1lXsxbJrxa?dl=1
+# SPAN-CPT post-processed in Inertial Explorer, 1 Hz, with its own standard deviations.
+f6ea85e34a3e52ec31cd521e6f9c12fbddde63458c81405eadf61c25ca3f9366  UrbanNav_TST_GT_raw_with_std.txt  https://www.dropbox.com/scl/fi/1ziscmnuq6gq6u0vg0tcw/UrbanNav_TST_GT_raw_with_std.txt?rlkey=5b8tnhlrhdmx467ft9glgdqni&dl=1

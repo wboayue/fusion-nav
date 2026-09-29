@@ -1,3 +1,5 @@
 # Fetched logs are large and their redistribution terms are usually unstated.
 # No trailing slash: see the note on .venv in the root .gitignore.
 logs
+# UrbanNav states no licence, so nothing of it is committed (GOALS.md, Secondary sources).
+urbannav

@@ -11,6 +11,8 @@
 #                                    assert data/ekf2.txt (or print its lines to commit)
 #   data/fetch.sh --list             show the manifest
 #   data/fetch.sh --venv             create .venv with the pyulog version the converter pins
+#   data/fetch.sh --manifest FILE [--fetch|--verify|--list]
+#                                    the same for another manifest, into data/<FILE's stem>
 #
 # Logs are large and their redistribution terms are usually unstated, so they are
 # fetched rather than committed. The manifest pins a sha256 per file so a corpus is
@@ -20,6 +22,12 @@
 # data/flight.csv is not managed here. It is small, checked in so that
 # `cargo run --example replay` works with no network, and generated rather than downloaded:
 # `cargo run --example simulate -- flight data` rewrites it and its truth file.
+#
+# A second manifest is a second licence (AGENTS.md, "two corpora, two licences, two
+# manifests"): data/urbannav.txt is fetched only when named, into its own directory, and its
+# `# terms:` lines are printed before anything is downloaded. Only fetching, verifying and
+# listing take it; replaying one is its own script's (data/urbannav.sh), since what is
+# converted from which files is particular to the dataset.
 #
 # --check is a local tool, not a CI job. It needs pyulog, and putting the converter in
 # the test path is exactly what GOALS.md's harness constraint rules out: CI replays the
@@ -31,6 +39,13 @@ set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 manifest="$root/data/manifest.txt"
 dest="$root/data/logs"
+if [ "${1:-}" = "--manifest" ]; then
+    [ -n "${2:-}" ] || { echo "fetch: usage: data/fetch.sh --manifest FILE [COMMAND]" >&2; exit 1; }
+    manifest=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")
+    name=$(basename "$manifest" .txt)
+    [ "$name" = manifest ] || dest="$root/data/$name"
+    shift 2
+fi
 # The converter needs pyulog, which CI never installs (GOALS.md, "Harness constraint").
 # `--venv` puts it in .venv, which is gitignored and picked up here without an activated
 # shell; PYTHON= overrides for any other interpreter that has it.
@@ -251,10 +266,18 @@ require_pinned_pyulog() {
 }
 
 cmd=${1:---fetch}
+if [ "$dest" != "$root/data/logs" ]; then
+    case "$cmd" in
+        --fetch|--verify|--list) ;;
+        *) die "$cmd reads data/manifest.txt only; $(basename "$manifest") is fetched, verified and listed here" ;;
+    esac
+fi
 case "$cmd" in
 --fetch)
     [ -f "$manifest" ] || die "no manifest at $manifest"
-    echo "fetching into data/logs"
+    # Stated at the point of download, before anything is fetched under them.
+    sed -n 's/^# terms: \{0,1\}//p' "$manifest"
+    echo "fetching into ${dest#"$root"/}"
     failed=0
     each_entry fetch_one || failed=1
     [ "$failed" = 0 ] || die "one or more entries failed"
