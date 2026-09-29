@@ -113,7 +113,7 @@ The harness judges each GNSS fix against truth (`Judged`: the gate's own test at
 be sparser than the IMU. The F9P rejects none of its 654 good fixes. The M8T, 200–470 m out while
 claiming 5–25 m, captures the filter: 32 of 338 bad fixes rejected, 59 good ones, 258 m RMS,
 heading lost; 12 of 16 position recoveries end lockouts, and `--recovery off` is 61 km. No gate
-percentile helps, so P999 and recovery-on stand; the persistent-error failure is on #10, unowned.
+percentile helps, so P999 and recovery-on stand; the persistent-error failure is #181.
 #81, #125, #25 and #62 landed together (#170), the sensor boundary. The edge converts both ways
 (`flu_to_enu`, `to_enu`, `to_flu`). The filter reads PX4's WMM table (`src/magnetic.rs`, the
 `magnetic-model` feature, 2.5 KB) where it places its origin unless the caller set a declination,
