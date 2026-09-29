@@ -593,19 +593,29 @@ impl Eskf {
         self.origin = Some(origin);
     }
 
+    /// What [`learn_declination`](Self::learn_declination) would do at `site`, committing
+    /// nothing: the model's declination there, and the turn about navigation down it gives a
+    /// heading referred to north through the declination alone (zero for any other). `None`
+    /// where there is nothing to learn: a declination the caller set, or no model.
+    fn declination_at(&self, site: Geodetic) -> Option<(Radians, f32)> {
+        if self.declination_set {
+            return None;
+        }
+        let declination = model_declination(site)?;
+        let change = wrap_pi(declination.as_radians() - self.declination.as_radians());
+        let turns = self.initialized && self.magnetic_north;
+        Some((declination, if turns { change } else { 0.0 }))
+    }
+
     /// The declination half of [`place_origin`](Self::place_origin), at `site`: for (44),
     /// which has to turn the heading before it reads the attitude it places the origin with.
     fn learn_declination(&mut self, site: Geodetic) {
-        if self.declination_set {
-            return;
-        }
-        let Some(declination) = model_declination(site) else {
+        let Some((declination, turn)) = self.declination_at(site) else {
             return;
         };
-        let change = wrap_pi(declination.as_radians() - self.declination.as_radians());
         self.declination = declination;
-        if self.initialized && self.magnetic_north && change != 0.0 {
-            let mut turned = exp_quat(Vector3::z() * change) * self.state.attitude.body_to_ned();
+        if turn != 0.0 {
+            let mut turned = exp_quat(Vector3::z() * turn) * self.state.attitude.body_to_ned();
             turned.renormalize();
             self.commit_state(State {
                 attitude: Attitude::from_body_to_ned(turned),
@@ -1298,13 +1308,16 @@ impl Eskf {
         // Equation (44): the origin under the estimate when the fix was taken, and the fix's
         // error as the position's. The estimate of the antenna's position, which is what the
         // fix measures, (28′), with the heading the site's declination turns it to first: read
-        // before, a 1 m arm under a 13.8° turn misplaces the origin by 0.24 m.
-        self.learn_declination(fix);
+        // before, a 1 m arm under a 13.8° turn misplaces the origin by 0.24 m. The turn is
+        // committed only once the origin is found, so a fix refused here changes nothing.
+        let turn = self.declination_at(fix).map_or(0.0, |(_, turn)| turn);
         let (past, _) = self.past(time);
-        let antenna_then = past.position.vector() + past.attitude.body_to_ned() * antenna.vector();
+        let attitude_then = exp_quat(Vector3::z() * turn) * past.attitude.body_to_ned();
+        let antenna_then = past.position.vector() + attitude_then * antenna.vector();
         let Some(origin) = LocalOrigin::placing(fix, Position::from_vector(antenna_then)) else {
             return self.refuse_gnss(Fusion::NoReference);
         };
+        self.learn_declination(fix);
         self.origin = Some(origin);
         let placed = self.reset_position_to(self.state.position, noise);
         debug_assert!(
@@ -2676,6 +2689,32 @@ mod tests {
         );
         assert_eq!(filter.initialize_coarse(imu), Err(InitError::NotFinite));
         assert!(!filter.is_initialized());
+    }
+
+    #[cfg(feature = "magnetic-model")]
+    #[test]
+    fn a_geodetic_fix_with_no_origin_under_it_turns_no_heading() {
+        // A magnetometer-set heading is turned by the declination the first origin reads, so
+        // a fix whose origin cannot be placed must not have turned it on the way to refusal.
+        let mut filter = Eskf::default();
+        let _ = filter
+            .initialize_over(&window_with_mag(), Seconds::from_secs(0.25))
+            .expect("a still window");
+        // Three metres out, so (44) must place an origin that puts a fix 3.4e38 m up three
+        // metres away, which no `f64` resolves.
+        let noise = PositionNoise::horizontal_vertical(1.0, 1.0);
+        assert!(filter.reset_position_to(Position::ned(3.0, 0.0, 0.0), noise));
+        let (attitude, declination) = (filter.state().attitude, filter.magnetic_declination());
+        let outcome = filter.fuse_gnss_geodetic(
+            filter.now(),
+            Geodetic::from_degrees(56.0, 44.0, 3.4e38),
+            PositionNoise::horizontal_vertical(1.0, 1.0),
+            Position::zero(),
+        );
+        assert_eq!(outcome.horizontal, Fusion::NoReference);
+        assert_eq!(filter.state().attitude, attitude);
+        assert_eq!(filter.magnetic_declination(), declination);
+        assert_eq!(filter.origin(), None);
     }
 
     #[test]
