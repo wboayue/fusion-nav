@@ -22,23 +22,25 @@ receiver, the one a flight controller fuses. Yaw truth is the baseline's, and th
 magnetometer sets only the truth's rotation about the baseline, one tilt axis.
 
 **Attitude truth is coarser than the filter.** Over one-second windows, the truth's own
-rotation differs from the integrated gyroscope by a median 1.5 to 1.6 deg on these three
+rotation differs from the integrated gyroscope by a median 1.4 to 1.6 deg on these three
 sequences (at the lag below), where the gyroscope is good to about 0.1 deg over a second.
 And its tilt is off outright: at rest, the truth rotates the accelerometer's gravity 17 deg
-from vertical on `outdoor_1` and 6 deg on the desert sequences, in the dataset's own frames.
-That is the axis the magnetometer sets, under a declination the Klagenfurt calibration
-has the wrong sign of (below). So the attitude keys are written, since a truth file
-carries them, and are neither pinned nor published (data/insane.sh).
+from vertical on `outdoor_1` and 5 to 6 deg on the desert sequences, in the dataset's own
+frames. That is the axis the magnetometer sets. So the attitude keys are written, since a
+truth file carries them, and are neither pinned nor published (data/insane.sh).
 
 **Its timeline lags the PX4 IMU's**, despite the dataset's own synchronization: that
 one-second rotation mismatch is least with the truth moved 80 to 170 ms earlier
-(`outdoor_1` 3.92 deg RMS at 0, 3.01 at -170 ms; `mars_19` 4.41 and 2.91), and the
-specific-force magnitude from RTK2's Doppler velocity agrees, -120 to -400 ms with a
-shallower minimum. Uncorrected, 170 ms is 1.2 m of position at `outdoor_1`'s 6.9 m/s. So each sequence's lag is
-measured here, the same fit the dataset used and against the same gyroscope, and the truth
-is moved by it; a sweep whose best lag sits on its edge is refused rather than applied.
-`mars_3`, `mars_4` and `mars_14` have no minimum at all (12 to 14 deg RMS at every lag),
-which is why they are not in the manifest.
+(`outdoor_1` 3.92 deg RMS at 0, 3.01 at -170 ms; `mars_19` 4.41 and 2.91; `mars_1` 3.93
+and 3.01 at -80, the weakest, its median moving only 1.49 to 1.41). The dataset's own
+`time_info.yaml` corroborates two of the three: `t_mag_gps - t_pximu_imugt`, the
+magnetometer's offset from the IMU the truth attitude was built on, is 196, 7 and 166 ms.
+Uncorrected, 170 ms is 1.2 m of position at `outdoor_1`'s 6.9 m/s. So each sequence's lag
+is measured here, the same fit the dataset used and against the same gyroscope, and the
+truth is moved by it; a sweep whose best lag sits on its edge is refused rather than
+applied. `mars_3`, `mars_4` and `mars_14` are left out: their mismatch is 12 to 16 deg RMS at
+every lag, carried by windows where the truth fails outright (medians 1.8 to 2.6 deg), so a
+handful of failures would set their lag.
 
 What each stream is, and what this does to it:
 
@@ -46,24 +48,30 @@ What each stream is, and what this does to it:
   +9.78 m/s^2 on z at rest, and the gyroscope's z has the sign of the truth's yaw rate.
   The replay's are forward, right, down, so (x, y, z) becomes (x, -y, -z).
 * **GNSS**, `px4_gps.csv`: the dataset's own east, north, up about its reference, the
-  frame the truth is on (within 4.4 cm of `geodesy.geodetic_to_ned`), with the receiver's
-  own variances, and both moved to the first RTK2 fix, where the vehicle starts: a static
-  start puts the filter at zero, and the desert's reference is a kilometre away. Its velocity is not written: it is horizontal only, `v_z` reads 0 on every
-  row, and it carries no accuracy. Dated `EKF2_GPS_DELAY`'s default before logging, since
-  no parameter came with it and the data cannot pin one: against corrected truth, with each
-  sequence's mean bias removed, `outdoor_1` is 2.05 m RMS at 0 ms and 1.87 at 350 ms, and
-  `mars_19` is flat.
+  frame the truth is on (within 5 cm of `geodesy.geodetic_to_ned`), with the receiver's own
+  variances. Fixes and truth are both moved to the first RTK2 fix, 0.6 m from where the IMU
+  starts: a static start puts the filter at zero, and the desert's reference is a kilometre
+  away. Its velocity is not written: it is horizontal only, `v_z` reads 0 on every row, and
+  it carries no accuracy. Dated `EKF2_GPS_DELAY`'s default before logging, since no
+  parameter came with it. Against corrected truth, with each sequence's mean bias removed,
+  `outdoor_1` is 2.05 m RMS at 0 ms and 1.87 at 350 ms, and `mars_19` is flat; but 350 ms
+  is past the 320 ms (23') keeps (at 380 every fix is discarded), and at 300 ms `pos_h`
+  moves 4.304 to 4.299 m, so the default stands.
 * **Barometer**, pressure turned into height by PX4's own `getAltitudeFromPressure`.
 * **Magnetometer**, the raw PX4 field the truth was built from (its intrinsic correction is
-  commented out there), rotated onto the IMU by `R_pxmag_pximu`, in gauss. No declination
-  line is written: the calibrations' `mag_var.dec` reads 3.4 deg west at Klagenfurt under
-  the truth script's own `sph2cart(pi/2 + dec)`, where the filter's table reads 4.6 deg
-  east. data/insane.sh replays under `--declination model`, that table, and the mean
-  heading innovation it leaves is under 0.01 rad on all three sequences.
-* **Truth**, at RTK2's epochs: the pose interpolated from the 80 Hz truth, and velocity from
-  RTK2's Doppler moved to the IMU, `v - R (w x r)` with `r` its `p_pximu_rtk2` and `w` the
-  gyroscope. So the lever-arm term, ~0.2 m/s RMS, is the only place an input reaches the
-  truth's value, at the gyroscope bias times 0.62 m. No bias is known.
+  commented out there), in gauss, on the IMU's axes as it comes: `R_pxmag_pximu` is not
+  applied. Against the baseline's yaw, the filter's mean heading error is -8.8, +5.9 and
+  +7.5 deg with that rotation (its transpose, as the truth script applies it), -6.1, -2.4
+  and -2.6 without; the desert's is a 13.9 deg rotation. `px4_mag` is plausibly PX4's own
+  body-frame field already, which the extrinsic would rotate twice. No declination line is
+  written: the calibrations' `mag_var.dec` reads 3.4 deg west at Klagenfurt under the truth
+  script's own `sph2cart(pi/2 + dec)`, where the filter's table reads 4.6 deg east, so
+  data/insane.sh replays under `--declination model`, that table.
+* **Truth**, at RTK2's epochs: the pose interpolated from the 80 Hz truth, and velocity the
+  mean of the two receivers' Doppler, which is the vehicle centre's (the baseline's
+  midpoint) and needs no attitude, moved to the IMU through `imu_velocity`'s 6 cm arm. The
+  constructed velocity agrees with the differentiated truth position to a median 4 to 8
+  cm/s. No bias is known.
 
 The PX4 receiver's antenna offset is not in INSANE's calibration, so fixes are taken at the
 IMU and no antenna line is written.
@@ -71,14 +79,14 @@ IMU and no antenna line is written.
 The three sequences, each covering what the others do not (the screen of all twenty GNSS
 sequences is in #9):
 
-* `outdoor_1`, the Klagenfurt model airfield, the only other site: 52 s still, 24 m climb, a
-  receiver 8 m high on average, and a barometer that drifts about 4 m from truth, start to
-  end, which is the case for (30')'s estimated offset.
-* `mars_1`, Negev desert: the receiver that claims most (sigma 0.77 m horizontally) and is
-  1.86 m RMS out, a mean normalized squared error of 3.9.
-* `mars_19`, the longest (371 s), hovering within 6 m: slow drift and bias observability,
-  and logging dropouts (596 IMU intervals over two and a half periods) that flicker
-  `Degraded`.
+* `outdoor_1`, the Klagenfurt model airfield, the only other site: 52 s still, a 24 m climb,
+  a receiver 8 m high on average, and a barometer that departs from truth by up to 2.8 m
+  during the climb and returns (5 s means; 0.35 m start to end).
+* `mars_1`, Negev desert: the receiver claiming the smallest error (sigma 0.77 m
+  horizontally) and 1.86 m RMS out, a mean normalized squared error of 3.9.
+* `mars_19`, the longest log (371 s, 280 s of it with truth), hovering within 6 m: a
+  barometer drifting 1.8 m from truth start to end (5 s means), and logging dropouts (596
+  IMU intervals over two and a half periods) that flicker `Degraded`.
 """
 
 from __future__ import annotations
@@ -93,12 +101,13 @@ from pathlib import Path
 
 from geodesy import geodetic_to_ned
 from gnss_noise import gnss_noise_note
-from replay_format import euler, rotate, source_tag, write_replay, write_truth
+from replay_format import source_tag, write_replay, write_truth
+from rotations import (angle_between, cross, euler, matmul, quaternion_matrix, rotate,
+                       rotation_vector_matrix, transpose)
 
 CALIBRATION = "insane_sensor_calib_preprocessed.zip"
 
-# Which magnetometer calibration a sequence was flown under: Klagenfurt's or the desert's.
-SEQUENCES = {"outdoor_1": "klu", "mars_1": "mars", "mars_19": "mars"}
+SEQUENCES = ("outdoor_1", "mars_1", "mars_19")
 
 # PX4's EKF2_GPS_DELAY default at c4e4ef98 (`src/modules/ekf2/params_gnss.yaml`), in ns.
 GNSS_DELAY_NS = 110_000_000
@@ -146,47 +155,6 @@ def yaml_numbers(text, key):
     if not match:
         raise ConversionError(f"calibration has no {key}")
     return [float(x) for x in re.findall(r"-?\d+\.?\d*(?:e-?\d+)?", match.group(1))]
-
-
-def matmul(a, b):
-    return tuple(tuple(sum(a[i][k] * b[k][j] for k in range(3)) for j in range(3))
-                 for i in range(3))
-
-
-def transpose(a):
-    return tuple(tuple(a[j][i] for j in range(3)) for i in range(3))
-
-
-def cross(a, b):
-    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
-
-
-def quaternion_matrix(w, x, y, z):
-    """Hamilton, scalar first, normalized: the rotation it applies to a vector."""
-    n = math.sqrt(w * w + x * x + y * y + z * z)
-    w, x, y, z = w / n, x / n, y / n, z / n
-    return ((1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)),
-            (2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)),
-            (2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)))
-
-
-def rotation_vector_matrix(v):
-    """exp([v]x), Rodrigues."""
-    angle = math.sqrt(sum(c * c for c in v))
-    if angle < 1e-12:
-        return ((1, 0, 0), (0, 1, 0), (0, 0, 1))
-    k = tuple(c / angle for c in v)
-    s, c = math.sin(angle), 1 - math.cos(angle)
-    kx = ((0, -k[2], k[1]), (k[2], 0, -k[0]), (-k[1], k[0], 0))
-    kx2 = matmul(kx, kx)
-    return tuple(tuple((i == j) + s * kx[i][j] + c * kx2[i][j] for j in range(3))
-                 for i in range(3))
-
-
-def angle_between(a, b):
-    """The angle of the rotation taking `a` onto `b`, in radians."""
-    r = matmul(transpose(a), b)
-    return math.acos(max(-1.0, min(1.0, (r[0][0] + r[1][1] + r[2][2] - 1) / 2)))
 
 
 def pressure_altitude(pa):
@@ -303,13 +271,8 @@ def convert(directory, sequence, out, truth_out):
     prefix = f"{sequence}_sensors"
     with zipfile.ZipFile(calibration_path) as archive:
         sensors = archive.read("insane_sensor_calib_preprocessed/sensor_calibration.yaml")
-        mag = archive.read(f"insane_sensor_calib_preprocessed/"
-                           f"mag_calibration_{SEQUENCES[sequence]}.yaml")
     # From the vehicle centre, the baseline's midpoint, to the IMU (`R_vc_pximu` is identity).
     arm = tuple(yaml_numbers(sensors.decode(), "p_vc_pximu"))
-    m = yaml_numbers(mag.decode(), "R_pxmag_pximu")
-    imu_in_mag = (tuple(m[0:3]), tuple(m[3:6]), tuple(m[6:9]))
-    mag_to_frd = matmul(FLU_TO_FRD, transpose(imu_in_mag))
 
     with zipfile.ZipFile(zip_path) as archive:
         lat0, lon0, h0 = site_reference(archive, sequence)
@@ -322,8 +285,9 @@ def convert(directory, sequence, out, truth_out):
         rtk2 = read_csv(archive, f"{prefix}/ground_truth/rtk_gps2_data_revised.csv")
 
     lag, mismatch, at_zero = truth_lag(imu, truth)
-    # The replay's origin is where the vehicle starts, the first RTK2 fix, since a static
-    # start puts the filter at zero: the desert's reference is a kilometre from its flights.
+    # The replay's origin is the first RTK2 fix, within a metre of where the IMU starts,
+    # since a static start puts the filter at zero: the desert's reference is a kilometre
+    # from its flights.
     origin = rtk2[0][1:4]
     shift = geodetic_to_ned(*origin, lat0, lon0, h0)
 
@@ -343,7 +307,8 @@ def convert(directory, sequence, out, truth_out):
     for t, pa in baro:
         rows.append((t, "baro", (pressure_altitude(pa),), (BARO_VARIANCE,)))
     for t, x, y, z, *_spherical in field:
-        gauss = tuple(c * 1e4 for c in rotate(mag_to_frd, (x, y, z)))
+        # On the IMU's axes as logged; `R_pxmag_pximu` is not applied (module docstring).
+        gauss = tuple(c * 1e4 for c in rotate(FLU_TO_FRD, (x, y, z)))
         rows.append((t, "mag", gauss, (MAG_VARIANCE,)))
     # Stable, so an IMU sample stamped at the same nanosecond as a measurement comes first.
     rows.sort(key=lambda r: r[0])
@@ -385,12 +350,79 @@ def convert(directory, sequence, out, truth_out):
     write_truth(truth_out, [
         f"fusion-nav truth for `{name}.csv`, source {tag}",
         "INSANE's truth at RTK2's epochs: position at the PX4 IMU, attitude from the RTK "
-        "baseline and the PX4 magnetometer, velocity RTK2's Doppler moved to the IMU; "
-        "no bias is known, so those columns are blank",
+        "baseline and the PX4 magnetometer, velocity the two RTK receivers' mean Doppler "
+        "moved to the IMU; no bias is known, so those columns are blank",
         f"Moved {lag / 1e6:+.0f} ms onto the PX4 IMU's clock: one-second rotation mismatch "
         f"against the gyroscope {mismatch:.2f} deg RMS there, {at_zero:.2f} at 0",
     ], truth_rows)
     return len(imu), len(fixes), len(truth_rows), lag / 1e6
+
+
+def convert_fixture(motion):
+    """`convert` end to end on a synthetic sequence: the truth moved by its lag and onto
+    the first RTK2 fix, its velocity the receivers' mean, and the magnetometer's axes."""
+    import tempfile
+    failures = 0
+    reference, first = (30.6, 34.87, 500.0), (30.601, 34.871, 510.0)
+    shift = geodetic_to_ned(*first, *reference)  # where the first RTK2 fix sits, north-east-down
+    start_enu = (shift[1], shift[0], -shift[2])
+    imu, truth = motion(150_000_000)
+
+    def csv(header, rows):
+        return header + "\n" + "".join(",".join(f"{c / 1e9:.9f}" if i == 0 else repr(c)
+                                                for i, c in enumerate(r)) + "\n" for r in rows)
+    truth_rows = [(t, start_enu[0] + 0.1, start_enu[1] + 0.2, start_enu[2] + 0.3) + tuple(q)
+                  for t, _, _, _, *q in truth]
+    epoch = truth[40][0]  # an RTK2 epoch on a truth row, stamped as late as the truth
+    files = {
+        "README.txt": f"Reference\n\t [Latitude,Longitude,Altitude] = {reference[0]}, "
+                      f"{reference[1]}, {reference[2]}\n",
+        "px4_imu.csv": csv("t, a_x, a_y, a_z, w_x, w_y, w_z", imu),
+        "px4_gps.csv": csv("t, lat, long, alt, p_x, p_y, p_z, cov_p_x, cov_p_y, cov_p_z,",
+                           [(10**9, 0.0, 0.0, 0.0, start_enu[0] + 1.0, start_enu[1] + 2.0,
+                             start_enu[2] + 3.0, 4.0, 5.0, 6.0)]),
+        "px4_baro.csv": csv("t, p", [(10**9, 101325.0)]),
+        "px4_mag.csv": csv("t, cart_x, cart_y, cart_z, spher_az, spher_el, spher_norm",
+                           [(10**9, 1e-5, 2e-5, 3e-5, 0.0, 0.0, 0.0)]),
+        "ground_truth/ground_truth_80hz.csv": csv("t, p_x, p_y, p_z, q_w, q_x, q_y, q_z",
+                                                  truth_rows),
+        "ground_truth/rtk_gps1_data_revised.csv": csv("", [
+            (epoch - 10**8, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0),
+            (epoch + 10**8, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0)]),
+        "ground_truth/rtk_gps2_data_revised.csv": csv("", [
+            (epoch,) + first + (3.0, 0.0, 0.0)]),
+    }
+    with tempfile.TemporaryDirectory() as directory:
+        directory = Path(directory)
+        with zipfile.ZipFile(directory / "mars_1_sensors.zip", "w") as archive:
+            for name, text in files.items():
+                archive.writestr(f"mars_1_sensors/{name}", text)
+        with zipfile.ZipFile(directory / CALIBRATION, "w") as archive:
+            archive.writestr("insane_sensor_calib_preprocessed/sensor_calibration.yaml",
+                             "p_vc_pximu: [0, 0, 0]\n\n")
+        convert(directory, "mars_1", directory / "out.csv", directory / "truth.csv")
+        out = (directory / "out.csv").read_text().splitlines()
+        rows = [line.split(",") for line in (directory / "truth.csv").read_text().splitlines()
+                if line[0].isdigit()]
+
+    def check(what, got, want, tolerance):
+        nonlocal failures
+        if any(abs(g - w) > tolerance for g, w in zip(got, want)):
+            failures += 1
+            print(f"FAIL {what}: got {got!r}, want {want!r}", file=sys.stderr)
+
+    (row,) = rows
+    # Stamped 150 ms late, so taken 150 ms before its stamp, on a clock that starts at 0.
+    check("truth time", [float(row[0])], [epoch / 1e9 - 0.150], 1e-6)
+    # 0.1 east, 0.2 north, 0.3 up of the first RTK2 fix; the fix 1, 2, 3 of it.
+    check("truth position", [float(c) for c in row[1:4]], [0.2, 0.1, -0.3], 1e-4)
+    fix = next(line.split(",") for line in out if ",gnss_pos," in line)
+    check("fix position", [float(c) for c in fix[2:5]], [2.0, 1.0, -3.0], 1e-4)
+    # East at 1 m/s and at 3: the centre moves east at 2.
+    check("truth velocity", [float(c) for c in row[4:7]], [0.0, 2.0, 0.0], 1e-9)
+    mag = next(line.split(",") for line in out if ",mag," in line)
+    check("mag axes, gauss", [float(c) for c in mag[2:5]], [0.1, -0.2, -0.3], 1e-9)
+    return failures
 
 
 def self_test():
@@ -433,11 +465,10 @@ def self_test():
     up = quaternion_matrix(math.cos(math.radians(-5)), 0.0, math.sin(math.radians(-5)), 0.0)
     expect("nose up", frd(up), (0.0, math.radians(10), math.pi / 2), 1e-12)
 
-    calibration = ("p_pximu_rtk2:  [-0.470121933088198, -0.410121933088197, 0]\n\n"
+    calibration = ("p_vc_pximu: [0.06, 0, 0]\n\n"
                    "R_pxmag_pximu: [[0.99,0.03,4e-2],\n  [-0.03,0.99,-5e-3],\n"
                    "  [-4e-2,3.2e-3,0.99]]\n\n# next\n")
-    expect("arm", yaml_numbers(calibration, "p_pximu_rtk2"),
-           [-0.470121933088198, -0.410121933088197, 0.0])
+    expect("arm", yaml_numbers(calibration, "p_vc_pximu"), [0.06, 0.0, 0.0])
     expect("matrix", yaml_numbers(calibration, "R_pxmag_pximu"),
            [0.99, 0.03, 4e-2, -0.03, 0.99, -5e-3, -4e-2, 3.2e-3, 0.99])
 
@@ -454,20 +485,57 @@ def self_test():
     expect("rtk mid", rtk_velocity(rtk, times, 50_000_000), (2.0, 2.0, 2.0), 1e-12)
     expect("rtk gap", rtk_velocity(rtk, times, 500_000_000), None)
 
-    # A truth that is the gyroscope's own attitude 150 ms late: the sweep finds -150 ms.
-    rate = lambda t: (0.3 * math.sin(1.3 * t), 0.2 * math.cos(0.7 * t), 0.5 * math.sin(0.4 * t))
-    imu = [(round(k * 5e6), 0.0, 0.0, 9.8) + rate(k * 5e-3) for k in range(4000)]
-    attitudes = gyro_attitudes(imu)
+    # One step integrates the earlier sample's rate over the interval: 1 rad, not 5.
+    step = gyro_attitudes([(0, 0.0, 0.0, 9.8, 0.0, 0.0, 1.0), (10**9, 0.0, 0.0, 9.8, 0.0, 0.0, 5.0)])
+    expect("earlier sample", angle_between(step[0], step[1]), 1.0, 1e-9)
+    # Two quarter turns, about x then about the *body's* z: body rates compose on the right.
+    quarter = math.pi / 2
+    turns = gyro_attitudes([(0, 0.0, 0.0, 9.8, quarter, 0.0, 0.0),
+                            (10**9, 0.0, 0.0, 9.8, 0.0, 0.0, quarter),
+                            (2 * 10**9, 0.0, 0.0, 9.8, 0.0, 0.0, 0.0)])
+    body = matmul(rotation_vector_matrix((quarter, 0.0, 0.0)),
+                  rotation_vector_matrix((0.0, 0.0, quarter)))
+    expect("body frame", angle_between(turns[2], body), 0.0, 1e-9)
 
-    def quaternion(r):
-        w = math.sqrt(max(0.0, 1 + r[0][0] + r[1][1] + r[2][2])) / 2
-        return (w, (r[2][1] - r[1][2]) / (4 * w), (r[0][2] - r[2][0]) / (4 * w),
-                (r[1][0] - r[0][1]) / (4 * w))
-    truth = [(round(k * 12.5e6) + 150_000_000, 0.0, 0.0, 0.0) + quaternion(attitudes[k * 5 // 2])
-             for k in range(0, 1560, 2)]
+    # q and -q are one rotation: halfway between them is that rotation, not zero.
+    pose = truth_pose([(0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
+                       (10, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0)], [0, 10], 5)
+    expect("hemisphere", pose[1], (1.0, 0.0, 0.0, 0.0), 1e-12)
+
+    # An analytic attitude, yaw then roll, with the body rates it implies: nothing here comes
+    # from `gyro_attitudes`, so a fault there cannot build the truth that passes it.
+    def angles(t):
+        return (0.8 * math.sin(1.1 * t), 0.5 * math.sin(0.7 * t + 0.3),
+                0.88 * math.cos(1.1 * t), 0.35 * math.cos(0.7 * t + 0.3))
+
+    def body_rate(t):
+        a, b, da, db = angles(t)
+        return (db, math.sin(b) * da, math.cos(b) * da)  # Rx(b)^T (0, 0, a') + (b', 0, 0)
+
+    def attitude(t):
+        a, b, _, _ = angles(t)
+        z = (math.cos(a / 2), 0.0, 0.0, math.sin(a / 2))
+        x = (math.cos(b / 2), math.sin(b / 2), 0.0, 0.0)
+        return (z[0] * x[0], z[0] * x[1], z[3] * x[1], z[3] * x[0])  # z (x) x
+
+    def motion(late_ns, seconds=4.0):
+        imu = [(round(k * 5e6), 0.0, 0.0, 9.8) + body_rate((k + 0.5) * 5e-3)
+               for k in range(int(seconds / 5e-3))]
+        truth = [(round(t * 1e9) + late_ns, 0.0, 0.0, 0.0) + attitude(t)
+                 for t in (0.6 + k * 0.0125 for k in range(int((seconds - 1.2) / 0.0125)))]
+        return imu, truth
+
+    imu, truth = motion(150_000_000)
     lag, mismatch, at_zero = truth_lag(imu, truth)
     expect("lag", lag, -150_000_000)
     expect("lag beats zero", mismatch < at_zero, True)
+    try:
+        truth_lag(*motion(550_000_000))
+        expect("a lag past the sweep is refused", False, True)
+    except ConversionError:
+        pass
+
+    failures += convert_fixture(motion)
 
     print(f"insane2replay self-test: {'FAIL' if failures else 'ok'}", file=sys.stderr)
     return 1 if failures else 0

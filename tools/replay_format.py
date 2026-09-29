@@ -1,4 +1,4 @@
-"""The replay and truth CSVs every converter writes, and the rotations they convert with.
+"""The replay and truth CSVs every converter writes.
 
 One writer, so the PX4 corpus, UrbanNav and INSANE cannot drift apart in a format
 `examples/replay.rs` reads with one parser: the column list, the number formats and the
@@ -6,7 +6,6 @@ One writer, so the PX4 corpus, UrbanNav and INSANE cannot drift apart in a forma
 """
 
 import hashlib
-import math
 
 REPLAY_COLUMNS = "t_s,source,v0,v1,v2,v3,v4,v5,var0,var1,var2,t_meas_s"
 
@@ -66,25 +65,3 @@ def source_tag(paths):
     for path in paths:
         digest.update(hashlib.sha256(path.read_bytes()).digest())
     return digest.hexdigest()[:12]
-
-
-def rotation(roll, pitch, yaw):
-    """Body (forward, right, down) to north, east, down, for ZYX Euler angles in radians."""
-    cr, sr = math.cos(roll), math.sin(roll)
-    cp, sp = math.cos(pitch), math.sin(pitch)
-    cy, sy = math.cos(yaw), math.sin(yaw)
-    return (
-        (cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr),
-        (sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr),
-        (-sp, cp * sr, cp * cr),
-    )
-
-
-def euler(r):
-    """ZYX roll, pitch and yaw in radians of a body-to-navigation rotation matrix."""
-    pitch = math.asin(max(-1.0, min(1.0, -r[2][0])))
-    return math.atan2(r[2][1], r[2][2]), pitch, math.atan2(r[1][0], r[0][0])
-
-
-def rotate(r, v):
-    return tuple(sum(r[i][j] * v[j] for j in range(3)) for i in range(3))

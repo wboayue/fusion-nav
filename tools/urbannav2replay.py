@@ -55,7 +55,8 @@ from pathlib import Path
 
 from geodesy import geodetic_to_ned
 from gnss_noise import GNSS_NOISE_PARAMETERS, gnss_noise_note
-from replay_format import rotate, rotation, source_tag, write_replay, write_truth
+from replay_format import source_tag, write_replay, write_truth
+from rotations import rotate, rotation
 
 SEGMENT = "UrbanNav-HK-Medium-Urban-1"
 IMU_FILE = "xsense_imu_medium_urban1.csv"
@@ -187,10 +188,6 @@ def read_imu(handle):
     return rows
 
 
-
-
-
-
 def read_truth(text):
     """(t_ns, lat, lon, h_ell, v_body_frd, roll, pitch, yaw) per row, radians.
 
@@ -220,10 +217,6 @@ def read_truth(text):
     if not rows:
         raise ConversionError("no truth rows")
     return rows
-
-
-
-
 
 
 def convert(directory, receiver, out, truth_out):
