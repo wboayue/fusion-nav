@@ -31,7 +31,10 @@ Four questions, a page each, because each needs different evidence
 {{count @scenarios}} simulated flights, scored against their exact trajectories. On the baseline
 flight: horizontal position {{score mission pos_h}} m RMS, height {{score mission pos_v}} m,
 velocity {{score mission vel}} m/s, tilt {{score mission tilt}}° and heading
-{{score mission yaw}}°.
+{{score mission yaw}}°. On a real quadcopter against RTK, horizontal position is off by
+{{score insane-outdoor_1/raw pos_h}}, {{score insane-mars_1/raw pos_h}} and
+{{score insane-mars_19/raw pos_h}} m RMS on three flights, which is its ordinary receiver's own
+error, and the reported uncertainty covers it.
 
 {{figure mission error_position}}
 

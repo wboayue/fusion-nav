@@ -16,6 +16,7 @@ run that produced it:
     {{agreement 89a498ce/raw climb}}   ... a corpus log's `agreement` line, per R policy
     {{summary 89a498ce/raw rate}}      a corpus run's `summary` line
     {{score urbannav-m8t/raw bad_gnss_pos}}   an UrbanNav run's, per receiver and R policy
+    {{score insane-mars_1/raw pos_h}}  an INSANE run's, per sequence and R policy
     {{seed mission}}                   the seed data/scenarios.txt pins for that scenario
     {{count scenarios}}                how many runs a list names (lists below)
     {{table score mission,static pos_h,pos_v}}   one row per run, one column per key
@@ -24,8 +25,10 @@ run that produced it:
 
 A scenario run is named as in data/scenarios.txt; a corpus run as a prefix of the log's name and
 the policy, `89a498ce/raw`, and a prefix naming two logs is refused; an UrbanNav run as
-`urbannav-<receiver>/<policy>`, what data/urbannav.sh replayed. UrbanNav places no figure:
-it states no licence, so only its scalars are published (data/urbannav.txt). Where a table or a count
+`urbannav-<receiver>/<policy>`, what data/urbannav.sh replayed, and an INSANE run as
+`insane-<sequence>/<policy>`, data/insane.sh's. Neither places a figure: UrbanNav states no
+licence and INSANE's forbids selling what derives from it, so only their scalars are
+published (data/urbannav.txt, data/insane.txt). Where a table or a count
 covers every run, it names a list rather than spelling the runs out, so a scenario or log added
 to the gates reaches the page without an edit here: `@scenarios` is data/scenarios.txt,
 `@anees` data/anees.txt, and `@corpus/raw` or `@corpus/px4` every data/manifest.txt log under
@@ -88,13 +91,18 @@ def run_dir(run):
     return run.replace("/", "-")
 
 
+# The fetched datasets replayed against their own truth, each by `data/<dataset>.sh` into
+# `<runs>/<dataset>/`: a run is named `<dataset>-<name>/<policy>`.
+TRUTH_DATASETS = ("urbannav", "insane")
+
+
 class Runs:
     """What tools/validation.sh captured, and where each run's files are.
 
     `<runs>/sim/<name>/` holds a scenario's log, truth and replay, `<runs>/scenarios/<name>.out`
     its stdout, `<runs>/anees/<name>.{anees,csv}` its ensemble, `<runs>/compare/` what
-    data/fetch.sh --compare wrote, `<runs>/urbannav/<receiver>.<policy>.out` what
-    data/urbannav.sh did, `<runs>/figures/<run>/<slug>.{png,md}` a figure and its
+    data/fetch.sh --compare wrote, `<runs>/<dataset>/<name>.<policy>.out` what
+    data/urbannav.sh or data/insane.sh did (`TRUTH_DATASETS`), `<runs>/figures/<run>/<slug>.{png,md}` a figure and its
     caption, and `<runs>/commit` the build.
     """
 
@@ -144,9 +152,10 @@ class Runs:
             return self.agreement[key]
         if kind == "anees":
             path = self.runs / "anees" / f"{run}.anees"
-        elif run.startswith("urbannav-"):
-            receiver, _, policy = run.removeprefix("urbannav-").partition("/")
-            path = self.runs / "urbannav" / f"{receiver}.{policy}.out"
+        elif run.split("-", 1)[0] in TRUTH_DATASETS:
+            dataset, _, rest = run.partition("-")
+            name, _, policy = rest.partition("/")
+            path = self.runs / dataset / f"{name}.{policy}.out"
         elif "/" in run:
             path = self.log_dir(run) / f"{run.split('/')[1]}.summary"
         else:
@@ -352,6 +361,8 @@ def self_test():
         (out / "urbannav").mkdir()
         (out / "urbannav/m8t.raw.out").write_text(
             "summary recovered=41\nscore pos_h=258.072 bad_gnss_pos=338\n")
+        (out / "insane").mkdir()
+        (out / "insane/mars_1.raw.out").write_text("summary recovered=0\nscore pos_h=1.929\n")
         (out / "figures/mission").mkdir(parents=True)
         (out / "figures/mission/error_position.md").write_text("Position error.\n")
         (out / "commit").write_text("abc1234\n")
@@ -369,6 +380,8 @@ def self_test():
         expect("corpus summary", rendered("{{summary 89a498ce/raw rate}}"), "250")
         expect("urbannav score", rendered("{{score urbannav-m8t/raw bad_gnss_pos}}"), "338")
         expect("urbannav summary", rendered("{{summary urbannav-m8t/raw recovered}}"), "41")
+        # A sequence name carrying an underscore, and a dataset other than the first.
+        expect("insane score", rendered("{{score insane-mars_1/raw pos_h}}"), "1.929")
         expect("seed", rendered("{{seed mission}}"), "2")
         expect("count of a list", rendered("{{count @scenarios}}"), "2")
         expect("count of the corpus", rendered("{{count @corpus/raw}}"), "1")
@@ -405,6 +418,7 @@ def self_test():
             ("an unknown list", "{{count @logs}}"),
             ("a line the file lacks", "{{agreement 00000000/raw climb}}"),
             ("an UrbanNav run not replayed", "{{score urbannav-f9p/raw pos_h}}"),
+            ("an INSANE sequence not replayed", "{{score insane-mars_19/raw pos_h}}"),
             ("a capital", "{{Score mission pos_h}}"),
             ("a missing brace", "{{score mission pos_h}"),
             ("a kind with a dash", "{{ score-x mission }}"),
