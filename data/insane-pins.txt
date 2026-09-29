@@ -7,8 +7,11 @@
 # All three: nothing rejected, nothing recovered, nothing floored, and horizontal error at
 # about the receiver's own against truth (1.9 to 3.9 m RMS), which no filter removes: an
 # ordinary receiver's error is a bias that persists. What these read is whether the
-# covariance covers it: nees_pos 0.35 to 0.47, conservative, since each receiver claims
-# more than it errs by. Velocity is more conservative still (nees_vel 0.03 to 0.07): no
+# covariance covers it: nees_pos 0.35 to 0.47, conservative, and (24') is why. Fused white,
+# every `Config::correlation` time constant off, the same flights read nees_pos 39.2, 11.6
+# and 16.1, and outdoor_1's pos_v 8.18 m against 1.88: mars_1's receiver claims 0.77 m and
+# errs by 1.86 m RMS, so it is the correlation that covers it, not the receiver's claim.
+# Velocity is more conservative still (nees_vel 0.03 to 0.07): no
 # GNSS velocity is fused, since the dataset's is horizontal with no accuracy, so velocity
 # is observed only through fixes claiming 1 to 4 m.
 #

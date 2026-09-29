@@ -110,9 +110,11 @@ GNSS receiver, its barometer and its magnetometer. The RTK receivers are only th
 Horizontal error here is the receiver's, not the filter's: an ordinary receiver is off by a
 metre or more for tens of seconds at a time, and no filter can remove an error its only
 position source shares. What the filter owes is to know it, and it does: position NEES under 1
-means the reported uncertainty covers the error, conservatively, since each receiver claims
-more than it errs by (the [honesty page](honesty.md#what-this-page-cannot-say) says what NEES
-is). Velocity is more conservative still, because the dataset's GNSS velocity is horizontal
+means the reported uncertainty covers the error, conservatively (the
+[honesty page](honesty.md#what-this-page-cannot-say) says what NEES is). That rests on the
+filter treating a receiver's error as lasting from one fix to the next
+([EQUATIONS.md (24′)](../EQUATIONS.md)): fused as though each fix's error were new, the same
+flights read far overconfident, and one of these receivers claims less error than it has. Velocity is more conservative still, because the dataset's GNSS velocity is horizontal
 only and states no accuracy, so none is fused and velocity is observed only through the fixes.
 The airfield flight's barometer drifts by metres from the truth over the flight, which is the
 case the filter's estimated barometric offset exists for.
