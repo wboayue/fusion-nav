@@ -5372,9 +5372,13 @@ mod tests {
         // is ε = 10.24, under it, and 3.3 m is 10.89, over.
         let scoring = heading_truth(1.0, 0.0);
         let variance = [1.0, 10_000.0, 1.0];
-        let [north, _] = judge(&scoring, [4.0, 0.0, 0.0], variance, [0.0; 3]);
+        let [north, level] = judge(&scoring, [4.0, 0.0, 0.0], variance, [0.0; 3]);
         let [east, _] = judge(&scoring, [0.0, 4.0, 0.0], variance, [0.0; 3]);
         assert!(north.bad && !east.bad);
+        assert!(
+            !level.bad,
+            "the horizontal error does not reach the height half"
+        );
         let [horizontal, under] = judge(&scoring, [0.0, 0.0, 3.2], variance, [0.0; 3]);
         let [_, over] = judge(&scoring, [0.0, 0.0, 3.3], variance, [0.0; 3]);
         assert!(!horizontal.bad, "height does not reach the horizontal half");
@@ -5429,7 +5433,8 @@ mod tests {
         // A bad fix accepted, then a run of two good fixes and one bad rejected and ended by
         // an adoption: a lockout, since good ones outnumber bad. Then a run of one of each,
         // a tie, ended by the adoption of a bad fix: counted a glitch. A refusal counts for
-        // nothing, and an adoption with no run before it is not a recovery.
+        // nothing, and an adoption with no run before it is not a recovery, including one
+        // whose run an accepted fix already ended.
         for (outcome, judged) in [
             (Fusion::Reset, GOOD),
             (accepted, BAD),
@@ -5441,16 +5446,19 @@ mod tests {
             (rejected, GOOD),
             (Fusion::Reset, BAD),
             (Fusion::NotInitialized, BAD),
+            (rejected, GOOD),
+            (accepted, GOOD),
+            (Fusion::Reset, GOOD),
         ] {
             fixes.record(outcome, judged);
         }
         assert_eq!(
             fixes,
             FixScore {
-                offered: 9,
+                offered: 12,
                 bad: 4,
                 rejected_bad: 2,
-                rejected_good: 3,
+                rejected_good: 4,
                 accepted_far: 1,
                 adopted_bad: 1,
                 recovered_after_bad: 1,
@@ -5460,8 +5468,8 @@ mod tests {
         );
         assert_eq!(
             fixes.keys("gnss_pos"),
-            " offered_gnss_pos=9 bad_gnss_pos=4 rejected_bad_gnss_pos=2 \
-             rejected_good_gnss_pos=3 accepted_far_gnss_pos=1 adopted_bad_gnss_pos=1 \
+            " offered_gnss_pos=12 bad_gnss_pos=4 rejected_bad_gnss_pos=2 \
+             rejected_good_gnss_pos=4 accepted_far_gnss_pos=1 adopted_bad_gnss_pos=1 \
              recovered_after_bad_gnss_pos=1 recovered_after_lockout_gnss_pos=1"
         );
     }
@@ -5530,7 +5538,11 @@ mod tests {
         let other = "# fusion-nav truth for `urbannav-tst-m8t.csv`, source 000000000000\n";
         assert_eq!(scenario_of(log), scenario_of(truth));
         assert_ne!(scenario_of(log), scenario_of(other));
-        assert_eq!(scenario_of("# fusion-nav note, with a comma\n"), None);
+        // A marker whose tail names neither a seed nor a source pairs with nothing.
+        assert_eq!(
+            scenario_of("# fusion-nav note on `x`, with a comma\n"),
+            None
+        );
     }
 
     // ---- the truth file belongs to the log ----
