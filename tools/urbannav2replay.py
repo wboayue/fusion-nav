@@ -47,7 +47,6 @@ from __future__ import annotations
 
 import argparse
 import datetime
-import hashlib
 import io
 import math
 import sys
@@ -56,6 +55,7 @@ from pathlib import Path
 
 from geodesy import geodetic_to_ned
 from gnss_noise import GNSS_NOISE_PARAMETERS, gnss_noise_note
+from replay_format import rotate, rotation, source_tag, write_replay, write_truth
 
 SEGMENT = "UrbanNav-HK-Medium-Urban-1"
 IMU_FILE = "xsense_imu_medium_urban1.csv"
@@ -187,20 +187,8 @@ def read_imu(handle):
     return rows
 
 
-def rotation(roll, pitch, yaw):
-    """Body (forward, right, down) to north, east, down, for ZYX Euler angles in radians."""
-    cr, sr = math.cos(roll), math.sin(roll)
-    cp, sp = math.cos(pitch), math.sin(pitch)
-    cy, sy = math.cos(yaw), math.sin(yaw)
-    return (
-        (cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr),
-        (sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr),
-        (-sp, cp * sr, cp * cr),
-    )
 
 
-def rotate(r, v):
-    return tuple(sum(r[i][j] * v[j] for j in range(3)) for i in range(3))
 
 
 def read_truth(text):
@@ -234,16 +222,8 @@ def read_truth(text):
     return rows
 
 
-def source_tag(paths):
-    """The first 12 hex digits of a sha256 over the inputs' own, the pairing check's tag."""
-    digest = hashlib.sha256()
-    for path in paths:
-        digest.update(hashlib.sha256(path.read_bytes()).digest())
-    return digest.hexdigest()[:12]
 
 
-def fmt(value):
-    return "" if value is None else f"{value:.6f}"
 
 
 def convert(directory, receiver, out, truth_out):
@@ -262,7 +242,6 @@ def convert(directory, receiver, out, truth_out):
     lat0, lon0, h0 = truth[0][1:4]
     name = f"urbannav-tst-{receiver}"
     tag = source_tag([imu_path, zip_path, truth_path])
-    seconds = lambda t: (t - t0) * 1e-9
 
     rows = []
     for t, gyro, accel in imu:
@@ -291,33 +270,20 @@ def convert(directory, receiver, out, truth_out):
         f"Velocity variance {VELOCITY_SIGMA ** 2:.6g} m^2/s^2 on every axis: u-blox NMEA "
         "publishes no speed accuracy",
     ]
-    with open(out, "w", newline="") as handle:
-        for line in header:
-            handle.write(f"# {line}\n")
-        handle.write("t_s,source,v0,v1,v2,v3,v4,v5,var0,var1,var2,t_meas_s\n")
-        for t, source, values, variances in rows:
-            values = list(values) + [None] * (6 - len(values))
-            cells = [f"{seconds(t):.6f}", source]
-            cells += ["" if v is None else f"{v:.6g}" for v in values + list(variances)]
-            cells.append("")
-            handle.write(",".join(cells) + "\n")
+    write_replay(out, header, rows, t0, 1e-9)
 
-    with open(truth_out, "w", newline="") as handle:
-        handle.write(f"# fusion-nav truth for `{name}.csv`, source {tag}\n")
-        handle.write(f"# SPAN-CPT from {TRUTH_FILE}, moved to the Xsens (body_T_SPAN); "
-                     "no bias is known, so those columns are blank\n")
-        handle.write("t_s,pos_n,pos_e,pos_d,vel_n,vel_e,vel_d,roll,pitch,yaw,"
-                     "ba_x,ba_y,ba_z,bg_x,bg_y,bg_z\n")
-        for t, lat, lon, h, v_body, roll, pitch, yaw in truth:
-            r = rotation(roll, pitch, yaw)
-            span = geodetic_to_ned(lat, lon, h, lat0, lon0, h0)
-            arm = rotate(r, SPAN_FRD)
-            position = tuple(p - a for p, a in zip(span, arm))
-            velocity = rotate(r, v_body)
-            cells = [f"{seconds(t):.6f}"]
-            cells += [fmt(x) for x in position + velocity + (roll, pitch, yaw)]
-            cells += [""] * 6
-            handle.write(",".join(cells) + "\n")
+    truth_rows = []
+    for t, lat, lon, h, v_body, roll, pitch, yaw in truth:
+        r = rotation(roll, pitch, yaw)
+        span = geodetic_to_ned(lat, lon, h, lat0, lon0, h0)
+        arm = rotate(r, SPAN_FRD)
+        position = tuple(p - a for p, a in zip(span, arm))
+        truth_rows.append(((t - t0) * 1e-9, position, rotate(r, v_body), (roll, pitch, yaw)))
+    write_truth(truth_out, [
+        f"fusion-nav truth for `{name}.csv`, source {tag}",
+        f"SPAN-CPT from {TRUTH_FILE}, moved to the Xsens (body_T_SPAN); "
+        "no bias is known, so those columns are blank",
+    ], truth_rows)
     return len(imu), len(fixes), len(truth)
 
 
