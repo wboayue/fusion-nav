@@ -2752,6 +2752,22 @@ mod tests {
         assert!(!filter.is_initialized());
     }
 
+    #[test]
+    fn a_still_window_whose_barometric_reference_overflows_is_refused_whole() {
+        // One reading `push` takes as finite; the mean and scatter of (30) square it past `f32`.
+        let mut altitudes = [100.0, 100.2, 99.9, 100.1, 100.0, 99.8, 100.3, 100.0];
+        altitudes[3] = f32::MAX;
+        let window = StaticWindow::try_from(
+            spaced(&window_with_baro(altitudes), Seconds::from_secs(0.25)).as_slice(),
+        )
+        .expect("every sample is finite");
+        let mut filter = Eskf::default();
+        assert_eq!(filter.alignment_of(&window), Err(InitError::NotFinite));
+        assert_eq!(filter.initialize(&window), Err(InitError::NotFinite));
+        assert!(!filter.is_initialized());
+        assert_eq!(filter.baro_reference(), None);
+    }
+
     #[cfg(feature = "magnetic-model")]
     #[test]
     fn a_geodetic_fix_with_no_origin_under_it_turns_no_heading() {
