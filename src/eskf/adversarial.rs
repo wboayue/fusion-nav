@@ -71,13 +71,19 @@ fn scalar(hostile: bool, lo: f32, hi: f32) -> BoxedStrategy<f32> {
     .boxed()
 }
 
+/// Three of [`scalar`], or, when `hostile`, sometimes one value on every axis: an overflow
+/// that needs two large components together, a lever arm rotated, is otherwise a draw in
+/// thousands.
 fn vector(hostile: bool, lo: f32, hi: f32) -> BoxedStrategy<[f32; 3]> {
-    [
+    let apart = [
         scalar(hostile, lo, hi),
         scalar(hostile, lo, hi),
         scalar(hostile, lo, hi),
-    ]
-    .boxed()
+    ];
+    if !hostile {
+        return apart.boxed();
+    }
+    prop_oneof![4 => apart, 1 => scalar(true, lo, hi).prop_map(|v| [v; 3])].boxed()
 }
 
 /// A measurement's time relative to the filter's clock, µs: in the recent past, or, when
