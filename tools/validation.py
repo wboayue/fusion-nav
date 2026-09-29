@@ -15,6 +15,7 @@ run that produced it:
     {{anees gnss_latency any_pos}}     ... its `anees` line, data/anees.sh's ensemble
     {{agreement 89a498ce/raw climb}}   ... a corpus log's `agreement` line, per R policy
     {{summary 89a498ce/raw rate}}      a corpus run's `summary` line
+    {{score urbannav-m8t/raw bad_gnss_pos}}   an UrbanNav run's, per receiver and R policy
     {{seed mission}}                   the seed data/scenarios.txt pins for that scenario
     {{count scenarios}}                how many runs a list names (lists below)
     {{table score mission,static pos_h,pos_v}}   one row per run, one column per key
@@ -22,7 +23,9 @@ run that produced it:
     {{stamp}}                          the commit the runs were produced at
 
 A scenario run is named as in data/scenarios.txt; a corpus run as a prefix of the log's name and
-the policy, `89a498ce/raw`, and a prefix naming two logs is refused. Where a table or a count
+the policy, `89a498ce/raw`, and a prefix naming two logs is refused; an UrbanNav run as
+`urbannav-<receiver>/<policy>`, what data/urbannav.sh replayed. UrbanNav places no figure:
+it states no licence, so only its scalars are published (data/urbannav.txt). Where a table or a count
 covers every run, it names a list rather than spelling the runs out, so a scenario or log added
 to the gates reaches the page without an edit here: `@scenarios` is data/scenarios.txt,
 `@anees` data/anees.txt, and `@corpus/raw` or `@corpus/px4` every data/manifest.txt log under
@@ -90,7 +93,8 @@ class Runs:
 
     `<runs>/sim/<name>/` holds a scenario's log, truth and replay, `<runs>/scenarios/<name>.out`
     its stdout, `<runs>/anees/<name>.{anees,csv}` its ensemble, `<runs>/compare/` what
-    data/fetch.sh --compare wrote, `<runs>/figures/<run>/<slug>.{png,md}` a figure and its
+    data/fetch.sh --compare wrote, `<runs>/urbannav/<receiver>.<policy>.out` what
+    data/urbannav.sh did, `<runs>/figures/<run>/<slug>.{png,md}` a figure and its
     caption, and `<runs>/commit` the build.
     """
 
@@ -140,6 +144,9 @@ class Runs:
             return self.agreement[key]
         if kind == "anees":
             path = self.runs / "anees" / f"{run}.anees"
+        elif run.startswith("urbannav-"):
+            receiver, _, policy = run.removeprefix("urbannav-").partition("/")
+            path = self.runs / "urbannav" / f"{receiver}.{policy}.out"
         elif "/" in run:
             path = self.log_dir(run) / f"{run.split('/')[1]}.summary"
         else:
@@ -342,6 +349,9 @@ def self_test():
         (out / "compare/89a498ce-9aa1/raw.summary").write_text("summary rate=250\n")
         (out / "compare/agreement.txt").write_text(
             "agreement log=89a498ce-9aa1 r_policy=raw climb=-1.5\n")
+        (out / "urbannav").mkdir()
+        (out / "urbannav/m8t.raw.out").write_text(
+            "summary recovered=41\nscore pos_h=258.072 bad_gnss_pos=338\n")
         (out / "figures/mission").mkdir(parents=True)
         (out / "figures/mission/error_position.md").write_text("Position error.\n")
         (out / "commit").write_text("abc1234\n")
@@ -357,6 +367,8 @@ def self_test():
         expect("anees", rendered("{{anees mission any_pos}}"), "0")
         expect("agreement", rendered("{{agreement 89a498ce/raw climb}}"), "-1.5")
         expect("corpus summary", rendered("{{summary 89a498ce/raw rate}}"), "250")
+        expect("urbannav score", rendered("{{score urbannav-m8t/raw bad_gnss_pos}}"), "338")
+        expect("urbannav summary", rendered("{{summary urbannav-m8t/raw recovered}}"), "41")
         expect("seed", rendered("{{seed mission}}"), "2")
         expect("count of a list", rendered("{{count @scenarios}}"), "2")
         expect("count of the corpus", rendered("{{count @corpus/raw}}"), "1")
@@ -392,6 +404,7 @@ def self_test():
             ("an unknown kind", "{{median mission pos_h}}"),
             ("an unknown list", "{{count @logs}}"),
             ("a line the file lacks", "{{agreement 00000000/raw climb}}"),
+            ("an UrbanNav run not replayed", "{{score urbannav-f9p/raw pos_h}}"),
             ("a capital", "{{Score mission pos_h}}"),
             ("a missing brace", "{{score mission pos_h}"),
             ("a kind with a dash", "{{ score-x mission }}"),

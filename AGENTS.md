@@ -488,6 +488,9 @@ data/fetch.sh --check             # convert each .ulg and replay it, assert expe
 data/fetch.sh --add <url> [name]  # download once, append a manifest line to commit
 data/fetch.sh --pin <name>        # replay one log, print the expectations to append
 data/fetch.sh --compare [--pin]   # every log beside EKF2, raw and px4, against data/ekf2.txt
+data/fetch.sh --manifest data/urbannav.txt   # UrbanNav's segment into data/urbannav; no licence, never commit
+data/urbannav.sh [--pin]          # both receivers against truth, raw and px4, data/urbannav-pins.txt
+uv run tools/urbannav2replay.py --self-test   # the UrbanNav converter's fixtures (stdlib)
 uv run tools/ulog2replay.py log.ulg --screen   # what a candidate could cover; data/README.md
 uv run tools/ulog2replay.py log.ulg -o log.csv [--reference]   # ULog -> replay CSV
 uv run tools/replay_report.py in.csv out.csv [truth.csv] \
@@ -595,9 +598,11 @@ entry at once.
 **Two corpora, two licences, two manifests.** The PX4 logs are CC BY 4.0 and could be redistributed;
 they are fetched rather than committed for size, not for terms. INSANE is BSD-2 with a
 non-commercial rider, so it cannot be bundled into an MIT crate at all and needs its own manifest
-rather than riding the default fetch (GOALS.md, Validation). Adding a data source means saying
-which behavior it uniquely covers **and** under what licence — and for a restricted one, that
-measured scalars are publishable while converted CSVs and plots stay out of the repository.
+rather than riding the default fetch (GOALS.md, Validation). UrbanNav states no licence at all,
+which is stricter still: `data/urbannav.txt`, fetched only when named, and only scalars
+published. Adding a data source means saying which behavior it uniquely covers **and** under
+what licence — and for a restricted one, that measured scalars are publishable while converted
+CSVs and plots stay out of the repository.
 
 **A third corpus is generated rather than fetched.** `examples/simulate.rs` writes seeded flights
 with analytic truth, so it needs no licence, no manifest and no network — and it is the only

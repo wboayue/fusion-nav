@@ -6,7 +6,7 @@ on. The format itself is documented in `examples/replay.rs`.
 
 It writes two files. `<out>.csv` is one row per IMU epoch: the state, the covariance diagonal as
 standard deviations, and the last test ratio per source. `<out>.fusion.csv` is one row per
-`fuse_*` call — `t_s,source,nu0..nu2,s0..s2,ratio,outcome` — which is the resolution the epoch
+`fuse_*` call — `t_s,source,nu0..nu2,s0..s2,ratio,outcome,truth` — which is the resolution the epoch
 file cannot reach, since it keeps only the most recent ratio and so cannot tell two fusions apart
 or say what became of either. The per-source gates ride in that file's header, because the filter
 reports `r = ε / γ` and a ratio without its `γ` does not go back to `ε`.
@@ -709,3 +709,39 @@ without the keys its log's manifest entry already pins, a `px4` line whole, sinc
 it. It bands whatever is printed with a decimal point (`pin_pairs --decimal`), which is every
 statistic and no count, so a new statistic needs no edit in `fetch.sh`. `data/ekf2.txt`'s header
 records what the first run said.
+
+## UrbanNav
+
+The gate benchmark (#60): a car in Hong Kong's urban canyons, where receivers are wrong by
+metres to hundreds of metres for tens of seconds while claiming a few, with SPAN-CPT truth to
+say so. It is the one source that can score a rejection as right or wrong, and it is a ground
+vehicle with no barometer and no magnetometer, so it scores GNSS position gating and nothing
+else: heading comes from the course, and height from GNSS alone.
+
+UrbanNav states no licence (GOALS.md, "Secondary sources"), so it has its own manifest and is
+never committed, converted or not:
+
+```console
+$ data/fetch.sh --manifest data/urbannav.txt           # prints the terms, fetches into data/urbannav
+$ data/urbannav.sh                                      # convert, replay, assert data/urbannav-pins.txt
+$ data/urbannav.sh --pin                                # print the lines to commit instead
+$ uv run tools/urbannav2replay.py data/urbannav --receiver m8t -o m8t.csv --truth m8t.truth.csv
+```
+
+One segment, Medium-Urban-1, and two receivers on it: the M8T, which fails its own accuracy on
+most fixes, and the F9P, which fails it on none. Neither needs the 34 GB rosbag: the converter
+reads the IMU CSV, each receiver's `$PUBX,00` out of the GNSS zip and the truth text, with the
+standard library alone. Its module docstring owns what each source is, the frames, the
+clocks and the constants it substitutes (a velocity σ, since u-blox NMEA carries none; PX4's
+defaults for `--r-policy px4`; a course sideslip read off the truth).
+
+The truth is 1 Hz, so an epoch is scored where a truth row falls within one IMU period of it
+and the rest are unscored, and it knows no bias, so `ba=` and `bg=` read `none`. Both files
+carry a `fusion-nav` marker naming the segment and a digest of the three inputs, which the
+harness checks as it checks a scenario's seed.
+
+What a fix's `bad` verdict means is `Judged`'s doc comment in `examples/replay.rs`: the gate a
+perfect state would run, at P999 on the fix's own variance, fixed whatever `Config::gates` or
+`--r-policy` the replay used. `data/urbannav-pins.txt` pins what each receiver did under both
+policies and says what the lines show. Only these scalars are published
+([robustness page](../validation/robustness.md#gnss-in-a-city)); no figure of the data is.

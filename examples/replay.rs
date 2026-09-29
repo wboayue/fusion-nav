@@ -84,8 +84,9 @@
 //!
 //! # Scoring
 //!
-//! Given a third argument — a `<scenario>.truth.csv` from `examples/simulate.rs` — the
-//! harness prints a `score` line beside `summary`, in the same `key=value` shape so one
+//! Given a third argument — a `<scenario>.truth.csv` from `examples/simulate.rs`, or the
+//! truth `tools/urbannav2replay.py` converts beside its log — the harness prints a `score`
+//! line beside `summary`, in the same `key=value` shape so one
 //! parser reads both. No truth file means no `score` line at all, rather than a line of
 //! zeros: a corpus log has no truth, and a missing line says that where `pos_h=0.000` would
 //! claim a perfect filter. `data/manifest.txt` is therefore untouched by any of this.
@@ -107,6 +108,18 @@
 //! | `false_valid` | quantity-epochs claimed usable while the error exceeded `Config::accuracy` |
 //! | `false_valid_att` | the tilt and heading share of it, pinned apart so a total cannot hide it |
 //! | `scored` | epochs that had a truth row, which is what every figure above is a mean over |
+//! | `offered_<half>` | GNSS verdicts the gate or an adoption decided, per half of the fix |
+//! | `bad_<half>` | of those, fixes truth says their own `R` could not explain; see [`Judged`] |
+//! | `rejected_bad_<half>`, `rejected_good_<half>` | rejections split by that verdict |
+//! | `accepted_far_<half>` | fixes accepted while past `Accuracy::position` on some axis |
+//! | `adopted_bad_<half>` | bad fixes taken by an adoption, a recovery's or a first one |
+//! | `recovered_after_bad_<half>`, `recovered_after_lockout_<half>` | recoveries by the run they ended; see [`FixScore`] |
+//!
+//! `<half>` is `gnss_pos` or `gnss_hgt`, the two verdicts one fix meets. These are the only keys
+//! that say whether a rejection was *right*, which needs hostile fixes and truth together
+//! (GOALS.md, "Three questions"): on the simulator they read a handful of bad fixes in a
+//! thousand, and on UrbanNav's M8T most of them (`data/urbannav-pins.txt`). The fusion file
+//! carries each verdict in its `truth` column.
 //!
 //! Convergence is **not** here: `aligned_at=` is on the `summary` line, it needs no truth,
 //! and the corpus pins it. One statistic, one implementation (`AGENTS.md`).
