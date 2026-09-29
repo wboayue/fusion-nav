@@ -3,3 +3,6 @@
 logs
 # UrbanNav states no licence, so nothing of it is committed (GOALS.md, Secondary sources).
 urbannav
+# INSANE forbids selling what derives from it, and this crate is MIT: nothing of it is
+# committed (data/insane.txt).
+insane

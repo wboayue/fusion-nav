@@ -1,0 +1,22 @@
+# INSANE (University of Klagenfurt, Control of Networked Systems), three outdoor sequences:
+# the accuracy benchmark of #9 for position, velocity and height. Brommer et al., "INSANE:
+# Cross-domain UAV data sets with increased number of sensors for developing and evaluating
+# multi-sensor fusion algorithms", IROS 2022, arXiv:2210.09114.
+#
+# terms: BSD-2-Clause with an added condition (LICENSE.txt beside the data, and inside
+# terms: each archive): no right to Sell, meaning to provide for a fee a product or service
+# terms: whose value derives from the data, and the authors must be cited in academic use.
+# terms: This crate is MIT, so none of it is committed: these files are fetched for local
+# terms: measurement, and nothing converted or plotted from them is committed. Only
+# terms: measured scalars are published, with the paper cited. Validating a commercial
+# terms: product against INSANE needs your own arrangement with Klagenfurt.
+#
+# Fetched into data/insane by `data/fetch.sh --manifest data/insane.txt`, and replayed by
+# data/insane.sh. Lines are <sha256>  <name>  <url>, as in data/manifest.txt. Each
+# sequence is one archive of CSVs, the PX4 autopilot's own sensors among them; the
+# sequences are chosen, and the rest left out, in tools/insane2replay.py's docstring.
+02ea94047ccb7d887c34f90f0c868f8430bdc448883bf82aeadd2a616d79bb79  outdoor_1_sensors.zip  https://cns-data.aau.at/insane-dataset/outdoor_1_sensors.zip
+5e0c4db80d4406e8e877bf9fc1c6c93ad6f45c026a9e5f034385be248cf35da9  mars_1_sensors.zip  https://cns-data.aau.at/insane-dataset/mars_1_sensors.zip
+1809c7d575f682a50d3df327f7c746244dbd867779b62fdb7fc49d0c15dfff4e  mars_19_sensors.zip  https://cns-data.aau.at/insane-dataset/mars_19_sensors.zip
+# Extrinsics and magnetometer calibrations for both sites, the ones the truth was built with.
+cff4fbd099051cf0ff29838f7ab4bc67ff35d70cc6555029e537ca1036c215f2  insane_sensor_calib_preprocessed.zip  https://cns-data.aau.at/insane-dataset/insane_sensor_calib_preprocessed.zip
