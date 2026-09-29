@@ -4,6 +4,7 @@ use nalgebra::{Matrix3, SMatrix, SVector, Vector3};
 
 use crate::frames::{Body, Ned};
 use crate::health::{Status, Validity};
+use crate::math::enforce_symmetry;
 use crate::units::{Acceleration, AngularRate, Attitude, Position, Velocity};
 
 /// Dimension of the error state: three each of position, velocity, attitude,
@@ -201,6 +202,8 @@ impl Covariance {
         self.0
             .fixed_view_mut::<3, 3>(theta, theta)
             .copy_from(&block);
+        // (42): `M P M` rounds differently on either side of the diagonal.
+        enforce_symmetry(&mut self.0);
     }
 
     /// [`reset_state`](Self::reset_state) over several states, for the position and
@@ -286,11 +289,17 @@ impl AttitudeVariance {
     /// The body-frame attitude block whose navigation-frame covariance is these three
     /// variances and nothing correlated between them: `R(q̂)ᵀ diag(·) R(q̂)`, the inverse of
     /// [`of`](Self::of). Equation (8).
+    ///
+    /// Symmetrized by (42), since the product is not exactly: rounded, `R(q̂)ᵀ D R(q̂)` differs
+    /// from its transpose in the last bit off the diagonal, and this block is committed at a
+    /// start with no propagation after it to repair that.
     pub(crate) fn in_body(self, attitude: &Attitude) -> Matrix3<f32> {
         let r = attitude.body_to_ned().to_rotation_matrix().into_inner();
         let ned =
             Matrix3::from_diagonal(&Vector3::new(self.tilt_north, self.tilt_east, self.heading));
-        r.transpose() * ned * r
+        let mut body = r.transpose() * ned * r;
+        enforce_symmetry(&mut body);
+        body
     }
 }
 
@@ -379,6 +388,35 @@ mod tests {
             heading: 3.0,
         };
         assert_eq!(variance.to_enu(), [2.0, 1.0, 3.0]);
+    }
+
+    /// Found by the adversarial suite (#44): rounded, `R D Rᵀ` and `M P M` are not their own
+    /// transposes, and both are committed with nothing after them to repair it. Several
+    /// attitudes, because whether the last bit differs depends on the rotation.
+    #[test]
+    fn the_attitude_blocks_a_start_and_a_heading_reset_write_are_exactly_symmetric() {
+        let variance = AttitudeVariance {
+            tilt_north: 4.1e-4,
+            tilt_east: 3.7e-4,
+            heading: 0.29,
+        };
+        for (roll, pitch, yaw) in [(0.3, -0.2, 1.1), (0.01, 0.02, -2.9), (-0.7, 0.4, 0.5)] {
+            let attitude = attitude_of(roll, pitch, yaw);
+            let block = variance.in_body(&attitude);
+            assert_eq!(
+                block,
+                block.transpose(),
+                "in_body at {roll}, {pitch}, {yaw}"
+            );
+
+            let mut p = with_attitude_block(block);
+            let down = attitude
+                .body_to_ned()
+                .inverse_transform_vector(&Vector3::z());
+            p.reset_attitude_direction(down, 0.05);
+            let p = p.as_matrix();
+            assert_eq!(*p, p.transpose(), "reset at {roll}, {pitch}, {yaw}");
+        }
     }
 
     fn with_attitude_block(block: Matrix3<f32>) -> Covariance {
