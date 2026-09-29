@@ -77,6 +77,15 @@ regenerates them from the gates it runs, and `--check` re-derives them. The page
 losses: `correlated` (#51) is overconfident and `7ce66f0d` levels wrong (#59). Order: #47, whose *API frozen* milestone has no open issue: #174 became bad vertical-accelerometer
 detection, internal and reported through `Diagnostics`, so it left the milestone (clipping, its first
 shape, is 22 samples on the corpus); #41 needs a board.
+#44 landed (#179), with the attitude renaming #47 asked for before the freeze. `Eskf::new` returns
+`Result<_, ConfigError>`, and `Config::validate` destructures `Config` without `..`, so a new field
+does not compile until it is bounded. The constructors are `Attitude::from_*`, and the getters carry
+the bare frame-pair names. `src/eskf/adversarial.rs` is a proptest suite (`hostile`, and `ordinary`
+with `floored == 0`) that checks the invariants on `[P, P_xb; P_xbᵀ, P_bb]` after every public
+call. It found seven defects, all fixed and pinned by literals. Each one was a finite input the
+arithmetic overflows (one `f32::MAX` reading, a rotated `f32::MAX` arm, a 1e20 rad/s gyro) or a
+refusal that had already committed something. Only the (42) fix moved output: three corpus logs
+in the fourth figure of their EKF2 agreement.
 #50 landed (#178): `StaticWindow::noise(&init)` reports the white noise a still window measured,
 per axis, as `WindowNoise`: a **floor** under `Config::imu` and a barometer's `R`, never applied,
 and asked of the window so a `Config` can be derived before any filter exists. The IMU densities
@@ -451,6 +460,7 @@ cargo run --example simulate -- flight data   # regenerate the committed data/fl
 data/bench.sh                     # score every scenario against data/scenarios.txt; a CI gate
 data/bench.sh mission static      # only these
 data/expect.sh --self-test        # the comparator both bench.sh and the manifest rules read
+cargo test --lib adversarial      # the proptest suite of #44, seeded; ~6 s in debug
 data/anees.sh                     # every scenario on 50 seeds against data/anees.txt; a CI gate
 python3 tools/anees.py --self-test   # the ensemble aggregator's fixtures (stdlib, no uv)
 uv run tools/agreement.py --self-test    # agreement with EKF2; replay_report's self-test runs it too
@@ -651,6 +661,15 @@ and a dropout, the `f64` timestamp parse past the `f32` mantissa, the counters, 
 key — against fixtures whose answer is known by construction. Keep them fixtures: the builder
 there emits rows and never a count, a rate or a verdict, so the expected values stay literals
 beside their assertions.
+
+**A dev-dependency's features reach every test and example build.** Cargo unifies features across
+the graph, and examples take dev-dependencies. proptest's `std` turns on `num-traits/std`, which
+switched nalgebra from `libm` to the platform's transcendentals in the harness, and moved
+`flight.csv`, the corpus and the validation pages in the last digit with no `src/` line changed.
+`cargo tree -e features -i num-traits` is the check. A new dev-dependency is also built for the
+thumb targets through `examples/embedded.rs`, hence proptest's `cfg(not(target_os = "none"))`
+table. And `flight.csv` alone is not a neutral replay: #179's (42) fix left it byte-identical
+and still moved three corpus logs, which only `tools/validation.sh --check` noticed.
 
 **A test of a guard is worth mutating.** Break the guard, run the test, and see it fail before
 believing it. A passing test proves nothing about a guard that was never exercised, and the
@@ -1051,6 +1070,12 @@ the declination table, and CI builds and tests without it too.
   heading recovery takes the same path. The barometric reference is the same
   shape without the step: a start that leaves none reads it from the estimate at the first
   altitude once position is established, which moves no state.
+- **A `Config` is valid by construction, and nothing is committed on a refusal.** `Eskf::new`
+  refuses a value outside its bound, so code past it may trust `Config`. A start is worked out
+  whole (`Startup`), checked, then committed, and `alignment_of` reads the same `Startup`. An
+  adoption, a declination turn or an origin placement that could still refuse is asked first
+  (`declination_at`, `carried_*` returning `None`). The adversarial suite holds both: a refused
+  call must leave the estimate, clock, origin, declination, reference and latches bit-identical.
 - **Nothing in `src/` panics.** No `unwrap`, `expect`, `panic!` or `unreachable!` outside
   `#[cfg(test)]`. On `thumbv6m` a panic is a `udf` and the vehicle is a brick, which is why bad
   input is reported through a typed outcome rather than asserted on. The matrix arithmetic the
