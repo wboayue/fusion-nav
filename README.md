@@ -557,9 +557,9 @@ let everything_off = Config { recovery: Recovery::OFF, ..Config::default() };
 ```
 
 `Eskf::new` checks every value in a `Config` against its bound and returns a `ConfigError` naming
-the first field outside it (`Config::validate` is the same check on its own). A NaN timeout would
-otherwise never expire, switching that source's recovery off without a word, and a zero one would
-adopt on the first rejection, switching its gate off. `None` is how a timeout says off.
+the first field outside it and the value it held. `Config::validate` is the same check on its own,
+and its documentation says what each refused value would have done. `None` is how a timeout says
+off.
 
 `reset_position_to(fix, noise)` and `reset_velocity_to(fix, noise)` are that application's
 tools. Both return `false`, changing nothing, for a fix or a noise a `fuse_*` would have refused:

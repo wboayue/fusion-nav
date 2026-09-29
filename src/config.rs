@@ -6,6 +6,7 @@
 //! [`Initialization`]'s stationarity tolerances, both read off the PX4 replay corpus, and
 //! [`ImuNoise`], which follows the defaults PX4 and ArduPilot ship.
 
+use crate::display::{Decimals, Fixed};
 use crate::units::{Meters, MetersPerSecond, MetersPerSecond2, Radians, RadiansPerSecond, Seconds};
 
 /// Standard gravity, m s⁻². The `γ` of equations (5) and (11).
@@ -946,189 +947,187 @@ impl Config {
     ///
     /// `Config` is plain data, built as `Config { field, ..Config::default() }`, so the bound
     /// on each value is checked once where it enters the filter rather than by a type per
-    /// field. A value outside its bound is not a tuning the filter can honour: each one reads
-    /// as something else downstream, silently. A NaN [`Recovery`] timeout never compares true,
+    /// field. A value outside its bound is not a tuning the filter can honour: each reads as
+    /// something else downstream, silently. A NaN [`Recovery`] timeout never compares true,
     /// so that source's recovery is off; a zero one adopts on the first rejection, so its gate
     /// is off. A NaN density in [`ImuNoise`], [`Coast`] or
-    /// [`baro_offset_walk`](Self::baro_offset_walk) enters `P` on the next step, and a NaN
-    /// [`Accuracy`] bound makes every quantity invalid for good. `None` is how an optional
-    /// value says off, so an infinite one is refused rather than taken as a second spelling of
-    /// it.
-    ///
-    /// [`Gates`] needs no check here: a [`Gate`] is valid by construction.
+    /// [`baro_offset_walk`](Self::baro_offset_walk) makes every step's covariance non-finite,
+    /// so [`predict`](crate::Eskf::predict) refuses each one and the filter stops. A NaN
+    /// [`Accuracy`] bound makes every quantity invalid for good. A negative density is squared
+    /// into the same `Q` as its magnitude and is refused as a claim nothing means, the sign of
+    /// a unit or a field confused. `None` is how an optional value says off, so an infinite one
+    /// is refused rather than taken as a second spelling of it.
     ///
     /// [`Eskf::new`]: crate::Eskf::new
     pub fn validate(&self) -> Result<(), ConfigError> {
         use ConfigBound::{NonNegative, Positive};
-        let (imu, init, accuracy) = (&self.imu, &self.init, &self.accuracy);
-        let (recovery, correlation) = (&self.recovery, &self.correlation);
-        let coast = self.coast;
-        let secs = |value: Option<Seconds>| value.map(Seconds::as_secs);
-        let checks: [(&'static str, Option<f32>, ConfigBound); 37] = [
-            ("imu.gyro_white", Some(imu.gyro_white), NonNegative),
-            ("imu.accel_white", Some(imu.accel_white), NonNegative),
-            ("imu.gyro_bias_walk", Some(imu.gyro_bias_walk), NonNegative),
-            (
-                "imu.accel_bias_walk",
-                Some(imu.accel_bias_walk),
-                NonNegative,
-            ),
-            (
-                "timeouts.dead_reckoning_after",
-                Some(self.timeouts.dead_reckoning_after.as_secs()),
-                Positive,
-            ),
-            (
-                "recovery.gnss_position",
-                secs(recovery.gnss_position),
-                Positive,
-            ),
-            ("recovery.gnss_height", secs(recovery.gnss_height), Positive),
-            (
-                "recovery.gnss_velocity",
-                secs(recovery.gnss_velocity),
-                Positive,
-            ),
-            (
-                "recovery.baro_altitude",
-                secs(recovery.baro_altitude),
-                Positive,
-            ),
-            ("recovery.mag_heading", secs(recovery.mag_heading), Positive),
-            (
-                "recovery.gnss_heading",
-                secs(recovery.gnss_heading),
-                Positive,
-            ),
-            ("recovery.course", secs(recovery.course), Positive),
-            (
-                "correlation.gnss_position",
-                secs(correlation.gnss_position),
-                Positive,
-            ),
-            (
-                "correlation.gnss_height",
-                secs(correlation.gnss_height),
-                Positive,
-            ),
-            (
-                "correlation.gnss_velocity",
-                secs(correlation.gnss_velocity),
-                Positive,
-            ),
-            (
-                "correlation.baro_altitude",
-                secs(correlation.baro_altitude),
-                Positive,
-            ),
-            (
-                "correlation.mag_heading",
-                secs(correlation.mag_heading),
-                Positive,
-            ),
-            (
-                "correlation.gnss_heading",
-                secs(correlation.gnss_heading),
-                Positive,
-            ),
-            ("correlation.course", secs(correlation.course), Positive),
-            (
-                "init.min_duration",
-                Some(init.min_duration.as_secs()),
-                NonNegative,
-            ),
-            (
-                "init.max_gyro_rate",
-                Some(init.max_gyro_rate.as_rad_per_s()),
-                NonNegative,
-            ),
-            (
-                "init.max_accel_deviation",
-                Some(init.max_accel_deviation.as_m_per_s2()),
-                NonNegative,
-            ),
-            (
-                "init.sigma_position",
-                Some(init.sigma_position.as_meters()),
-                Positive,
-            ),
-            (
-                "init.sigma_velocity",
-                Some(init.sigma_velocity.as_m_per_s()),
-                Positive,
-            ),
-            (
-                "init.sigma_tilt",
-                Some(init.sigma_tilt.as_radians()),
-                Positive,
-            ),
-            (
-                "init.sigma_yaw",
-                Some(init.sigma_yaw.as_radians()),
-                Positive,
-            ),
-            (
-                "init.sigma_accel_bias",
-                Some(init.sigma_accel_bias.as_m_per_s2()),
-                Positive,
-            ),
-            (
-                "init.sigma_gyro_bias",
-                Some(init.sigma_gyro_bias.as_rad_per_s()),
-                Positive,
-            ),
-            ("accuracy.tilt", Some(accuracy.tilt.as_radians()), Positive),
-            (
-                "accuracy.heading",
-                Some(accuracy.heading.as_radians()),
-                Positive,
-            ),
-            (
-                "accuracy.position",
-                Some(accuracy.position.as_meters()),
-                Positive,
-            ),
-            (
-                "accuracy.velocity",
-                Some(accuracy.velocity.as_m_per_s()),
-                Positive,
-            ),
-            (
-                "accuracy.horizon",
-                Some(accuracy.horizon.as_secs()),
-                NonNegative,
-            ),
-            (
-                "max_predict_dt",
-                Some(self.max_predict_dt.as_secs()),
-                Positive,
-            ),
-            (
-                "coast.acceleration",
-                coast.map(|c| c.acceleration),
-                NonNegative,
-            ),
-            ("coast.rotation", coast.map(|c| c.rotation), NonNegative),
-            ("baro_offset_walk", Some(self.baro_offset_walk), NonNegative),
-        ];
-        for (field, value, bound) in checks {
-            if let Some(value) = value
-                && !bound.holds(value)
-            {
-                return Err(ConfigError { field, bound });
+        // Destructured without `..`: a field added to `Config`, or to any part of it checked
+        // here, does not compile until it is placed below.
+        let Config {
+            imu:
+                ImuNoise {
+                    gyro_white,
+                    accel_white,
+                    gyro_bias_walk,
+                    accel_bias_walk,
+                },
+            // A `Gate` is valid by construction.
+            gates: _,
+            timeouts: Timeouts {
+                dead_reckoning_after,
+            },
+            recovery,
+            correlation,
+            init:
+                Initialization {
+                    min_duration,
+                    max_gyro_rate,
+                    max_accel_deviation,
+                    sigma_position,
+                    sigma_velocity,
+                    sigma_tilt,
+                    sigma_yaw,
+                    sigma_accel_bias,
+                    sigma_gyro_bias,
+                },
+            accuracy:
+                Accuracy {
+                    tilt,
+                    heading,
+                    position,
+                    velocity,
+                    horizon,
+                },
+            max_predict_dt,
+            coast,
+            baro_offset_walk,
+            baro_reference_from_estimate: _,
+        } = *self;
+        let check = |field, value: f32, bound: ConfigBound| {
+            if bound.holds(value) {
+                Ok(())
+            } else {
+                Err(ConfigError {
+                    field,
+                    value,
+                    bound,
+                })
+            }
+        };
+        check("imu.gyro_white", gyro_white, NonNegative)?;
+        check("imu.accel_white", accel_white, NonNegative)?;
+        check("imu.gyro_bias_walk", gyro_bias_walk, NonNegative)?;
+        check("imu.accel_bias_walk", accel_bias_walk, NonNegative)?;
+        let dead_reckoning_after = dead_reckoning_after.as_secs();
+        check(
+            "timeouts.dead_reckoning_after",
+            dead_reckoning_after,
+            Positive,
+        )?;
+        for (field, after) in recovery.named().into_iter().chain(correlation.named()) {
+            if let Some(after) = after {
+                check(field, after.as_secs(), Positive)?;
             }
         }
-        Ok(())
+        check("init.min_duration", min_duration.as_secs(), NonNegative)?;
+        check(
+            "init.max_gyro_rate",
+            max_gyro_rate.as_rad_per_s(),
+            NonNegative,
+        )?;
+        let deviation = max_accel_deviation.as_m_per_s2();
+        check("init.max_accel_deviation", deviation, NonNegative)?;
+        check("init.sigma_position", sigma_position.as_meters(), Positive)?;
+        check("init.sigma_velocity", sigma_velocity.as_m_per_s(), Positive)?;
+        check("init.sigma_tilt", sigma_tilt.as_radians(), Positive)?;
+        check("init.sigma_yaw", sigma_yaw.as_radians(), Positive)?;
+        check(
+            "init.sigma_accel_bias",
+            sigma_accel_bias.as_m_per_s2(),
+            Positive,
+        )?;
+        check(
+            "init.sigma_gyro_bias",
+            sigma_gyro_bias.as_rad_per_s(),
+            Positive,
+        )?;
+        check("accuracy.tilt", tilt.as_radians(), Positive)?;
+        check("accuracy.heading", heading.as_radians(), Positive)?;
+        check("accuracy.position", position.as_meters(), Positive)?;
+        check("accuracy.velocity", velocity.as_m_per_s(), Positive)?;
+        check("accuracy.horizon", horizon.as_secs(), NonNegative)?;
+        check("max_predict_dt", max_predict_dt.as_secs(), Positive)?;
+        if let Some(Coast {
+            acceleration,
+            rotation,
+        }) = coast
+        {
+            check("coast.acceleration", acceleration, NonNegative)?;
+            check("coast.rotation", rotation, NonNegative)?;
+        }
+        check("baro_offset_walk", baro_offset_walk, NonNegative)
+    }
+}
+
+impl Recovery {
+    /// Each source's timeout, named by its path from [`Config`]. Destructured without `..`,
+    /// so a source added here is a compile error until [`Config::validate`] sees it.
+    fn named(self) -> [(&'static str, Option<Seconds>); 7] {
+        let Self {
+            gnss_position,
+            gnss_height,
+            gnss_velocity,
+            baro_altitude,
+            mag_heading,
+            gnss_heading,
+            course,
+        } = self;
+        [
+            ("recovery.gnss_position", gnss_position),
+            ("recovery.gnss_height", gnss_height),
+            ("recovery.gnss_velocity", gnss_velocity),
+            ("recovery.baro_altitude", baro_altitude),
+            ("recovery.mag_heading", mag_heading),
+            ("recovery.gnss_heading", gnss_heading),
+            ("recovery.course", course),
+        ]
+    }
+}
+
+impl Correlation {
+    /// Each source's `τ`, named by its path from [`Config`]; as [`Recovery::named`].
+    fn named(self) -> [(&'static str, Option<Seconds>); 7] {
+        let Self {
+            gnss_position,
+            gnss_height,
+            gnss_velocity,
+            baro_altitude,
+            mag_heading,
+            gnss_heading,
+            course,
+        } = self;
+        [
+            ("correlation.gnss_position", gnss_position),
+            ("correlation.gnss_height", gnss_height),
+            ("correlation.gnss_velocity", gnss_velocity),
+            ("correlation.baro_altitude", baro_altitude),
+            ("correlation.mag_heading", mag_heading),
+            ("correlation.gnss_heading", gnss_heading),
+            ("correlation.course", course),
+        ]
     }
 }
 
 /// Why [`Config::validate`] refused a configuration: the first field outside its bound.
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ConfigError {
     /// The field's path from [`Config`], as it is written in a struct literal:
     /// `"recovery.gnss_height"`.
     pub field: &'static str,
+    /// The value it held, in the field's own unit: seconds for a duration, the density's
+    /// unit for a density.
+    pub value: f32,
     /// The bound it failed.
     pub bound: ConfigBound,
 }
@@ -1140,8 +1139,8 @@ pub enum ConfigBound {
     /// Greater than zero: a duration the filter waits for or divides by, a standard
     /// deviation, or an accuracy bar.
     Positive,
-    /// Zero or more: a noise density, where zero is a claim (no noise of that kind), not a
-    /// fault.
+    /// Zero or more, where zero is a claim rather than a fault: a noise density (no noise of
+    /// that kind), a window duration or stationarity tolerance, or a projection horizon.
     NonNegative,
 }
 
@@ -1161,7 +1160,8 @@ impl core::fmt::Display for ConfigError {
             ConfigBound::Positive => "finite and positive",
             ConfigBound::NonNegative => "finite and not negative",
         };
-        write!(f, "config {} must be {bound}", self.field)
+        let value = Fixed::new(self.value, Decimals::Three);
+        write!(f, "config {} is {value}, and must be {bound}", self.field)
     }
 }
 
@@ -1455,9 +1455,10 @@ mod tests {
             {
                 let mut config = Config::default();
                 set(&mut config, value);
+                let refused = config.validate().err();
                 assert_eq!(
-                    config.validate(),
-                    Err(ConfigError { field, bound }),
+                    refused.map(|e| (e.field, e.bound)),
+                    Some((field, bound)),
                     "{field} = {value}"
                 );
             }

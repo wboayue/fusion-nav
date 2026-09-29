@@ -2767,13 +2767,12 @@ mod tests {
             },
             ..Config::default()
         };
+        let refused = Eskf::new(config).err();
         assert_eq!(
-            Eskf::new(config).err(),
-            Some(ConfigError {
-                field: "recovery.gnss_height",
-                bound: crate::config::ConfigBound::Positive,
-            })
+            refused.map(|e| (e.field, e.bound)),
+            Some(("recovery.gnss_height", crate::ConfigBound::Positive))
         );
+        assert!(refused.is_some_and(|e| e.value.is_nan()));
         assert_eq!(Eskf::default().config(), &Config::default());
     }
 
@@ -2880,7 +2879,11 @@ mod tests {
         p[(0, 1)] = 0.01;
         p[(1, 0)] = 0.03;
         let mut filter = Eskf::default();
-        assert!(filter.seed(State::default(), Covariance::from_matrix(p)).is_ok());
+        assert!(
+            filter
+                .seed(State::default(), Covariance::from_matrix(p))
+                .is_ok()
+        );
         let committed = filter.covariance().as_matrix();
         assert_eq!(*committed, committed.transpose());
         assert_eq!(committed[(0, 1)], 0.02);

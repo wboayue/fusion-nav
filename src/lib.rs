@@ -27,6 +27,7 @@ mod update;
 #[doc(inline)]
 pub use prelude::*;
 
+pub use config::ConfigBound;
 pub use frames::Frame;
 pub use state::{CovarianceMatrix, STATES};
 
@@ -86,12 +87,12 @@ pub use state::{CovarianceMatrix, STATES};
 /// ```
 ///
 /// Deliberately excluded, because their names are too generic to glob-import safely:
-/// [`Frame`], [`STATES`], and [`CovarianceMatrix`]. Import those by path.
+/// [`Frame`], [`STATES`], and [`CovarianceMatrix`]. Import those by path, as
+/// [`ConfigBound`], which a caller reads off a [`ConfigError`] far more often than it names.
 pub mod prelude {
     pub use crate::config::{
-        ALIGNED_HEADING, ALIGNED_TILT, Accuracy, Coast, Config, ConfigBound, ConfigError,
-        Correlation, GRAVITY, Gate, Gates, ImuNoise, Initialization, LATENCY_HORIZON, Percentile,
-        Recovery, Timeouts,
+        ALIGNED_HEADING, ALIGNED_TILT, Accuracy, Coast, Config, ConfigError, Correlation, GRAVITY,
+        Gate, Gates, ImuNoise, Initialization, LATENCY_HORIZON, Percentile, Recovery, Timeouts,
     };
     pub use crate::eskf::Eskf;
     pub use crate::frames::{Body, Enu, Ned};

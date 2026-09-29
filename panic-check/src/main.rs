@@ -20,8 +20,8 @@
 
 use core::hint::black_box;
 
-use fusion_nav::STATES;
 use fusion_nav::prelude::*;
+use fusion_nav::{ConfigBound, STATES};
 
 /// A handler is required to link, and its body is irrelevant: the gate fails on the
 /// *reachability* of `core::panicking`, not on what happens after it is reached.
@@ -345,6 +345,7 @@ fn surface(state: State, diagnostics: Diagnostics, covariance: &Covariance) {
 
     show::<ConfigError>(ConfigError {
         field: "baro_offset_walk",
+        value: black_box(-0.5),
         bound: ConfigBound::NonNegative,
     });
     let _ = black_box(black_box(Config::default()).validate());
