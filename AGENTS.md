@@ -489,7 +489,7 @@ data/fetch.sh --add <url> [name]  # download once, append a manifest line to com
 data/fetch.sh --pin <name>        # replay one log, print the expectations to append
 data/fetch.sh --compare [--pin]   # every log beside EKF2, raw and px4, against data/ekf2.txt
 data/fetch.sh --manifest data/urbannav.txt   # UrbanNav's segment into data/urbannav; no licence, never commit
-data/urbannav.sh [--pin]          # both receivers against truth, raw and px4, data/urbannav-pins.txt
+data/urbannav.sh [--pin]          # both receivers against truth, raw and px4 (M8T also recovery off)
 uv run tools/urbannav2replay.py --self-test   # the UrbanNav converter's fixtures (stdlib)
 uv run tools/ulog2replay.py log.ulg --screen   # what a candidate could cover; data/README.md
 uv run tools/ulog2replay.py log.ulg -o log.csv [--reference]   # ULog -> replay CSV

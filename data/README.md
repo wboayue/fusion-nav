@@ -743,5 +743,5 @@ harness checks as it checks a scenario's seed.
 What a fix's `bad` verdict means is `Judged`'s doc comment in `examples/replay.rs`: the gate a
 perfect state would run, at P999 on the fix's own variance, fixed whatever `Config::gates` or
 `--r-policy` the replay used. `data/urbannav-pins.txt` pins what each receiver did under both
-policies and says what the lines show. Only these scalars are published
+policies, and the M8T under `--recovery off`, and says what the lines show. Only these scalars are published
 ([robustness page](../validation/robustness.md#gnss-in-a-city)); no figure of the data is.

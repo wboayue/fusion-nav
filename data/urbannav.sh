@@ -35,7 +35,7 @@ aligned_at degraded_s dead_reckoning_s transitions status
 pos_h pos_v pos_h_max yaw nees_pos"
 for half in gnss_pos gnss_hgt; do
     for count in offered bad rejected_bad rejected_good accepted_far adopted_bad \
-        recovered_after_bad recovered_after_lockout; do
+        recovered_after_bad recovered_after_lockout unjudged; do
         keys="$keys ${count}_$half"
     done
 done
@@ -60,35 +60,43 @@ replay="$target/release/examples/replay"
 out="$target/urbannav"
 mkdir -p "$out"
 
+# Each receiver under both R policies, and the M8T once more with `Recovery::OFF`: the filter
+# that only reports, which is what recovery's worth on a hostile receiver is measured against.
+runs="m8t:raw m8t:px4 m8t:raw-norecovery f9p:raw f9p:px4"
+
 failed=0
 for receiver in m8t f9p; do
     uv run --quiet "$root/tools/urbannav2replay.py" "$data" --receiver "$receiver" \
         -o "$out/$receiver.csv" --truth "$out/$receiver.truth.csv" 2>/dev/null ||
         die "converting $receiver failed"
-    for policy in raw px4; do
-        run="$out/$receiver.$policy"
-        "$replay" --r-policy "$policy" "$out/$receiver.csv" "$run.csv" \
-            "$out/$receiver.truth.csv" > "$run.out" 2>&1 || die "replaying $receiver $policy failed"
-        line="$(grep '^summary ' "$run.out") $(grep '^score ' "$run.out")"
-        picked=""
-        for key in $keys; do
-            value=$(pair_value "$line" "$key") || die "$receiver $policy: no $key= on the lines"
-            picked="${picked:+$picked }$key=$value"
-        done
-        if [ "$pin" = 1 ]; then
-            echo "$receiver $policy $(pin_pairs "run $picked" --decimal)"
-            continue
-        fi
-        expect=$(awk -v r="$receiver" -v p="$policy" '$1 == r && $2 == p { $1 = $2 = ""; print; exit }' "$pins")
-        if [ -z "$expect" ]; then
-            echo "  no expectations  $receiver $policy"
-            failed=1
-        elif compare_pairs "$picked" "$expect" "$receiver $policy"; then
-            echo "  ok       $receiver $policy"
-        else
-            echo "    got $picked" >&2
-            failed=1
-        fi
+done
+for entry in $runs; do
+    receiver=${entry%%:*} policy=${entry#*:}
+    options="--r-policy ${policy%-norecovery}"
+    [ "$policy" = "${policy%-norecovery}" ] || options="$options --recovery off"
+    run="$out/$receiver.$policy"
+    # shellcheck disable=SC2086 # two flags, split on purpose
+    "$replay" $options "$out/$receiver.csv" "$run.csv" \
+        "$out/$receiver.truth.csv" > "$run.out" 2>&1 || die "replaying $receiver $policy failed"
+    line="$(grep '^summary ' "$run.out") $(grep '^score ' "$run.out")"
+    picked=""
+    for key in $keys; do
+        value=$(pair_value "$line" "$key") || die "$receiver $policy: no $key= on the lines"
+        picked="${picked:+$picked }$key=$value"
     done
+    if [ "$pin" = 1 ]; then
+        echo "$receiver $policy $(pin_pairs "run $picked" --decimal)"
+        continue
+    fi
+    expect=$(awk -v r="$receiver" -v p="$policy" '$1 == r && $2 == p { $1 = $2 = ""; print; exit }' "$pins")
+    if [ -z "$expect" ]; then
+        echo "  no expectations  $receiver $policy"
+        failed=1
+    elif compare_pairs "$picked" "$expect" "$receiver $policy"; then
+        echo "  ok       $receiver $policy"
+    else
+        echo "    got $picked" >&2
+        failed=1
+    fi
 done
 [ "$failed" = 0 ] || die "one or more runs did not match data/urbannav-pins.txt"

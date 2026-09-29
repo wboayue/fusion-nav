@@ -731,12 +731,13 @@ could be argued back:
   no recovery, and no fix after any of its eight gaps turned down.
 - **Truth scored it (#60).** UrbanNav's M8T is wrong by tens to hundreds of metres for a minute
   at a time while claiming a few, and 338 of its 517 fixes fail their own `R` against SPAN-CPT.
-  With recovery the filter reads 258 m horizontal RMSE and ends 11 of its 41 rejection runs as
-  lockouts of good fixes; with `Recovery::OFF` it rejects 499 of 517 fixes and reads 61 km.
-  Neither is a working filter, and the gate is not what could make one: every percentile from
-  P99 to P99999 lands between 257 and 266 m with recovery on. A receiver whose error persists
-  is followed a fix at a time until the right fixes are the ones that disagree, which no
-  threshold on one innovation can see. `data/urbannav-pins.txt` pins the counts.
+  With recovery the filter reads 258 m horizontal RMSE, and 12 of its 16 position recoveries end
+  a lockout of good fixes; with `Recovery::OFF` it rejects 499 of 517 fixes and reads 61 km
+  (`data/urbannav-pins.txt` pins both). Neither is a working filter, and the gate is not what
+  could make one: on #60's branch, setting `Config::gates` to every percentile from P99 to P99999
+  landed between 257 and 266 m with recovery on. A receiver whose error persists is followed a
+  fix at a time until the right fixes are the ones that disagree, which no threshold on one
+  innovation can see.
 - **Report-and-stop handed every integrator the same loop.** The filter holds the timers, the
   rejected measurement, its `R` and the adoption path. An application wanting a working estimate,
   which is most of them, would write PX4's timeout-and-reset again and get it subtly wrong. A

@@ -121,13 +121,14 @@ This is the failure an innovation gate cannot prevent on its own. A gate asks wh
 agrees with the estimate; a receiver that is wrong the same way for many seconds moves the
 estimate a little with each fix it is allowed, until the wrong fixes agree and the right ones
 do not. Once that has happened the filter is locked out, refusing the fixes that would correct
-it. It recovered {{summary urbannav-m8t/raw recovered}} times by taking a fix after a long run
-of refusals; {{score urbannav-m8t/raw recovered_after_lockout_gnss_pos}} of those runs were
-mostly good fixes, a lockout ended, and {{score urbannav-m8t/raw recovered_after_bad_gnss_pos}}
-were mostly bad ones. Without those recoveries the filter refuses nearly every fix and dead
-reckons for most of the drive, which is far worse; that is why recovery is on by default
+it. It recovers by taking a fix after a long run of refusals: for position,
+{{score urbannav-m8t/raw recovered_after_lockout_gnss_pos}} of those runs were mostly good
+fixes, a lockout ended, and {{score urbannav-m8t/raw recovered_after_bad_gnss_pos}} were mostly
+bad ones. Replayed without recovery, the filter refuses
+{{summary urbannav-m8t/raw-norecovery rejected_gnss_pos}} of the
+{{score urbannav-m8t/raw-norecovery offered_gnss_pos}} fixes and its position is off by
+{{score urbannav-m8t/raw-norecovery pos_h}} m RMS, which is why recovery is on by default
 ([GOALS.md, "Rejection handling"](../GOALS.md#rejection-handling-recover-by-default-opt-out-per-source)).
-A stricter or looser gate threshold changes the M8T's result little.
 
 Under PX4's floor on the receiver's stated accuracy the picture is the same: the M8T's position
 is off by {{score urbannav-m8t/px4 pos_h}} m RMS and the F9P refuses

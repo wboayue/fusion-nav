@@ -23,9 +23,9 @@ What each source is, and what this does to it:
 * **IMU**, an Xsens MTi-10 at 400 Hz. Its axes are right, forward, up, which the at-rest
   specific force (+9.79 m/s^2 on z) and the gyroscope's z against the truth's heading rate
   both confirm; the replay's are forward, right, down, so (x, y, z) becomes (y, x, -z).
-  Timed by `field.header.stamp`, which is UTC: the gyroscope's yaw rate matches the truth's
-  heading rate at an offset of 0 s (0.15 deg/s RMS, against 0.60 at +-0.2 s), and not at
-  the 18 s of GPS time. The MTi-10's magnetometer is not published, so no heading row.
+  Timed by `field.header.stamp`, which is UTC: one-second means of the gyroscope's yaw rate
+  against the truth's heading differences agree at an offset of 0 s (0.15 deg/s RMS, against
+  0.57 to 0.60 at +-0.2 s), and not at the 18 s of GPS time. The MTi-10's magnetometer is not published, so no heading row.
 * **GNSS**, one u-blox receiver's `$PUBX,00`, the one sentence carrying its own accuracy:
   `hAcc` and `vAcc` as sigma, squared into the variance columns, and a height above the
   ellipsoid, the datum the truth's `H-Ell` is on. 3D fixes only (`G3`, `D3`): a `NF` row
@@ -55,7 +55,7 @@ import zipfile
 from pathlib import Path
 
 from geodesy import geodetic_to_ned
-from ulog2replay import GNSS_NOISE_PARAMETERS, gnss_noise_note
+from gnss_noise import GNSS_NOISE_PARAMETERS, gnss_noise_note
 
 SEGMENT = "UrbanNav-HK-Medium-Urban-1"
 IMU_FILE = "xsense_imu_medium_urban1.csv"
@@ -65,8 +65,8 @@ TRUTH_FILE = "UrbanNav_TST_GT_raw_with_std.txt"
 # The two receivers with a `$PUBX,00`, and so with an accuracy of their own. The other
 # u-blox files and the phones carry GGA alone, which has no sigma to fuse or to judge.
 RECEIVERS = {
-    # GPS and BeiDou, single frequency, a patch antenna on the roof: the hostile one. It
-    # reports hAcc of 5 m while 200 to 470 m out for a minute at a time.
+    # GPS and BeiDou, single frequency: the hostile one. It reports an hAcc of 4.5 to 24 m
+    # while 200 to 470 m out, for a minute at a time.
     "m8t": f"{SEGMENT}.ublox.m8t.GC.nmea",
     # Dual frequency with differential corrections: honest to its hAcc on this segment,
     # which is what makes it the test of rejecting good fixes at road speed.
@@ -88,7 +88,7 @@ VELOCITY_SIGMA = dict(GNSS_NOISE_PARAMETERS)["EKF2_GPS_V_NOISE"]
 
 # The course's sideslip, sigma in radians: 3 deg. The truth's own body velocity, above
 # 3 m/s, puts the angle between travel and heading at 1.44 deg RMS with a 1.25 deg mean and
-# 3.8 deg at its 99th percentile. The mean is a share every reading carries, so the sigma
+# 3.9 deg at its 99th percentile. The mean is a share every reading carries, so the sigma
 # sits at twice the RMS rather than at it.
 COURSE_SIDESLIP = math.radians(3.0)
 
