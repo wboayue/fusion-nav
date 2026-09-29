@@ -74,7 +74,7 @@ scenario (`mission` 0.414° → 0.330); `7ce66f0d` recovers 28 times rather than
 a reader who has never computed a NEES. Every number and table comes through a placeholder in
 `validation/src/`, and every figure through `replay_report.py --figures`. `tools/validation.sh`
 regenerates them from the gates it runs, and `--check` re-derives them. The pages state the
-losses: `correlated` (#51) is overconfident and `7ce66f0d` levels wrong (#59). Order: #47, whose *API frozen* milestone has no open issue: #174 became bad vertical-accelerometer
+losses: `correlated` (#51) is overconfident and `7ce66f0d` levels wrong (#59). Order: #183, then #47. #183 takes nalgebra, 0.x and so a semver break per minor, out of the public surface (plain arrays, optional `mint` interop) and is the *API frozen* milestone's one open issue: #174 became bad vertical-accelerometer
 detection, internal and reported through `Diagnostics`, so it left the milestone (clipping, its first
 shape, is 22 samples on the corpus); #41 needs a board.
 #44 landed (#179), with the attitude renaming #47 asked for before the freeze. `Eskf::new` returns
