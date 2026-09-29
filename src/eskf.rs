@@ -1853,7 +1853,9 @@ impl Eskf {
             .observe(time, |past, _| build(past, &self.covariance))
             .correlated(correlation_inflation(since_measured, source.correlation));
         if self.unestablished.heading {
-            self.adopt_heading(&observation, spread);
+            if !self.adopt_heading(&observation, spread) {
+                return refuse((source.health)(&mut self.diagnostics), Fusion::NotFinite);
+            }
             (source.health)(&mut self.diagnostics).record_adopted();
             self.note_alignment();
             self.magnetic_north = source.magnetic;
@@ -1867,8 +1869,7 @@ impl Eskf {
             source.gate,
         );
         let fused = self.apply_or_recover(outcome, source.health, source.recovery, |filter| {
-            filter.adopt_heading(&observation, spread);
-            true
+            filter.adopt_heading(&observation, spread)
         });
         // An adoption replaces the heading with this source's; a true heading accepted means
         // the estimate is no longer referred to north through the declination alone.
@@ -1903,14 +1904,24 @@ impl Eskf {
     /// error is priced on the path where the tilt it comes from is worst.
     ///
     /// `spread` is added to `R`: see [`fuse_heading`](Self::fuse_heading).
-    fn adopt_heading(&mut self, observation: &Observation<1>, spread: f32) {
+    ///
+    /// Returns whether it adopted: a variance or an innovation that is not finite commits
+    /// nothing. Both are finite products of a finite covariance, and can still overflow: the
+    /// levelling variance of (36′) squares a tilt σ a coarse start charged a 1e20 rad/s
+    /// gyroscope reading to.
+    fn adopt_heading(&mut self, observation: &Observation<1>, spread: f32) -> bool {
         // Navigation down in body axes, `R(q̂)ᵀe₃`, of the present state: the axis the
         // adoption turns about. Not read off the observation's attitude row, which (23′) carries
         // through the error dynamics: a course's gains a tilt component from its velocity block,
         // `∇χᵀR[a_b]× τ`, about 0.06 at 18 m/s and 110 ms, and stops being the unit vector
         // `reset_attitude_direction` needs.
         let down = self.state.attitude.body_to_ned().inverse() * Vector3::z();
-        self.reset_heading_by(observation.y[0], observation.r_m[0] + spread, down);
+        let (y, variance) = (observation.y[0], observation.r_m[0] + spread);
+        if !(y.is_finite() && variance.is_finite()) {
+            return false;
+        }
+        self.reset_heading_by(y, variance, down);
+        true
     }
 
     /// Turn the estimate by a yaw error and give the result the measurement's variance:
@@ -2891,6 +2902,26 @@ mod tests {
         let committed = filter.covariance().as_matrix();
         assert_eq!(*committed, committed.transpose());
         assert_eq!(committed[(0, 1)], 0.02);
+    }
+
+    #[test]
+    fn a_heading_adoption_whose_variance_overflows_is_refused() {
+        // A coarse start charges its tilt prior the peak rate it saw; (36′) squares that tilt
+        // into the variance a first magnetic heading is adopted at.
+        let mut filter = Eskf::default();
+        let spinning = ImuSample::from_rates(
+            Timestamp::from_micros(1_000_000),
+            AngularRate::body(0.0, 0.0, 1.0e20),
+            Acceleration::body(0.3, 0.0, -9.3),
+            DT,
+        );
+        assert!(filter.initialize_coarse(spinning).is_ok());
+        let (state, covariance) = (filter.state, *filter.covariance());
+        let field = MagField::body(0.22, 0.0, 0.44);
+        let outcome = filter.fuse_mag_heading(filter.now(), field, HeadingNoise::from_sigma(0.02));
+        assert_eq!(outcome, Fusion::NotFinite);
+        assert_eq!((filter.state, *filter.covariance()), (state, covariance));
+        assert!(filter.unestablished.heading);
     }
 
     #[test]
