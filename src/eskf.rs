@@ -342,7 +342,14 @@ impl Eskf {
                 .alpha0()
                 .map(|(reference, variance)| (reference, Offset::independent(variance)))
         });
-        self.checked_startup(alignment, state, &measured, at_rest, measured.end, reference)
+        self.checked_startup(
+            alignment,
+            state,
+            &measured,
+            at_rest,
+            measured.end,
+            reference,
+        )
     }
 
     /// What [`initialize`](Self::initialize) would make of this window, without touching
@@ -951,6 +958,10 @@ impl Eskf {
     /// One place, for the reason `apply` is one place: every source recovers through here, so
     /// none can adopt without counting it or forget [`note_alignment`](Self::note_alignment).
     ///
+    /// `adopt` returns whether it adopted. One that would write a value that is not finite
+    /// commits nothing and the measurement is refused as [`Fusion::NotFinite`]: a finite fix
+    /// carried to now by (28′) can still overflow, a lever arm of `f32::MAX` rotated.
+    ///
     /// Out of line for the reason [`observe`](Self::observe) is: inlined, the `Update` it takes
     /// sat in each `fuse_*` frame beneath `update::<3>`, `fuse_gnss_velocity` at 2384 bytes on
     /// `thumbv6m-none-eabi` against 1416. That frame into `update::<3>` is the crate's
@@ -961,14 +972,16 @@ impl Eskf {
         outcome: Update,
         source: fn(&mut Diagnostics) -> &mut SourceHealth,
         after: Option<Seconds>,
-        adopt: impl FnOnce(&mut Self),
+        adopt: impl FnOnce(&mut Self) -> bool,
     ) -> Fusion {
         let since_initialized = self.diagnostics.since_initialized;
         let locked_out = source(&mut self.diagnostics).locked_out(after, since_initialized);
         if !(matches!(outcome, Update::Rejected { .. }) && locked_out) {
             return self.apply(outcome, source);
         }
-        adopt(self);
+        if !adopt(self) {
+            return refuse(source(&mut self.diagnostics), Fusion::NotFinite);
+        }
         source(&mut self.diagnostics).record_recovered();
         self.note_alignment();
         Fusion::Reset
@@ -1061,7 +1074,9 @@ impl Eskf {
             if !noise.is_positive() {
                 return self.refuse_gnss(Fusion::InvalidNoise);
             }
-            let adopted = self.carried_position(position, antenna, time);
+            let Some(adopted) = self.carried_position(position, antenna, time) else {
+                return self.refuse_gnss(Fusion::NotFinite);
+            };
             self.adopt_position(adopted, noise, POSITION);
             self.unestablished.position = false;
             self.diagnostics.gnss_position.record_adopted();
@@ -1094,7 +1109,9 @@ impl Eskf {
                     self.config.recovery.gnss_position,
                     |filter| {
                         let adopted = filter.carried_position(position, antenna, time);
-                        filter.adopt_position(adopted, noise, HORIZONTAL);
+                        adopted
+                            .map(|adopted| filter.adopt_position(adopted, noise, HORIZONTAL))
+                            .is_some()
                     },
                 )
             }
@@ -1123,7 +1140,9 @@ impl Eskf {
                     self.config.recovery.gnss_height,
                     |filter| {
                         let adopted = filter.carried_position(position, antenna, time);
-                        filter.adopt_height(adopted, noise);
+                        adopted
+                            .map(|adopted| filter.adopt_height(adopted, noise))
+                            .is_some()
                     },
                 )
             }
@@ -1233,16 +1252,20 @@ impl Eskf {
     /// motion since, `+ x̂ − x̂(t − τ)`. For an adoption, which writes the measurement as the
     /// state. A fix 110 ms old on a vehicle at 30 m/s, adopted as it stands, puts the estimate
     /// 3.3 m behind.
+    ///
+    /// `None` where the sum overflows, which finite inputs can: an adoption would write it
+    /// into the state.
     fn carried_position(
         &self,
         taken: Position<Ned>,
         antenna: Position<Body>,
         time: Timestamp,
-    ) -> Position<Ned> {
+    ) -> Option<Position<Ned>> {
         let (past, _) = self.past(time);
         let arm = past.attitude.body_to_ned() * antenna.vector();
         let moved = self.state.position.vector() - past.position.vector();
-        Position::from_vector(taken.vector() - arm + moved)
+        let carried = Position::from_vector(taken.vector() - arm + moved);
+        carried.is_finite().then_some(carried)
     }
 
     /// [`carried_position`](Self::carried_position) for a velocity, referred to the IMU by
@@ -1253,12 +1276,13 @@ impl Eskf {
         taken: Velocity<Ned>,
         antenna: Position<Body>,
         time: Timestamp,
-    ) -> Velocity<Ned> {
+    ) -> Option<Velocity<Ned>> {
         let (past, age) = self.past(time);
         let omega = self.mean_rate(&past, age.as_secs());
         let turning = past.attitude.body_to_ned() * omega.vector().cross(&antenna.vector());
         let moved = self.state.velocity.vector() - past.velocity.vector();
-        Velocity::from_vector(taken.vector() - turning + moved)
+        let carried = Velocity::from_vector(taken.vector() - turning + moved);
+        carried.is_finite().then_some(carried)
     }
 
     /// Refuse both halves of a GNSS fix for one reason.
@@ -1332,6 +1356,14 @@ impl Eskf {
             let Some(origin) = LocalOrigin::new(fix) else {
                 return self.refuse_gnss(Fusion::NoReference);
             };
+            // The adoption below refuses an arm that overflows, and placing the origin turns
+            // the heading, so ask first. The turn is about down and keeps the arm's length.
+            if self
+                .carried_position(Position::zero(), antenna, time)
+                .is_none()
+            {
+                return self.refuse_gnss(Fusion::NotFinite);
+            }
             self.place_origin(origin);
             return self.fuse_gnss_position(time, Position::zero(), noise, antenna);
         }
@@ -1406,7 +1438,10 @@ impl Eskf {
             return refuse(&mut self.diagnostics.gnss_velocity, Fusion::InvalidNoise);
         }
         if self.unestablished.velocity {
-            self.adopt_velocity(self.carried_velocity(velocity, antenna, time), noise);
+            let Some(adopted) = self.carried_velocity(velocity, antenna, time) else {
+                return refuse(&mut self.diagnostics.gnss_velocity, Fusion::NotFinite);
+            };
+            self.adopt_velocity(adopted, noise);
             self.unestablished.velocity = false;
             self.diagnostics.gnss_velocity.record_adopted();
             return Fusion::Reset;
@@ -1432,7 +1467,9 @@ impl Eskf {
             self.config.recovery.gnss_velocity,
             |filter| {
                 let adopted = filter.carried_velocity(velocity, antenna, time);
-                filter.adopt_velocity(adopted, noise);
+                adopted
+                    .map(|adopted| filter.adopt_velocity(adopted, noise))
+                    .is_some()
             },
         )
     }
@@ -1537,7 +1574,10 @@ impl Eskf {
             outcome,
             |diagnostics| &mut diagnostics.baro_altitude,
             after,
-            |filter| filter.reference_from_estimate(altitude, noise, time),
+            |filter| {
+                filter.reference_from_estimate(altitude, noise, time);
+                true
+            },
         )
     }
 
@@ -1812,7 +1852,8 @@ impl Eskf {
             source.gate,
         );
         let fused = self.apply_or_recover(outcome, source.health, source.recovery, |filter| {
-            filter.adopt_heading(&observation, spread)
+            filter.adopt_heading(&observation, spread);
+            true
         });
         // An adoption replaces the heading with this source's; a true heading accepted means
         // the estimate is no longer referred to north through the declination alone.
@@ -2792,6 +2833,34 @@ mod tests {
         assert_eq!(filter.state().attitude, attitude);
         assert_eq!(filter.magnetic_declination(), declination);
         assert_eq!(filter.origin(), None);
+    }
+
+    #[test]
+    fn an_adoption_that_would_overflow_is_refused_and_places_nothing() {
+        // After a coarse start the first fix is adopted, carried to the IMU by (28′). A finite
+        // arm of `f32::MAX` on every axis overflows once rotated, and a tilted start rotates it.
+        let arm = Position::body(f32::MAX, f32::MAX, f32::MAX);
+        let noise = PositionNoise::horizontal_vertical(1.0, 1.0);
+        let mut filter = Eskf::default();
+        let tilted = ImuSample::from_rates(
+            Timestamp::from_micros(1_000_000),
+            AngularRate::body(0.0, 0.0, 0.0),
+            Acceleration::body(3.0, -2.0, -9.0),
+            DT,
+        );
+        assert!(filter.initialize_coarse(tilted).is_ok());
+        let (state, declination) = (filter.state, filter.magnetic_declination());
+
+        let outcome = filter.fuse_gnss_position(filter.now(), Position::zero(), noise, arm);
+        assert_eq!(outcome, GnssFusion::both(Fusion::NotFinite));
+        let fix = Geodetic::from_degrees(56.0, 44.0, 100.0);
+        let outcome = filter.fuse_gnss_geodetic(filter.now(), fix, noise, arm);
+        assert_eq!(outcome, GnssFusion::both(Fusion::NotFinite));
+
+        assert_eq!(filter.state, state);
+        assert_eq!(filter.origin(), None);
+        assert_eq!(filter.magnetic_declination(), declination);
+        assert!(filter.unestablished.position);
     }
 
     #[test]
