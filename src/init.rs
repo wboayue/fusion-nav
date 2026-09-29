@@ -1170,8 +1170,8 @@ pub enum InitError {
     /// [`Fusion::InvalidNoise`](crate::Fusion::InvalidNoise) for the bar every `fuse_*`
     /// puts on `R`, which is still strict positivity.
     ///
-    /// Symmetry and positive-definiteness are not checked: that is a factorization on the
-    /// caller's data, not a guard.
+    /// Symmetry is imposed by (42) rather than checked, and positive-definiteness is not
+    /// checked: that is a factorization on the caller's data, not a guard.
     InvalidVariance,
 }
 

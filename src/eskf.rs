@@ -7,7 +7,8 @@ use crate::health::{Diagnostics, Fusion, GnssFusion, Propagation, SourceHealth, 
 use crate::history::History;
 use crate::init::{self, Alignment, Coarse, InitError, Measured, StaticSample, StaticWindow};
 use crate::math::{
-    below_floor, correlation_inflation, exp_quat, floor_diagonal, floor_offset, wrap_pi,
+    below_floor, correlation_inflation, enforce_symmetry, exp_quat, floor_diagonal, floor_offset,
+    wrap_pi,
 };
 use crate::observation::{baro, gnss, heading, mag};
 use crate::propagate::{self, ImuSample, Propagated, project, propagate};
@@ -486,9 +487,19 @@ impl Eskf {
         if below_floor(covariance.as_matrix()) {
             return Err(InitError::InvalidVariance);
         }
+        // (42): a seed built by another filter's arithmetic differs from its transpose in the
+        // last bit, and nothing after a start repairs it before the first gate reads it.
+        let mut seed = *covariance.as_matrix();
+        enforce_symmetry(&mut seed);
         // Nothing a seed carries is unestablished: the caller vouched for every quantity,
         // heading included, so no first measurement overwrites one.
-        self.start(state, covariance, Unestablished::default(), time, false);
+        self.start(
+            state,
+            Covariance::from_matrix(seed),
+            Unestablished::default(),
+            time,
+            false,
+        );
         self.note_alignment();
         Ok(Alignment::Seeded)
     }
@@ -2861,6 +2872,18 @@ mod tests {
         assert_eq!(filter.origin(), None);
         assert_eq!(filter.magnetic_declination(), declination);
         assert!(filter.unestablished.position);
+    }
+
+    #[test]
+    fn a_seed_that_is_not_symmetric_is_committed_symmetric() {
+        let mut p = crate::CovarianceMatrix::from_diagonal_element(0.1);
+        p[(0, 1)] = 0.01;
+        p[(1, 0)] = 0.03;
+        let mut filter = Eskf::default();
+        assert!(filter.seed(State::default(), Covariance::from_matrix(p)).is_ok());
+        let committed = filter.covariance().as_matrix();
+        assert_eq!(*committed, committed.transpose());
+        assert_eq!(committed[(0, 1)], 0.02);
     }
 
     #[test]
