@@ -181,6 +181,24 @@ struct Unestablished {
     heading: bool,
 }
 
+/// A start from a window or a sample, worked out and checked but not yet committed; see
+/// [`Eskf::checked_startup`].
+struct Startup {
+    alignment: Alignment,
+    state: State,
+    covariance: Covariance,
+    unestablished: Unestablished,
+    time: Timestamp,
+    /// Whether the start showed the vehicle at rest.
+    settled: bool,
+    /// Whether (6) levelled the heading from a magnetometer, so it is referred to north
+    /// through the declination alone.
+    magnetic_north: bool,
+    /// The barometric reference the start sets: `None` keeps the one held, `Some(None)`
+    /// clears it.
+    reference: Option<Option<(Altitude, Offset)>>,
+}
+
 impl Default for Eskf {
     /// A filter on [`Config::default`], which validates (a test holds it to that).
     fn default() -> Self {
@@ -301,6 +319,16 @@ impl Eskf {
     /// [`InitError::NoSamples`] for an empty window. A sample nothing can be made of is
     /// refused as it is [pushed](StaticWindow::push), so a window holds none.
     pub fn initialize(&mut self, window: &StaticWindow) -> Result<Alignment, InitError> {
+        let startup = self.startup(window)?;
+        let alignment = startup.alignment;
+        self.commit_startup(startup);
+        Ok(alignment)
+    }
+
+    /// The start `window` gives, worked out and checked but not committed: what
+    /// [`initialize`](Self::initialize) commits and [`alignment_of`](Self::alignment_of)
+    /// reports, so the two cannot disagree.
+    fn startup(&self, window: &StaticWindow) -> Result<Startup, InitError> {
         let measured = window.measured()?;
         let alignment = init::classify(&measured, &self.config.init);
         // One answer to "was the vehicle on the ground", read by the gyroscope bias of
@@ -309,16 +337,12 @@ impl Eskf {
         // short to align an attitude from can still be a window of a parked vehicle.
         let at_rest = init::at_rest(measured.peaks, &self.config.init);
         let state = init::nominal_state(&measured, self.declination, at_rest);
-        self.apply_alignment(alignment, state, &measured, at_rest, measured.end)?;
-        if at_rest {
-            self.establish_reference(
-                window
-                    .alpha0()
-                    .map(|(reference, variance)| (reference, Offset::independent(variance))),
-            );
-        }
-        self.note_alignment();
-        Ok(alignment)
+        let reference = at_rest.then(|| {
+            window
+                .alpha0()
+                .map(|(reference, variance)| (reference, Offset::independent(variance)))
+        });
+        self.checked_startup(alignment, state, &measured, at_rest, measured.end, reference)
     }
 
     /// What [`initialize`](Self::initialize) would make of this window, without touching
@@ -332,9 +356,9 @@ impl Eskf {
     ///
     /// # Errors
     ///
-    /// As [`initialize`](Self::initialize).
+    /// As [`initialize`](Self::initialize), whose work it does up to the commit.
     pub fn alignment_of(&self, window: &StaticWindow) -> Result<Alignment, InitError> {
-        Ok(init::classify(&window.measured()?, &self.config.init))
+        self.startup(window).map(|startup| startup.alignment)
     }
 
     /// Start from a single IMU sample, with no window at all.
@@ -381,10 +405,10 @@ impl Eskf {
         // window shows rest by holding still over a span of time and this one spans none:
         // an accelerometer reading `γ` for an instant is a hover as readily as a vehicle
         // on the ground, and this entry point exists for the launches that are moving.
-        self.apply_alignment(alignment, state, &measured, false, imu.time)?;
         // The barometric reference is left alone: one sample does not establish one, and
         // a restart at altitude should keep the reference the flight began with.
-        self.note_alignment();
+        let startup = self.checked_startup(alignment, state, &measured, false, imu.time, None)?;
+        self.commit_startup(startup);
         Ok(alignment)
     }
 
@@ -2318,30 +2342,23 @@ impl Eskf {
         self.commit_covariance(covariance, offset);
     }
 
-    /// Commit an alignment: take the nominal state equation (7) built, and reset the
-    /// covariance and health for a fresh start whose attitude uncertainty matches how good
-    /// the alignment was. The barometric reference is the caller's to set, because only it
-    /// knows whether this start establishes a new one.
+    /// Work out the covariance for a start, equation (8), and check the whole of it before
+    /// anything is committed. `reference` is the barometric reference the start sets:
+    /// `None` leaves the one held alone, `Some(None)` clears it.
     ///
-    /// A start the window showed at rest clears the origin, on the same evidence that
-    /// establishes its position: both are the claim *zero is here*, and an origin held
-    /// from before says zero is somewhere else. The next geodetic fix places a new one.
-    /// A start taken in motion keeps it, because its position is unestablished and the
-    /// first fix is adopted about the origin the flight already has. The two move
-    /// together or a still short window would report an established position of `(0,0,0)`
-    /// about an origin nothing put under it.
-    ///
-    /// Refused as [`InitError::NotFinite`], committing nothing, when the state or covariance
-    /// is not finite. Every sample was finite, but their average can still overflow what (5)
-    /// and (8) square: one accelerometer reading of `f32::MAX` levels to a NaN tilt variance.
-    fn apply_alignment(
-        &mut self,
+    /// Refused as [`InitError::NotFinite`] when the state, the covariance or the reference is
+    /// not finite. Every sample was finite, but their averages can still overflow what (5),
+    /// (8) and (30) square: one accelerometer reading of `f32::MAX` levels to a NaN tilt
+    /// variance, and one barometer reading of it gives an infinite `P_bb`.
+    fn checked_startup(
+        &self,
         alignment: Alignment,
         state: State,
         measured: &Measured,
         settled: bool,
         time: Timestamp,
-    ) -> Result<(), InitError> {
+        reference: Option<Option<(Altitude, Offset)>>,
+    ) -> Result<Startup, InitError> {
         // The bias of (7) as committed, so that what it absorbed is not charged a second
         // time as motion the window could not vouch for; see `init::coarse_sigmas`.
         let (sigma_tilt, sigma_yaw) =
@@ -2353,17 +2370,51 @@ impl Eskf {
             sigma_yaw,
             measured.level_variance,
         );
-        if !(state.is_finite() && covariance.is_finite()) {
+        let reference_finite = reference.flatten().is_none_or(|(altitude, offset)| {
+            altitude.as_meters().is_finite() && offset.variance.is_finite()
+        });
+        if !(state.is_finite() && covariance.is_finite() && reference_finite) {
             return Err(InitError::NotFinite);
         }
-        let unestablished = Unestablished::after(settled, measured.field.is_some());
-        self.start(state, covariance, unestablished, time, settled);
+        Ok(Startup {
+            alignment,
+            state,
+            covariance,
+            unestablished: Unestablished::after(settled, measured.field.is_some()),
+            time,
+            settled,
+            magnetic_north: measured.field.is_some(),
+            reference,
+        })
+    }
+
+    /// Commit a start: the nominal state equation (7) built, the covariance of (8), fresh
+    /// health, and the barometric reference the start sets, if any.
+    ///
+    /// A start the window showed at rest clears the origin, on the same evidence that
+    /// establishes its position: both are the claim *zero is here*, and an origin held
+    /// from before says zero is somewhere else. The next geodetic fix places a new one.
+    /// A start taken in motion keeps it, because its position is unestablished and the
+    /// first fix is adopted about the origin the flight already has. The two move
+    /// together or a still short window would report an established position of `(0,0,0)`
+    /// about an origin nothing put under it.
+    fn commit_startup(&mut self, startup: Startup) {
+        self.start(
+            startup.state,
+            startup.covariance,
+            startup.unestablished,
+            startup.time,
+            startup.settled,
+        );
         // (6) levelled the heading from the window's field with the declination it held.
-        self.magnetic_north = measured.field.is_some();
-        if settled {
+        self.magnetic_north = startup.magnetic_north;
+        if startup.settled {
             self.origin = None;
         }
-        Ok(())
+        if let Some(reference) = startup.reference {
+            self.establish_reference(reference);
+        }
+        self.note_alignment();
     }
 
     /// Begin a new life at `time`: the state and covariance a start committed, fresh health,
