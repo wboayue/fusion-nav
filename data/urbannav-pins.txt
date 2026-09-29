@@ -1,0 +1,23 @@
+# data/urbannav.sh's expectations: UrbanNav-HK-Medium-Urban-1, per receiver and R policy.
+#
+# <receiver> <policy> key=value...  Same pair language as data/manifest.txt (data/expect.sh);
+# decimals carry 1 % either side. Print fresh lines with `data/urbannav.sh --pin`.
+#
+# m8t: GPS and BeiDou single frequency, the hostile receiver. 338 of its 517 3D fixes are
+# bad against their own hAcc, and the gate turns down 32 of them while turning down 59 good
+# ones: a receiver whose error persists for tens of seconds is followed, not refused, and a
+# filter that has followed it then refuses the fixes that would bring it back. Recovery ends
+# 41 such runs, 11 of them lockouts on position. Heading is lost (yaw ~90 deg RMS) and
+# nees_pos ~800 says the filter never knew. Recovery off locks out instead: 499 of 517
+# rejected, pos_h 61 km against 258 m, which is the case for recovery on by default. No gate
+# percentile from P99 to P99999 moves pos_h outside 257-266 m with recovery on. Both measured
+# by setting Config::recovery and Config::gates in the harness, not options it carries.
+#
+# f9p: dual frequency with differential corrections, honest to its accuracy here: no bad
+# fix, and none rejected at any percentile or policy. pos_h is the 131 s the receiver
+# stopped reporting at 557 s (dead_reckoning_s), dead reckoned on an MTi-10: 2.2 km at
+# worst, inside the covariance (nees_pos 1.6). Outside that gap the error is 2 to 5 m.
+m8t raw recovered=41 rejected_gnss_pos=91 rejected_gnss_hgt=37 rejected_gnss_vel=31 rejected_course=60 aligned_at=46.97..47.93 degraded_s=92.61..94.49 dead_reckoning_s=176.69..180.27 transitions=72 status=Healthy pos_h=255.491..260.653 pos_v=84.159..85.861 pos_h_max=1511.103..1541.631 yaw=88.956..90.754 nees_pos=798.6938..814.8292 offered_gnss_pos=517 bad_gnss_pos=338 rejected_bad_gnss_pos=32 rejected_good_gnss_pos=59 accepted_far_gnss_pos=404 adopted_bad_gnss_pos=4 recovered_after_bad_gnss_pos=4 recovered_after_lockout_gnss_pos=11 offered_gnss_hgt=517 bad_gnss_hgt=221 rejected_bad_gnss_hgt=13 rejected_good_gnss_hgt=24 accepted_far_gnss_hgt=429 adopted_bad_gnss_hgt=3 recovered_after_bad_gnss_hgt=3 recovered_after_lockout_gnss_hgt=5
+m8t px4 recovered=41 rejected_gnss_pos=90 rejected_gnss_hgt=42 rejected_gnss_vel=30 rejected_course=60 aligned_at=46.97..47.93 degraded_s=105.66..107.80 dead_reckoning_s=173.72..177.24 transitions=72 status=Healthy pos_h=254.652..259.798 pos_v=83.405..85.091 pos_h_max=1514.109..1544.699 yaw=88.931..90.729 nees_pos=797.9704..814.0912 offered_gnss_pos=517 bad_gnss_pos=338 rejected_bad_gnss_pos=43 rejected_good_gnss_pos=47 accepted_far_gnss_pos=394 adopted_bad_gnss_pos=4 recovered_after_bad_gnss_pos=7 recovered_after_lockout_gnss_pos=8 offered_gnss_hgt=517 bad_gnss_hgt=221 rejected_bad_gnss_hgt=23 rejected_good_gnss_hgt=19 accepted_far_gnss_hgt=423 adopted_bad_gnss_hgt=3 recovered_after_bad_gnss_hgt=6 recovered_after_lockout_gnss_hgt=4
+f9p raw recovered=0 rejected_gnss_pos=0 rejected_gnss_hgt=0 rejected_gnss_vel=0 rejected_course=0 aligned_at=7.37..7.53 degraded_s=2.47..2.53 dead_reckoning_s=125.18..127.72 transitions=6 status=Healthy pos_h=362.814..370.144 pos_v=10.965..11.187 pos_h_max=2220.917..2265.785 yaw=13.345..13.615 nees_pos=1.5737..1.6055 offered_gnss_pos=654 bad_gnss_pos=0 rejected_bad_gnss_pos=0 rejected_good_gnss_pos=0 accepted_far_gnss_pos=46 adopted_bad_gnss_pos=0 recovered_after_bad_gnss_pos=0 recovered_after_lockout_gnss_pos=0 offered_gnss_hgt=654 bad_gnss_hgt=0 rejected_bad_gnss_hgt=0 rejected_good_gnss_hgt=0 accepted_far_gnss_hgt=330 adopted_bad_gnss_hgt=0 recovered_after_bad_gnss_hgt=0 recovered_after_lockout_gnss_hgt=0
+f9p px4 recovered=0 rejected_gnss_pos=0 rejected_gnss_hgt=0 rejected_gnss_vel=0 rejected_course=0 aligned_at=7.37..7.53 degraded_s=2.47..2.53 dead_reckoning_s=125.18..127.72 transitions=6 status=Healthy pos_h=363.591..370.937 pos_v=11.251..11.479 pos_h_max=2226.552..2271.534 yaw=13.345..13.615 nees_pos=1.4154..1.4440 offered_gnss_pos=654 bad_gnss_pos=0 rejected_bad_gnss_pos=0 rejected_good_gnss_pos=0 accepted_far_gnss_pos=46 adopted_bad_gnss_pos=0 recovered_after_bad_gnss_pos=0 recovered_after_lockout_gnss_pos=0 offered_gnss_hgt=654 bad_gnss_hgt=0 rejected_bad_gnss_hgt=0 rejected_good_gnss_hgt=0 accepted_far_gnss_hgt=330 adopted_bad_gnss_hgt=0 recovered_after_bad_gnss_hgt=0 recovered_after_lockout_gnss_hgt=0

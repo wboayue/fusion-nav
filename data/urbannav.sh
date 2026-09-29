@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+#
+# Replay UrbanNav-HK-Medium-Urban-1 against its truth and assert data/urbannav-pins.txt.
+#
+#   data/urbannav.sh          convert, replay each receiver under raw and px4, compare
+#   data/urbannav.sh --pin    print the lines to commit instead
+#
+# The gate benchmark of #60: the one source with hostile GNSS *and* truth, so the one place a
+# rejection is scored as right or wrong (`bad_`, `rejected_bad_`, `rejected_good_` and the
+# recovery split on the `score` line; examples/replay.rs owns what each means). Two receivers
+# on one drive: the M8T, which claims a few metres while hundreds out, and the F9P, honest
+# to its own accuracy, which is the test of rejecting good fixes at road speed.
+#
+# Local, like `data/fetch.sh --check`, and never CI: UrbanNav states no licence, so its files
+# are fetched (`data/fetch.sh --manifest data/urbannav.txt`) and nothing drawn from them is
+# committed but the scalars below (data/urbannav.txt carries the terms).
+
+set -euo pipefail
+
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+data="$root/data/urbannav"
+pins="$root/data/urbannav-pins.txt"
+
+# shellcheck source=data/expect.sh
+. "$root/data/expect.sh"
+
+die() { echo "urbannav: $*" >&2; exit 1; }
+
+# What a pin line carries. The `summary` keys a hostile receiver moves, and every truth-scored
+# key on the `score` line that says what the gate did; the per-key meanings are in
+# examples/replay.rs. The rest of either line is on the terminal when this runs, and pinning
+# all of it would re-pin on every change that touched a figure nobody reads for this.
+keys="recovered rejected_gnss_pos rejected_gnss_hgt rejected_gnss_vel rejected_course
+aligned_at degraded_s dead_reckoning_s transitions status
+pos_h pos_v pos_h_max yaw nees_pos"
+for half in gnss_pos gnss_hgt; do
+    for count in offered bad rejected_bad rejected_good accepted_far adopted_bad \
+        recovered_after_bad recovered_after_lockout; do
+        keys="$keys ${count}_$half"
+    done
+done
+
+pin=0
+case "${1:-}" in
+    --pin) pin=1 ;;
+    '') ;;
+    *) die "unknown option $1 (usage: data/urbannav.sh [--pin])" ;;
+esac
+
+"$root/data/fetch.sh" --manifest "$root/data/urbannav.txt" --verify >/dev/null ||
+    die "the segment is missing or changed; data/fetch.sh --manifest data/urbannav.txt"
+command -v uv >/dev/null || die "uv not found; tools/urbannav2replay.py runs through it"
+
+echo "building"
+(cd "$root" && cargo build --quiet --release --example replay) || die "build failed"
+target=$(cd "$root" && cargo metadata --format-version 1 --no-deps |
+    python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])') ||
+    die "cargo metadata failed"
+replay="$target/release/examples/replay"
+out="$target/urbannav"
+mkdir -p "$out"
+
+failed=0
+for receiver in m8t f9p; do
+    uv run --quiet "$root/tools/urbannav2replay.py" "$data" --receiver "$receiver" \
+        -o "$out/$receiver.csv" --truth "$out/$receiver.truth.csv" 2>/dev/null ||
+        die "converting $receiver failed"
+    for policy in raw px4; do
+        run="$out/$receiver.$policy"
+        "$replay" --r-policy "$policy" "$out/$receiver.csv" "$run.csv" \
+            "$out/$receiver.truth.csv" > "$run.out" 2>&1 || die "replaying $receiver $policy failed"
+        line="$(grep '^summary ' "$run.out") $(grep '^score ' "$run.out")"
+        picked=""
+        for key in $keys; do
+            value=$(pair_value "$line" "$key") || die "$receiver $policy: no $key= on the lines"
+            picked="${picked:+$picked }$key=$value"
+        done
+        if [ "$pin" = 1 ]; then
+            echo "$receiver $policy $(pin_pairs "run $picked" --decimal)"
+            continue
+        fi
+        expect=$(awk -v r="$receiver" -v p="$policy" '$1 == r && $2 == p { $1 = $2 = ""; print; exit }' "$pins")
+        if [ -z "$expect" ]; then
+            echo "  no expectations  $receiver $policy"
+            failed=1
+        elif compare_pairs "$picked" "$expect" "$receiver $policy"; then
+            echo "  ok       $receiver $policy"
+        else
+            echo "    got $picked" >&2
+            failed=1
+        fi
+    done
+done
+[ "$failed" = 0 ] || die "one or more runs did not match data/urbannav-pins.txt"

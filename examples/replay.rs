@@ -3002,7 +3002,8 @@ fn seconds_in(transitions: &[(f64, Status)], end: f64, status: Status) -> f64 {
         .zip(until)
         .filter(|((_, s), _)| *s == status)
         .map(|((from, _), to)| to - from)
-        .sum()
+        // A fold from +0.0: `Sum` on floats starts at −0.0, which prints as `-0.00`.
+        .fold(0.0, |total, span| total + span)
 }
 
 /// What truth says of one half of a GNSS fix: `bad` where the receiver's own `R` could not
@@ -5528,7 +5529,8 @@ mod tests {
         ];
         assert_eq!(seconds_in(&transitions, 10.0, Status::Degraded), 4.5);
         assert_eq!(seconds_in(&transitions, 10.0, Status::Aligning), 2.0);
-        assert_eq!(seconds_in(&transitions, 10.0, Status::DeadReckoning), 0.0);
+        let never = seconds_in(&transitions, 10.0, Status::DeadReckoning);
+        assert_eq!(format!("{never:.2}"), "0.00", "not -0.00");
     }
 
     #[test]
