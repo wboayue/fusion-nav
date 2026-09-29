@@ -505,9 +505,14 @@ impl Eskf {
 
     /// Store the offset's covariance, floored by (42′) as
     /// [`commit_covariance`](Self::commit_covariance) floors the rest — while there is a
-    /// reference. Without one the offset is zero by definition and nothing reads it.
+    /// reference. Without one the offset is zero by definition and nothing reads it, so it is
+    /// stored as zero rather than as what (30′)'s walk would have grown it to.
     fn commit_offset(&mut self, mut offset: Offset) {
-        if self.baro_reference.is_some() && floor_offset(&mut offset) {
+        if self.baro_reference.is_none() {
+            self.offset = Offset::default();
+            return;
+        }
+        if floor_offset(&mut offset) {
             self.diagnostics.floored = self.diagnostics.floored.saturating_add(1);
         }
         self.offset = offset;
@@ -2636,6 +2641,19 @@ mod tests {
             })
         );
         assert_eq!(Eskf::default().config(), &Config::default());
+    }
+
+    // Found by the adversarial suite (#44), `adversarial.rs`, and kept as literals so each
+    // names the defect it guards.
+
+    #[test]
+    fn a_filter_with_no_barometric_reference_holds_no_offset() {
+        let mut filter = initialized();
+        assert_eq!(filter.baro_reference(), None);
+        for _ in 0..10 {
+            assert_eq!(filter.step(still().imu, DT), Propagation::Propagated);
+        }
+        assert_eq!(filter.offset, Offset::default());
     }
 
     #[test]
