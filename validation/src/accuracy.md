@@ -3,9 +3,9 @@
 **How close does the estimate get when the true answer is known?** On the baseline simulated
 flight, horizontal position is off by {{score mission pos_h}} m RMS and never by more than
 {{score mission pos_h_max}} m. Tilt is off by {{score mission tilt}}° RMS and heading by
-{{score mission yaw}}°. These are simulated flights, because no real log carries the true
-trajectory, so they show how the filter handles the errors the simulator models, not every
-error a real vehicle has.
+{{score mission yaw}}°. These are simulated flights, so they show how the filter handles the
+errors the simulator models, not every error a real vehicle has. One real quadcopter is scored
+too, [below](#a-real-quadcopter-against-rtk), for position, height and velocity.
 
 {{stamp}}
 
@@ -90,12 +90,48 @@ that start, tilt is off by {{score moving_start tilt}}° RMS and heading by
 
 {{figure moving_start error_attitude}}
 
-## What this page cannot say
+## A real quadcopter against RTK
 
 A simulator models only the errors it was written with: no vibration spectrum of a real frame,
-no GNSS reflections off buildings, no clock drift between sensors. Real ground truth will come
-from the INSANE dataset (#9). Its licence allows publishing summary numbers here, but not
-trajectory plots.
+no bias in a real receiver, no gaps in a real log. The
+[INSANE dataset](https://www.aau.at/en/smart-systems-technologies/control-of-networked-systems/datasets/insane-dataset/)
+(University of Klagenfurt; Brommer et al., IROS 2022,
+[arXiv:2210.09114](https://arxiv.org/abs/2210.09114)) flew a 3 kg quadcopter carrying two RTK
+receivers 1.2 m apart, which place it to centimetres while their corrections hold. Three of its flights are replayed
+here on the autopilot's own sensors, the ones a flight controller fuses: its IMU, its ordinary
+GNSS receiver, its barometer and its magnetometer. The RTK receivers are only the truth.
+
+| Flight | Horizontal (m RMS) | Height (m RMS) | Velocity (m/s RMS) | Position NEES | Velocity NEES |
+|---|---|---|---|---|---|
+| Model airfield, Klagenfurt, 24 m climb | {{score insane-outdoor_1/raw pos_h}} | {{score insane-outdoor_1/raw pos_v}} | {{score insane-outdoor_1/raw vel}} | {{score insane-outdoor_1/raw nees_pos}} | {{score insane-outdoor_1/raw nees_vel}} |
+| Desert, a receiver that overstates its accuracy | {{score insane-mars_1/raw pos_h}} | {{score insane-mars_1/raw pos_v}} | {{score insane-mars_1/raw vel}} | {{score insane-mars_1/raw nees_pos}} | {{score insane-mars_1/raw nees_vel}} |
+| Desert, a long hover | {{score insane-mars_19/raw pos_h}} | {{score insane-mars_19/raw pos_v}} | {{score insane-mars_19/raw vel}} | {{score insane-mars_19/raw nees_pos}} | {{score insane-mars_19/raw nees_vel}} |
+
+Horizontal error here is mostly the receiver's: an ordinary receiver is off by a metre or
+more for tens of seconds at a time, and no filter can remove an error its only position
+source shares. What the filter owes is to know it, and it does: position NEES under 1 means
+the reported uncertainty covers the error, conservatively (the
+[honesty page](honesty.md#how-it-is-measured) says what NEES is). That rests on the filter
+treating a receiver's error as lasting from one fix to the next
+([EQUATIONS.md (24′)](../EQUATIONS.md)): fused as though each fix's error were new, the same
+flights read far overconfident, and one of these receivers claims less error than it has.
+It costs a little accuracy: the filter ends slightly further from the truth than the fixes
+themselves are, where fused that way it would match them. Velocity is more conservative
+still, because the dataset's GNSS velocity is horizontal only and states no accuracy, so none
+is fused and velocity is observed only through the fixes.
+The barometers depart from the truth by metres, during the airfield flight's climb and slowly
+through the hover, which is the case the filter's estimated barometric offset exists for.
+
+Attitude is not scored. INSANE builds its attitude truth from the RTK baseline and the same
+magnetometer the filter fuses, and at rest that truth tilts gravity several degrees from
+vertical, more than this filter's own tilt error; `tools/insane2replay.py` has the
+measurements. The licence allows publishing these numbers but not the converted data or plots
+of it, and validating a commercial product against INSANE needs an arrangement with Klagenfurt.
+
+## What this page cannot say
+
+Attitude accuracy rests on the simulator alone: no real dataset found carries an attitude truth
+better than this filter's own estimate.
 
 ## Details
 

@@ -19,7 +19,8 @@ overconfident at the same time would pass it.
 
 ## How it is measured
 
-Two tests, both against the simulator's known truth:
+Two tests, both against a known truth, the simulator's everywhere but in one paragraph
+[below](#what-this-page-cannot-say):
 
 - **Within 3σ** (`in3s`): at every moment and on every quantity the filter estimates, is the
   real error inside three standard deviations of the reported uncertainty? The figure is the
@@ -99,4 +100,8 @@ Measuring each sensor's correlation time, instead of assuming a typical one, is 
 The real PX4 logs have no truth, so on them the reported uncertainty can only be checked
 against the filter's own predictions: whether each new measurement falls as far from the
 prediction as the filter expected (the `nis_` values in `data/manifest.txt`). That is a weaker
-test, and it is not repeated here.
+test, and it is not repeated here. One real quadcopter does carry a truth, and on its three
+flights position NEES is {{score insane-outdoor_1/raw nees_pos}},
+{{score insane-mars_1/raw nees_pos}} and {{score insane-mars_19/raw nees_pos}}: pessimistic,
+like the simulator's ([accuracy page](accuracy.md#a-real-quadcopter-against-rtk)). One flight
+each, not an ensemble, so no bound is drawn around them.

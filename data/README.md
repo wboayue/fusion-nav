@@ -745,3 +745,37 @@ perfect state would run, at P999 on the fix's own variance, fixed whatever `Conf
 `--r-policy` the replay used. `data/urbannav-pins.txt` pins what each receiver did under both
 policies, and the M8T under `--recovery off`, and says what the lines show. Only these scalars are published
 ([robustness page](../validation/robustness.md#gnss-in-a-city)); no figure of the data is.
+
+## INSANE
+
+The accuracy benchmark for a real UAV (#9): a 3 kg quadcopter's own PX4 IMU, receiver,
+barometer and magnetometer, with two RTK receivers on a 1.2 m baseline as the truth. It is the
+one source with a real barometer and magnetometer *and* truth, and it scores position, height
+and velocity, and whether the covariance covers them. It does not score attitude: its attitude
+truth is fitted partly to the magnetometer the filter fuses, and at rest it tilts gravity 5° to
+17° from vertical.
+
+Its licence forbids selling what derives from it (GOALS.md, "Primary sources"), so it has its
+own manifest and is never committed, converted or not:
+
+```console
+$ data/fetch.sh --manifest data/insane.txt             # prints the terms, fetches into data/insane
+$ data/insane.sh                                        # convert, replay, assert data/insane-pins.txt
+$ data/insane.sh --pin                                  # print the lines to commit instead
+$ uv run tools/insane2replay.py data/insane --sequence outdoor_1 -o o.csv --truth o.truth.csv
+```
+
+Three of the twenty GNSS sequences, each covering what the others do not; the converter's
+docstring says what, and why the rest are left out. Each sequence is an archive of CSVs, read
+with the standard library alone, and the docstring owns the frames, the clocks, and what the
+truth is built from. Two things it does that no other converter does: it moves the truth onto
+the IMU's clock by a lag it measures per sequence (80 to 170 ms), and it builds the truth's
+velocity from the RTK baseline's midpoint so the truth's tilt error stays out of it.
+
+The truth is written at RTK2's epochs, about 7 Hz, and knows no bias. Both files carry a
+`fusion-nav` marker naming the sequence and a digest of its archive and the calibrations. The
+replay runs under `--declination model`, since the dataset's own declination has the wrong sign
+at Klagenfurt, and under raw `R` only: every fix claims more than PX4's floors, so `px4`
+scores the same, key for key. `data/insane-pins.txt` pins no attitude key and says what the lines
+show. Only these scalars are published
+([accuracy page](../validation/accuracy.md#a-real-quadcopter-against-rtk)); no figure of the data is.

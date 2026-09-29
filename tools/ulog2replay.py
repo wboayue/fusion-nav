@@ -40,6 +40,7 @@ from pathlib import Path
 
 from geodesy import geodetic_to_ned
 from gnss_noise import gnss_noise_note
+from replay_format import write_replay
 
 # The sphere PX4's local x/y are projected on (`src/lib/geo/geo.h:55` at
 # c4e4ef98); `px4_reproject` owns the rest.
@@ -528,28 +529,15 @@ def convert(path, baro_variance, mag_variance, heading_variance=DEFAULT_GNSS_HEA
 def write_rows(rows, out, note, delays):
     """Sort by time, rebase to the first sample, and write the replay schema.
 
-    `t_meas_s` is a row's time less its source's delay in `delays`, microseconds by
-    source name, and blank where there is none: when the measurement was taken, where
-    `t_s` is when it was logged.
+    `delays` is microseconds by source name, which `replay_format.write_replay` turns into
+    `t_meas_s`.
     """
     rows.sort(key=lambda r: r[0])
     if not rows:
         raise ConversionError("nothing to write")
     t0 = rows[0][0]
 
-    with open(out, "w", newline="") as handle:
-        for line in note:
-            handle.write(f"# {line}\n")
-        handle.write("t_s,source,v0,v1,v2,v3,v4,v5,var0,var1,var2,t_meas_s\n")
-        for timestamp, source, values, variances in rows:
-            t = (timestamp - t0) * 1e-6  # ULog timestamps are microseconds
-            values = list(values) + [None] * (6 - len(values))
-            variances = list(variances) + [None] * (3 - len(variances))
-            cells = [f"{t:.6f}", source]
-            cells += ["" if v is None else f"{v:.6g}" for v in values + variances]
-            delay = delays.get(source, 0)
-            cells.append(f"{(timestamp - delay - t0) * 1e-6:.6f}" if delay else "")
-            handle.write(",".join(cells) + "\n")
+    write_replay(out, note, rows, t0, 1e-6, delays)  # ULog timestamps are microseconds
     return len(rows), t0
 
 

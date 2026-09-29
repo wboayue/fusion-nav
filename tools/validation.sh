@@ -7,12 +7,12 @@
 #   tools/validation.sh --allow-dirty   rewrite from an uncommitted tree, while editing templates
 #
 # Local, never CI: the corpus half needs the fetched logs, pyulog and uv (GOALS.md, "Harness
-# constraint"), and data/fetch.sh --compare is what runs it; the UrbanNav half needs its
-# segment, `data/fetch.sh --manifest data/urbannav.txt`. Every gate the pages publish is
-# asserted on the way, so a page is never drawn from a run that breached one: data/anees.sh
-# gates the ensembles, fetch.sh --compare the corpus against data/ekf2.txt, data/urbannav.sh
-# UrbanNav against data/urbannav-pins.txt, and each scenario's `score` line is the one
-# data/bench.sh gates in CI.
+# constraint"), and data/fetch.sh --compare is what runs it; the UrbanNav and INSANE halves
+# need their files, `data/fetch.sh --manifest data/urbannav.txt` and `... data/insane.txt`.
+# Every gate the pages publish is asserted on the way, so a page is never drawn from a run that
+# breached one: data/anees.sh gates the ensembles, fetch.sh --compare the corpus against
+# data/ekf2.txt, data/urbannav.sh and data/insane.sh their datasets against their pins, and
+# each scenario's `score` line is the one data/bench.sh gates in CI.
 #
 # The pages are templates under validation/src/, rendered by tools/validation.py, which copies
 # every number off a line some tool printed and refuses a placeholder naming nothing. --check is
@@ -89,6 +89,11 @@ ln -s "$target/compare" "$out/compare"
 echo "replaying UrbanNav against its truth"
 "$root/data/urbannav.sh" >/dev/null || die "data/urbannav.sh failed"
 ln -s "$target/urbannav" "$out/urbannav"
+
+# Scalars only as well: INSANE's licence forbids selling what derives from it (data/insane.txt).
+echo "replaying INSANE against its truth"
+"$root/data/insane.sh" >/dev/null || die "data/insane.sh failed"
+ln -s "$target/insane" "$out/insane"
 
 echo "drawing"
 python3 "$root/tools/validation.py" draw "$src" "$out" "$root" || die "drawing failed"

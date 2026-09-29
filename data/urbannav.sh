@@ -21,9 +21,6 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 data="$root/data/urbannav"
 pins="$root/data/urbannav-pins.txt"
 
-# shellcheck source=data/expect.sh
-. "$root/data/expect.sh"
-
 die() { echo "urbannav: $*" >&2; exit 1; }
 
 # What a pin line carries. The `summary` keys a hostile receiver moves, and every truth-scored
@@ -46,17 +43,14 @@ case "${1:-}" in
     '') ;;
     *) die "unknown option $1 (usage: data/urbannav.sh [--pin])" ;;
 esac
+# shellcheck source=data/truth-runs.sh
+. "$root/data/truth-runs.sh"
 
 "$root/data/fetch.sh" --manifest "$root/data/urbannav.txt" --verify >/dev/null ||
     die "the segment is missing or changed; data/fetch.sh --manifest data/urbannav.txt"
 command -v uv >/dev/null || die "uv not found; tools/urbannav2replay.py runs through it"
 
-echo "building"
-(cd "$root" && cargo build --quiet --release --example replay) || die "build failed"
-target=$(cd "$root" && cargo metadata --format-version 1 --no-deps |
-    python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])') ||
-    die "cargo metadata failed"
-replay="$target/release/examples/replay"
+build_replay
 out="$target/urbannav"
 mkdir -p "$out"
 
@@ -64,7 +58,6 @@ mkdir -p "$out"
 # that only reports, which is what recovery's worth on a hostile receiver is measured against.
 runs="m8t:raw m8t:px4 m8t:raw-norecovery f9p:raw f9p:px4"
 
-failed=0
 for receiver in m8t f9p; do
     uv run --quiet "$root/tools/urbannav2replay.py" "$data" --receiver "$receiver" \
         -o "$out/$receiver.csv" --truth "$out/$receiver.truth.csv" 2>/dev/null ||
@@ -74,29 +67,8 @@ for entry in $runs; do
     receiver=${entry%%:*} policy=${entry#*:}
     options="--r-policy ${policy%-norecovery}"
     [ "$policy" = "${policy%-norecovery}" ] || options="$options --recovery off"
-    run="$out/$receiver.$policy"
     # shellcheck disable=SC2086 # two flags, split on purpose
-    "$replay" $options "$out/$receiver.csv" "$run.csv" \
-        "$out/$receiver.truth.csv" > "$run.out" 2>&1 || die "replaying $receiver $policy failed"
-    line="$(grep '^summary ' "$run.out") $(grep '^score ' "$run.out")"
-    picked=""
-    for key in $keys; do
-        value=$(pair_value "$line" "$key") || die "$receiver $policy: no $key= on the lines"
-        picked="${picked:+$picked }$key=$value"
-    done
-    if [ "$pin" = 1 ]; then
-        echo "$receiver $policy $(pin_pairs "run $picked" --decimal)"
-        continue
-    fi
-    expect=$(awk -v r="$receiver" -v p="$policy" '$1 == r && $2 == p { $1 = $2 = ""; print; exit }' "$pins")
-    if [ -z "$expect" ]; then
-        echo "  no expectations  $receiver $policy"
-        failed=1
-    elif compare_pairs "$picked" "$expect" "$receiver $policy"; then
-        echo "  ok       $receiver $policy"
-    else
-        echo "    got $picked" >&2
-        failed=1
-    fi
+    pinned_run "$receiver" "$policy" "$out/$receiver.$policy" "$out/$receiver.csv" \
+        "$out/$receiver.truth.csv" $options
 done
 [ "$failed" = 0 ] || die "one or more runs did not match data/urbannav-pins.txt"

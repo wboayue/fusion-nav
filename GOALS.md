@@ -554,7 +554,14 @@ would remove. `moving_start`'s four headings sharing one levelling error (#150),
 `data/anees.txt` asserted, is this issue in miniature and went with it. On `2c42096b`, σ_pos_n is
 under `eph` at 1788 fixes of 4614, median ratio 1.039 against 0.726. On `7ce66f0d`, the
 magnetometer that kept pushing a wrongly levelled heading stops outvoting GNSS: `recovered=` 294
-to 69, the magnetometer rejected instead. On `093e806a`, 35 to 29.
+to 69, the magnetometer rejected instead. On `093e806a`, 35 to 29. And on INSANE (#9), the first
+real receivers scored against truth, white reads `nees_pos` 39.2, 11.6 and 16.1 on its three
+flights where (24′) reads 0.47, 0.35 and 0.44, and `outdoor_1`'s `pos_v` is 8.18 m white against
+1.88. `mars_1`'s receiver claims 0.77 m and errs by 1.86 m RMS, so what covers it is the
+correlation (24′) prices, not the receiver's claim. It is not free: white, the horizontal error
+matches the fixes' own (3.95 m against their 3.92 on `outdoor_1`), and under (24′) it is 0.05
+to 0.37 m RMS worse, which is what an honest covariance cost on a receiver whose error
+persists.
 
 **What it did not buy.** `harsh_imu` (#149) and `gnss_latency` stopped failing on attitude
 because the covariance widened, not because the error shrank: `harsh_imu`'s tilt moved 1.19° to
@@ -833,8 +840,9 @@ corpus can say is when the filter stopped vouching for its own attitude; what it
 whether that attitude was any good.
 
 **How accurate is it?** Error-based: RMSE and NEES against a reference trajectory. This needs
-truth, so it is the simulator's question and INSANE's, and neither displaces the corpus: synthetic
-data cannot falsify a sensor model, and a clean RTK dataset does not present glitchy sensors.
+truth, so it is the simulator's question and INSANE's, INSANE's for position, height and velocity
+only, and neither displaces the corpus: synthetic data cannot falsify a sensor model, and a clean
+RTK dataset does not present glitchy sensors.
 
 **Was a rejection correct?** This needs truth *and* deliberately hostile measurements, which is a
 third combination rather than a harder version of either. Consistency cannot answer it, because a
@@ -853,16 +861,31 @@ filter's prior, and the 0.2 s after a moving start's heading adoption (`data/ane
 ### Primary sources
 
 **[INSANE](https://www.aau.at/en/smart-systems-technologies/control-of-networked-systems/datasets/insane-dataset/)** (University of Klagenfurt) is the
-accuracy benchmark. It is the only public dataset found that covers the full sensor set on a
-UAV: three IMUs (900 Hz LSM9DS1, 200 Hz ICM20689 and BMI055), dual RTK GNSS, two magnetometers,
-a barometer, a laser range finder, UWB, and motor telemetry, eighteen sensors in total. Ground
-truth is centimeter and sub-degree outdoors from dual RTK, millimeter indoors from motion
-capture, with fiducial markers bridging the two. Recorded on a 3 kg quadcopter across a motion
-capture facility, a university campus, a model airfield, and Mars-analog desert terrain. Raw
-unprocessed measurements with post-processing tools.
+accuracy benchmark for position, height and velocity on a real UAV. It is the only public
+dataset found that covers the full sensor set on one: three IMUs (900 Hz LSM9DS1, 200 Hz
+ICM20689 and BMI055), dual RTK GNSS, two magnetometers, a barometer, a laser range finder, UWB,
+and motor telemetry, eighteen sensors in total, on a 3 kg quadcopter across a motion capture
+facility, a university campus, a model airfield, and Mars-analog desert terrain. The filter
+is fed the PX4 autopilot's own IMU, receiver, barometer and magnetometer (`tools/insane2replay.py`,
+`data/insane.sh`).
 
-The data is licensed BSD-2-Clause **with commercial use excluded**, a rider that is not part of
-BSD-2 and makes the license non-free despite the name. Two consequences, and the second is the
+What its truth can score is narrower than its paper's "centimeter and sub-degree", and the
+dataset's own truth pipeline is why. Position is RTK, and good: two receivers' Doppler
+velocities agree with the differentiated truth to a median 4 to 8 cm/s. Attitude is fitted to the RTK
+baseline *and the PX4 magnetometer the filter fuses*, so the dual-antenna heading would be
+scored against itself, and at rest the truth tilts gravity 17° from vertical on the airfield
+flight and 5 to 6° in the desert, which is worse than this filter's own tilt. So attitude
+accuracy stays the simulator's question. The truth's timeline also lags the IMU's by 80 to
+170 ms, which the converter measures and removes per flight; three of the twenty GNSS
+sequences are not used, because windows where their truth fails outright (12 to 16° RMS off
+the gyroscope over a second, against medians near 2°) would set their lag. Three flights
+are: the airfield, a desert flight whose receiver overstates its accuracy, and a desert
+hover with 280 s of truth. On all three the reported position
+uncertainty covers the error, and (24′) is why ([Correlated measurement error](#correlated-measurement-error-as-equivalent-white-noise)).
+
+The data is licensed BSD-2-Clause **with an added condition**: no right to sell a product or
+service whose value derives from it, and citation of the authors in academic use. That
+condition is not part of BSD-2 and makes the licence non-free despite the name. Two consequences, and the second is the
 one that shapes the work. Redistribution is permitted, with the copyright notice, conditions and
 disclaimer retained: that much is ordinary BSD-2, and the opposite of what the name "non-free"
 suggests. But this crate is MIT, so bundling non-commercial data into it would hand every adopter
@@ -923,8 +946,8 @@ ceiling in CI. It does not displace the four below, because synthetic data canno
 sensor model, and that is exactly what INSANE and the PX4 corpus are for. What it measures is only
 as good as the error models in its own tables.
 
-1. INSANE as the accuracy benchmark, the only source exercising all four sensors on a UAV with
-   centimeter ground truth.
+1. INSANE as the accuracy benchmark for position, height and velocity, the only source
+   exercising all four sensors on a UAV with centimeter position truth.
 2. A dozen PX4 public logs as the regression corpus: cheap to add, catches divergence, and
    provides EKF2 as a side-by-side reference.
 3. UrbanNav specifically for innovation-gating tests, since its GNSS is deliberately hostile.

@@ -23,11 +23,12 @@
 # `cargo run --example replay` works with no network, and generated rather than downloaded:
 # `cargo run --example simulate -- flight data` rewrites it and its truth file.
 #
-# A second manifest is a second licence (AGENTS.md, "two corpora, two licences, two
-# manifests"): data/urbannav.txt is fetched only when named, into its own directory, and its
-# `# terms:` lines are printed before anything is downloaded. Only fetching, verifying and
-# listing take it; replaying one is its own script's (data/urbannav.sh), since what is
-# converted from which files is particular to the dataset.
+# Another manifest is another licence (AGENTS.md, "Replay corpus"):
+# data/urbannav.txt and data/insane.txt are fetched only when named, each into its own
+# directory, and their `# terms:` lines are printed before anything is downloaded. Only
+# fetching, verifying and listing take them; replaying one is its own script's
+# (data/urbannav.sh, data/insane.sh), since what is converted from which files is
+# particular to the dataset.
 #
 # --check is a local tool, not a CI job. It needs pyulog, and putting the converter in
 # the test path is exactly what GOALS.md's harness constraint rules out: CI replays the
