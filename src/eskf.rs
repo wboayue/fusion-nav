@@ -615,6 +615,7 @@ impl Eskf {
     /// Hold `origin` as the navigation origin, and read the site's declination from the
     /// magnetic model there unless the caller has set one. Every placement reads the model:
     /// [`set_origin`](Self::set_origin) and the coarse start's through here, and (44) through
+    /// [`declination_at`](Self::declination_at) and
     /// [`learn_declination`](Self::learn_declination) directly, at the fix.
     ///
     /// GOALS.md differentiator 7: the site is the one thing the model needs, and the origin is
@@ -638,14 +639,16 @@ impl Eskf {
     /// vehicle accelerates: a first origin arrives before that matters, and a caller moving
     /// the origin mid-flight to a distant site sets the declination itself.
     fn place_origin(&mut self, origin: LocalOrigin) {
-        self.learn_declination(origin.geodetic());
+        if let Some(learned) = self.declination_at(origin.geodetic()) {
+            self.learn_declination(learned);
+        }
         self.origin = Some(origin);
     }
 
-    /// What [`learn_declination`](Self::learn_declination) would do at `site`, committing
-    /// nothing: the model's declination there, and the turn about navigation down it gives a
-    /// heading referred to north through the declination alone (zero for any other). `None`
-    /// where there is nothing to learn: a declination the caller set, or no model.
+    /// What the magnetic model says at `site`, committing nothing: its declination there, and
+    /// the turn about navigation down that gives a heading referred to north through the
+    /// declination alone (zero for any other). `None` where there is nothing to learn: a
+    /// declination the caller set, or no model.
     fn declination_at(&self, site: Geodetic) -> Option<(Radians, f32)> {
         if self.declination_set {
             return None;
@@ -656,12 +659,10 @@ impl Eskf {
         Some((declination, if turns { change } else { 0.0 }))
     }
 
-    /// The declination half of [`place_origin`](Self::place_origin), at `site`: for (44),
-    /// which has to turn the heading before it reads the attitude it places the origin with.
-    fn learn_declination(&mut self, site: Geodetic) {
-        let Some((declination, turn)) = self.declination_at(site) else {
-            return;
-        };
+    /// Commit what [`declination_at`](Self::declination_at) read: the declination half of
+    /// [`place_origin`](Self::place_origin), apart for (44), which places the origin with the
+    /// turned heading before it commits the turn.
+    fn learn_declination(&mut self, (declination, turn): (Radians, f32)) {
         self.declination = declination;
         if turn != 0.0 {
             let mut turned = exp_quat(Vector3::z() * turn) * self.state.attitude.body_to_ned();
@@ -1384,14 +1385,17 @@ impl Eskf {
         // fix measures, (28′), with the heading the site's declination turns it to first: read
         // before, a 1 m arm under a 13.8° turn misplaces the origin by 0.24 m. The turn is
         // committed only once the origin is found, so a fix refused here changes nothing.
-        let turn = self.declination_at(fix).map_or(0.0, |(_, turn)| turn);
+        let learned = self.declination_at(fix);
+        let turn = learned.map_or(0.0, |(_, turn)| turn);
         let (past, _) = self.past(time);
         let attitude_then = exp_quat(Vector3::z() * turn) * past.attitude.body_to_ned();
         let antenna_then = past.position.vector() + attitude_then * antenna.vector();
         let Some(origin) = LocalOrigin::placing(fix, Position::from_vector(antenna_then)) else {
             return self.refuse_gnss(Fusion::NoReference);
         };
-        self.learn_declination(fix);
+        if let Some(learned) = learned {
+            self.learn_declination(learned);
+        }
         self.origin = Some(origin);
         let placed = self.reset_position_to(self.state.position, noise);
         debug_assert!(
