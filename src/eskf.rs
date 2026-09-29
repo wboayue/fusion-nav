@@ -547,15 +547,22 @@ impl Eskf {
     /// turned whenever a later origin changes it.
     ///
     /// Returns `false`, changing nothing, for an origin with a coordinate that is not a
-    /// number or a latitude beyond ±90°.
+    /// number or a latitude beyond ±90°, or one so far from the held position that it cannot
+    /// be written in `f32` metres from the new origin.
     #[must_use = "a refused origin leaves the filter to place its own on the first fix"]
     pub fn set_origin(&mut self, origin: Geodetic) -> bool {
         let Some(new) = LocalOrigin::new(origin) else {
             return false;
         };
         if let Some(old) = self.origin {
+            let position = new.to_ned(old.to_geodetic(self.state.position));
+            // An origin further from the vehicle than `f32` reaches, such as a height of
+            // 1e38 m, which `LocalOrigin::new` has no reason to refuse on its own.
+            if !position.is_finite() {
+                return false;
+            }
             self.commit_state(State {
-                position: new.to_ned(old.to_geodetic(self.state.position)),
+                position,
                 ..self.state
             });
         }
@@ -2715,6 +2722,16 @@ mod tests {
         assert_eq!(filter.state().attitude, attitude);
         assert_eq!(filter.magnetic_declination(), declination);
         assert_eq!(filter.origin(), None);
+    }
+
+    #[test]
+    fn an_origin_the_position_cannot_be_written_about_is_refused() {
+        let mut filter = initialized();
+        assert!(filter.set_origin(Geodetic::from_degrees(47.4, 8.5, 488.0)));
+        let held = (filter.origin(), filter.state().position);
+        // A height `f64` holds and `f32` does not.
+        assert!(!filter.set_origin(Geodetic::from_degrees(47.4, 8.5, -1.0e39)));
+        assert_eq!((filter.origin(), filter.state().position), held);
     }
 
     #[test]
