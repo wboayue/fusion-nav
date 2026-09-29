@@ -5511,7 +5511,8 @@ mod tests {
         // fixes and one bad rejected, ended by recovering onto a good one: a lockout. A run of
         // one bad, ended by recovering onto a good one: a tie, counted a glitch. A recovery
         // after a gap, whose own fix is the whole run: bad, a glitch. A refusal counts for
-        // nothing, and a decided fix with no truth is unjudged. A run an accepted fix ended
+        // nothing, a refused one with no truth row included, and a decided fix with no truth
+        // is unjudged. A run an accepted fix ended
         // leaves the next recovery with only its own fix: good, a lockout.
         for (outcome, judged, recovery) in [
             (Fusion::Reset, GOOD, false),
@@ -5524,6 +5525,13 @@ mod tests {
             (Fusion::Reset, GOOD, true),
             (Fusion::Reset, BAD, true),
             (Fusion::NotInitialized, BAD, false),
+            (
+                Fusion::OutOfHorizon {
+                    age: Seconds::from_secs(1.0),
+                },
+                None,
+                false,
+            ),
             (accepted, None, false),
             (rejected, BAD, false),
             (accepted, GOOD, false),
