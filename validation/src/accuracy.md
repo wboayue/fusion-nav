@@ -97,7 +97,7 @@ no bias in a real receiver, no gaps in a real log. The
 [INSANE dataset](https://www.aau.at/en/smart-systems-technologies/control-of-networked-systems/datasets/insane-dataset/)
 (University of Klagenfurt; Brommer et al., IROS 2022,
 [arXiv:2210.09114](https://arxiv.org/abs/2210.09114)) flew a 3 kg quadcopter carrying two RTK
-receivers 1.2 m apart, which place it to about a centimetre. Three of its flights are replayed
+receivers 1.2 m apart, which place it to centimetres while their corrections hold. Three of its flights are replayed
 here on the autopilot's own sensors, the ones a flight controller fuses: its IMU, its ordinary
 GNSS receiver, its barometer and its magnetometer. The RTK receivers are only the truth.
 
@@ -116,8 +116,9 @@ treating a receiver's error as lasting from one fix to the next
 ([EQUATIONS.md (24′)](../EQUATIONS.md)): fused as though each fix's error were new, the same
 flights read far overconfident, and one of these receivers claims less error than it has.
 It costs a little accuracy: the filter ends slightly further from the truth than the fixes
-themselves are, where fused that way it would match them. Velocity is more conservative still, because the dataset's GNSS velocity is horizontal
-only and states no accuracy, so none is fused and velocity is observed only through the fixes.
+themselves are, where fused that way it would match them. Velocity is more conservative
+still, because the dataset's GNSS velocity is horizontal only and states no accuracy, so none
+is fused and velocity is observed only through the fixes.
 The barometers depart from the truth by metres, during the airfield flight's climb and slowly
 through the hover, which is the case the filter's estimated barometric offset exists for.
 
