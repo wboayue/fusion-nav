@@ -133,9 +133,10 @@ fn intervals(hostile: bool) -> BoxedStrategy<Option<(f32, f32)>> {
     prop::option::weighted(0.2, (sigma(), sigma())).boxed()
 }
 
-/// One sample of a still window replaced by whatever arrives, when `hostile`.
-#[allow(clippy::type_complexity)]
-fn odd(hostile: bool) -> BoxedStrategy<Option<(usize, [f32; 3], [f32; 3], f32)>> {
+/// One sample of a still window replaced by whatever arrives, when `hostile`: its IMU, its
+/// barometer or both, since a hostile IMU reading breaks rest and a window not at rest sets
+/// no barometric reference for a hostile reading to reach.
+fn odd(hostile: bool) -> BoxedStrategy<Option<OddSample>> {
     if !hostile {
         return Just(None).boxed();
     }
@@ -144,12 +145,25 @@ fn odd(hostile: bool) -> BoxedStrategy<Option<(usize, [f32; 3], [f32; 3], f32)>>
         0.3,
         (
             0usize..900,
+            select(vec![Odd::Imu, Odd::Baro, Odd::Both]),
             vector(h, -1.0, 1.0),
             vector(h, -10.0, 10.0),
             scalar(h, -5.0, 5.0),
         ),
     )
     .boxed()
+}
+
+/// The sample [`odd`] replaces, which of its readings, and the gyroscope, accelerometer and
+/// barometer values it gets.
+type OddSample = (usize, Odd, [f32; 3], [f32; 3], f32);
+
+/// Which of a window sample's readings [`odd`] replaces.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Odd {
+    Imu,
+    Baro,
+    Both,
 }
 
 #[derive(Clone, Debug)]
@@ -173,6 +187,7 @@ enum Op {
         age: i64,
         offset: [f32; 3],
         sigma: (f32, f32),
+        antenna: [f32; 3],
     },
     GnssVelocity {
         age: i64,
@@ -243,8 +258,8 @@ fn op(hostile: bool) -> BoxedStrategy<Op> {
         12 => predict,
         2 => (age(h), vector(h, -3.0, 3.0), (sigma(), sigma()), vector(h, -0.2, 0.2))
             .prop_map(|(age, ned, sigma, antenna)| Op::GnssPosition { age, ned, sigma, antenna }),
-        1 => (age(h), vector(h, -3.0, 3.0), (sigma(), sigma()))
-            .prop_map(|(age, offset, sigma)| Op::GnssGeodetic { age, offset, sigma }),
+        1 => (age(h), vector(h, -3.0, 3.0), (sigma(), sigma()), vector(h, -0.2, 0.2))
+            .prop_map(|(age, offset, sigma, antenna)| Op::GnssGeodetic { age, offset, sigma, antenna }),
         2 => (age(h), vector(h, -0.3, 0.3), sigma(), vector(h, -0.2, 0.2))
             .prop_map(|(age, ned, sigma, antenna)| Op::GnssVelocity { age, ned, sigma, antenna }),
         2 => (age(h), scalar(h, -2.0, 2.0), sigma())
@@ -275,12 +290,14 @@ enum Start {
         samples: usize,
         baro: bool,
         mag: bool,
-        odd: Option<(usize, [f32; 3], [f32; 3], f32)>,
+        odd: Option<OddSample>,
     },
     /// One sample, whatever it reads.
     Coarse { gyro: [f32; 3], accel: [f32; 3] },
-    /// A seed: level at the origin, every variance `variance`.
-    Seeded { variance: f32 },
+    /// A seed: level at the origin, every variance `variance`, and the first two position
+    /// errors correlated by `asymmetry` one way and half as much again the other, as a
+    /// caller's own arithmetic can leave them.
+    Seeded { variance: f32, asymmetry: f32 },
 }
 
 fn start(hostile: bool) -> BoxedStrategy<Start> {
@@ -302,7 +319,13 @@ fn start(hostile: bool) -> BoxedStrategy<Start> {
         ],
     )
         .prop_map(|(gyro, accel)| Start::Coarse { gyro, accel });
-    let seeded = scalar(h, 1.0e-4, 1.0).prop_map(|variance| Start::Seeded { variance });
+    let seeded =
+        (scalar(h, 1.0e-4, 1.0), scalar(h, -1.0e-5, 1.0e-5)).prop_map(|(variance, asymmetry)| {
+            Start::Seeded {
+                variance,
+                asymmetry,
+            }
+        });
     if hostile {
         prop_oneof![1 => Just(Start::Uninitialized), 6 => window, 2 => coarse, 2 => seeded].boxed()
     } else {
@@ -402,11 +425,15 @@ fn begin(filter: &mut Eskf, start: &Start) -> Result<(), TestCaseError> {
             let mut window = StaticWindow::new();
             for i in 0..samples {
                 let mut s = still(i, baro, mag);
-                if let Some((j, gyro, accel, altitude)) = odd
+                if let Some((j, which, gyro, accel, altitude)) = odd
                     && i == j
                 {
-                    s.imu = sample(s.imu.time, gyro, accel, s.imu.angle_interval);
-                    s.baro = Some(Altitude::from_meters(altitude));
+                    if which != Odd::Baro {
+                        s.imu = sample(s.imu.time, gyro, accel, s.imu.angle_interval);
+                    }
+                    if which != Odd::Imu {
+                        s.baro = Some(Altitude::from_meters(altitude));
+                    }
                 }
                 let before = format!("{window:?}");
                 if window.push(s).is_err() {
@@ -437,12 +464,18 @@ fn begin(filter: &mut Eskf, start: &Start) -> Result<(), TestCaseError> {
             );
             let _ = filter.initialize_coarse(imu);
         }
-        Start::Seeded { variance } => {
+        Start::Seeded {
+            variance,
+            asymmetry,
+        } => {
             let state = State {
                 attitude: Attitude::level(),
                 ..State::default()
             };
-            let covariance = Covariance::from_sigmas([variance.sqrt(); STATES]);
+            let mut p = *Covariance::from_sigmas([variance.sqrt(); STATES]).as_matrix();
+            p[(0, 1)] = asymmetry;
+            p[(1, 0)] = asymmetry * 1.5;
+            let covariance = Covariance::from_matrix(p);
             let _ = filter.initialize_from(state, covariance, Timestamp::from_micros(1_000_000));
         }
     }
@@ -456,6 +489,11 @@ struct Snapshot {
     covariance: Covariance,
     offset: Offset,
     time: Option<Timestamp>,
+    origin: Option<LocalOrigin>,
+    declination: (Radians, bool, bool),
+    baro_reference: Option<Altitude>,
+    unestablished: super::Unestablished,
+    aligned: bool,
 }
 
 fn snapshot(filter: &Eskf) -> Snapshot {
@@ -466,6 +504,15 @@ fn snapshot(filter: &Eskf) -> Snapshot {
         covariance: *filter.covariance(),
         offset: filter.offset,
         time: filter.time(),
+        origin: filter.origin,
+        declination: (
+            filter.declination,
+            filter.declination_set,
+            filter.magnetic_north,
+        ),
+        baro_reference: filter.baro_reference,
+        unestablished: filter.unestablished,
+        aligned: filter.aligned,
     }
 }
 
@@ -551,11 +598,38 @@ fn check(filter: &Eskf, after: &str, project: bool) -> Result<(), TestCaseError>
     Ok(())
 }
 
+/// A `fuse_*` touches its own sources' health and no other's, and a refusal counts once on
+/// the source it names.
+fn health_of(
+    filter: &Eskf,
+    before: &Diagnostics,
+    own: &[&str],
+    refused: &[(&str, bool)],
+) -> Result<(), TestCaseError> {
+    let after = filter.diagnostics().sources();
+    for ((name, was), (_, now)) in before.sources().iter().zip(after.iter()) {
+        if !own.contains(name) {
+            prop_assert_eq!(was, now, "{} moved by another source's measurement", name);
+        }
+        if let Some((_, true)) = refused.iter().find(|(source, _)| source == name) {
+            prop_assert_eq!(
+                now.refused,
+                was.refused + 1,
+                "{} refused and not counted",
+                name
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Run one call and check it: a refusal or rejection leaves the state, the covariance, the
 /// offset and the clock as they were, and a `predict` moves the clock as its contract says.
 fn apply(filter: &mut Eskf, op: &Op, project: bool) -> Result<(), TestCaseError> {
     let before = snapshot(filter);
+    let health = *filter.diagnostics();
     let now = filter.time().unwrap_or(Timestamp::from_micros(1_000_000));
+    let is_refused = |outcome: Fusion| outcome.refusal().is_some();
     let untouched = |filter: &Eskf, what: &str| -> Result<(), TestCaseError> {
         prop_assert_eq!(&snapshot(filter), &before, "{} changed the filter", what);
         Ok(())
@@ -627,17 +701,32 @@ fn apply(filter: &mut Eskf, op: &Op, project: bool) -> Result<(), TestCaseError>
             if !fused(outcome.horizontal) && !fused(outcome.height) {
                 untouched(filter, "an unfused GNSS position")?;
             }
+            let refused = [
+                ("gnss_position", is_refused(outcome.horizontal)),
+                ("gnss_height", is_refused(outcome.height)),
+            ];
+            health_of(filter, &health, &["gnss_position", "gnss_height"], &refused)?;
         }
-        Op::GnssGeodetic { age, offset, sigma } => {
+        Op::GnssGeodetic {
+            age,
+            offset,
+            sigma,
+            antenna,
+        } => {
             let outcome = filter.fuse_gnss_geodetic(
                 at(now, age),
                 geodetic(offset),
                 horizontal(sigma),
-                Position::zero(),
+                Position::body(antenna[0], antenna[1], antenna[2]),
             );
             if !fused(outcome.horizontal) && !fused(outcome.height) {
                 untouched(filter, "an unfused geodetic fix")?;
             }
+            let refused = [
+                ("gnss_position", is_refused(outcome.horizontal)),
+                ("gnss_height", is_refused(outcome.height)),
+            ];
+            health_of(filter, &health, &["gnss_position", "gnss_height"], &refused)?;
         }
         Op::GnssVelocity {
             age,
@@ -654,6 +743,12 @@ fn apply(filter: &mut Eskf, op: &Op, project: bool) -> Result<(), TestCaseError>
             if !fused(outcome) {
                 untouched(filter, "an unfused GNSS velocity")?;
             }
+            health_of(
+                filter,
+                &health,
+                &["gnss_velocity"],
+                &[("gnss_velocity", is_refused(outcome))],
+            )?;
         }
         Op::Baro {
             age,
@@ -674,6 +769,8 @@ fn apply(filter: &mut Eskf, op: &Op, project: bool) -> Result<(), TestCaseError>
                     "an unfused altitude changed the estimate"
                 );
             }
+            let refused = [("baro_altitude", is_refused(outcome))];
+            health_of(filter, &health, &["baro_altitude"], &refused)?;
         }
         Op::Mag { age, field, sigma } => {
             let outcome = filter.fuse_mag_heading(
@@ -684,6 +781,12 @@ fn apply(filter: &mut Eskf, op: &Op, project: bool) -> Result<(), TestCaseError>
             if !fused(outcome) {
                 untouched(filter, "an unfused magnetic heading")?;
             }
+            health_of(
+                filter,
+                &health,
+                &["mag_heading"],
+                &[("mag_heading", is_refused(outcome))],
+            )?;
         }
         Op::GnssHeading {
             age,
@@ -698,12 +801,24 @@ fn apply(filter: &mut Eskf, op: &Op, project: bool) -> Result<(), TestCaseError>
             if !fused(outcome) {
                 untouched(filter, "an unfused GNSS heading")?;
             }
+            health_of(
+                filter,
+                &health,
+                &["gnss_heading"],
+                &[("gnss_heading", is_refused(outcome))],
+            )?;
         }
         Op::Course { age, sigma } => {
             let outcome = filter.fuse_course(at(now, age), HeadingNoise::from_sigma(sigma));
             if !fused(outcome) {
                 untouched(filter, "an unfused course")?;
             }
+            health_of(
+                filter,
+                &health,
+                &["course"],
+                &[("course", is_refused(outcome))],
+            )?;
         }
         Op::ResetPosition { ned, sigma } => {
             if !filter.reset_position_to(Position::ned(ned[0], ned[1], ned[2]), horizontal(sigma)) {
@@ -717,7 +832,9 @@ fn apply(filter: &mut Eskf, op: &Op, project: bool) -> Result<(), TestCaseError>
             }
         }
         Op::SetOrigin { offset } => {
-            let _ = filter.set_origin(geodetic(offset));
+            if !filter.set_origin(geodetic(offset)) {
+                untouched(filter, "a refused origin")?;
+            }
         }
         Op::SetBaroReference { altitude, sigma } => {
             let accepted = filter.set_baro_reference(
@@ -729,7 +846,9 @@ fn apply(filter: &mut Eskf, op: &Op, project: bool) -> Result<(), TestCaseError>
             }
         }
         Op::SetDeclination(declination) => {
-            let _ = filter.set_magnetic_declination(Radians::from_radians(declination));
+            if !filter.set_magnetic_declination(Radians::from_radians(declination)) {
+                untouched(filter, "a refused declination")?;
+            }
         }
     }
     check(filter, &format!("{op:?}"), project)
@@ -793,6 +912,18 @@ proptest! {
             }
         }
         let quaternion = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(q[0], q[1], q[2], q[3]));
+        // Each constructor's getter hands back what it was given, up to the quaternion's sign.
+        if quaternion.coords.iter().all(|c| c.is_finite()) {
+            let trips = [
+                ("body_to_ned", Attitude::from_body_to_ned(quaternion).body_to_ned()),
+                ("ned_to_body", Attitude::from_ned_to_body(quaternion).ned_to_body()),
+                ("flu_to_enu", Attitude::from_flu_to_enu(quaternion).flu_to_enu()),
+                ("flu_to_nwu", Attitude::from_flu_to_nwu(quaternion).flu_to_nwu()),
+            ];
+            for (name, back) in trips {
+                prop_assert!(back.angle_to(&quaternion) < 1e-3, "{name}: {quaternion:?} came back {back:?}");
+            }
+        }
         for attitude in [
             Attitude::from_body_to_ned(quaternion),
             Attitude::from_ned_to_body(quaternion),
