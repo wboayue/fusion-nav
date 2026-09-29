@@ -12,11 +12,11 @@
 #
 # One run per sequence, raw `R`, under `--declination model` (the converter writes no
 # declination). `--r-policy px4` is not run: every fix claims more than PX4's floors, so it
-# replays byte for byte what raw does.
+# scores the same as raw, key for key.
 #
 # Local, like `data/fetch.sh --check`, and never CI: INSANE's terms forbid selling what
 # derives from it, so its files are fetched (`data/fetch.sh --manifest data/insane.txt`) and
-# nothing drawn from them is committed but the scalars below (data/insane.txt carries them).
+# nothing drawn from them is committed but the scalars in data/insane-pins.txt.
 
 set -euo pipefail
 
@@ -54,9 +54,10 @@ mkdir -p "$out"
 sequences=$(awk '$1 !~ /^#/ && $2 ~ /_sensors\.zip$/ { sub(/_sensors\.zip$/, "", $2); print $2 }' \
     "$root/data/insane.txt")
 for sequence in $sequences; do
+    # The converter's own reason, a lag it refuses among them, rather than only its status.
     uv run --quiet "$root/tools/insane2replay.py" "$data" --sequence "$sequence" \
-        -o "$out/$sequence.csv" --truth "$out/$sequence.truth.csv" 2>/dev/null ||
-        die "converting $sequence failed"
+        -o "$out/$sequence.csv" --truth "$out/$sequence.truth.csv" 2>"$out/$sequence.log" ||
+        die "converting $sequence failed: $(tail -1 "$out/$sequence.log")"
     pinned_run "$sequence" raw "$out/$sequence.raw" "$out/$sequence.csv" \
         "$out/$sequence.truth.csv" --declination model
 done

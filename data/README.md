@@ -752,7 +752,7 @@ The accuracy benchmark for a real UAV (#9): a 3 kg quadcopter's own PX4 IMU, rec
 barometer and magnetometer, with two RTK receivers on a 1.2 m baseline as the truth. It is the
 one source with a real barometer and magnetometer *and* truth, and it scores position, height
 and velocity, and whether the covariance covers them. It does not score attitude: its attitude
-truth is fitted partly to the magnetometer the filter fuses, and at rest it tilts gravity 6° to
+truth is fitted partly to the magnetometer the filter fuses, and at rest it tilts gravity 5° to
 17° from vertical.
 
 Its licence forbids selling what derives from it (GOALS.md, "Primary sources"), so it has its
@@ -776,6 +776,6 @@ The truth is written at RTK2's epochs, about 7 Hz, and knows no bias. Both files
 `fusion-nav` marker naming the sequence and a digest of its archive and the calibrations. The
 replay runs under `--declination model`, since the dataset's own declination has the wrong sign
 at Klagenfurt, and under raw `R` only: every fix claims more than PX4's floors, so `px4`
-replays the same bytes. `data/insane-pins.txt` pins no attitude key and says what the lines
+scores the same, key for key. `data/insane-pins.txt` pins no attitude key and says what the lines
 show. Only these scalars are published
 ([accuracy page](../validation/accuracy.md#a-real-quadcopter-against-rtk)); no figure of the data is.

@@ -105,19 +105,21 @@ GNSS receiver, its barometer and its magnetometer. The RTK receivers are only th
 |---|---|---|---|---|---|
 | Model airfield, Klagenfurt, 24 m climb | {{score insane-outdoor_1/raw pos_h}} | {{score insane-outdoor_1/raw pos_v}} | {{score insane-outdoor_1/raw vel}} | {{score insane-outdoor_1/raw nees_pos}} | {{score insane-outdoor_1/raw nees_vel}} |
 | Desert, a receiver that overstates its accuracy | {{score insane-mars_1/raw pos_h}} | {{score insane-mars_1/raw pos_v}} | {{score insane-mars_1/raw vel}} | {{score insane-mars_1/raw nees_pos}} | {{score insane-mars_1/raw nees_vel}} |
-| Desert, six minutes of hover | {{score insane-mars_19/raw pos_h}} | {{score insane-mars_19/raw pos_v}} | {{score insane-mars_19/raw vel}} | {{score insane-mars_19/raw nees_pos}} | {{score insane-mars_19/raw nees_vel}} |
+| Desert, a long hover | {{score insane-mars_19/raw pos_h}} | {{score insane-mars_19/raw pos_v}} | {{score insane-mars_19/raw vel}} | {{score insane-mars_19/raw nees_pos}} | {{score insane-mars_19/raw nees_vel}} |
 
-Horizontal error here is the receiver's, not the filter's: an ordinary receiver is off by a
-metre or more for tens of seconds at a time, and no filter can remove an error its only
-position source shares. What the filter owes is to know it, and it does: position NEES under 1
-means the reported uncertainty covers the error, conservatively (the
-[honesty page](honesty.md#what-this-page-cannot-say) says what NEES is). That rests on the
-filter treating a receiver's error as lasting from one fix to the next
+Horizontal error here is mostly the receiver's: an ordinary receiver is off by a metre or
+more for tens of seconds at a time, and no filter can remove an error its only position
+source shares. What the filter owes is to know it, and it does: position NEES under 1 means
+the reported uncertainty covers the error, conservatively (the
+[honesty page](honesty.md#how-it-is-measured) says what NEES is). That rests on the filter
+treating a receiver's error as lasting from one fix to the next
 ([EQUATIONS.md (24′)](../EQUATIONS.md)): fused as though each fix's error were new, the same
-flights read far overconfident, and one of these receivers claims less error than it has. Velocity is more conservative still, because the dataset's GNSS velocity is horizontal
+flights read far overconfident, and one of these receivers claims less error than it has.
+It costs a little accuracy: the filter ends slightly further from the truth than the fixes
+themselves are, where fused that way it would match them. Velocity is more conservative still, because the dataset's GNSS velocity is horizontal
 only and states no accuracy, so none is fused and velocity is observed only through the fixes.
-The airfield flight's barometer drifts by metres from the truth over the flight, which is the
-case the filter's estimated barometric offset exists for.
+The barometers depart from the truth by metres, during the airfield flight's climb and slowly
+through the hover, which is the case the filter's estimated barometric offset exists for.
 
 Attitude is not scored. INSANE builds its attitude truth from the RTK baseline and the same
 magnetometer the filter fuses, and at rest that truth tilts gravity several degrees from

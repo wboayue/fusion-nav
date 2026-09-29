@@ -556,9 +556,12 @@ under `eph` at 1788 fixes of 4614, median ratio 1.039 against 0.726. On `7ce66f0
 magnetometer that kept pushing a wrongly levelled heading stops outvoting GNSS: `recovered=` 294
 to 69, the magnetometer rejected instead. On `093e806a`, 35 to 29. And on INSANE (#9), the first
 real receivers scored against truth, white reads `nees_pos` 39.2, 11.6 and 16.1 on its three
-flights where (24′) reads 0.47, 0.36 and 0.44, and `outdoor_1`'s `pos_v` is 8.18 m white against
+flights where (24′) reads 0.47, 0.35 and 0.44, and `outdoor_1`'s `pos_v` is 8.18 m white against
 1.88. `mars_1`'s receiver claims 0.77 m and errs by 1.86 m RMS, so what covers it is the
-correlation (24′) prices, not the receiver's claim.
+correlation (24′) prices, not the receiver's claim. It is not free: white, the horizontal error
+matches the fixes' own (3.95 m against their 3.92 on `outdoor_1`), and under (24′) it is 0.05
+to 0.37 m RMS worse, which is what an honest covariance cost on a receiver whose error
+persists.
 
 **What it did not buy.** `harsh_imu` (#149) and `gnss_latency` stopped failing on attitude
 because the covariance widened, not because the error shrank: `harsh_imu`'s tilt moved 1.19° to
@@ -868,15 +871,16 @@ is fed the PX4 autopilot's own IMU, receiver, barometer and magnetometer (`tools
 
 What its truth can score is narrower than its paper's "centimeter and sub-degree", and the
 dataset's own truth pipeline is why. Position is RTK, and good: two receivers' Doppler
-velocities agree with the differentiated truth to 3 to 8 cm/s. Attitude is fitted to the RTK
+velocities agree with the differentiated truth to a median 4 to 8 cm/s. Attitude is fitted to the RTK
 baseline *and the PX4 magnetometer the filter fuses*, so the dual-antenna heading would be
 scored against itself, and at rest the truth tilts gravity 17° from vertical on the airfield
-flight and 6° in the desert, which is worse than this filter's own tilt. So attitude accuracy
-stays the simulator's question. The truth's timeline also lags the IMU's by 80 to 170 ms,
-which the converter measures and removes per flight, and three of the twenty GNSS sequences
-have no clear lag at all (their attitude truth is 12 to 14° RMS off the gyroscope over a
-second) and are not used. Three flights are: the airfield, a desert flight whose receiver
-overstates its accuracy, and six minutes of desert hover. On all three the reported position
+flight and 5 to 6° in the desert, which is worse than this filter's own tilt. So attitude
+accuracy stays the simulator's question. The truth's timeline also lags the IMU's by 80 to
+170 ms, which the converter measures and removes per flight; three of the twenty GNSS
+sequences are not used, because windows where their truth fails outright (12 to 16° RMS off
+the gyroscope over a second, against medians near 2°) would set their lag. Three flights
+are: the airfield, a desert flight whose receiver overstates its accuracy, and a desert
+hover with 280 s of truth. On all three the reported position
 uncertainty covers the error, and (24′) is why ([Correlated measurement error](#correlated-measurement-error-as-equivalent-white-noise)).
 
 The data is licensed BSD-2-Clause **with an added condition**: no right to sell a product or

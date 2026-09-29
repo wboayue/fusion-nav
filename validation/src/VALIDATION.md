@@ -33,7 +33,7 @@ flight: horizontal position {{score mission pos_h}} m RMS, height {{score missio
 velocity {{score mission vel}} m/s, tilt {{score mission tilt}}° and heading
 {{score mission yaw}}°. On a real quadcopter against RTK, horizontal position is off by
 {{score insane-outdoor_1/raw pos_h}}, {{score insane-mars_1/raw pos_h}} and
-{{score insane-mars_19/raw pos_h}} m RMS on three flights, which is its ordinary receiver's own
+{{score insane-mars_19/raw pos_h}} m RMS on three flights, about its ordinary receiver's own
 error, and the reported uncertainty covers it.
 
 {{figure mission error_position}}

@@ -19,7 +19,8 @@ overconfident at the same time would pass it.
 
 ## How it is measured
 
-Two tests, both against the simulator's known truth:
+Two tests, both against a known truth, the simulator's everywhere but in one paragraph
+[below](#what-this-page-cannot-say):
 
 - **Within 3σ** (`in3s`): at every moment and on every quantity the filter estimates, is the
   real error inside three standard deviations of the reported uncertainty? The figure is the
