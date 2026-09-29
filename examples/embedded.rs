@@ -86,7 +86,7 @@ trait Board: core::fmt::Write {
 }
 
 fn run(board: &mut impl Board) -> ! {
-    let mut filter = Eskf::new(Config::default());
+    let mut filter = Eskf::default();
     align(&mut filter, board);
     let mut ticks: u32 = 0;
     loop {

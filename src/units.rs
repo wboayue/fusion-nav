@@ -76,11 +76,11 @@ impl Attitude {
     /// frame", Hamilton and scalar-first (`msg/versioned/VehicleAttitude.msg:2,10`), and
     /// ArduPilot publishes `AP_AHRS::get_quat_body_to_ned`
     /// (`libraries/AP_AHRS/AP_AHRS.h:672`).
-    /// [`flu_to_nwu`](Self::flu_to_nwu) maps `fusion-ahrs`'s three conventions onto these
+    /// [`from_flu_to_nwu`](Self::from_flu_to_nwu) maps `fusion-ahrs`'s three conventions onto these
     /// constructors, `Convention::Ned` included.
     ///
     /// Read at PX4-Autopilot `c4e4ef98` (v1.18.0-beta1) and ardupilot `368dc0c4`.
-    pub const fn body_to_ned(q: UnitQuaternion<f32>) -> Self {
+    pub const fn from_body_to_ned(q: UnitQuaternion<f32>) -> Self {
         Self(q)
     }
 
@@ -91,7 +91,7 @@ impl Attitude {
     /// reaches. An inverted attitude is finite, is a unit quaternion, and is identity
     /// wherever the true one is, so it survives every gate and every static test; it
     /// differs only in the sign of every rotation the vehicle actually has.
-    pub fn ned_to_body(q: UnitQuaternion<f32>) -> Self {
+    pub fn from_ned_to_body(q: UnitQuaternion<f32>) -> Self {
         Self(q.inverse())
     }
 
@@ -102,7 +102,7 @@ impl Attitude {
     /// navigation frame is the half-applied form, and it is not obviously wrong: it
     /// reports the same heading as this one and the vehicle upside down, so a level bench
     /// check that reads a compass agrees with it.
-    pub fn flu_to_enu(q: UnitQuaternion<f32>) -> Self {
+    pub fn from_flu_to_enu(q: UnitQuaternion<f32>) -> Self {
         let r_nav = ned_from_enu();
         let r_body = frd_from_flu();
         Self(r_nav * q * r_body.inverse())
@@ -115,45 +115,45 @@ impl Attitude {
     /// quaternion rotates the sensor frame into the earth frame, its default
     /// `Convention::Nwu` puts north, west, up on the earth axes, and a level sensor then
     /// reads gravity on `+z`, which is an FLU body. `Convention::Enu` is
-    /// [`flu_to_enu`](Self::flu_to_enu) and `Convention::Ned` is
-    /// [`body_to_ned`](Self::body_to_ned).
+    /// [`from_flu_to_enu`](Self::from_flu_to_enu) and `Convention::Ned` is
+    /// [`from_body_to_ned`](Self::from_body_to_ned).
     ///
-    /// Two-sided for the reason [`flu_to_enu`](Self::flu_to_enu) is. Both halves are the
+    /// Two-sided for the reason [`from_flu_to_enu`](Self::from_flu_to_enu) is. Both halves are the
     /// same half turn here, so the conversion is a conjugation and a vehicle that is only
     /// rolled comes through unchanged — a second attitude that cannot tell a conversion
     /// from no conversion at all.
-    pub fn flu_to_nwu(q: UnitQuaternion<f32>) -> Self {
+    pub fn from_flu_to_nwu(q: UnitQuaternion<f32>) -> Self {
         let r_nav = ned_from_nwu();
         let r_body = frd_from_flu();
         Self(r_nav * q * r_body.inverse())
     }
 
     /// The underlying quaternion, body to NED: the convention
-    /// [`body_to_ned`](Self::body_to_ned) takes, and what PX4 and ArduPilot publish.
-    pub const fn quaternion(self) -> UnitQuaternion<f32> {
+    /// [`from_body_to_ned`](Self::from_body_to_ned) takes, and what PX4 and ArduPilot publish.
+    pub const fn body_to_ned(self) -> UnitQuaternion<f32> {
         self.0
     }
 
     /// The quaternion that rotates NED to body FRD: the inverse of
-    /// [`ned_to_body`](Self::ned_to_body), for a consumer that stores the direction-cosine
-    /// matrix taking navigation vectors into the body.
-    pub fn as_ned_to_body(self) -> UnitQuaternion<f32> {
+    /// [`from_ned_to_body`](Self::from_ned_to_body), for a consumer that stores the
+    /// direction-cosine matrix taking navigation vectors into the body.
+    pub fn ned_to_body(self) -> UnitQuaternion<f32> {
         self.0.inverse()
     }
 
     /// The quaternion that rotates body FLU to ENU, for ROS (`nav_msgs/Odometry`,
-    /// `sensor_msgs/Imu`): the inverse of [`flu_to_enu`](Self::flu_to_enu).
+    /// `sensor_msgs/Imu`): the inverse of [`from_flu_to_enu`](Self::from_flu_to_enu).
     ///
     /// Two-sided on the way out for the reason it is on the way in,
     /// `q = r_nav⁻¹ ⊗ q_{NED←FRD} ⊗ r_body`; rotating the navigation frame alone publishes
     /// the right heading and the vehicle upside down.
-    pub fn as_flu_to_enu(self) -> UnitQuaternion<f32> {
+    pub fn flu_to_enu(self) -> UnitQuaternion<f32> {
         ned_from_enu().inverse() * self.0 * frd_from_flu()
     }
 
     /// The quaternion that rotates body FLU to NWU, as Madgwick-family filters report it:
-    /// the inverse of [`flu_to_nwu`](Self::flu_to_nwu).
-    pub fn as_flu_to_nwu(self) -> UnitQuaternion<f32> {
+    /// the inverse of [`from_flu_to_nwu`](Self::from_flu_to_nwu).
+    pub fn flu_to_nwu(self) -> UnitQuaternion<f32> {
         ned_from_nwu().inverse() * self.0 * frd_from_flu()
     }
 
@@ -1125,15 +1125,15 @@ mod tests {
         let [ned_from_frd, enu_from_flu, nwu_from_flu] = nose_east_rolled_right();
 
         assert_same_rotation(
-            Attitude::body_to_ned(ned_from_frd).quaternion(),
+            Attitude::from_body_to_ned(ned_from_frd).body_to_ned(),
             ned_from_frd,
         );
         assert_same_rotation(
-            Attitude::flu_to_enu(enu_from_flu).quaternion(),
+            Attitude::from_flu_to_enu(enu_from_flu).body_to_ned(),
             ned_from_frd,
         );
         assert_same_rotation(
-            Attitude::flu_to_nwu(nwu_from_flu).quaternion(),
+            Attitude::from_flu_to_nwu(nwu_from_flu).body_to_ned(),
             ned_from_frd,
         );
     }
@@ -1152,7 +1152,7 @@ mod tests {
         // number a bench check reads.
         let level = UnitQuaternion::identity();
         let (half_roll, _, half_yaw) = (ned_from_enu() * level).euler_angles();
-        let (roll, _, yaw) = Attitude::flu_to_enu(level).euler_angles();
+        let (roll, _, yaw) = Attitude::from_flu_to_enu(level).euler_angles();
         assert!((half_yaw - yaw).abs() < 1.0e-6);
         assert!((half_roll.abs() - core::f32::consts::PI).abs() < 1.0e-6);
         assert!(roll.abs() < 1.0e-6);
@@ -1160,37 +1160,38 @@ mod tests {
 
     #[test]
     fn an_identity_in_each_convention_is_the_attitude_that_convention_calls_level() {
-        let (roll, pitch, yaw) = Attitude::flu_to_enu(UnitQuaternion::identity()).euler_angles();
+        let (roll, pitch, yaw) =
+            Attitude::from_flu_to_enu(UnitQuaternion::identity()).euler_angles();
         // ENU pairs east with body forward, so its identity is a vehicle pointing east.
         assert!(roll.abs() < 1.0e-6 && pitch.abs() < 1.0e-6);
         assert!((yaw - core::f32::consts::FRAC_PI_2).abs() < 1.0e-6);
 
         // NWU pairs north with body forward, so its identity is ours.
         assert_same_rotation(
-            Attitude::flu_to_nwu(UnitQuaternion::identity()).quaternion(),
-            Attitude::level().quaternion(),
+            Attitude::from_flu_to_nwu(UnitQuaternion::identity()).body_to_ned(),
+            Attitude::level().body_to_ned(),
         );
 
         // And NWU's conversion is a conjugation by a half turn about that shared first
         // axis, so a vehicle that is only rolled comes through with its own quaternion.
         let rolled = UnitQuaternion::from_euler_angles(0.4, 0.0, 0.0);
-        assert_same_rotation(Attitude::flu_to_nwu(rolled).quaternion(), rolled);
+        assert_same_rotation(Attitude::from_flu_to_nwu(rolled).body_to_ned(), rolled);
     }
 
     #[test]
     fn every_convention_leaves_as_it_arrived() {
         let [ned_from_frd, enu_from_flu, nwu_from_flu] = nose_east_rolled_right();
-        let attitude = Attitude::body_to_ned(ned_from_frd);
+        let attitude = Attitude::from_body_to_ned(ned_from_frd);
 
-        assert_same_rotation(attitude.as_flu_to_enu(), enu_from_flu);
-        assert_same_rotation(attitude.as_flu_to_nwu(), nwu_from_flu);
-        assert_same_rotation(attitude.as_ned_to_body(), ned_from_frd.inverse());
+        assert_same_rotation(attitude.flu_to_enu(), enu_from_flu);
+        assert_same_rotation(attitude.flu_to_nwu(), nwu_from_flu);
+        assert_same_rotation(attitude.ned_to_body(), ned_from_frd.inverse());
         assert_same_rotation(
-            Attitude::flu_to_enu(attitude.as_flu_to_enu()).quaternion(),
+            Attitude::from_flu_to_enu(attitude.flu_to_enu()).body_to_ned(),
             ned_from_frd,
         );
         assert_same_rotation(
-            Attitude::flu_to_nwu(attitude.as_flu_to_nwu()).quaternion(),
+            Attitude::from_flu_to_nwu(attitude.flu_to_nwu()).body_to_ned(),
             ned_from_frd,
         );
 
@@ -1206,7 +1207,7 @@ mod tests {
         let frd_from_ned = ned_from_frd.inverse();
 
         assert_same_rotation(
-            Attitude::ned_to_body(frd_from_ned).quaternion(),
+            Attitude::from_ned_to_body(frd_from_ned).body_to_ned(),
             ned_from_frd,
         );
         // The error the inversion exists to prevent: still a unit quaternion, still

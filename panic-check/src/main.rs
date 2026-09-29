@@ -20,8 +20,8 @@
 
 use core::hint::black_box;
 
-use fusion_nav::STATES;
 use fusion_nav::prelude::*;
+use fusion_nav::{ConfigBound, STATES};
 
 /// A handler is required to link, and its body is irrelevant: the gate fails on the
 /// *reachability* of `core::panicking`, not on what happens after it is reached.
@@ -44,10 +44,12 @@ fn drive() {
     if let Some(gate) = Gate::new(black_box(gates.baro_altitude.threshold())) {
         gates.baro_altitude = gate;
     }
-    let mut filter = Eskf::new(black_box(Config {
+    let Ok(mut filter) = Eskf::new(black_box(Config {
         gates,
         ..Config::default()
-    }));
+    })) else {
+        return;
+    };
     let dt = Seconds::from_secs(black_box(0.0025));
     // Every `Timestamp` conversion, since each one saturates or rounds a float into integers.
     let start = Timestamp::from_secs_f64(black_box(12.5));
@@ -258,20 +260,24 @@ fn drive() {
 /// the reason to skip it — `Covariance::get` indexes the same `nalgebra` matrix that
 /// `Index` bounds-checks, and `Attitude::euler_angles` is two `atan2` calls and an `asin`.
 fn surface(state: State, diagnostics: Diagnostics, covariance: &Covariance) {
-    let _ = black_box(state.attitude.quaternion());
+    let _ = black_box(state.attitude.body_to_ned());
     let _ = black_box(state.attitude.euler_angles());
     let _ = black_box(Attitude::level());
-    let _ = black_box(Attitude::body_to_ned(black_box(
-        state.attitude.quaternion(),
+    let _ = black_box(Attitude::from_body_to_ned(black_box(
+        state.attitude.body_to_ned(),
     )));
-    let _ = black_box(Attitude::ned_to_body(black_box(
-        state.attitude.quaternion(),
+    let _ = black_box(Attitude::from_ned_to_body(black_box(
+        state.attitude.body_to_ned(),
     )));
-    let _ = black_box(Attitude::flu_to_enu(black_box(state.attitude.quaternion())));
-    let _ = black_box(Attitude::flu_to_nwu(black_box(state.attitude.quaternion())));
-    let _ = black_box(black_box(state.attitude).as_ned_to_body());
-    let _ = black_box(black_box(state.attitude).as_flu_to_enu());
-    let _ = black_box(black_box(state.attitude).as_flu_to_nwu());
+    let _ = black_box(Attitude::from_flu_to_enu(black_box(
+        state.attitude.body_to_ned(),
+    )));
+    let _ = black_box(Attitude::from_flu_to_nwu(black_box(
+        state.attitude.body_to_ned(),
+    )));
+    let _ = black_box(black_box(state.attitude).ned_to_body());
+    let _ = black_box(black_box(state.attitude).flu_to_enu());
+    let _ = black_box(black_box(state.attitude).flu_to_nwu());
 
     let _ = black_box(state.position.x());
     let _ = black_box(state.position.y());
@@ -337,6 +343,12 @@ fn surface(state: State, diagnostics: Diagnostics, covariance: &Covariance) {
     let _ = black_box(Propagation::Propagated.is_propagated());
     let _ = black_box(Alignment::Static.is_static());
 
+    show::<ConfigError>(ConfigError {
+        field: "baro_offset_walk",
+        value: black_box(-0.5),
+        bound: ConfigBound::NonNegative,
+    });
+    let _ = black_box(black_box(Config::default()).validate());
     show::<InitError>(InitError::InvalidInterval {
         interval: Seconds::from_secs(black_box(-0.5)),
     });

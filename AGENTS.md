@@ -94,7 +94,7 @@ and fusing the barometer's as `R` took `nis_baro` to 1.54 to 34.56 on five of si
 there. `a299e722`'s rows average 2.5 ms while standing for 20 ms, so its figures read about √8
 high and are left out of the quoted ranges until #177 carries the converter's integral intervals.
 #81, #125, #25 and #62 landed together (#170), the sensor boundary. The edge converts both ways
-(`as_flu_to_enu`, `to_enu`, `to_flu`). The filter reads PX4's WMM table (`src/magnetic.rs`, the
+(`flu_to_enu`, `to_enu`, `to_flu`). The filter reads PX4's WMM table (`src/magnetic.rs`, the
 `magnetic-model` feature, 2.5 KB) where it places its origin unless the caller set a declination,
 and turns a heading only the magnetometer set; fixed epoch, since the table is within 0.26° and
 drifts 0.42° in five years at the corpus origins, against a 3.1° heading σ (GOALS). Every GNSS
@@ -362,7 +362,7 @@ held throughout: #58 landed before stage 5, the first code to read
 `f32`, and stage 5 then decided the default percentile from replay (`P999`) in the diff that first
 turned a fix down at all — the corpus stayed at `rejected=0` on all five logs until (29) reached a
 receiver whose velocity it refuses; #61 landed before stage 2, so a quaternion reaches `Attitude` only through
-a constructor naming its convention (`body_to_ned`, `ned_to_body`, `flu_to_enu`, `flu_to_nwu`) and
+a constructor naming its convention (`from_body_to_ned`, `from_ned_to_body`, `from_flu_to_enu`, `from_flu_to_nwu`) and
 the `q̂₀` of (5)–(7) is committed through the final shape; #59's signature landed with it, so
 `StaticSample` carries GNSS velocity and `Coarse::NotStationary` reports `ā_n`. What is left of #59
 is equation (5′), and the attitude it needs to rotate `ā_n` into body axes now exists.

@@ -321,7 +321,7 @@ type Column = fn(&State) -> f32;
 /// The estimate columns: each name next to the value it reads. Drives both the header and
 /// the row, so the two cannot drift apart.
 ///
-/// Attitude is the quaternion `Attitude::body_to_ned` names, Hamilton and scalar-first,
+/// Attitude is the quaternion `Attitude::from_body_to_ned` names, Hamilton and scalar-first,
 /// rather than Euler angles: ZYX Euler cannot separate roll from yaw at 90° of pitch, where a
 /// tailsitter cruises, while the quaternion is the rotation itself at every attitude. What a
 /// reader wants drawn from it — tilt, heading, the difference from EKF2 — is derived by
@@ -333,10 +333,10 @@ const ESTIMATE: [(&str, Column); 16] = [
     ("vel_n", |s| s.velocity.x()),
     ("vel_e", |s| s.velocity.y()),
     ("vel_d", |s| s.velocity.z()),
-    ("q0", |s| s.attitude.quaternion().w),
-    ("q1", |s| s.attitude.quaternion().i),
-    ("q2", |s| s.attitude.quaternion().j),
-    ("q3", |s| s.attitude.quaternion().k),
+    ("q0", |s| s.attitude.body_to_ned().w),
+    ("q1", |s| s.attitude.body_to_ned().i),
+    ("q2", |s| s.attitude.body_to_ned().j),
+    ("q3", |s| s.attitude.body_to_ned().k),
     ("ba_x", |s| s.accel_bias.x()),
     ("ba_y", |s| s.accel_bias.y()),
     ("ba_z", |s| s.accel_bias.z()),
@@ -512,7 +512,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     write_header(&mut epoch_out)?;
     write_fusion_header(&mut fusion_out, config.gates)?;
 
-    let mut replay = Replay::new(config, policy, scoring);
+    let mut replay = Replay::new(config, policy, scoring)?;
     replay.course = course.or_else(|| sideslip_of(&text));
     if replay
         .course
@@ -802,7 +802,7 @@ impl Excursion {
     }
 
     fn attitude(&mut self, attitude: Attitude) {
-        let down = attitude.quaternion() * Vector3::z();
+        let down = attitude.body_to_ned() * Vector3::z();
         let tilt = down.z.clamp(-1.0, 1.0).acos().to_degrees();
         self.tilt_max = Some(self.tilt_max.map_or(tilt, |t| t.max(tilt)));
     }
@@ -1004,10 +1004,10 @@ struct Replay {
 }
 
 impl Replay {
-    fn new(config: Config, policy: RPolicy, scoring: Option<Scoring>) -> Self {
-        Self {
+    fn new(config: Config, policy: RPolicy, scoring: Option<Scoring>) -> Result<Self, ConfigError> {
+        Ok(Self {
             consistency: Consistency::new(config.gates),
-            filter: Eskf::new(config),
+            filter: Eskf::new(config)?,
             window: [Held::default(); WINDOW],
             filled: 0,
             still_since_start: true,
@@ -1045,7 +1045,7 @@ impl Replay {
             transitions: Vec::new(),
             scoring,
             policy,
-        }
+        })
     }
 
     fn row(&mut self, line: &str, out: &mut Sinks) -> Result<(), Box<dyn Error>> {
@@ -2465,7 +2465,7 @@ fn error_state(state: &State, truth: &TruthRow) -> SVector<f32, STATES> {
         ),
         (
             ErrorState::AttitudeX,
-            (state.attitude.quaternion().inverse() * truth.attitude).scaled_axis(),
+            (state.attitude.body_to_ned().inverse() * truth.attitude).scaled_axis(),
         ),
         (
             ErrorState::AccelBiasX,
@@ -2504,7 +2504,7 @@ fn horizontal(error: &SVector<f32, STATES>, x: ErrorState, y: ErrorState) -> f32
 /// the filter's shape without borrowing its geometry: a transposed `R` in the filter would
 /// be mirrored by a harness that reused it, and is not by this.
 fn attitude_error_ned(state: &State, truth: &TruthRow) -> Vector3<f32> {
-    (truth.attitude * state.attitude.quaternion().inverse()).scaled_axis()
+    (truth.attitude * state.attitude.body_to_ned().inverse()).scaled_axis()
 }
 
 /// `ε = δxᵀ P⁻¹ δx` over the three-component block starting at `first`, or `None` if that
@@ -3216,7 +3216,7 @@ mod tests {
         policy: RPolicy,
         scoring: Option<Scoring>,
     ) -> Result<(Replay, String), String> {
-        let mut replay = Replay::new(config, policy, scoring);
+        let mut replay = Replay::new(config, policy, scoring).map_err(|e| e.to_string())?;
         assert!(
             replay
                 .filter
@@ -3681,8 +3681,8 @@ mod tests {
     #[test]
     fn a_source_named_by_without_is_never_offered() {
         let log = still_start().mag(2.0).mag(2.1);
-        let mut kept = Replay::new(Config::default(), RPolicy::Raw, None);
-        let mut dropped = Replay::new(Config::default(), RPolicy::Raw, None);
+        let mut kept = Replay::new(Config::default(), RPolicy::Raw, None).unwrap();
+        let mut dropped = Replay::new(Config::default(), RPolicy::Raw, None).unwrap();
         dropped.without = Some("mag".to_string());
         for replay in [&mut kept, &mut dropped] {
             let mut sinks = Sinks {
@@ -4761,7 +4761,9 @@ mod tests {
     /// valid — so a `false_valid` count is about the error and not about what was claimed.
     fn state_at(roll: f32, pitch: f32, yaw: f32) -> State {
         State {
-            attitude: Attitude::body_to_ned(UnitQuaternion::from_euler_angles(roll, pitch, yaw)),
+            attitude: Attitude::from_body_to_ned(UnitQuaternion::from_euler_angles(
+                roll, pitch, yaw,
+            )),
             validity: Validity {
                 tilt: true,
                 heading: true,
@@ -4877,7 +4879,7 @@ mod tests {
         let pitch = core::f32::consts::FRAC_PI_2;
         let state = state_at(0.0, pitch, 0.0);
         let turned =
-            UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 0.6) * state.attitude.quaternion();
+            UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 0.6) * state.attitude.body_to_ned();
         let mut truth = truth_at(0.0, 0.0, 0.0);
         truth.attitude = turned;
         let score = score_one(&state, &Covariance::from_sigmas([0.5; STATES]), &truth);
@@ -5204,7 +5206,7 @@ mod tests {
         // still do.
         let mut out = Vec::new();
         write_header(&mut out).expect("header");
-        let mut replay = Replay::new(Config::default(), RPolicy::Raw, None);
+        let mut replay = Replay::new(Config::default(), RPolicy::Raw, None).unwrap();
         let log = still_start().run(2.0, 1, DT, STILL);
         {
             let mut sinks = Sinks {
@@ -5233,7 +5235,7 @@ mod tests {
         // still reads as a valid rotation — a half turn about a tilted axis — so only the
         // position of the one non-zero pair says which convention reached the file.
         let state = State {
-            attitude: Attitude::body_to_ned(UnitQuaternion::from_euler_angles(
+            attitude: Attitude::from_body_to_ned(UnitQuaternion::from_euler_angles(
                 0.0,
                 core::f32::consts::FRAC_PI_2,
                 0.0,

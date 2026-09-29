@@ -72,7 +72,7 @@ use fusion_nav::prelude::*;
 # let (lat_e7, lon_e7, height_mm, h_acc_mm, v_acc_mm) = (473_977_420, 85_455_940, 488_000, 1_500, 3_000);
 # let arrived = Timestamp::from_micros(12_500_000);
 
-let mut filter = Eskf::new(Config::default());
+let mut filter = Eskf::default();
 // Where the GNSS antenna sits relative to the IMU, forward, right, down in metres: the fix
 // is the antenna's, and the filter refers it to the IMU with its own attitude and rate.
 let antenna = Position::body(0.05, 0.0, -0.12);
@@ -268,10 +268,10 @@ with no residual to expose a wrong one.
 
 | the convention | in | out |
 | -------------- | -- | --- |
-| body FRD to NED — PX4 `vehicle_attitude.q`, ArduPilot `get_quat_body_to_ned`, `fusion-ahrs` on `Convention::Ned` | `Attitude::body_to_ned(q)`, which converts nothing | `attitude.quaternion()` |
-| NED to body FRD, the stored inverse | `Attitude::ned_to_body(q)` | `attitude.as_ned_to_body()` |
-| body FLU to ENU — ROS REP 103 | `Attitude::flu_to_enu(q)` | `attitude.as_flu_to_enu()` |
-| body FLU to NWU — Madgwick-family, `fusion-ahrs` on its default | `Attitude::flu_to_nwu(q)` | `attitude.as_flu_to_nwu()` |
+| body FRD to NED — PX4 `vehicle_attitude.q`, ArduPilot `get_quat_body_to_ned`, `fusion-ahrs` on `Convention::Ned` | `Attitude::from_body_to_ned(q)`, which converts nothing | `attitude.body_to_ned()` |
+| NED to body FRD, the stored inverse | `Attitude::from_ned_to_body(q)` | `attitude.ned_to_body()` |
+| body FLU to ENU — ROS REP 103 | `Attitude::from_flu_to_enu(q)` | `attitude.flu_to_enu()` |
+| body FLU to NWU — Madgwick-family, `fusion-ahrs` on its default | `Attitude::from_flu_to_nwu(q)` | `attitude.flu_to_nwu()` |
 
 The edge is symmetric: whatever enters in a convention can leave in it. Vectors go the same way,
 `Position::enu(..).to_ned()` in and `position.to_enu()` out, `AngularRate::flu(..)` in and
@@ -287,7 +287,7 @@ a wrong one costs.
 use fusion_nav::prelude::*;
 use nalgebra::UnitQuaternion;
 
-let mut filter = Eskf::new(Config::default());
+let mut filter = Eskf::default();
 
 // What a companion AHRS published: 2.9° nose up, heading 63°.
 let q = UnitQuaternion::from_euler_angles(0.0, 0.05, 1.1);
@@ -295,7 +295,7 @@ let q = UnitQuaternion::from_euler_angles(0.0, 0.05, 1.1);
 // PX4's `vehicle_attitude.q` and ArduPilot's `get_quat_body_to_ned` are body FRD to NED
 // already, which is this crate's convention too, so this constructor converts nothing.
 let state = State {
-    attitude: Attitude::body_to_ned(q),
+    attitude: Attitude::from_body_to_ned(q),
     ..State::default()
 };
 
@@ -549,10 +549,17 @@ let config = Config {
     },
     ..Config::default()
 };
-# let _ = config;
+let filter = Eskf::new(config)?;
+# let _ = filter;
 let everything_off = Config { recovery: Recovery::OFF, ..Config::default() };
 # let _ = everything_off;
+# Ok::<(), ConfigError>(())
 ```
+
+`Eskf::new` checks every value in a `Config` against its bound and returns a `ConfigError` naming
+the first field outside it and the value it held. `Config::validate` is the same check on its own,
+and its documentation says what each refused value would have done. `None` is how a timeout says
+off.
 
 `reset_position_to(fix, noise)` and `reset_velocity_to(fix, noise)` are that application's
 tools. Both return `false`, changing nothing, for a fix or a noise a `fuse_*` would have refused:

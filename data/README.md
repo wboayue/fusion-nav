@@ -344,7 +344,7 @@ as standard deviations), and `ekf2_ratio` (the four aggregate innovation test ra
 names match the epoch file's, so a diff is by name.
 
 Attitude is a quaternion in both files — Hamilton, scalar-first, body to NED, the convention
-`Attitude::body_to_ned` names and `vehicle_attitude.q` already logs — rather than Euler angles,
+`Attitude::from_body_to_ned` names and `vehicle_attitude.q` already logs — rather than Euler angles,
 because ZYX Euler cannot separate roll from yaw at 90° of pitch, where a tailsitter cruises (#129).
 On the `mission` scenario with the circuit's pitch amplitude raised from 0.12 rad to 1.9 rad (a
 local edit to `examples/simulate.rs`, default seed), which pitches to 109°, ZYX roll and yaw read

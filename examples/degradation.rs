@@ -31,7 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Config::default()
     };
 
-    let mut filter = Eskf::new(config);
+    let mut filter = Eskf::new(config)?;
     assert!(filter.set_magnetic_declination(Radians::from_radians(-0.06)));
 
     // A measurement before initialization is refused rather than silently dropped.
