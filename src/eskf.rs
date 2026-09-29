@@ -2532,6 +2532,9 @@ fn refuse(source: &mut SourceHealth, outcome: Fusion) -> Fusion {
 }
 
 #[cfg(test)]
+mod adversarial;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::{Accuracy, Coast, Correlation, GRAVITY, Recovery};

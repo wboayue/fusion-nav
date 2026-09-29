@@ -43,6 +43,13 @@ magnetic-model = []
 
 [dev-dependencies]
 
+# The adversarial suite (`src/eskf/adversarial.rs`, #44): generated hostile inputs, shrunk to
+# the shortest failing sequence. Test-only, so the `no_std` build and its one dependency are
+# untouched; hosted targets only, because examples take dev-dependencies too and
+# `examples/embedded.rs` builds for bare metal, where proptest's `std` does not exist.
+[target.'cfg(not(target_os = "none"))'.dev-dependencies]
+proptest = { version = "1.11.0", default-features = false, features = ["std"] }
+
 # The harness reports the crate's magnetic model beside a log's own declination
 # (`declination_model=`), so it needs the model built in.
 [[example]]
