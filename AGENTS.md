@@ -362,7 +362,7 @@ held throughout: #58 landed before stage 5, the first code to read
 `f32`, and stage 5 then decided the default percentile from replay (`P999`) in the diff that first
 turned a fix down at all — the corpus stayed at `rejected=0` on all five logs until (29) reached a
 receiver whose velocity it refuses; #61 landed before stage 2, so a quaternion reaches `Attitude` only through
-a constructor naming its convention (`body_to_ned`, `ned_to_body`, `flu_to_enu`, `flu_to_nwu`) and
+a constructor naming its convention (`from_body_to_ned`, `from_ned_to_body`, `from_flu_to_enu`, `from_flu_to_nwu`) and
 the `q̂₀` of (5)–(7) is committed through the final shape; #59's signature landed with it, so
 `StaticSample` carries GNSS velocity and `Coarse::NotStationary` reports `ā_n`. What is left of #59
 is equation (5′), and the attitude it needs to rotate `ā_n` into body axes now exists.

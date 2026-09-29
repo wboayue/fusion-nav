@@ -1303,7 +1303,7 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | — | per-source health tracking | `health.rs` | `SourceHealth`, `Status` |
 | (39)–(41) | injection and reset | `update.rs` | `inject`, `reset_jacobian`, `reparameterize`, `reparameterize_offset`, called by `update` |
 | (41) | reset after an adoption | `eskf.rs` | `Eskf::reset_heading_by`, through `update.rs`'s `reparameterize` and `state.rs`'s `Covariance::reset_attitude_direction` |
-| (42) | symmetry enforcement | `math.rs` | `enforce_symmetry`, called by `propagate_covariance` and `reparameterize` |
+| (42) | symmetry enforcement | `math.rs` | `enforce_symmetry`, called by `propagate_covariance`, `reparameterize`, `Covariance::reset_attitude_direction`, `AttitudeVariance::in_body` and `Eskf::initialize_from` |
 | (42′) | diagonal variance floor | `math.rs` | `floor_diagonal`, `floor_offset` and `FLOOR`; applied by `Eskf::commit_covariance` |
 | (43) | local tangent plane | `geodetic.rs` | `LocalOrigin::to_ned`, `to_geodetic` |
 | (44) | origin placement | `geodetic.rs` | `LocalOrigin::placing`; committed by `Eskf::fuse_gnss_geodetic` |

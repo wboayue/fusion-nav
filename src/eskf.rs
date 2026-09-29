@@ -437,8 +437,8 @@ impl Eskf {
     ///
     /// `state.attitude` names its own convention, through whichever
     /// [`Attitude`](crate::Attitude) constructor built it — PX4 and ArduPilot quaternions
-    /// through [`body_to_ned`](crate::Attitude::from_body_to_ned), a ROS one through
-    /// [`flu_to_enu`](crate::Attitude::from_flu_to_enu), which is where the conventions and
+    /// through [`from_body_to_ned`](crate::Attitude::from_body_to_ned), a ROS one through
+    /// [`from_flu_to_enu`](crate::Attitude::from_flu_to_enu), which is where the conventions and
     /// what a wrong one costs are written down. It is the one error on this path no check
     /// downstream can reach.
     ///
@@ -895,8 +895,9 @@ impl Eskf {
     /// covariance of (8) — unprotected, each carrying a variance that came from outside the
     /// filter.
     ///
-    /// Symmetry stays where the algebra is, in `propagate_covariance` and `reparameterize`:
-    /// (42)'s two halves answer different faults. `½(P + Pᵀ)` repairs drift a product
+    /// Symmetry stays where the algebra is, beside each product that can drift off it
+    /// (EQUATIONS.md's table lists them), and at `initialize_from`, where a caller's matrix
+    /// enters: (42)'s two halves answer different faults. `½(P + Pᵀ)` repairs drift a product
     /// introduces, so it belongs to the product; the floor bounds a value, so it belongs to
     /// the value.
     fn commit_covariance(&mut self, covariance: Covariance, offset: Offset) {
@@ -2765,13 +2766,6 @@ mod tests {
         filter
     }
 
-    /// The floor of (42′) exists to be unreachable by an honest source, and this is the only
-    /// place CI asserts it: `data/fetch.sh --check` pins `floored=` per corpus log — zero on
-    /// seven, and 21 on `cd7e0001`, whose receiver claims 0.43 mm/s — and it needs a network
-    /// and PX4 tooling, so it runs locally. The margin between the floor and
-    /// anything a filter that is propagating and fusing reaches is measured in `math.rs`'s
-    /// `FLOOR` — a count here means the floor is masking a collapse rather than preventing
-    /// one, and the `sigma_*` columns of `examples/replay.rs` say which state.
     #[test]
     fn a_config_outside_its_bounds_builds_no_filter() {
         // A NaN timeout never compares true: built, this filter would never recover GNSS height.
@@ -2934,6 +2928,13 @@ mod tests {
         assert_eq!((filter.origin(), filter.state().position), held);
     }
 
+    /// The floor of (42′) exists to be unreachable by an honest source. CI asserts it here, on
+    /// one run whose every fix is exact, and in `adversarial.rs`'s `ordinary`, on generated
+    /// honest ones; `data/fetch.sh --check` pins `floored=0` on all thirteen corpus logs, and
+    /// needs a network and PX4 tooling, so it runs locally. The margin between the floor and
+    /// anything a filter that is propagating and fusing reaches is measured in `math.rs`'s
+    /// `FLOOR` — a count here means the floor is masking a collapse rather than preventing
+    /// one, and the `sigma_*` columns of `examples/replay.rs` say which state.
     #[test]
     fn an_ordinary_run_never_reaches_the_floor() {
         let mut filter = aided();
