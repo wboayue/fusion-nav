@@ -895,6 +895,16 @@ reality.
 | Google Smartphone Decimeter Challenge | raw GNSS with Android IMU, magnetometer and barometer; NovAtel SPAN ground truth; large volume | automotive, phone-grade IMU |
 | [strapdown-data](https://github.com/jbrodovsky/strapdown-rs) | smartphone MEMS IMU and GNSS, aimed at this use case | phone-grade, limited dynamics |
 
+UrbanNav states **no licence at all**. The repository has no LICENSE file, and its README's
+"License" heading holds only contact addresses (checked at `b9d4b9c0`). Without terms nothing
+is granted, so it is handled more strictly than INSANE: **fetched and never committed**, pinned by
+checksum in its own manifest (`data/urbannav.txt`, `data/fetch.sh --manifest`), with converted
+CSVs and plots kept out of the repository and only measured scalars published. The one segment
+used, Medium-Urban-1, needs no rosbag: its IMU is published as CSV, its receivers' own solutions
+as NMEA, and its SPAN-CPT truth as text, so no ROS tooling reaches even the converter. Asking the
+maintainers for terms (PolyU IPNL, the README's collaboration contact) is what would lift the
+restriction.
+
 ### Plan
 
 Simulation comes first, and is the only source already in the repository: `examples/simulate.rs`
