@@ -729,6 +729,15 @@ could be argued back:
   881 of the next 1154 fixes turned down until the log ended. With recovery it read 31 and ended
   `Healthy` (#143). Coasting the gap by equation (22′) (#144) then removed the lockout itself:
   no recovery, and no fix after any of its eight gaps turned down.
+- **Truth scored it (#60).** UrbanNav's M8T is wrong by tens to hundreds of metres for a minute
+  at a time while claiming 5 to 25, and 338 of its 517 fixes fail their own `R` against SPAN-CPT.
+  With recovery the filter reads 258 m horizontal RMSE, and 12 of its 16 position recoveries end
+  a lockout of good fixes; with `Recovery::OFF` it rejects 499 of 517 fixes and reads 61 km
+  (`data/urbannav-pins.txt` pins both). Neither is a working filter, and the gate is not what
+  could make one: on #60's branch, setting `Config::gates` to every percentile from P99 to P99999
+  landed between 257 and 266 m with recovery on. A receiver whose error persists is followed a
+  fix at a time until the right fixes are the ones that disagree, which no threshold on one
+  innovation can see.
 - **Report-and-stop handed every integrator the same loop.** The filter holds the timers, the
   rejected measurement, its `R` and the adoption path. An application wanting a working estimate,
   which is most of them, would write PX4's timeout-and-reset again and get it subtly wrong. A
@@ -894,6 +903,16 @@ reality.
 | [MILUV](https://arxiv.org/html/2504.14376v1) | quadcopters with IMU, magnetometer, barometer, UWB, range finder | no GNSS, indoor |
 | Google Smartphone Decimeter Challenge | raw GNSS with Android IMU, magnetometer and barometer; NovAtel SPAN ground truth; large volume | automotive, phone-grade IMU |
 | [strapdown-data](https://github.com/jbrodovsky/strapdown-rs) | smartphone MEMS IMU and GNSS, aimed at this use case | phone-grade, limited dynamics |
+
+UrbanNav states **no licence at all**. The repository has no LICENSE file, and its README's
+"License" heading holds only contact addresses (checked at `b9d4b9c0`). Without terms nothing
+is granted, so it is handled more strictly than INSANE: **fetched and never committed**, pinned by
+checksum in its own manifest (`data/urbannav.txt`, `data/fetch.sh --manifest`), with converted
+CSVs and plots kept out of the repository and only measured scalars published. The one segment
+used, Medium-Urban-1, needs no rosbag: its IMU is published as CSV, its receivers' own solutions
+as NMEA, and its SPAN-CPT truth as text, so no ROS tooling reaches even the converter. Asking the
+maintainers for terms (PolyU IPNL, the README's collaboration contact) is what would lift the
+restriction.
 
 ### Plan
 

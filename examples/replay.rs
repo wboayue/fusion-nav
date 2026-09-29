@@ -21,6 +21,8 @@
 //! default, or `px4`; see [`RPolicy`]. `--declination model` ignores the header's declination
 //! and leaves the filter to read its own magnetic model at the origin; `header` is the default.
 //! `--antenna zero` fuses every GNSS row as the IMU's rather than at the header's antenna.
+//! `--recovery off` replays with `Recovery::OFF`, the filter that only reports, which is how a
+//! lockout recovery ends is priced (`recovery=` on the `summary` line says which ran).
 //! It also writes `<out>.nees.csv`, `ε` per block per epoch, which `data/anees.sh` averages
 //! across seeds (#89), and `<out>.error.csv`, the truth error on navigation axes beside its σ,
 //! which `tools/replay_report.py` draws.
@@ -66,10 +68,10 @@
 //! ```text
 //! # one row per verdict. gates gnss_pos=13.815511 gnss_hgt=10.827566 gnss_vel=16.266235 baro=10.827566 mag=10.827566
 //! # nu* and s* are the filter's published innovation and diag(S), empty where the gate ran no update: an adoption, a refusal, a call before initialization
-//! t_s,source,nu0,nu1,nu2,s0,s1,s2,ratio,outcome
-//! 0.0000,baro,,,,,,,,not_initialized
-//! 2.2000,gnss_pos,1.350874,1.096309,,1.258352,1.258354,,0.1741,accepted
-//! 2.2000,gnss_hgt,2.224828,,,4.004997,,,0.1142,accepted
+//! t_s,source,nu0,nu1,nu2,s0,s1,s2,ratio,outcome,truth
+//! 0.0000,baro,,,,,,,,not_initialized,
+//! 2.2000,gnss_pos,1.350874,1.096309,,1.258352,1.258354,,0.1741,accepted,good
+//! 2.2000,gnss_hgt,2.224828,,,4.004997,,,0.1142,accepted,good
 //! ```
 //!
 //! The gates ride in the header because the filter reports `r = ε / γ`: without `γ` a ratio
@@ -84,8 +86,9 @@
 //!
 //! # Scoring
 //!
-//! Given a third argument — a `<scenario>.truth.csv` from `examples/simulate.rs` — the
-//! harness prints a `score` line beside `summary`, in the same `key=value` shape so one
+//! Given a third argument — a `<scenario>.truth.csv` from `examples/simulate.rs`, or the
+//! truth `tools/urbannav2replay.py` converts beside its log — the harness prints a `score`
+//! line beside `summary`, in the same `key=value` shape so one
 //! parser reads both. No truth file means no `score` line at all, rather than a line of
 //! zeros: a corpus log has no truth, and a missing line says that where `pos_h=0.000` would
 //! claim a perfect filter. `data/manifest.txt` is therefore untouched by any of this.
@@ -107,6 +110,18 @@
 //! | `false_valid` | quantity-epochs claimed usable while the error exceeded `Config::accuracy` |
 //! | `false_valid_att` | the tilt and heading share of it, pinned apart so a total cannot hide it |
 //! | `scored` | epochs that had a truth row, which is what every figure above is a mean over |
+//! | `offered_<half>` | GNSS verdicts the gate or an adoption decided, per half of the fix |
+//! | `bad_<half>` | of those, fixes truth says their own `R` could not explain; see [`Judged`] |
+//! | `rejected_bad_<half>`, `rejected_good_<half>` | rejections split by that verdict |
+//! | `accepted_far_<half>` | fixes accepted while past `Accuracy::position` on some axis |
+//! | `adopted_bad_<half>` | bad fixes taken by an adoption, a recovery's or a first one |
+//! | `recovered_after_bad_<half>`, `recovered_after_lockout_<half>` | recoveries by the run they ended; see [`FixScore`] |
+//!
+//! `<half>` is `gnss_pos` or `gnss_hgt`, the two verdicts one fix meets. These are the only keys
+//! that say whether a rejection was *right*, which needs hostile fixes and truth together
+//! (GOALS.md, "Three questions"): on the simulator they read a handful of bad fixes in a
+//! thousand, and on UrbanNav's M8T most of them (`data/urbannav-pins.txt`). The fusion file
+//! carries each verdict in its `truth` column.
 //!
 //! Convergence is **not** here: `aligned_at=` is on the `summary` line, it needs no truth,
 //! and the corpus pins it. One statistic, one implementation (`AGENTS.md`).
@@ -447,6 +462,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut without = None;
     let mut model_declination = false;
     let mut antenna_from_header = true;
+    let mut recovery = true;
     let mut positional = Vec::new();
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -470,6 +486,12 @@ fn run() -> Result<(), Box<dyn Error>> {
                 Some("zero") => false,
                 _ => return Err("--antenna wants `header` or `zero`".into()),
             };
+        } else if arg == "--recovery" {
+            recovery = match args.next().as_deref() {
+                Some("on") => true,
+                Some("off") => false,
+                _ => return Err("--recovery wants `on` or `off`".into()),
+            };
         } else if arg == "--without" {
             let name = args.next().ok_or("--without wants an input source name")?;
             if !DROPPABLE.contains(&name.as_str()) {
@@ -488,7 +510,10 @@ fn run() -> Result<(), Box<dyn Error>> {
     let truth = args.next();
 
     let text = fs::read_to_string(&input).map_err(|e| format!("{}: {e}", input.display()))?;
-    let config = Config::default();
+    let mut config = Config::default();
+    if !recovery {
+        config.recovery = Recovery::OFF;
+    }
     let policy = match policy.as_deref() {
         None | Some("raw") => RPolicy::Raw,
         Some("px4") => RPolicy::Px4(gnss_noise_of(&text).ok_or(
@@ -1103,17 +1128,45 @@ impl Replay {
             }
             "gnss_pos" => {
                 self.excursion.fix(r.value(0)?, r.value(1)?);
+                let fix = Position::ned(r.value(0)?, r.value(1)?, r.value(2)?);
                 // Variance comes from the log, per sample: a real GNSS reports its own
                 // accuracy, and it degrades before it drops out.
+                let variance = [r.variance(0)?, r.variance(1)?, r.variance(2)?];
+                let recovered = |filter: &Eskf| {
+                    let sources = filter.diagnostics().sources();
+                    [sources[GNSS_POS].1.recovered, sources[GNSS_HGT].1.recovered]
+                };
+                let before = recovered(&self.filter);
                 let outcome = self.filter.fuse_gnss_position(
                     r.taken(),
-                    Position::ned(r.value(0)?, r.value(1)?, r.value(2)?),
-                    self.policy
-                        .position([r.variance(0)?, r.variance(1)?, r.variance(2)?]),
+                    fix,
+                    self.policy.position(variance),
                     self.antenna,
                 );
-                self.observe(r.t, GNSS_POS, outcome.horizontal, out)?;
-                self.observe(r.t, GNSS_HGT, outcome.height, out)?;
+                let after = recovered(&self.filter);
+                // Judged on the row's own variance whatever `--r-policy` fused, so every
+                // policy is scored against the same set of bad fixes.
+                let judged = self.scoring.as_ref().and_then(|scoring| {
+                    scoring.judge(
+                        r.measured.unwrap_or(r.t),
+                        fix,
+                        variance,
+                        self.antenna,
+                        &self.filter.config().accuracy,
+                    )
+                });
+                let [horizontal, height] = judged.map_or([None; 2], |[h, v]| [Some(h), Some(v)]);
+                if let Some(scoring) = &mut self.scoring {
+                    for (half, outcome, judged) in [
+                        (0, outcome.horizontal, horizontal),
+                        (1, outcome.height, height),
+                    ] {
+                        let recovery = after[half] > before[half];
+                        scoring.score.fixes[half].record(outcome, judged, recovery);
+                    }
+                }
+                self.observe(r.t, GNSS_POS, outcome.horizontal, horizontal, out)?;
+                self.observe(r.t, GNSS_HGT, outcome.height, height, out)?;
             }
             "gnss_vel" => {
                 let velocity = Velocity::ned(r.value(0)?, r.value(1)?, r.value(2)?);
@@ -1128,11 +1181,11 @@ impl Replay {
                         .velocity([r.variance(0)?, r.variance(1)?, r.variance(2)?]),
                     self.antenna,
                 );
-                self.observe(r.t, GNSS_VEL, outcome, out)?;
+                self.observe(r.t, GNSS_VEL, outcome, None, out)?;
                 if let Some(sideslip) = self.course {
                     let sideslip = HeadingNoise::from_sigma(sideslip.as_radians());
                     let outcome = self.filter.fuse_course(r.taken(), sideslip);
-                    self.observe(r.t, COURSE, outcome, out)?;
+                    self.observe(r.t, COURSE, outcome, None, out)?;
                 }
             }
             "baro" => {
@@ -1143,7 +1196,7 @@ impl Replay {
                     altitude,
                     AltitudeNoise::from_variance(r.variance(0)?),
                 );
-                self.observe(r.t, BARO, outcome, out)?;
+                self.observe(r.t, BARO, outcome, None, out)?;
             }
             "mag" => {
                 let field = MagField::body(r.value(0)?, r.value(1)?, r.value(2)?);
@@ -1153,7 +1206,7 @@ impl Replay {
                     field,
                     HeadingNoise::from_variance(r.variance(0)?),
                 );
-                self.observe(r.t, MAG, outcome, out)?;
+                self.observe(r.t, MAG, outcome, None, out)?;
             }
             "gnss_yaw" => {
                 let outcome = self.filter.fuse_gnss_heading(
@@ -1161,7 +1214,7 @@ impl Replay {
                     Radians::from_radians(r.value(0)?),
                     self.policy.heading(r.variance(0)?),
                 );
-                self.observe(r.t, GNSS_YAW, outcome, out)?;
+                self.observe(r.t, GNSS_YAW, outcome, None, out)?;
             }
             other => return Err(format!("unknown source `{other}`").into()),
         }
@@ -1437,6 +1490,8 @@ impl Replay {
         if let Some(scoring) = &mut self.scoring {
             scoring.epoch(
                 t,
+                // A period: see `Truth::at`.
+                self.interval.unwrap_or(TRUTH_TOLERANCE),
                 &state,
                 self.filter.covariance(),
                 self.filter.attitude_variance(),
@@ -1457,6 +1512,7 @@ impl Replay {
         t: f64,
         source: usize,
         outcome: Fusion,
+        judged: Option<Judged>,
         out: &mut Sinks,
     ) -> io::Result<()> {
         self.ratios[source] = outcome.test_ratio();
@@ -1482,7 +1538,7 @@ impl Replay {
         }
         writeln!(
             out.fusions,
-            "{t:.4},{},{},{},{}",
+            "{t:.4},{},{},{},{},{}",
             SOURCES[source],
             innovation_fields(innovation),
             match outcome.test_ratio() {
@@ -1490,6 +1546,13 @@ impl Replay {
                 None => String::new(),
             },
             verdict(outcome),
+            // Only where the gate or an adoption decided: a refusal judged nothing.
+            match judged {
+                Some(judged) if decided(outcome) => {
+                    if judged.bad { "bad" } else { "good" }
+                }
+                _ => "",
+            },
         )
     }
 
@@ -1755,12 +1818,12 @@ impl Replay {
             scoring.path.display(),
             score.scored
         );
-        if score.unmatched > 0 {
+        if scoring.unmatched() > 0 {
             // Not a rounding question: the two files are written together by one run of
             // `examples/simulate.rs`, so an epoch with no truth row means they were not.
             println!(
                 "  {} epochs had no truth row — the log and the truth are from different runs",
-                score.unmatched
+                scoring.unmatched()
             );
         }
         if score.scored == 0 {
@@ -1782,9 +1845,9 @@ impl Replay {
             score.rms(score.yaw).to_degrees(),
         );
         println!(
-            "  bias         RMS {:.5} m/s^2 accelerometer, {:.6} rad/s gyroscope",
-            score.rms(score.accel_bias),
-            score.rms(score.gyro_bias),
+            "  bias         RMS {} m/s^2 accelerometer, {} rad/s gyroscope",
+            Score::bias_text(score.accel_bias, score.accel_bias_scored, 5),
+            Score::bias_text(score.gyro_bias, score.gyro_bias_scored, 6),
         );
         println!(
             "  consistency  {:.1}% of axis-epochs within 3 sigma; NEES/dof {} pos, \
@@ -1980,9 +2043,9 @@ impl Replay {
         format!(
             "summary rate={:.0} window={} {} align={} an={} alpha0={} heading={} \
              roll0={roll0:.2} pitch0={pitch0:.2} yaw0={yaw0:.2} declination={:.2} declination_model={} antenna={} resets={} \
-             recovered={} aligned_at={} attitude_lost={} r_policy={} course={} without={} rejected={}{} discarded={} coasted={} refused={} \
+             recovered={} aligned_at={} attitude_lost={} r_policy={} recovery={} course={} without={} rejected={}{} discarded={} coasted={} refused={} \
              invalid={} floored={} epochs={}{} {} \
-             transitions={} status={:?}",
+             degraded_s={:.2} dead_reckoning_s={:.2} transitions={} status={:?}",
             self.interval.map_or(0.0, |interval| 1.0 / interval),
             self.window_samples,
             // What the vehicle did, so a note's "past a kilometre" is a pin. See `Excursion`.
@@ -2059,6 +2122,11 @@ impl Replay {
             // changes, and because the update of (23)–(28) should push it to `never`.
             self.attitude_lost_after(),
             self.policy.name(),
+            if self.filter.config().recovery == Recovery::OFF {
+                "off"
+            } else {
+                "on"
+            },
             // Choices rather than counts, as `r_policy=` is: whether the course constraint was
             // fused and at what sideslip, and which input source was dropped, so a figure from
             // a vehicle replayed without its magnetometer names that it was.
@@ -2096,8 +2164,21 @@ impl Replay {
             // residuals say it is. See `consistency_keys`.
             self.consistency_keys(),
             self.noise_keys(),
+            // How long the filter said so, beside how often: `transitions=` counts a flap
+            // and a minute alike, and #60 asks for the time a hostile receiver costs.
+            self.seconds_in(Status::Degraded),
+            self.seconds_in(Status::DeadReckoning),
             self.transitions.len(),
             state.status,
+        )
+    }
+
+    /// Log time spent in one [`Status`], to the last IMU sample; see [`seconds_in`].
+    fn seconds_in(&self, status: Status) -> f64 {
+        seconds_in(
+            &self.transitions,
+            self.previous_imu.unwrap_or_default(),
+            status,
         )
     }
 
@@ -2228,12 +2309,14 @@ const TRUTH_COLUMNS: [&str; STATES + 1] = [
     "ba_y", "ba_z", "bg_x", "bg_y", "bg_z",
 ];
 
-/// How near a truth row must be to an epoch to be that epoch's truth, in seconds.
+/// How near a truth row must be to a GNSS fix to judge it, in seconds.
 ///
-/// The simulator prints both files' timestamps with four decimals, so a paired file matches
-/// exactly and this only absorbs a converter that rounds differently. Held at that write
-/// resolution rather than widened: it is under half a sample period at any rate below
-/// 5 kHz, so the tolerance cannot reach into the neighbouring row on a log that exists.
+/// A fix is judged against truth taken at its own time, never at a neighbouring row: the
+/// simulator writes both at the same instants, and UrbanNav's receivers and its SPAN-CPT
+/// both report on the UTC second. So this only absorbs a writer's rounding, the simulator's
+/// four decimals, and a fix between truth rows goes unjudged rather than being judged
+/// against a truth it did not share. Epochs are matched within an IMU period instead; see
+/// [`Truth::at`].
 const TRUTH_TOLERANCE: f64 = 1e-4;
 
 /// Components in one NEES block: position, velocity and attitude are three each.
@@ -2241,14 +2324,20 @@ const BLOCK: usize = 3;
 
 /// One row of `<scenario>.truth.csv`: the state a perfect filter would report at that
 /// instant, with the biases actually applied to that sample.
+///
+/// A bias group may be blank, all three cells, where nothing knows it: a real vehicle's
+/// reference (`tools/urbannav2replay.py`'s SPAN-CPT) reports a trajectory and no bias of the
+/// IMU being scored. `None` then, and every key that reads it says `none` rather than
+/// scoring the estimate against a zero nobody measured. Position, velocity and attitude are
+/// never optional: they are what a truth file is for.
 #[derive(Clone, Copy)]
 struct TruthRow {
     t: f64,
     position: Vector3<f32>,
     velocity: Vector3<f32>,
     attitude: UnitQuaternion<f32>,
-    accel_bias: Vector3<f32>,
-    gyro_bias: Vector3<f32>,
+    accel_bias: Option<Vector3<f32>>,
+    gyro_bias: Option<Vector3<f32>>,
 }
 
 impl TruthRow {
@@ -2257,38 +2346,35 @@ impl TruthRow {
         // `f64` for the same reason `Record::parse` widens it: a timestamp is large and the
         // interval between two of them is small.
         let t = fields.next()?.trim().parse().ok()?;
-        let mut values = [0.0f32; STATES];
+        let mut values = [None; STATES];
         for slot in &mut values {
-            *slot = fields.next()?.trim().parse().ok()?;
+            let cell = fields.next()?.trim();
+            if !cell.is_empty() {
+                *slot = Some(cell.parse::<f32>().ok()?);
+            }
         }
         // Five groups of three, in `TRUTH_COLUMNS` order after `t_s` — which the header this
-        // file was accepted on has already been checked against.
-        let group =
-            |first: usize| Vector3::new(values[first], values[first + 1], values[first + 2]);
+        // file was accepted on has already been checked against. A group is all there or all
+        // blank; a partial one is a malformed row, not a partial truth.
+        let group = |first: usize| match values[first..first + BLOCK] {
+            [Some(x), Some(y), Some(z)] => Some(Some(Vector3::new(x, y, z))),
+            [None, None, None] => Some(None),
+            _ => None,
+        };
+        let [roll, pitch, yaw] = [values[6]?, values[7]?, values[8]?];
         Some(Self {
             t,
-            position: group(0),
-            velocity: group(3),
+            position: group(0)??,
+            velocity: group(3)??,
             // `from_euler_angles` is the ZYX sequence `Attitude::euler_angles` reads back,
             // which is what makes the two ends of this comparison the same convention.
-            attitude: UnitQuaternion::from_euler_angles(values[6], values[7], values[8]),
-            accel_bias: group(9),
-            gyro_bias: group(12),
+            attitude: UnitQuaternion::from_euler_angles(roll, pitch, yaw),
+            accel_bias: group(9)?,
+            gyro_bias: group(12)?,
         })
     }
 }
 
-/// The scenario a generated file names in its `#` header, as `(name, seed)`.
-///
-/// `examples/simulate.rs` stamps both halves of a scenario with this — the log carries
-/// ``scenario `mission`, seed 2`` and the truth ``truth for `mission.csv`, seed 2`` — and
-/// both parsers read those lines and drop them. It is the only thing that can say a truth
-/// file belongs to the log being scored against it. [`Score::unmatched`] cannot: a 50 Hz log
-/// lands on every fourth row of 200 Hz truth, so the wrong file matches every epoch and
-/// publishes an accuracy figure with nothing tying it to what produced it.
-///
-/// `None` for a file carrying no marker — a corpus log, a converted one, a hand-written one.
-/// Those are taken on trust, because there is nothing in them that could be checked.
 /// The magnetic declination a log's header names, or zero where it names none.
 ///
 /// Read from the log because the site sets it: `tools/ulog2replay.py` writes the one the log's
@@ -2366,16 +2452,30 @@ fn gnss_noise_of(text: &str) -> Option<GnssNoiseParameters> {
     })
 }
 
-fn scenario_of(text: &str) -> Option<(String, u64)> {
+/// The run a generated file names in its `#` header, as `(name, tag)`.
+///
+/// `examples/simulate.rs` stamps both halves of a scenario with this — the log carries
+/// ``scenario `mission`, seed 2`` and the truth ``truth for `mission.csv`, seed 2`` — and a
+/// converter pairing a log with its reference does the same with the sources' digest,
+/// ``converted `urbannav-tst-m8t` from …, source 39a76af5d675``. The tag is what follows the
+/// last `, `, compared as text, so either form is one check. It is the only thing that can
+/// say a truth file belongs to the log being scored against it. The row count cannot: a
+/// 50 Hz log lands on every fourth row of 200 Hz truth, so the wrong file matches every epoch
+/// and publishes an accuracy figure with nothing tying it to what produced it.
+///
+/// `None` for a file carrying no marker — a corpus log, a hand-written one. Those are taken
+/// on trust, because there is nothing in them that could be checked.
+fn scenario_of(text: &str) -> Option<(String, String)> {
     let line = text
         .lines()
         .take_while(|line| line.starts_with('#'))
         .find(|line| line.contains("fusion-nav"))?;
     // The backticked name, which the truth header spells with its `.csv` and the log's
-    // without, and the trailing seed.
+    // without, and the trailing tag.
     let name = line.split('`').nth(1)?.trim_end_matches(".csv").to_string();
-    let seed = line.rsplit("seed ").next()?.trim().parse().ok()?;
-    Some((name, seed))
+    let (_, tag) = line.rsplit_once(", ")?;
+    let tag = tag.trim();
+    (tag.starts_with("seed ") || tag.starts_with("source ")).then(|| (name, tag.to_string()))
 }
 
 /// The truth file, and how far through it the replay has got.
@@ -2383,6 +2483,14 @@ fn scenario_of(text: &str) -> Option<(String, u64)> {
 struct Truth {
     rows: Vec<TruthRow>,
     cursor: usize,
+    /// The row the last answer came from, and the epoch it answered: so a row is scored at
+    /// one epoch, and a repeated epoch is answered again.
+    claimed: Option<(usize, f64)>,
+    /// The epoch asked about before this one.
+    previous: Option<f64>,
+    /// Rows passed unscored although an epoch fell within half a period of them: a truth
+    /// file denser than the log, or offset from it.
+    missed: u32,
 }
 
 impl Truth {
@@ -2413,25 +2521,72 @@ impl Truth {
         if rows.is_empty() {
             return Err("no truth rows".to_string());
         }
-        Ok(Self { rows, cursor: 0 })
+        Ok(Self {
+            rows,
+            cursor: 0,
+            claimed: None,
+            previous: None,
+            missed: 0,
+        })
     }
 
     /// The truth at one epoch, or `None` if this file has no row for it.
     ///
+    /// The row nearest the epoch, if it is within `tolerance`, one IMU period, and no earlier
+    /// epoch was scored against it: so each row is scored at the first epoch it is nearest,
+    /// within a period. The simulator writes a row per epoch at the epoch's own time, so
+    /// every epoch finds its own row exactly. A vehicle's reference is sparser than its IMU
+    /// (UrbanNav's SPAN-CPT at 1 Hz against a 400 Hz Xsens) and never lands on an epoch, so
+    /// a row is scored up to 2.5 ms from its epoch, 29 mm at the segment's 11.5 m/s. Half a
+    /// period would be the nearest epoch alone, and missed 21 of the segment's 787 rows to
+    /// the Xsens' timestamp jitter. Nothing is interpolated: the epochs between rows are
+    /// unscored, as they are.
+    ///
     /// A cursor rather than a search: epochs arrive in order, so the whole file is walked
-    /// once. It advances on `<` rather than `<=`, which is what lets a repeated timestamp —
-    /// a duplicate IMU row, refused as an invalid step and still written as an epoch — ask
-    /// twice and be answered twice.
-    fn at(&mut self, t: f64) -> Option<TruthRow> {
+    /// once. It moves on only to a row strictly nearer, which is what lets a repeated
+    /// timestamp — a duplicate IMU row, refused as an invalid step and still written as an
+    /// epoch — ask twice and be answered twice.
+    fn at(&mut self, t: f64, tolerance: f64) -> Option<TruthRow> {
         while self
             .rows
-            .get(self.cursor)
-            .is_some_and(|row| row.t < t - TRUTH_TOLERANCE)
+            .get(self.cursor + 1)
+            .is_some_and(|next| (next.t - t).abs() < (self.rows[self.cursor].t - t).abs())
         {
+            // A row left behind unscored between two epochs, within half a period of either,
+            // had an epoch to be scored at. One in a gap in the log did not, nor one before
+            // the first epoch scored, nor the neighbour of a row an epoch sits on.
+            let passed = self.rows[self.cursor].t;
+            let claimed = self.claimed.is_some_and(|(index, _)| index == self.cursor);
+            let reachable = self.previous.is_some_and(|previous| {
+                let near = |epoch: f64| (passed - epoch).abs() <= tolerance / 2.0;
+                near(previous) || near(t)
+            });
+            if reachable && !claimed {
+                self.missed += 1;
+            }
             self.cursor += 1;
         }
-        self.rows
+        self.previous = Some(t);
+        let row = self
+            .rows
             .get(self.cursor)
+            .copied()
+            .filter(|row| (row.t - t).abs() <= tolerance)?;
+        match self.claimed {
+            Some((index, at)) if index == self.cursor => (at == t).then_some(row),
+            _ => {
+                self.claimed = Some((self.cursor, t));
+                Some(row)
+            }
+        }
+    }
+
+    /// The row at one instant within [`TRUTH_TOLERANCE`], found by search: a fix is asked
+    /// for out of step with the epochs' cursor, and at most once.
+    fn near(&self, t: f64) -> Option<TruthRow> {
+        let after = self.rows.partition_point(|row| row.t < t - TRUTH_TOLERANCE);
+        self.rows
+            .get(after)
             .copied()
             .filter(|row| (row.t - t).abs() <= TRUTH_TOLERANCE)
     }
@@ -2467,13 +2622,19 @@ fn error_state(state: &State, truth: &TruthRow) -> SVector<f32, STATES> {
             ErrorState::AttitudeX,
             (state.attitude.body_to_ned().inverse() * truth.attitude).scaled_axis(),
         ),
+        // Zero where the truth knows no bias: [`Score::epoch`] reads the bias rows only where
+        // it does, so the zero is never scored as a perfect estimate.
         (
             ErrorState::AccelBiasX,
-            truth.accel_bias - state.accel_bias.vector(),
+            truth
+                .accel_bias
+                .map_or_else(Vector3::zeros, |bias| bias - state.accel_bias.vector()),
         ),
         (
             ErrorState::GyroBiasX,
-            truth.gyro_bias - state.gyro_bias.vector(),
+            truth
+                .gyro_bias
+                .map_or_else(Vector3::zeros, |bias| bias - state.gyro_bias.vector()),
         ),
     ];
     for (first, values) in &blocks {
@@ -2680,9 +2841,6 @@ const QUANTITIES: [Quantity; 6] = [
 #[derive(Clone, Default)]
 struct Score {
     scored: u32,
-    /// Epochs the truth file had no row for. Zero on a paired file; anything else means the
-    /// log and the truth came from different runs, which is why it reaches the report.
-    unmatched: u32,
     position_horizontal: f64,
     position_vertical: f64,
     position_horizontal_max: f64,
@@ -2691,12 +2849,18 @@ struct Score {
     yaw: f64,
     accel_bias: f64,
     gyro_bias: f64,
+    /// Epochs whose truth knew each bias, the mean `ba` and `bg` are taken over: a truth file
+    /// with blank bias columns scores the trajectory and leaves both `none`.
+    accel_bias_scored: u32,
+    gyro_bias_scored: u32,
     within_3s: u64,
     axes: u64,
     nees: [f64; 3],
     nees_epochs: [u32; 3],
     /// Per claim, in `claims` order.
     false_valid: [u32; 6],
+    /// Each GNSS verdict against truth, `gnss_pos` and `gnss_hgt` in that order.
+    fixes: [FixScore; 2],
 }
 
 impl Score {
@@ -2732,11 +2896,27 @@ impl Score {
         self.yaw += f64::from(attitude_ned.z).powi(2);
         // Whole blocks, the way `velocity` is scored: a bias is estimated per axis but
         // wrong as one vector, and no part of `Accuracy` splits it.
-        self.accel_bias += f64::from(error.fixed_rows::<BLOCK>(AccelBiasX.index()).norm_squared());
-        self.gyro_bias += f64::from(error.fixed_rows::<BLOCK>(GyroBiasX.index()).norm_squared());
+        if truth.accel_bias.is_some() {
+            self.accel_bias_scored += 1;
+            self.accel_bias +=
+                f64::from(error.fixed_rows::<BLOCK>(AccelBiasX.index()).norm_squared());
+        }
+        if truth.gyro_bias.is_some() {
+            self.gyro_bias_scored += 1;
+            self.gyro_bias +=
+                f64::from(error.fixed_rows::<BLOCK>(GyroBiasX.index()).norm_squared());
+        }
 
         let p = covariance.as_matrix();
         for i in 0..STATES {
+            let unknown = match i / BLOCK {
+                3 => truth.accel_bias.is_none(),
+                4 => truth.gyro_bias.is_none(),
+                _ => false,
+            };
+            if unknown {
+                continue;
+            }
             self.axes += 1;
             if error[i].abs() <= 3.0 * p[(i, i)].sqrt() {
                 self.within_3s += 1;
@@ -2771,6 +2951,15 @@ impl Score {
     /// Root mean square of one accumulated sum of squares.
     fn rms(&self, sum: f64) -> f64 {
         (sum / f64::from(self.scored.max(1))).sqrt()
+    }
+
+    /// The bias RMS as the `score` line prints it, `places` decimals, or `none` where the
+    /// truth never knew that bias.
+    fn bias_text(sum: f64, scored: u32, places: usize) -> String {
+        match scored {
+            0 => "none".to_string(),
+            n => format!("{:.places$}", (sum / f64::from(n)).sqrt()),
+        }
     }
 
     /// Mean NEES per degree of freedom for one block — ≈1 where the covariance describes the
@@ -2826,18 +3015,23 @@ impl Score {
         if self.scored == 0 {
             return "score scored=0".to_string();
         }
+        let fixes: String = [GNSS_POS, GNSS_HGT]
+            .iter()
+            .zip(&self.fixes)
+            .map(|(&source, fixes)| fixes.keys(SOURCES[source]))
+            .collect();
         format!(
             "score pos_h={:.3} pos_v={:.3} vel={:.3} pos_h_max={:.3} tilt={:.3} yaw={:.3} \
-             ba={:.5} bg={:.6} in3s={:.4} nees_pos={} nees_vel={} nees_att={} \
-             false_valid={} false_valid_att={} scored={}",
+             ba={} bg={} in3s={:.4} nees_pos={} nees_vel={} nees_att={} \
+             false_valid={} false_valid_att={} scored={}{fixes}",
             self.rms(self.position_horizontal),
             self.rms(self.position_vertical),
             self.rms(self.velocity),
             self.position_horizontal_max,
             self.rms(self.tilt).to_degrees(),
             self.rms(self.yaw).to_degrees(),
-            self.rms(self.accel_bias),
-            self.rms(self.gyro_bias),
+            Self::bias_text(self.accel_bias, self.accel_bias_scored, 5),
+            Self::bias_text(self.gyro_bias, self.gyro_bias_scored, 6),
             self.in3s(),
             self.nees_text(0),
             self.nees_text(1),
@@ -2849,6 +3043,161 @@ impl Score {
     }
 }
 
+/// Time spent in `status` over a list of transitions ending at `end`.
+///
+/// Read off the transitions rather than kept beside them, so the two cannot disagree.
+fn seconds_in(transitions: &[(f64, Status)], end: f64, status: Status) -> f64 {
+    let until = transitions.iter().skip(1).map(|(t, _)| *t).chain([end]);
+    transitions
+        .iter()
+        .zip(until)
+        .filter(|((_, s), _)| *s == status)
+        .map(|((from, _), to)| to - from)
+        // A fold from +0.0: `Sum` on floats starts at −0.0, which prints as `-0.00`.
+        .fold(0.0, |total, span| total + span)
+}
+
+/// What truth says of one half of a GNSS fix: `bad` where the receiver's own `R` could not
+/// have produced the error, `far` where the error is past the mission's bar.
+///
+/// `bad` is the gate a perfect state would run: `ε = eᵀ R⁻¹ e` with `e` the fix less the true
+/// antenna position, per half the way the filter gates it, `Gate<2>` on the horizontal pair
+/// and `Gate<1>` on height (#118), at [`Percentile::P999`] and the row's own variance. Fixed
+/// there rather than at `Config::gates`, `--r-policy` or `--recovery`, so a sweep of any
+/// scores its rejections against one set of bad fixes. The antenna is the one the replay
+/// fuses at, so `--antenna zero` judges at the IMU as it fuses there. The truth's own σ is left out: SPAN-CPT reports
+/// at most 0.40 m on this segment, 3 % of the smallest variance a receiver claims.
+///
+/// `far` is the answer to "wrong by metres" in the shape the filter states it:
+/// [`Accuracy::position`] per axis, the bar `Validity` reads, so an accepted fix that is
+/// `far` is one that could move a valid estimate out of its own claim.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Judged {
+    bad: bool,
+    far: bool,
+}
+
+/// The gates [`Judged::bad`] reads, fixed at [`Percentile::P999`].
+const BAD_HORIZONTAL: Gate<2> = Gate::<2>::at(Percentile::P999);
+const BAD_HEIGHT: Gate<1> = Gate::<1>::at(Percentile::P999);
+
+/// One half of every GNSS fix, scored against truth (#60): what the gate did with the fixes
+/// that were bad and with those that were not.
+///
+/// Counts of verdicts, like `rejected_`, and only of those the gate or an adoption decided:
+/// a refusal (before initialization, outside the history) judged nothing. A decided fix with
+/// no truth row at its time is `unjudged_`, so a clock or a truth rate that misses the fixes
+/// reads as that rather than as nothing bad.
+///
+/// The recovery split reads the run of rejections since the last accepted or adopted fix,
+/// the adopted fix included: an adoption ending a run mostly of good fixes ended a lockout,
+/// one ending a run of bad ones ended a glitch, and a tie is counted a glitch. The adopted
+/// fix counts because `Config::recovery` times from the last *acceptance*: after a gap in
+/// the fixes the first one can be rejected and adopted at once, with no run before it. So
+/// the two sum to that source's `SourceHealth::recovered`, where `recovered=` on the
+/// `summary` line sums every source and splits none.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct FixScore {
+    offered: u32,
+    bad: u32,
+    rejected_bad: u32,
+    rejected_good: u32,
+    accepted_far: u32,
+    adopted_bad: u32,
+    recovered_after_bad: u32,
+    recovered_after_lockout: u32,
+    unjudged: u32,
+    /// Bad and good fixes rejected since the last one accepted or adopted.
+    run: (u32, u32),
+}
+
+impl FixScore {
+    /// Count one verdict. `judged` is `None` where truth had no row at the fix's time;
+    /// `recovery` says an adoption was `Config::recovery`'s rather than a first one.
+    fn record(&mut self, outcome: Fusion, judged: Option<Judged>, recovery: bool) {
+        if !decided(outcome) {
+            return;
+        }
+        let Some(judged) = judged else {
+            self.unjudged += 1;
+            return;
+        };
+        match outcome {
+            Fusion::Accepted { .. } => {
+                self.accepted_far += u32::from(judged.far);
+                self.run = (0, 0);
+            }
+            Fusion::Rejected { .. } => {
+                if judged.bad {
+                    self.rejected_bad += 1;
+                    self.run.0 += 1;
+                } else {
+                    self.rejected_good += 1;
+                    self.run.1 += 1;
+                }
+            }
+            Fusion::Reset => {
+                self.adopted_bad += u32::from(judged.bad);
+                if recovery {
+                    let (bad, good) = if judged.bad {
+                        (self.run.0 + 1, self.run.1)
+                    } else {
+                        (self.run.0, self.run.1 + 1)
+                    };
+                    if good > bad {
+                        self.recovered_after_lockout += 1;
+                    } else {
+                        self.recovered_after_bad += 1;
+                    }
+                }
+                self.run = (0, 0);
+            }
+            Fusion::NotInitialized
+            | Fusion::NoReference
+            | Fusion::Unobservable
+            | Fusion::NotFinite
+            | Fusion::InvalidNoise
+            | Fusion::StateInvalid
+            | Fusion::OutOfHorizon { .. } => return,
+        }
+        self.offered += 1;
+        self.bad += u32::from(judged.bad);
+    }
+
+    /// ` offered_<source>=… recovered_after_lockout_<source>=…`, for the `score` line.
+    fn keys(&self, source: &str) -> String {
+        [
+            ("offered", self.offered),
+            ("bad", self.bad),
+            ("rejected_bad", self.rejected_bad),
+            ("rejected_good", self.rejected_good),
+            ("accepted_far", self.accepted_far),
+            ("adopted_bad", self.adopted_bad),
+            ("recovered_after_bad", self.recovered_after_bad),
+            ("recovered_after_lockout", self.recovered_after_lockout),
+            ("unjudged", self.unjudged),
+        ]
+        .iter()
+        .map(|(key, value)| format!(" {key}_{source}={value}"))
+        .collect()
+    }
+}
+
+/// Whether the gate or an adoption decided a measurement, rather than a refusal turning it
+/// away before either could.
+fn decided(outcome: Fusion) -> bool {
+    match outcome {
+        Fusion::Accepted { .. } | Fusion::Rejected { .. } | Fusion::Reset => true,
+        Fusion::NotInitialized
+        | Fusion::NoReference
+        | Fusion::Unobservable
+        | Fusion::NotFinite
+        | Fusion::InvalidNoise
+        | Fusion::StateInvalid
+        | Fusion::OutOfHorizon { .. } => false,
+    }
+}
+
 /// `ε` per block for one epoch, in the order `nees_pos`, `nees_vel`, `nees_att`: `None` where
 /// the block was singular, or where the truth file had no row.
 type Epsilon = [Option<f64>; 3];
@@ -2857,11 +3206,13 @@ type Epsilon = [Option<f64>; 3];
 #[derive(Clone)]
 struct Scoring {
     path: PathBuf,
-    /// The `(name, seed)` both headers named, carried into the `.nees.csv` header so
+    /// The `(name, tag)` both headers named, carried into the `.nees.csv` header so
     /// `tools/anees.py` can refuse an ensemble that mixes scenarios or repeats a seed.
-    scenario: Option<(String, u64)>,
+    scenario: Option<(String, String)>,
     truth: Truth,
     score: Score,
+    /// Epochs outside the truth file's time range: truth that stops before the log does.
+    outside: u32,
     /// `ε` and the error per epoch, kept rather than written as they arrive: [`Replay`] is
     /// cloned and rewound while it waits for a static window, and a buffer inside it rewinds
     /// with it. The error is `None` where the truth file had no row.
@@ -2875,6 +3226,7 @@ impl Scoring {
             scenario: None,
             truth,
             score: Score::default(),
+            outside: 0,
             epochs: Vec::new(),
         }
     }
@@ -2887,7 +3239,7 @@ impl Scoring {
             && from_log != from_truth
         {
             return Err(format!(
-                "{}: truth for `{}` seed {}, but the log is `{}` seed {}",
+                "{}: truth for `{}`, {}, but the log is `{}`, {}",
                 path.display(),
                 from_truth.0,
                 from_truth.1,
@@ -2902,17 +3254,31 @@ impl Scoring {
         })
     }
 
-    /// Score one epoch, or record that this file had no truth for it.
+    /// Score one epoch against the truth row within `tolerance` of it, one IMU period, or
+    /// record that there was none.
     fn epoch(
         &mut self,
         t: f64,
+        tolerance: f64,
         state: &State,
         covariance: &Covariance,
         attitude: AttitudeVariance,
         accuracy: &Accuracy,
     ) {
-        let Some(truth) = self.truth.at(t) else {
-            self.score.unmatched += 1;
+        // Outside by more than half the truth's own spacing: an IMU that runs on for 22 ms
+        // past a 1 Hz reference's last row is not a mismatch; one that runs on past a
+        // reference written per epoch is.
+        let rows = &self.truth.rows;
+        let margin = match rows.as_slice() {
+            [a, b, ..] => (b.t - a.t) / 2.0,
+            _ => 0.0,
+        };
+        let covered = rows.first().is_some_and(|row| t >= row.t - margin)
+            && rows.last().is_some_and(|row| t <= row.t + margin);
+        if !covered {
+            self.outside += 1;
+        }
+        let Some(truth) = self.truth.at(t, tolerance) else {
             self.epochs.push((t, [None; 3], None));
             return;
         };
@@ -2924,6 +3290,50 @@ impl Scoring {
         self.epochs.push((t, epsilon, Some(deviation)));
     }
 
+    /// Judge a GNSS fix taken at `t` against the truth at that instant, or `None` where the
+    /// truth has no row there or the fix's variance could not be divided by.
+    ///
+    /// At the antenna, `p + R(q) a` with the truth's own attitude, since that is where the
+    /// receiver was: on UrbanNav 0.86 m ahead of the IMU.
+    fn judge(
+        &self,
+        t: f64,
+        fix: Position<Ned>,
+        variance: [f32; 3],
+        antenna: Position<Body>,
+        accuracy: &Accuracy,
+    ) -> Option<[Judged; 2]> {
+        if !variance.iter().all(|v| v.is_finite() && *v > 0.0) {
+            return None;
+        }
+        let truth = self.truth.near(t)?;
+        let e = fix.vector() - (truth.position + truth.attitude * antenna.vector());
+        let horizontal = e.x * e.x / variance[0] + e.y * e.y / variance[1];
+        let height = e.z * e.z / variance[2];
+        let bar = accuracy.position.as_meters();
+        Some([
+            Judged {
+                bad: horizontal > BAD_HORIZONTAL.threshold(),
+                far: e.x.abs() > bar || e.y.abs() > bar,
+            },
+            Judged {
+                bad: height > BAD_HEIGHT.threshold(),
+                far: e.z.abs() > bar,
+            },
+        ])
+    }
+
+    /// Truth the log and the file do not share: epochs outside the truth's time range, and
+    /// rows an epoch could have been scored at and was not ([`Truth::missed`]).
+    ///
+    /// Zero on a paired file, a log with a gap in it included. The first catches truth that
+    /// stops early; the second a file denser than the log or offset from it, which is how a
+    /// 50 Hz log scored against 200 Hz truth shows up here as well as in its header. Between
+    /// two rows of a sparse truth an epoch is simply unscored, which is not a mismatch.
+    fn unmatched(&self) -> u32 {
+        self.outside + self.truth.missed
+    }
+
     /// `<out>.nees.csv`: `ε` per block per epoch, the input `tools/anees.py` averages across
     /// seeds.
     ///
@@ -2933,7 +3343,7 @@ impl Scoring {
     /// time-averaged `nees_*` on the `score` line and the ensemble bound read one `ε`.
     fn write_nees(&self, out: &mut dyn Write) -> io::Result<()> {
         match &self.scenario {
-            Some((name, seed)) => writeln!(out, "# fusion-nav nees for `{name}`, seed {seed}")?,
+            Some((name, tag)) => writeln!(out, "# fusion-nav nees for `{name}`, {tag}")?,
             None => writeln!(out, "# fusion-nav nees, no scenario named")?,
         }
         writeln!(
@@ -2963,7 +3373,7 @@ impl Scoring {
     /// empty where the truth file had no row rather than dropped.
     fn write_error(&self, out: &mut dyn Write) -> io::Result<()> {
         match &self.scenario {
-            Some((name, seed)) => writeln!(out, "# fusion-nav error for `{name}`, seed {seed}")?,
+            Some((name, tag)) => writeln!(out, "# fusion-nav error for `{name}`, {tag}")?,
             None => writeln!(out, "# fusion-nav error, no scenario named")?,
         }
         writeln!(
@@ -3059,7 +3469,7 @@ fn write_fusion_header(out: &mut impl Write, gates: Gates) -> io::Result<()> {
         "# nu* and s* are the filter's published innovation and diag(S), empty where the \
          gate ran no update: an adoption, a refusal, a call before initialization"
     )?;
-    writeln!(out, "t_s,source,nu0,nu1,nu2,s0,s1,s2,ratio,outcome")
+    writeln!(out, "t_s,source,nu0,nu1,nu2,s0,s1,s2,ratio,outcome,truth")
 }
 
 fn write_header(out: &mut impl Write) -> io::Result<()> {
@@ -4581,8 +4991,9 @@ mod tests {
             ),
         ] {
             let last = fusion_rows(&log).pop().expect("a fusion row");
+            // Second from the end: `truth` follows the outcome, empty with no truth file.
             assert_eq!(
-                last.rsplit(',').next(),
+                last.rsplit(',').nth(1),
                 Some(expected),
                 "expected {expected}: {last}"
             );
@@ -4655,7 +5066,7 @@ mod tests {
         assert!(text.contains("baro=2.71"), "the gate in force: {text}");
         assert_eq!(
             text.lines().last(),
-            Some("t_s,source,nu0,nu1,nu2,s0,s1,s2,ratio,outcome")
+            Some("t_s,source,nu0,nu1,nu2,s0,s1,s2,ratio,outcome,truth")
         );
     }
 
@@ -4790,8 +5201,14 @@ mod tests {
         assert_eq!(score.position_horizontal_max, 0.0);
         assert_eq!(score.rms(score.tilt), 0.0);
         assert_eq!(score.rms(score.yaw), 0.0);
-        assert_eq!(score.rms(score.accel_bias), 0.0);
-        assert_eq!(score.rms(score.gyro_bias), 0.0);
+        assert_eq!(
+            Score::bias_text(score.accel_bias, score.accel_bias_scored, 5),
+            "0.00000"
+        );
+        assert_eq!(
+            Score::bias_text(score.gyro_bias, score.gyro_bias_scored, 6),
+            "0.000000"
+        );
         assert_eq!(score.false_valid(), 0);
         assert_eq!(score.within_3s, score.axes, "all 15 axes, not just the 9");
         for block in 0..3 {
@@ -4982,6 +5399,277 @@ mod tests {
         assert_eq!(Score::default().line(), "score scored=0");
     }
 
+    // ---- a GNSS fix judged against truth (#60) ----
+
+    /// Truth at the origin heading `yaw`, level and still, with no bias known: what
+    /// `tools/urbannav2replay.py` writes, blank bias columns and all.
+    fn heading_truth(t: f64, yaw: f32) -> Scoring {
+        let row = format!("{t:.4},0,0,0,0,0,0,0,0,{yaw},,,,,,\n");
+        TruthLog(TruthLog::new().0 + &row).scoring()
+    }
+
+    fn judge(
+        scoring: &Scoring,
+        fix: [f32; 3],
+        variance: [f32; 3],
+        antenna: [f32; 3],
+    ) -> [Judged; 2] {
+        scoring
+            .judge(
+                1.0,
+                Position::ned(fix[0], fix[1], fix[2]),
+                variance,
+                Position::body(antenna[0], antenna[1], antenna[2]),
+                &Accuracy::default(),
+            )
+            .expect("a truth row at the fix's time")
+    }
+
+    #[test]
+    fn a_fix_is_judged_at_the_antenna_on_the_truth_attitude() {
+        // Heading east, an antenna a metre forward sits a metre east of the IMU. A fix there
+        // is exact; the same fix read on the IMU, or on a north-facing antenna, is a metre
+        // out against a 0.1 m sigma, ε = 100 past γ = 13.8.
+        let scoring = heading_truth(1.0, core::f32::consts::FRAC_PI_2);
+        let tight = [0.01, 0.01, 0.01];
+        let [horizontal, height] = judge(&scoring, [0.0, 1.0, 0.0], tight, [1.0, 0.0, 0.0]);
+        assert!(!horizontal.bad && !height.bad);
+        let [horizontal, _] = judge(&scoring, [1.0, 0.0, 0.0], tight, [1.0, 0.0, 0.0]);
+        assert!(
+            horizontal.bad,
+            "the antenna rotated onto east, not left on north"
+        );
+    }
+
+    #[test]
+    fn a_fix_is_bad_against_its_own_variance_and_per_half() {
+        // 4 m north against a 1 m sigma north and a 100 m sigma east: ε = 16, past the
+        // 2-DOF γ = 13.8. The same 4 m on east reads ε = 0.0016. Asymmetric so a swapped
+        // axis cannot pass, and height judged alone at the 1-DOF γ = 10.8: 3.2 m against 1 m
+        // is ε = 10.24, under it, and 3.3 m is 10.89, over.
+        let scoring = heading_truth(1.0, 0.0);
+        let variance = [1.0, 10_000.0, 1.0];
+        let [north, level] = judge(&scoring, [4.0, 0.0, 0.0], variance, [0.0; 3]);
+        let [east, _] = judge(&scoring, [0.0, 4.0, 0.0], variance, [0.0; 3]);
+        assert!(north.bad && !east.bad);
+        assert!(
+            !level.bad,
+            "the horizontal error does not reach the height half"
+        );
+        let [horizontal, under] = judge(&scoring, [0.0, 0.0, 3.2], variance, [0.0; 3]);
+        let [_, over] = judge(&scoring, [0.0, 0.0, 3.3], variance, [0.0; 3]);
+        assert!(!horizontal.bad, "height does not reach the horizontal half");
+        assert!(!under.bad && over.bad);
+    }
+
+    #[test]
+    fn far_is_per_axis_against_the_mission_bar() {
+        // `Accuracy::position` is 5 m per axis, the way `Validity` states it: 4.5 m north and
+        // 4.5 m east is 6.4 m off and not far, and 5.5 m on one axis is.
+        let scoring = heading_truth(1.0, 0.0);
+        let loose = [1.0e6; 3];
+        let [both, _] = judge(&scoring, [4.5, 4.5, 0.0], loose, [0.0; 3]);
+        let [one, _] = judge(&scoring, [0.0, 5.5, 0.0], loose, [0.0; 3]);
+        let [_, height] = judge(&scoring, [0.0, 0.0, -5.5], loose, [0.0; 3]);
+        assert!(!both.far && one.far && height.far);
+    }
+
+    #[test]
+    fn a_fix_between_truth_rows_or_without_a_variance_is_not_judged() {
+        let scoring = heading_truth(1.0, 0.0);
+        let at = |t: f64, variance: [f32; 3]| {
+            scoring.judge(
+                t,
+                Position::ned(0.0, 0.0, 0.0),
+                variance,
+                Position::zero(),
+                &Accuracy::default(),
+            )
+        };
+        assert!(at(1.0, [1.0; 3]).is_some());
+        assert!(at(1.01, [1.0; 3]).is_none(), "no truth row at 1.01 s");
+        assert!(
+            at(1.0, [1.0, 0.0, 1.0]).is_none(),
+            "a zero variance divides nothing"
+        );
+    }
+
+    #[test]
+    fn verdicts_are_counted_against_what_truth_said_of_the_fix() {
+        const GOOD: Option<Judged> = Some(Judged {
+            bad: false,
+            far: false,
+        });
+        const BAD: Option<Judged> = Some(Judged {
+            bad: true,
+            far: true,
+        });
+        let accepted = Fusion::Accepted { test_ratio: 0.1 };
+        let rejected = Fusion::Rejected { test_ratio: 3.0 };
+        let mut fixes = FixScore::default();
+        // A first adoption, which is no recovery. A bad fix accepted, then a run of two good
+        // fixes and one bad rejected, ended by recovering onto a good one: a lockout. A run of
+        // one bad, ended by recovering onto a good one: a tie, counted a glitch. A recovery
+        // after a gap, whose own fix is the whole run: bad, a glitch. A refusal counts for
+        // nothing, a refused one with no truth row included, and a decided fix with no truth
+        // is unjudged. A run an accepted fix ended
+        // leaves the next recovery with only its own fix: good, a lockout.
+        for (outcome, judged, recovery) in [
+            (Fusion::Reset, GOOD, false),
+            (accepted, BAD, false),
+            (rejected, GOOD, false),
+            (rejected, BAD, false),
+            (rejected, GOOD, false),
+            (Fusion::Reset, GOOD, true),
+            (rejected, BAD, false),
+            (Fusion::Reset, GOOD, true),
+            (Fusion::Reset, BAD, true),
+            (Fusion::NotInitialized, BAD, false),
+            (
+                Fusion::OutOfHorizon {
+                    age: Seconds::from_secs(1.0),
+                },
+                None,
+                false,
+            ),
+            (accepted, None, false),
+            (rejected, BAD, false),
+            (accepted, GOOD, false),
+            (Fusion::Reset, GOOD, true),
+        ] {
+            fixes.record(outcome, judged, recovery);
+        }
+        assert_eq!(
+            fixes,
+            FixScore {
+                offered: 12,
+                bad: 5,
+                rejected_bad: 3,
+                rejected_good: 2,
+                accepted_far: 1,
+                adopted_bad: 1,
+                recovered_after_bad: 2,
+                recovered_after_lockout: 2,
+                unjudged: 1,
+                run: (0, 0),
+            }
+        );
+        assert_eq!(
+            fixes.keys("gnss_pos"),
+            " offered_gnss_pos=12 bad_gnss_pos=5 rejected_bad_gnss_pos=3 \
+             rejected_good_gnss_pos=2 accepted_far_gnss_pos=1 adopted_bad_gnss_pos=1 \
+             recovered_after_bad_gnss_pos=2 recovered_after_lockout_gnss_pos=2 \
+             unjudged_gnss_pos=1"
+        );
+    }
+
+    #[test]
+    fn a_gap_in_the_log_is_not_a_mismatch_and_a_denser_truth_is() {
+        // Truth every period, epochs every period with five missing: the rows in the gap had
+        // no epoch to be scored at. Truth four times as dense as the epochs: three rows in
+        // four had one within a period, and were passed.
+        let covariance = Covariance::from_sigmas([0.5; STATES]);
+        let state = state_at(0.0, 0.0, 0.0);
+        // The tolerance is the log's own period, as the harness hands it over.
+        let unmatched = |truth: TruthLog, epochs: &[f64]| {
+            let mut scoring = truth.scoring();
+            let period = epochs[1] - epochs[0];
+            for &t in epochs {
+                scoring.epoch(
+                    t,
+                    period,
+                    &state,
+                    &covariance,
+                    AttitudeVariance::default(),
+                    &Accuracy::default(),
+                );
+            }
+            (scoring.score.scored, scoring.unmatched())
+        };
+        let gap: Vec<f64> = (0..20)
+            .filter(|i| !(8..13).contains(i))
+            .map(|i| i as f64 * DT)
+            .collect();
+        assert_eq!(unmatched(TruthLog::new().still(0.0, 20, DT), &gap), (15, 0));
+        let sparse: Vec<f64> = (0..5).map(|i| i as f64 * 4.0 * DT).collect();
+        assert_eq!(
+            unmatched(TruthLog::new().still(0.0, 17, DT), &sparse),
+            (5, 12)
+        );
+    }
+
+    #[test]
+    fn a_truth_without_biases_scores_the_trajectory_and_leaves_ba_and_bg_none() {
+        // Blank bias columns are unknown, not zero: the estimate's zero bias would otherwise
+        // score perfect against them, and `in3s` would count six axes nobody measured.
+        let scoring = heading_truth(1.0, 0.0);
+        let row = scoring.truth.rows[0];
+        assert!(row.accel_bias.is_none() && row.gyro_bias.is_none());
+        let score = score_one(
+            &state_at(0.0, 0.0, 0.0),
+            &Covariance::from_sigmas([0.5; STATES]),
+            &row,
+        );
+        assert_eq!(key(&score.line(), "ba"), "none");
+        assert_eq!(key(&score.line(), "bg"), "none");
+        assert_eq!(score.axes, 9, "position, velocity and attitude only");
+        let partial = format!("{}0.0000{},1,,\n", TruthLog::new().0, ",0".repeat(12));
+        assert_eq!(truth_error(&partial), "line 3: malformed row");
+    }
+
+    #[test]
+    fn sparse_truth_is_scored_once_a_row_and_is_not_a_mismatch() {
+        // Rows 10 epochs apart, one of them 0.4 of a period off an epoch: every row is scored
+        // at one epoch, the epochs between are unscored, and nothing is unmatched.
+        let mut scoring = TruthLog::new()
+            .row(0.0, [0.0; STATES])
+            .row(10.4 * DT, [0.0; STATES])
+            .row(20.0 * DT, [0.0; STATES])
+            .scoring();
+        let state = state_at(0.0, 0.0, 0.0);
+        let covariance = Covariance::from_sigmas([0.5; STATES]);
+        for epoch in 0..=20 {
+            scoring.epoch(
+                epoch as f64 * DT,
+                DT,
+                &state,
+                &covariance,
+                AttitudeVariance::default(),
+                &Accuracy::default(),
+            );
+        }
+        assert_eq!(scoring.score.scored, 3);
+        assert_eq!(scoring.unmatched(), 0);
+    }
+
+    #[test]
+    fn time_in_a_status_runs_to_the_next_transition_and_the_last_ends_the_log() {
+        let transitions = [
+            (1.0, Status::Aligning),
+            (3.0, Status::Degraded),
+            (4.5, Status::Healthy),
+            (7.0, Status::Degraded),
+        ];
+        assert_eq!(seconds_in(&transitions, 10.0, Status::Degraded), 4.5);
+        assert_eq!(seconds_in(&transitions, 10.0, Status::Aligning), 2.0);
+        let never = seconds_in(&transitions, 10.0, Status::DeadReckoning);
+        assert_eq!(format!("{never:.2}"), "0.00", "not -0.00");
+    }
+
+    #[test]
+    fn a_converted_log_pairs_with_its_truth_by_source_digest() {
+        let log = "# fusion-nav converted `urbannav-tst-m8t` from UrbanNav, source 39a76af5d675\n";
+        let truth = "# fusion-nav truth for `urbannav-tst-m8t.csv`, source 39a76af5d675\n";
+        let other = "# fusion-nav truth for `urbannav-tst-m8t.csv`, source 000000000000\n";
+        assert_eq!(scenario_of(log), scenario_of(truth));
+        assert_ne!(scenario_of(log), scenario_of(other));
+        // A marker whose tail names neither a seed nor a source pairs with nothing.
+        assert_eq!(
+            scenario_of("# fusion-nav note on `x`, with a comma\n"),
+            None
+        );
+    }
+
     // ---- the truth file belongs to the log ----
 
     #[test]
@@ -4990,7 +5678,10 @@ mod tests {
         // — and the whole check rests on them coming out equal anyway.
         let log = "# fusion-nav simulated flight - scenario `mission`, seed 2\n# covers\n";
         let truth = "# fusion-nav truth for `mission.csv`, seed 2\n#\n";
-        assert_eq!(scenario_of(log), Some(("mission".to_string(), 2)));
+        assert_eq!(
+            scenario_of(log),
+            Some(("mission".to_string(), "seed 2".to_string()))
+        );
         assert_eq!(scenario_of(log), scenario_of(truth));
     }
 
@@ -5062,12 +5753,12 @@ mod tests {
     #[test]
     fn a_repeated_epoch_is_answered_from_the_same_truth_row() {
         // A duplicate IMU row is refused as an invalid step and still writes an epoch, so
-        // the same timestamp is asked for twice. The cursor advances on `<`, which is what
+        // the same timestamp is asked for twice. The cursor moves on only to a strictly nearer row, which is what
         // makes the second answer the first.
         let mut truth = TruthLog::new().still(0.0, 3, DT).parse().expect("parses");
-        assert!(truth.at(DT).is_some());
-        assert!(truth.at(DT).is_some(), "asked twice, answered twice");
-        assert!(truth.at(2.0 * DT).is_some(), "and still moves on");
+        assert!(truth.at(DT, DT).is_some());
+        assert!(truth.at(DT, DT).is_some(), "asked twice, answered twice");
+        assert!(truth.at(2.0 * DT, DT).is_some(), "and still moves on");
     }
 
     #[test]
@@ -5080,6 +5771,7 @@ mod tests {
         for epoch in 0..5 {
             scoring.epoch(
                 epoch as f64 * DT,
+                DT,
                 &state,
                 &covariance,
                 AttitudeVariance::default(),
@@ -5087,7 +5779,7 @@ mod tests {
             );
         }
         assert_eq!(scoring.score.scored, 3);
-        assert_eq!(scoring.score.unmatched, 2);
+        assert_eq!(scoring.unmatched(), 2);
     }
 
     #[test]
@@ -5096,12 +5788,13 @@ mod tests {
         // `tools/anees.py` aligns seeds row by row and refuses an empty field, so a missing
         // truth row stops the ensemble instead of shifting every later epoch by one.
         let mut scoring = TruthLog::new().still(0.0, 2, DT).scoring();
-        scoring.scenario = Some(("fixture".to_string(), 7));
+        scoring.scenario = Some(("fixture".to_string(), "seed 7".to_string()));
         let state = state_at(0.0, 0.0, 0.0);
         let covariance = Covariance::from_sigmas([0.5; STATES]);
         for epoch in 0..3 {
             scoring.epoch(
                 epoch as f64 * DT,
+                DT,
                 &state,
                 &covariance,
                 AttitudeVariance::default(),
@@ -5130,7 +5823,7 @@ mod tests {
         values[0] = 1.5;
         values[8] = 0.25;
         let mut scoring = TruthLog::new().row(0.0, values).scoring();
-        scoring.scenario = Some(("fixture".to_string(), 7));
+        scoring.scenario = Some(("fixture".to_string(), "seed 7".to_string()));
         let state = state_at(0.0, 0.0, 0.0);
         let covariance = Covariance::from_sigmas([
             0.5, 0.6, 0.7, 0.1, 0.2, 0.3, 0.7, 0.8, 0.9, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5,
@@ -5143,6 +5836,7 @@ mod tests {
         for epoch in 0..2 {
             scoring.epoch(
                 epoch as f64 * DT,
+                DT,
                 &state,
                 &covariance,
                 attitude,
@@ -5181,7 +5875,7 @@ mod tests {
         let score = &replay.scoring.as_ref().expect("scoring").score;
         assert_eq!(key(&replay.summary(), "epochs"), "10");
         assert_eq!(score.scored, 10, "one scored epoch per written epoch");
-        assert_eq!(score.unmatched, 0);
+        assert_eq!(replay.scoring.as_ref().expect("scoring").unmatched(), 0);
         assert_eq!(key(&score.line(), "pos_h"), "0.000");
         assert_eq!(key(&score.line(), "scored"), "10");
     }

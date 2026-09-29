@@ -4,7 +4,9 @@
 stays inside the band of uncertainty the filter reports. During the fault the filter either
 widens that band or refuses the bad measurements, and its `Status` reports that something is
 wrong. GNSS fixes that arrive late are a fault it absorbs rather than reports: each is used at
-the moment it describes.
+the moment it describes. On a real city drive with truth, the filter takes every fix an honest
+receiver gives it, and **fails** against a receiver that stays wrong for a minute at a time
+while claiming to be right: [GNSS in a city](#gnss-in-a-city).
 
 {{stamp}}
 
@@ -80,9 +82,67 @@ The [honesty page](honesty.md#fixes-that-arrive-late) shows the same across many
 
 {{figure gnss_latency error_position}}
 
+## GNSS in a city
+
+**Does the filter refuse the fixes it should, and only those?** The simulated faults above are
+our own idea of a bad fix. [UrbanNav](https://github.com/IPNL-POLYU/UrbanNavDataset)'s
+Medium-Urban-1 is a real one: a car driven for about thirteen minutes through the high-rise
+streets of Tsim Sha Tsui, Hong Kong, where signals reflect off buildings, with a survey-grade
+reference system aboard to say where the car really was. Two ordinary receivers rode along,
+and each is replayed on its own, with the car's own low-cost IMU. There is no barometer or
+magnetometer in this data, so heading comes from the direction of travel.
+
+A fix is counted as **bad** when it is further from the truth than the receiver's own stated
+accuracy could explain, by the same test the filter's gate applies at its default threshold,
+as if the filter's estimate were perfect. The filter never sees that verdict; it is how the
+page scores what the filter did.
+
+**The honest receiver.** A dual-frequency u-blox F9P with differential corrections has
+{{score urbannav-f9p/raw bad_gnss_pos}} bad fixes out of
+{{score urbannav-f9p/raw offered_gnss_pos}}, and the filter refuses
+{{score urbannav-f9p/raw rejected_good_gnss_pos}} of the good ones: at road speed, through
+turns, it takes every fix a receiver is right about. Its worst moment is not a bad fix but no
+fix at all. The receiver stopped reporting for about two minutes, and the filter dead reckoned
+on its IMU for {{summary urbannav-f9p/raw dead_reckoning_s}} s, reaching
+{{score urbannav-f9p/raw pos_h_max}} m of error, and its reported uncertainty grew with it
+(position NEES {{score urbannav-f9p/raw nees_pos}} over the drive, where near 1 is honest).
+
+**The hostile receiver.** A single-frequency u-blox M8T reports an accuracy of 5 to 25 m while
+it is tens to hundreds of metres out, for a minute at a time.
+{{score urbannav-m8t/raw bad_gnss_pos}} of its {{score urbannav-m8t/raw offered_gnss_pos}}
+fixes are bad, and **the filter does not survive it**. It refuses only
+{{score urbannav-m8t/raw rejected_bad_gnss_pos}} of the bad fixes and, having followed the
+rest, refuses {{score urbannav-m8t/raw rejected_good_gnss_pos}} good ones. Its position is off
+by {{score urbannav-m8t/raw pos_h}} m RMS, its heading by {{score urbannav-m8t/raw yaw}}°, and
+its reported uncertainty does not cover either (position NEES
+{{score urbannav-m8t/raw nees_pos}}, where near 1 is honest).
+
+This is the failure an innovation gate cannot prevent on its own. A gate asks whether a fix
+agrees with the estimate; a receiver that is wrong the same way for many seconds moves the
+estimate a little with each fix it is allowed, until the wrong fixes agree and the right ones
+do not. Once that has happened the filter is locked out, refusing the fixes that would correct
+it. It recovers by taking a fix after a long run of refusals: for position,
+{{score urbannav-m8t/raw recovered_after_lockout_gnss_pos}} of those runs were mostly good
+fixes, a lockout ended, and {{score urbannav-m8t/raw recovered_after_bad_gnss_pos}} were mostly
+bad ones. Replayed without recovery, the filter refuses
+{{summary urbannav-m8t/raw-norecovery rejected_gnss_pos}} of the
+{{score urbannav-m8t/raw-norecovery offered_gnss_pos}} fixes and its position is off by
+{{score urbannav-m8t/raw-norecovery pos_h}} m RMS, which is why recovery is on by default
+([GOALS.md, "Rejection handling"](../GOALS.md#rejection-handling-recover-by-default-opt-out-per-source)).
+
+Under PX4's floor on the receiver's stated accuracy the picture is the same: the M8T's position
+is off by {{score urbannav-m8t/px4 pos_h}} m RMS and the F9P refuses
+{{score urbannav-f9p/px4 rejected_good_gnss_pos}} good fixes.
+
+UrbanNav states no licence, so its data is fetched for measurement and nothing drawn from it,
+no plot and no converted file, is published here: these are scalars about this filter. Using
+the dataset for anything else, such as validating a commercial product, needs the maintainers'
+permission.
+
 ## What this page cannot say
 
-Every fault here is simulated, one at a time, on one flight each. Real hostile conditions, such
-as GNSS reflections in a city, will be scored against truth when the UrbanNav dataset (#60)
-lands. The real PX4 logs contain faults too, including a logging gap at 30 m/s, but have no
-truth; they are on the [EKF2 page](ekf2.md), where the question is agreement.
+Every simulated fault here is one at a time, on one flight each. The city drive is one drive,
+one vehicle and two receivers: it shows the gate failing against a receiver that lies
+persistently, and says nothing yet about how often a real receiver does. The real PX4 logs
+contain faults too, including a logging gap at 30 m/s, but have no truth; they are on the
+[EKF2 page](ekf2.md), where the question is agreement.

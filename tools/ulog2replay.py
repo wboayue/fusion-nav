@@ -38,9 +38,8 @@ import re
 import sys
 from pathlib import Path
 
-# WGS84, for the local tangent plane about the first GNSS fix.
-WGS84_A = 6_378_137.0
-WGS84_E2 = 6.694_379_990_141e-3
+from geodesy import geodetic_to_ned
+from gnss_noise import gnss_noise_note
 
 # The sphere PX4's local x/y are projected on (`src/lib/geo/geo.h:55` at
 # c4e4ef98); `px4_reproject` owns the rest.
@@ -167,37 +166,6 @@ REFERENCE_TOPICS = [
 
 class ConversionError(Exception):
     pass
-
-
-def geodetic_to_ned(lat, lon, alt, lat0, lon0, alt0):
-    """Local tangent plane about (lat0, lon0, alt0). Degrees in, meters out.
-
-    Exact, the same conversion as `LocalOrigin::to_ned` in src/geodetic.rs, so the
-    replay corpus and the filter agree about where a fix is: both points to
-    Earth-centered coordinates, then the difference rotated onto the origin's
-    north, east and down.
-    """
-    x, y, z = ecef(lat, lon, alt)
-    x0, y0, z0 = ecef(lat0, lon0, alt0)
-    dx, dy, dz = x - x0, y - y0, z - z0
-    phi, lam = math.radians(lat0), math.radians(lon0)
-    sp, cp, sl, cl = math.sin(phi), math.cos(phi), math.sin(lam), math.cos(lam)
-    north = -sp * cl * dx - sp * sl * dy + cp * dz
-    east = -sl * dx + cl * dy
-    down = -cp * cl * dx - cp * sl * dy - sp * dz
-    return north, east, down
-
-
-def ecef(lat, lon, alt):
-    """Earth-centered, Earth-fixed meters of a WGS84 position in degrees."""
-    phi, lam = math.radians(lat), math.radians(lon)
-    s = math.sin(phi)
-    n = WGS84_A / math.sqrt(1.0 - WGS84_E2 * s * s)
-    return (
-        (n + alt) * math.cos(phi) * math.cos(lam),
-        (n + alt) * math.cos(phi) * math.sin(lam),
-        (n * (1.0 - WGS84_E2) + alt) * s,
-    )
 
 
 def px4_reproject(x, y, lat0, lon0):
@@ -1386,34 +1354,6 @@ def declination_note(params, origin):
         degrees = float(params.get("ATT_MAG_DECL", 0.0))
         source = "ATT_MAG_DECL" if "ATT_MAG_DECL" in params else "no declination parameter, so zero"
     return f"Magnetic declination {math.radians(degrees):.6f} rad ({degrees:.2f} deg, {source})"
-
-
-# The parameters PX4 floors and caps a receiver's reported accuracy with, and
-# their defaults at c4e4ef98 (`src/modules/ekf2/params_gnss.yaml:30-72`,
-# `module.yaml:67-71` for EKF2_NOAID_NOISE) for a log that does not carry one.
-GNSS_NOISE_PARAMETERS = [
-    ("EKF2_GPS_P_NOISE", 0.5),
-    ("EKF2_GPS_V_NOISE", 0.3),
-    ("EKF2_NOAID_NOISE", 10.0),
-]
-
-
-def gnss_noise_note(params):
-    """The header line `examples/replay.rs --r-policy px4` reads its floors from.
-
-    The values this log's EKF2 bounded its receiver with, so a floored replay is
-    compared against the `R` EKF2 actually fused rather than a default it may not
-    have run: `2c42096b` flew `EKF2_GPS_V_NOISE` 0.3, not the 0.5 #113 floored it
-    at. A parameter the log does not carry falls back to PX4's default and says so. The rule the harness applies to them is its own, cited
-    there; this line carries values only.
-    """
-    cells = []
-    for name, default in GNSS_NOISE_PARAMETERS:
-        if name in params:
-            cells.append(f"{name} {float(params[name]):.6g}")
-        else:
-            cells.append(f"{name} {default:.6g} (PX4 default; not in the log)")
-    return "GNSS noise parameters: " + ", ".join(cells)
 
 
 # How EKF2 dates a measurement: its timestamp less a configured delay, per source.
