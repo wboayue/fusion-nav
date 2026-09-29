@@ -309,7 +309,7 @@ impl Eskf {
         // short to align an attitude from can still be a window of a parked vehicle.
         let at_rest = init::at_rest(measured.peaks, &self.config.init);
         let state = init::nominal_state(&measured, self.declination, at_rest);
-        self.apply_alignment(alignment, state, &measured, at_rest, measured.end);
+        self.apply_alignment(alignment, state, &measured, at_rest, measured.end)?;
         if at_rest {
             self.establish_reference(
                 window
@@ -381,7 +381,7 @@ impl Eskf {
         // window shows rest by holding still over a span of time and this one spans none:
         // an accelerometer reading `γ` for an instant is a hover as readily as a vehicle
         // on the ground, and this entry point exists for the launches that are moving.
-        self.apply_alignment(alignment, state, &measured, false, imu.time);
+        self.apply_alignment(alignment, state, &measured, false, imu.time)?;
         // The barometric reference is left alone: one sample does not establish one, and
         // a restart at altitude should keep the reference the flight began with.
         self.note_alignment();
@@ -2310,6 +2310,10 @@ impl Eskf {
     /// first fix is adopted about the origin the flight already has. The two move
     /// together or a still short window would report an established position of `(0,0,0)`
     /// about an origin nothing put under it.
+    ///
+    /// Refused as [`InitError::NotFinite`], committing nothing, when the state or covariance
+    /// is not finite. Every sample was finite, but their average can still overflow what (5)
+    /// and (8) square: one accelerometer reading of `f32::MAX` levels to a NaN tilt variance.
     fn apply_alignment(
         &mut self,
         alignment: Alignment,
@@ -2317,7 +2321,7 @@ impl Eskf {
         measured: &Measured,
         settled: bool,
         time: Timestamp,
-    ) {
+    ) -> Result<(), InitError> {
         // The bias of (7) as committed, so that what it absorbed is not charged a second
         // time as motion the window could not vouch for; see `init::coarse_sigmas`.
         let (sigma_tilt, sigma_yaw) =
@@ -2329,6 +2333,9 @@ impl Eskf {
             sigma_yaw,
             measured.level_variance,
         );
+        if !(state.is_finite() && covariance.is_finite()) {
+            return Err(InitError::NotFinite);
+        }
         let unestablished = Unestablished::after(settled, measured.field.is_some());
         self.start(state, covariance, unestablished, time, settled);
         // (6) levelled the heading from the window's field with the declination it held.
@@ -2336,6 +2343,7 @@ impl Eskf {
         if settled {
             self.origin = None;
         }
+        Ok(())
     }
 
     /// Begin a new life at `time`: the state and covariance a start committed, fresh health,
@@ -2654,6 +2662,20 @@ mod tests {
             assert_eq!(filter.step(still().imu, DT), Propagation::Propagated);
         }
         assert_eq!(filter.offset, Offset::default());
+    }
+
+    #[test]
+    fn a_start_that_overflows_is_refused_and_commits_nothing() {
+        // Finite, so `push` takes it; (5) and (8) square it past `f32`.
+        let mut filter = Eskf::default();
+        let imu = ImuSample::from_rates(
+            Timestamp::from_micros(1_000_000),
+            AngularRate::body(0.0, 0.0, 0.0),
+            Acceleration::body(0.0, 0.0, f32::MAX),
+            DT,
+        );
+        assert_eq!(filter.initialize_coarse(imu), Err(InitError::NotFinite));
+        assert!(!filter.is_initialized());
     }
 
     #[test]
