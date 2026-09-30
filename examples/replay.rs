@@ -201,9 +201,9 @@ use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
+use fusion_nav::STATES;
 use fusion_nav::prelude::*;
-use fusion_nav::{CovarianceMatrix, STATES};
-use nalgebra::{SVector, UnitQuaternion, Vector3};
+use nalgebra::{Quaternion, SMatrix, SVector, UnitQuaternion, Vector3};
 
 /// Capacity of the initialization window, in samples.
 ///
@@ -333,6 +333,23 @@ impl RPolicy {
 /// Reads one estimate column out of a `State`.
 type Column = fn(&State) -> f32;
 
+/// The error covariance as the harness's own algebra reads it.
+type CovarianceMatrix = SMatrix<f32, STATES, STATES>;
+
+/// The filter's covariance as `nalgebra`'s. Built entry by entry: `nalgebra`'s `From` for an
+/// array reads columns, and would score the transpose.
+fn matrix(covariance: &Covariance) -> CovarianceMatrix {
+    let p = covariance.to_rows();
+    CovarianceMatrix::from_fn(|row, column| p[row][column])
+}
+
+/// The filter's attitude as `nalgebra`'s, for the harness's own algebra. Unchecked, so the
+/// rotation scored is the filter's to the last bit: the getter hands back what it stores.
+fn rotation(attitude: Attitude) -> UnitQuaternion<f32> {
+    let q = attitude.body_to_ned();
+    UnitQuaternion::new_unchecked(Quaternion::new(q.w, q.x, q.y, q.z))
+}
+
 /// The estimate columns: each name next to the value it reads. Drives both the header and
 /// the row, so the two cannot drift apart.
 ///
@@ -349,9 +366,9 @@ const ESTIMATE: [(&str, Column); 16] = [
     ("vel_e", |s| s.velocity.y()),
     ("vel_d", |s| s.velocity.z()),
     ("q0", |s| s.attitude.body_to_ned().w),
-    ("q1", |s| s.attitude.body_to_ned().i),
-    ("q2", |s| s.attitude.body_to_ned().j),
-    ("q3", |s| s.attitude.body_to_ned().k),
+    ("q1", |s| s.attitude.body_to_ned().x),
+    ("q2", |s| s.attitude.body_to_ned().y),
+    ("q3", |s| s.attitude.body_to_ned().z),
     ("ba_x", |s| s.accel_bias.x()),
     ("ba_y", |s| s.accel_bias.y()),
     ("ba_z", |s| s.accel_bias.z()),
@@ -549,7 +566,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     replay.site = origin_of(&text);
     if antenna_from_header {
         replay.antenna = antenna_of(&text).unwrap_or_default();
-        if !replay.antenna.vector().iter().all(|v| v.is_finite()) {
+        if !replay.antenna.to_array().iter().all(|v| v.is_finite()) {
             return Err("the `# GNSS antenna` header is not a finite offset".into());
         }
     }
@@ -827,7 +844,7 @@ impl Excursion {
     }
 
     fn attitude(&mut self, attitude: Attitude) {
-        let down = attitude.body_to_ned() * Vector3::z();
+        let down = rotation(attitude) * Vector3::z();
         let tilt = down.z.clamp(-1.0, 1.0).acos().to_degrees();
         self.tilt_max = Some(self.tilt_max.map_or(tilt, |t| t.max(tilt)));
     }
@@ -1916,7 +1933,7 @@ impl Replay {
                                 "GNSS puts the vehicle's own acceleration at {:.3} m/s^2 \
                                  ({:.2}, {:.2}, {:.2} NED), which in-motion levelling would \
                                  subtract",
-                                accel.vector().norm(),
+                                Vector3::from(accel.to_array()).norm(),
                                 accel.x(),
                                 accel.y(),
                                 accel.z(),
@@ -2612,29 +2629,29 @@ fn error_state(state: &State, truth: &TruthRow) -> SVector<f32, STATES> {
     let blocks = [
         (
             ErrorState::PositionNorth,
-            truth.position - state.position.vector(),
+            truth.position - Vector3::from(state.position.to_array()),
         ),
         (
             ErrorState::VelocityNorth,
-            truth.velocity - state.velocity.vector(),
+            truth.velocity - Vector3::from(state.velocity.to_array()),
         ),
         (
             ErrorState::AttitudeX,
-            (state.attitude.body_to_ned().inverse() * truth.attitude).scaled_axis(),
+            (rotation(state.attitude).inverse() * truth.attitude).scaled_axis(),
         ),
         // Zero where the truth knows no bias: [`Score::epoch`] reads the bias rows only where
         // it does, so the zero is never scored as a perfect estimate.
         (
             ErrorState::AccelBiasX,
-            truth
-                .accel_bias
-                .map_or_else(Vector3::zeros, |bias| bias - state.accel_bias.vector()),
+            truth.accel_bias.map_or_else(Vector3::zeros, |bias| {
+                bias - Vector3::from(state.accel_bias.to_array())
+            }),
         ),
         (
             ErrorState::GyroBiasX,
-            truth
-                .gyro_bias
-                .map_or_else(Vector3::zeros, |bias| bias - state.gyro_bias.vector()),
+            truth.gyro_bias.map_or_else(Vector3::zeros, |bias| {
+                bias - Vector3::from(state.gyro_bias.to_array())
+            }),
         ),
     ];
     for (first, values) in &blocks {
@@ -2665,7 +2682,7 @@ fn horizontal(error: &SVector<f32, STATES>, x: ErrorState, y: ErrorState) -> f32
 /// the filter's shape without borrowing its geometry: a transposed `R` in the filter would
 /// be mirrored by a harness that reused it, and is not by this.
 fn attitude_error_ned(state: &State, truth: &TruthRow) -> Vector3<f32> {
-    (truth.attitude * state.attitude.body_to_ned().inverse()).scaled_axis()
+    (truth.attitude * rotation(state.attitude).inverse()).scaled_axis()
 }
 
 /// `ε = δxᵀ P⁻¹ δx` over the three-component block starting at `first`, or `None` if that
@@ -2907,7 +2924,7 @@ impl Score {
                 f64::from(error.fixed_rows::<BLOCK>(GyroBiasX.index()).norm_squared());
         }
 
-        let p = covariance.as_matrix();
+        let p = matrix(covariance);
         for i in 0..STATES {
             let unknown = match i / BLOCK {
                 3 => truth.accel_bias.is_none(),
@@ -2930,7 +2947,7 @@ impl Score {
             .into_iter()
             .enumerate()
         {
-            epsilon[block] = nees(&error, p, first);
+            epsilon[block] = nees(&error, &p, first);
             if let Some(nees) = epsilon[block] {
                 self.nees[block] += nees;
                 self.nees_epochs[block] += 1;
@@ -3307,7 +3324,8 @@ impl Scoring {
             return None;
         }
         let truth = self.truth.near(t)?;
-        let e = fix.vector() - (truth.position + truth.attitude * antenna.vector());
+        let e = Vector3::from(fix.to_array())
+            - (truth.position + truth.attitude * Vector3::from(antenna.to_array()));
         let horizontal = e.x * e.x / variance[0] + e.y * e.y / variance[1];
         let height = e.z * e.z / variance[2];
         let bar = accuracy.position.as_meters();
@@ -3500,6 +3518,16 @@ fn default_output() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A test's rotation as the components every `Attitude` constructor takes.
+    fn components(q: UnitQuaternion<f32>) -> fusion_nav::Quaternion {
+        fusion_nav::Quaternion {
+            w: q.w,
+            x: q.i,
+            y: q.j,
+            z: q.k,
+        }
+    }
 
     /// The rate the fixtures run at, which is `data/flight.csv`'s.
     const DT: f64 = 0.02;
@@ -3945,20 +3973,20 @@ mod tests {
         // A 5 cm RTK fix: horizontal floored at p, vertical at 1.5 p — not at p, which is
         // what one floor for both axes would give.
         let fix = px4.position([0.0025, 0.0025, 0.0025]).variance();
-        assert_eq!(sigmas([fix.x, fix.y, fix.z]), [0.5, 0.5, 0.75]);
+        assert_eq!(sigmas(fix), [0.5, 0.5, 0.75]);
         // A 40 m claim is capped at `no_aid` on both axes.
         let wild = px4.position([1600.0, 1600.0, 1600.0]).variance();
-        assert_eq!(sigmas([wild.x, wild.y, wild.z]), [10.0, 10.0, 10.0]);
+        assert_eq!(sigmas(wild), [10.0, 10.0, 10.0]);
         // Velocity floors first, then widens vertical: 0.1 m/s reads 0.3 / 0.45, where
         // widening first and flooring after would read 0.3 / 0.3.
         let slow = px4.velocity([0.01, 0.01, 0.01]).variance();
-        assert_eq!(sigmas([slow.x, slow.y, slow.z]), [0.3, 0.3, 0.45]);
+        assert_eq!(sigmas(slow), [0.3, 0.3, 0.45]);
         // A NaN is not floored into a fix: `f32::max` would return the floor.
-        assert!(px4.position([f32::NAN, 1.0, 1.0]).variance().x.is_nan());
-        assert!(px4.velocity([-1.0, 1.0, 1.0]).variance().x < 0.0);
+        assert!(px4.position([f32::NAN, 1.0, 1.0]).variance()[0].is_nan());
+        assert!(px4.velocity([-1.0, 1.0, 1.0]).variance()[0] < 0.0);
         // `Raw` is the row, untouched.
         let raw = RPolicy::Raw.velocity([0.01, 0.01, 0.01]).variance();
-        assert_eq!(sigmas([raw.x, raw.y, raw.z]), [0.1, 0.1, 0.1]);
+        assert_eq!(sigmas(raw), [0.1, 0.1, 0.1]);
     }
 
     #[test]
@@ -4273,9 +4301,9 @@ mod tests {
         assert_eq!(key(&replay.summary(), "an"), "measured");
         let accel = replay.inertial_accel().expect("ā_n measured");
         assert!(
-            (accel.x() - 2.0).abs() < 1e-3 && accel.vector().norm() > 1.9,
+            (accel.x() - 2.0).abs() < 1e-3 && Vector3::from(accel.to_array()).norm() > 1.9,
             "2 m/s over 1 s, north: {:?}",
-            accel.vector()
+            Vector3::from(accel.to_array())
         );
     }
 
@@ -5172,9 +5200,9 @@ mod tests {
     /// valid — so a `false_valid` count is about the error and not about what was claimed.
     fn state_at(roll: f32, pitch: f32, yaw: f32) -> State {
         State {
-            attitude: Attitude::from_body_to_ned(UnitQuaternion::from_euler_angles(
+            attitude: Attitude::from_body_to_ned(components(UnitQuaternion::from_euler_angles(
                 roll, pitch, yaw,
-            )),
+            ))),
             validity: Validity {
                 tilt: true,
                 heading: true,
@@ -5296,7 +5324,7 @@ mod tests {
         let pitch = core::f32::consts::FRAC_PI_2;
         let state = state_at(0.0, pitch, 0.0);
         let turned =
-            UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 0.6) * state.attitude.body_to_ned();
+            UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 0.6) * rotation(state.attitude);
         let mut truth = truth_at(0.0, 0.0, 0.0);
         truth.attitude = turned;
         let score = score_one(&state, &Covariance::from_sigmas([0.5; STATES]), &truth);
@@ -5323,7 +5351,7 @@ mod tests {
         let mut p = CovarianceMatrix::identity();
         p[(0, 1)] = 0.99;
         p[(1, 0)] = 0.99;
-        let covariance = Covariance::from_matrix(p);
+        let covariance = Covariance::from_rows(p.transpose().into());
         let truth = truth_offset(1.0, -1.0, 0.0);
         let score = score_one(&state_at(0.0, 0.0, 0.0), &covariance, &truth);
         assert_eq!(
@@ -5342,7 +5370,7 @@ mod tests {
         for i in 0..3 {
             p[(i, i)] = 0.0;
         }
-        let covariance = Covariance::from_matrix(p);
+        let covariance = Covariance::from_rows(p.transpose().into());
         let score = score_one(
             &state_at(0.0, 0.0, 0.0),
             &covariance,
@@ -5928,14 +5956,13 @@ mod tests {
         // Pitched 90° about body y: `q = (cos 45°, 0, sin 45°, 0)`. A scalar-last write
         // still reads as a valid rotation — a half turn about a tilted axis — so only the
         // position of the one non-zero pair says which convention reached the file.
-        let state = State {
-            attitude: Attitude::from_body_to_ned(UnitQuaternion::from_euler_angles(
-                0.0,
-                core::f32::consts::FRAC_PI_2,
-                0.0,
-            )),
-            ..State::default()
-        };
+        let state =
+            State {
+                attitude: Attitude::from_body_to_ned(components(
+                    UnitQuaternion::from_euler_angles(0.0, core::f32::consts::FRAC_PI_2, 0.0),
+                )),
+                ..State::default()
+            };
         let column = |name: &str| {
             let (_, read) = ESTIMATE
                 .iter()

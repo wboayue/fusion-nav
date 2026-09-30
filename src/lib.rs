@@ -23,13 +23,14 @@ mod state;
 mod units;
 mod update;
 
-// The prelude is the one list of public types; the root adds back the three it leaves out.
+// The prelude is the one list of public types; the root adds back the four it leaves out.
 #[doc(inline)]
 pub use prelude::*;
 
 pub use config::ConfigBound;
 pub use frames::Frame;
-pub use state::{CovarianceMatrix, STATES};
+pub use state::STATES;
+pub use units::Quaternion;
 
 /// Everything needed to write an integration loop, in one import.
 ///
@@ -87,7 +88,8 @@ pub use state::{CovarianceMatrix, STATES};
 /// ```
 ///
 /// Deliberately excluded, because their names are too generic to glob-import safely:
-/// [`Frame`], [`STATES`], and [`CovarianceMatrix`]. Import those by path, as
+/// [`Frame`], [`STATES`] and [`Quaternion`], the last of which `nalgebra` and most algebra
+/// crates also export. Import those by path, as
 /// [`ConfigBound`], which a caller reads off a [`ConfigError`] far more often than it names.
 pub mod prelude {
     pub use crate::config::{

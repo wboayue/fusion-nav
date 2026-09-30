@@ -53,7 +53,7 @@ impl State {
     ///
     /// The quaternion is unit by construction, so only its finiteness is in question.
     pub(crate) fn is_finite(&self) -> bool {
-        let q = self.attitude.body_to_ned();
+        let q = self.attitude.quaternion();
         [q.w, q.i, q.j, q.k].iter().all(|v| v.is_finite())
             && self.position.is_finite()
             && self.velocity.is_finite()
@@ -102,7 +102,7 @@ pub enum ErrorState {
 }
 
 impl ErrorState {
-    /// The index of this component, for indexing [`Covariance::as_matrix`].
+    /// The index of this component, for indexing [`Covariance::to_rows`].
     pub const fn index(self) -> usize {
         self as usize
     }
@@ -110,8 +110,8 @@ impl ErrorState {
 
 /// The 15 x 15 error covariance `P`, in the [`ErrorState`] ordering.
 ///
-/// 900 bytes in `f32`. Returned by reference for that reason.
-pub type CovarianceMatrix = SMatrix<f32, STATES, STATES>;
+/// 900 bytes in `f32`, so the filter hands it around by reference.
+pub(crate) type CovarianceMatrix = SMatrix<f32, STATES, STATES>;
 
 /// The error covariance, with named access to its components.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -130,8 +130,15 @@ impl Covariance {
         Self(CovarianceMatrix::from_diagonal(&variances))
     }
 
-    /// Wrap a matrix. Not checked for symmetry or positive-definiteness.
-    pub const fn from_matrix(p: CovarianceMatrix) -> Self {
+    /// From rows, `p[row][column]` in the [`ErrorState`] ordering. Not checked for symmetry
+    /// or positive-definiteness here; [`Eskf::initialize_from`](crate::Eskf::initialize_from)
+    /// checks what it needs of a seed.
+    pub fn from_rows(p: [[f32; STATES]; STATES]) -> Self {
+        Self(CovarianceMatrix::from_fn(|row, column| p[row][column]))
+    }
+
+    /// Wrap a matrix the filter computed.
+    pub(crate) const fn from_matrix(p: CovarianceMatrix) -> Self {
         Self(p)
     }
 
@@ -219,8 +226,21 @@ impl Covariance {
         }
     }
 
-    /// The whole matrix, for callers that want to do their own algebra.
-    pub const fn as_matrix(&self) -> &CovarianceMatrix {
+    /// The whole matrix as rows, `p[row][column]` in the [`ErrorState`] ordering, for callers
+    /// that do their own algebra.
+    ///
+    /// Rows rather than `nalgebra`'s storage, which is an array of columns, because `P` is
+    /// symmetric only to its last bit: a caller indexing columns as rows would read the
+    /// transpose, and nothing would say so. The same trap is on the way into `nalgebra`, whose
+    /// `From<[[f32; 15]; 15]>` also reads columns: `SMatrix::from_fn(|i, j| p[i][j])` is the
+    /// conversion. A copy, 900 bytes on the caller's stack; [`get`](Self::get) reads one entry
+    /// without it.
+    pub fn to_rows(&self) -> [[f32; STATES]; STATES] {
+        core::array::from_fn(|row| core::array::from_fn(|column| self.0[(row, column)]))
+    }
+
+    /// The whole matrix, for the filter's own algebra.
+    pub(crate) const fn as_matrix(&self) -> &CovarianceMatrix {
         &self.0
     }
 
@@ -268,7 +288,7 @@ impl AttitudeVariance {
     /// covariance projected forward, which the nominal attitude it was projected from
     /// still describes.
     pub(crate) fn of(attitude: &Attitude, covariance: &Covariance) -> Self {
-        let r = attitude.body_to_ned().to_rotation_matrix().into_inner();
+        let r = attitude.quaternion().to_rotation_matrix().into_inner();
         let theta = ErrorState::AttitudeX.index();
         let p_theta = covariance.as_matrix().fixed_view::<3, 3>(theta, theta);
         let ned = r * p_theta * r.transpose();
@@ -294,7 +314,7 @@ impl AttitudeVariance {
     /// from its transpose in the last bit off the diagonal, and this block is committed at a
     /// start with no propagation after it to repair that.
     pub(crate) fn in_body(self, attitude: &Attitude) -> Matrix3<f32> {
-        let r = attitude.body_to_ned().to_rotation_matrix().into_inner();
+        let r = attitude.quaternion().to_rotation_matrix().into_inner();
         let ned =
             Matrix3::from_diagonal(&Vector3::new(self.tilt_north, self.tilt_east, self.heading));
         let mut body = r.transpose() * ned * r;
@@ -377,7 +397,24 @@ mod tests {
     use nalgebra::UnitQuaternion;
 
     fn attitude_of(roll: f32, pitch: f32, yaw: f32) -> Attitude {
-        Attitude::from_body_to_ned(UnitQuaternion::from_euler_angles(roll, pitch, yaw))
+        Attitude::from_quaternion(UnitQuaternion::from_euler_angles(roll, pitch, yaw))
+    }
+
+    #[test]
+    fn the_array_is_rows_in_and_out() {
+        // Asymmetric, so an array read as columns anywhere reads the transpose and fails.
+        let mut rows = [[0.0; STATES]; STATES];
+        rows[ErrorState::PositionNorth.index()][ErrorState::GyroBiasZ.index()] = 1.0;
+        let covariance = Covariance::from_rows(rows);
+        assert_eq!(
+            covariance.get(ErrorState::PositionNorth, ErrorState::GyroBiasZ),
+            1.0
+        );
+        assert_eq!(
+            covariance.get(ErrorState::GyroBiasZ, ErrorState::PositionNorth),
+            0.0
+        );
+        assert_eq!(covariance.to_rows(), rows);
     }
 
     #[test]
@@ -411,7 +448,7 @@ mod tests {
 
             let mut p = with_attitude_block(block);
             let down = attitude
-                .body_to_ned()
+                .quaternion()
                 .inverse_transform_vector(&Vector3::z());
             p.reset_attitude_direction(down, 0.05);
             let p = p.as_matrix();
