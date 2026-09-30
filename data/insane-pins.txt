@@ -9,13 +9,11 @@
 # the fixes are judged at `t_meas_s`, on truth interpolated between RTK2's epochs): an
 # ordinary receiver's error persists, and no filter removes what its only position source
 # shares. What these read is whether the covariance covers it: nees_pos 0.35 to 0.47,
-# conservative, and (24') is why. Fused white, every `Config::correlation` time constant off,
-# the same flights read nees_pos 39.2, 11.6 and 16.1 and outdoor_1's pos_v 8.18 m, and
-# horizontally they match the fixes (3.95, 1.87, 2.82 m): (24') costs 0.05 to 0.37 m of
-# horizontal RMS for a covariance that is honest. mars_1's receiver claims 0.77 m and errs by
-# 1.87 m, so it is the correlation that covers it, not the receiver's claim: 143 of its 483
-# fixes are bad against their own R (bad_gnss_pos), and the gate rejects none: it tests a fix
-# against the estimate, which follows the receiver's persistent error, not against truth.
+# conservative, and (24') is why; GOALS.md, "Correlated measurement error as equivalent white
+# noise", owns what fusing white reads and what (24') costs. mars_1's receiver claims 0.77 m
+# and errs by 1.87 m, so it is the correlation that covers it, not the receiver's claim: 143
+# of its 483 fixes are bad against their own R (bad_gnss_pos), and the gate rejects none: it
+# tests a fix against the estimate, which follows the receiver's persistent error, not truth.
 # Height is the barometer's to hold: the fixes are 8.80, 2.68 and 5.57 m off vertically
 # (rms_gnss_hgt; on average 8.0 m high, 1.9 m low and 5.3 m high) against pos_v 1.88, 0.39
 # and 2.04, and `--without baro` outdoor_1 and mars_19 read pos_v 9.35 and 5.72, the fixes'
