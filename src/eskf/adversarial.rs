@@ -528,7 +528,7 @@ fn snapshot(filter: &Eskf) -> Snapshot {
 fn check(filter: &Eskf, after: &str, project: bool) -> Result<(), TestCaseError> {
     let state = &filter.state;
     prop_assert!(state.is_finite(), "{after}: state not finite: {state:?}");
-    let norm = state.attitude.body_to_ned().norm();
+    let norm = state.attitude.quaternion().norm();
     prop_assert!((norm - 1.0).abs() < 1e-3, "{after}: quaternion norm {norm}");
 
     let p = filter.covariance.as_matrix();
@@ -917,24 +917,33 @@ proptest! {
                 );
             }
         }
-        let quaternion = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(q[0], q[1], q[2], q[3]));
-        // Each constructor's getter hands back what it was given, up to the quaternion's sign.
-        if quaternion.coords.iter().all(|c| c.is_finite()) {
+        let unit = |[w, x, y, z]: [f32; 4]| UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(w, x, y, z));
+        // Scaled as the constructors scale, so `f32::MAX` and 1e-40 components are rotations.
+        let largest = q.iter().fold(0.0f32, |m, c| m.max(c.abs()));
+        let rotation = largest > 0.0 && q.iter().all(|c| c.is_finite());
+        let quaternion = unit(q.map(|c| c / largest));
+        // Each constructor's getter hands back what it was given, normalized, up to the
+        // quaternion's sign; a zero or non-finite one comes out non-finite, not a panic.
+        if rotation {
             let trips = [
-                ("body_to_ned", Attitude::from_body_to_ned(quaternion).body_to_ned()),
-                ("ned_to_body", Attitude::from_ned_to_body(quaternion).ned_to_body()),
-                ("flu_to_enu", Attitude::from_flu_to_enu(quaternion).flu_to_enu()),
-                ("flu_to_nwu", Attitude::from_flu_to_nwu(quaternion).flu_to_nwu()),
+                ("body_to_ned", Attitude::from_body_to_ned(q).body_to_ned()),
+                ("ned_to_body", Attitude::from_ned_to_body(q).ned_to_body()),
+                ("flu_to_enu", Attitude::from_flu_to_enu(q).flu_to_enu()),
+                ("flu_to_nwu", Attitude::from_flu_to_nwu(q).flu_to_nwu()),
             ];
             for (name, back) in trips {
-                prop_assert!(back.angle_to(&quaternion) < 1e-3, "{name}: {quaternion:?} came back {back:?}");
+                prop_assert!(unit(back).angle_to(&quaternion) < 1e-3, "{name}: {quaternion:?} came back {back:?}");
             }
         }
+        if !rotation {
+            let refused = State { attitude: Attitude::from_body_to_ned(q), ..State::default() };
+            prop_assert!(!refused.is_finite(), "{q:?} is no rotation and came out {refused:?}");
+        }
         for attitude in [
-            Attitude::from_body_to_ned(quaternion),
-            Attitude::from_ned_to_body(quaternion),
-            Attitude::from_flu_to_enu(quaternion),
-            Attitude::from_flu_to_nwu(quaternion),
+            Attitude::from_body_to_ned(q),
+            Attitude::from_ned_to_body(q),
+            Attitude::from_flu_to_enu(q),
+            Attitude::from_flu_to_nwu(q),
         ] {
             let _ = (attitude.ned_to_body(), attitude.flu_to_enu(), attitude.flu_to_nwu(), attitude.euler_angles());
         }

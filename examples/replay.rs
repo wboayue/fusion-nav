@@ -203,7 +203,7 @@ use std::path::{Path, PathBuf};
 
 use fusion_nav::prelude::*;
 use fusion_nav::{CovarianceMatrix, STATES};
-use nalgebra::{SVector, UnitQuaternion, Vector3};
+use nalgebra::{Quaternion, SVector, UnitQuaternion, Vector3};
 
 /// Capacity of the initialization window, in samples.
 ///
@@ -333,6 +333,13 @@ impl RPolicy {
 /// Reads one estimate column out of a `State`.
 type Column = fn(&State) -> f32;
 
+/// The filter's attitude as `nalgebra`'s, for the harness's own algebra. Unchecked, so the
+/// rotation scored is the filter's to the last bit: the getter hands back what it stores.
+fn rotation(attitude: Attitude) -> UnitQuaternion<f32> {
+    let [w, x, y, z] = attitude.body_to_ned();
+    UnitQuaternion::new_unchecked(Quaternion::new(w, x, y, z))
+}
+
 /// The estimate columns: each name next to the value it reads. Drives both the header and
 /// the row, so the two cannot drift apart.
 ///
@@ -348,10 +355,10 @@ const ESTIMATE: [(&str, Column); 16] = [
     ("vel_n", |s| s.velocity.x()),
     ("vel_e", |s| s.velocity.y()),
     ("vel_d", |s| s.velocity.z()),
-    ("q0", |s| s.attitude.body_to_ned().w),
-    ("q1", |s| s.attitude.body_to_ned().i),
-    ("q2", |s| s.attitude.body_to_ned().j),
-    ("q3", |s| s.attitude.body_to_ned().k),
+    ("q0", |s| s.attitude.body_to_ned()[0]),
+    ("q1", |s| s.attitude.body_to_ned()[1]),
+    ("q2", |s| s.attitude.body_to_ned()[2]),
+    ("q3", |s| s.attitude.body_to_ned()[3]),
     ("ba_x", |s| s.accel_bias.x()),
     ("ba_y", |s| s.accel_bias.y()),
     ("ba_z", |s| s.accel_bias.z()),
@@ -827,7 +834,7 @@ impl Excursion {
     }
 
     fn attitude(&mut self, attitude: Attitude) {
-        let down = attitude.body_to_ned() * Vector3::z();
+        let down = rotation(attitude) * Vector3::z();
         let tilt = down.z.clamp(-1.0, 1.0).acos().to_degrees();
         self.tilt_max = Some(self.tilt_max.map_or(tilt, |t| t.max(tilt)));
     }
@@ -2620,7 +2627,7 @@ fn error_state(state: &State, truth: &TruthRow) -> SVector<f32, STATES> {
         ),
         (
             ErrorState::AttitudeX,
-            (state.attitude.body_to_ned().inverse() * truth.attitude).scaled_axis(),
+            (rotation(state.attitude).inverse() * truth.attitude).scaled_axis(),
         ),
         // Zero where the truth knows no bias: [`Score::epoch`] reads the bias rows only where
         // it does, so the zero is never scored as a perfect estimate.
@@ -2665,7 +2672,7 @@ fn horizontal(error: &SVector<f32, STATES>, x: ErrorState, y: ErrorState) -> f32
 /// the filter's shape without borrowing its geometry: a transposed `R` in the filter would
 /// be mirrored by a harness that reused it, and is not by this.
 fn attitude_error_ned(state: &State, truth: &TruthRow) -> Vector3<f32> {
-    (truth.attitude * state.attitude.body_to_ned().inverse()).scaled_axis()
+    (truth.attitude * rotation(state.attitude).inverse()).scaled_axis()
 }
 
 /// `ε = δxᵀ P⁻¹ δx` over the three-component block starting at `first`, or `None` if that
@@ -3501,6 +3508,11 @@ fn default_output() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A test's rotation as the `[w, x, y, z]` every `Attitude` constructor takes.
+    fn components(q: UnitQuaternion<f32>) -> [f32; 4] {
+        [q.w, q.i, q.j, q.k]
+    }
 
     /// The rate the fixtures run at, which is `data/flight.csv`'s.
     const DT: f64 = 0.02;
@@ -5173,9 +5185,9 @@ mod tests {
     /// valid — so a `false_valid` count is about the error and not about what was claimed.
     fn state_at(roll: f32, pitch: f32, yaw: f32) -> State {
         State {
-            attitude: Attitude::from_body_to_ned(UnitQuaternion::from_euler_angles(
+            attitude: Attitude::from_body_to_ned(components(UnitQuaternion::from_euler_angles(
                 roll, pitch, yaw,
-            )),
+            ))),
             validity: Validity {
                 tilt: true,
                 heading: true,
@@ -5297,7 +5309,7 @@ mod tests {
         let pitch = core::f32::consts::FRAC_PI_2;
         let state = state_at(0.0, pitch, 0.0);
         let turned =
-            UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 0.6) * state.attitude.body_to_ned();
+            UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 0.6) * rotation(state.attitude);
         let mut truth = truth_at(0.0, 0.0, 0.0);
         truth.attitude = turned;
         let score = score_one(&state, &Covariance::from_sigmas([0.5; STATES]), &truth);
@@ -5929,14 +5941,13 @@ mod tests {
         // Pitched 90° about body y: `q = (cos 45°, 0, sin 45°, 0)`. A scalar-last write
         // still reads as a valid rotation — a half turn about a tilted axis — so only the
         // position of the one non-zero pair says which convention reached the file.
-        let state = State {
-            attitude: Attitude::from_body_to_ned(UnitQuaternion::from_euler_angles(
-                0.0,
-                core::f32::consts::FRAC_PI_2,
-                0.0,
-            )),
-            ..State::default()
-        };
+        let state =
+            State {
+                attitude: Attitude::from_body_to_ned(components(
+                    UnitQuaternion::from_euler_angles(0.0, core::f32::consts::FRAC_PI_2, 0.0),
+                )),
+                ..State::default()
+            };
         let column = |name: &str| {
             let (_, read) = ESTIMATE
                 .iter()

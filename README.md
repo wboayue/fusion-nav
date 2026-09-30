@@ -163,7 +163,10 @@ Frames are in the types, and constructors name them: `Position::ned(n, e, d)`,
 Units are SI and named only where a source commonly supplies something else:
 `Radians::from_degrees`, `AngularRate::body_deg_per_s`, `Geodetic::from_degrees_e7`. Noise is
 built `from_sigma` or `from_variance`, so a receiver's σ cannot arrive as a variance.
-Components come out as plain numbers: `.x()`, `.to_array()`, or `.vector()` for `nalgebra`.
+Components cross as plain numbers, `.x()` or `.to_array()` out and `from_array` in, with the frame
+still the type parameter: `Position::<Ned>::from_array(p)`. No `nalgebra` type is public. It is
+0.x, so a public `Vector3` would pin every integrator to this crate's version; an array converts
+to and from any version's, and glam's, with `.into()`.
 
 The filter never reads a clock. Every `ImuSample` carries a `Timestamp` on the caller's clock and
 the intervals its increments were integrated over; the step between samples is differenced from
@@ -262,8 +265,10 @@ early-flight performance. See [initialization](https://github.com/wboayue/fusion
 
 ### Seeding an attitude
 
-A quaternion carries no frames, so `Attitude` has no `From<UnitQuaternion>` and every constructor
-names the convention it takes. Nothing else in initialization is like this: a seed is the one input
+A quaternion carries no frames, so `Attitude` has no `From<[f32; 4]>` and every constructor
+names the convention it takes. The array is `[w, x, y, z]`, scalar first as PX4's `q[4]` is; ROS,
+Eigen and `nalgebra`'s `coords` store the scalar last, so build it by named components
+(`[q.w, q.x, q.y, q.z]`) rather than copying storage. Nothing else in initialization is like this: a seed is the one input
 with no residual to expose a wrong one.
 
 | the convention | in | out |
@@ -285,12 +290,11 @@ a wrong one costs.
 
 ```rust
 use fusion_nav::prelude::*;
-use nalgebra::UnitQuaternion;
 
 let mut filter = Eskf::default();
 
-// What a companion AHRS published: 2.9° nose up, heading 63°.
-let q = UnitQuaternion::from_euler_angles(0.0, 0.05, 1.1);
+// What a companion AHRS published, `[w, x, y, z]`: 2.9° nose up, heading 63°.
+let q = [0.8523, -0.0131, 0.0213, 0.5225];
 
 // PX4's `vehicle_attitude.q` and ArduPilot's `get_quat_body_to_ned` are body FRD to NED
 // already, which is this crate's convention too, so this constructor converts nothing.
@@ -312,7 +316,7 @@ let covariance = Covariance::from_sigmas([
 // When the seed is valid, on the clock the IMU's timestamps are on.
 let time = Timestamp::from_micros(12_500_000);
 assert_eq!(filter.initialize_from(state, covariance, time)?, Alignment::Seeded);
-assert!((filter.state().attitude.euler_angles().2 - 1.1).abs() < 1.0e-6);
+assert!((filter.state().attitude.euler_angles().2 - 1.1).abs() < 1.0e-3);
 # Ok::<(), InitError>(())
 ```
 

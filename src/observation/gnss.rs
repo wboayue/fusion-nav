@@ -26,7 +26,7 @@ use crate::update::Observation;
 fn arm(state: &State, antenna: Position<Body>) -> (Vector3<f32>, Matrix3<f32>) {
     let r = state
         .attitude
-        .body_to_ned()
+        .quaternion()
         .to_rotation_matrix()
         .into_inner();
     let arm = antenna.vector();
@@ -140,7 +140,7 @@ pub(crate) fn velocity_observation(
 ) -> Observation<3> {
     let r = state
         .attitude
-        .body_to_ned()
+        .quaternion()
         .to_rotation_matrix()
         .into_inner();
     let (arm, turning) = (antenna.vector(), omega.vector().cross(&antenna.vector()));
@@ -218,7 +218,7 @@ mod tests {
     /// A state that is neither level nor axis-aligned, so no term of `R̂` cancels.
     fn tilted() -> State {
         State {
-            attitude: crate::units::Attitude::from_body_to_ned(
+            attitude: crate::units::Attitude::from_quaternion(
                 nalgebra::UnitQuaternion::from_euler_angles(0.3, -0.2, 1.1),
             ),
             gyro_bias: AngularRate::body(0.01, -0.02, 0.005),
@@ -231,7 +231,7 @@ mod tests {
     fn antenna_at(state: &State, arm: Vector3<f32>, omega: Vector3<f32>) -> [Vector3<f32>; 2] {
         let r = state
             .attitude
-            .body_to_ned()
+            .quaternion()
             .to_rotation_matrix()
             .into_inner();
         [
@@ -273,8 +273,8 @@ mod tests {
                 let mut e = Vector3::zeros();
                 e[axis] = sign * step;
                 State {
-                    attitude: crate::units::Attitude::from_body_to_ned(
-                        state.attitude.body_to_ned() * crate::math::exp_quat(e),
+                    attitude: crate::units::Attitude::from_quaternion(
+                        state.attitude.quaternion() * crate::math::exp_quat(e),
                     ),
                     ..state
                 }

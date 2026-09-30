@@ -1296,7 +1296,7 @@ pub(crate) fn nominal_state(measured: &Measured, declination: Radians, at_rest: 
     State {
         // q_ZYX(ψ₀, θ₀, φ₀) of (7): `from_euler_angles` composes Rz(ψ) Ry(θ) Rx(φ), the
         // sequence (6) levels with and `Attitude::euler_angles` reads back.
-        attitude: Attitude::from_body_to_ned(UnitQuaternion::from_euler_angles(
+        attitude: Attitude::from_quaternion(UnitQuaternion::from_euler_angles(
             roll.as_radians(),
             pitch.as_radians(),
             yaw.as_radians(),
@@ -1650,7 +1650,7 @@ pub(crate) fn initial_covariance(
     // variance `σ_βa² I`. Horizontal only: `[d̂]×` has no component along `d̂`, and a bias
     // along gravity moves `‖f̄‖`, not the direction (5) levels to.
     let down = attitude
-        .body_to_ned()
+        .quaternion()
         .inverse_transform_vector(&Vector3::z());
     covariance.set_attitude_accel_bias_block(skew(down) * (-accel_bias * explained));
     covariance
@@ -1898,7 +1898,7 @@ pub(crate) mod tests {
                 ..still()
             }; 8];
             let state = nominal(&window, Radians::ZERO, true);
-            let committed = state.attitude.body_to_ned();
+            let committed = state.attitude.quaternion();
             // `q = q̂ ⊗ δq`, the local error of equation (2).
             let error =
                 (committed.inverse() * UnitQuaternion::from_rotation_matrix(&truth)).scaled_axis();
@@ -2014,7 +2014,7 @@ pub(crate) mod tests {
         for (roll, pitch) in TILTS {
             let window = window_at(roll, pitch, 0.0, 0.0);
             let state = nominal(&window, Radians::ZERO, true);
-            let navigation = state.attitude.body_to_ned() * window[0].imu.specific_force().vector();
+            let navigation = state.attitude.quaternion() * window[0].imu.specific_force().vector();
             assert!(
                 (navigation - Vector3::new(0.0, 0.0, -GRAVITY)).norm() < 1e-4,
                 "({roll}, {pitch}) rotated back to {navigation:?}"

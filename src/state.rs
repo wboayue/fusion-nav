@@ -53,7 +53,7 @@ impl State {
     ///
     /// The quaternion is unit by construction, so only its finiteness is in question.
     pub(crate) fn is_finite(&self) -> bool {
-        let q = self.attitude.body_to_ned();
+        let q = self.attitude.quaternion();
         [q.w, q.i, q.j, q.k].iter().all(|v| v.is_finite())
             && self.position.is_finite()
             && self.velocity.is_finite()
@@ -268,7 +268,7 @@ impl AttitudeVariance {
     /// covariance projected forward, which the nominal attitude it was projected from
     /// still describes.
     pub(crate) fn of(attitude: &Attitude, covariance: &Covariance) -> Self {
-        let r = attitude.body_to_ned().to_rotation_matrix().into_inner();
+        let r = attitude.quaternion().to_rotation_matrix().into_inner();
         let theta = ErrorState::AttitudeX.index();
         let p_theta = covariance.as_matrix().fixed_view::<3, 3>(theta, theta);
         let ned = r * p_theta * r.transpose();
@@ -294,7 +294,7 @@ impl AttitudeVariance {
     /// from its transpose in the last bit off the diagonal, and this block is committed at a
     /// start with no propagation after it to repair that.
     pub(crate) fn in_body(self, attitude: &Attitude) -> Matrix3<f32> {
-        let r = attitude.body_to_ned().to_rotation_matrix().into_inner();
+        let r = attitude.quaternion().to_rotation_matrix().into_inner();
         let ned =
             Matrix3::from_diagonal(&Vector3::new(self.tilt_north, self.tilt_east, self.heading));
         let mut body = r.transpose() * ned * r;
@@ -377,7 +377,7 @@ mod tests {
     use nalgebra::UnitQuaternion;
 
     fn attitude_of(roll: f32, pitch: f32, yaw: f32) -> Attitude {
-        Attitude::from_body_to_ned(UnitQuaternion::from_euler_angles(roll, pitch, yaw))
+        Attitude::from_quaternion(UnitQuaternion::from_euler_angles(roll, pitch, yaw))
     }
 
     #[test]
@@ -411,7 +411,7 @@ mod tests {
 
             let mut p = with_attitude_block(block);
             let down = attitude
-                .body_to_ned()
+                .quaternion()
                 .inverse_transform_vector(&Vector3::z());
             p.reset_attitude_direction(down, 0.05);
             let p = p.as_matrix();

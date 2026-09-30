@@ -267,11 +267,11 @@ fn test_ratio<const M: usize>(epsilon: f32, gate: Gate<M>) -> f32 {
 fn inject(state: &State, dx: &SVector<f32, STATES>) -> State {
     let block = |at: ErrorState| -> Vector3<f32> { dx.fixed_rows::<3>(at.index()).clone_owned() };
 
-    let mut attitude = state.attitude.body_to_ned() * exp_quat(block(ErrorState::AttitudeX));
+    let mut attitude = state.attitude.quaternion() * exp_quat(block(ErrorState::AttitudeX));
     attitude.renormalize();
 
     State {
-        attitude: Attitude::from_body_to_ned(attitude),
+        attitude: Attitude::from_quaternion(attitude),
         position: Position::from_vector(state.position.vector() + block(ErrorState::PositionNorth)),
         velocity: Velocity::from_vector(state.velocity.vector() + block(ErrorState::VelocityNorth)),
         accel_bias: Acceleration::from_vector(
@@ -702,7 +702,7 @@ mod tests {
     #[test]
     fn injection_composes_attitude_on_the_right_and_adds_the_rest() {
         let start = State {
-            attitude: Attitude::from_body_to_ned(UnitQuaternion::from_euler_angles(0.0, 0.0, 0.5)),
+            attitude: Attitude::from_quaternion(UnitQuaternion::from_euler_angles(0.0, 0.0, 0.5)),
             ..State::default()
         };
         let mut dx = SVector::<f32, STATES>::zeros();
@@ -711,8 +711,8 @@ mod tests {
         dx[ErrorState::AccelBiasY.index()] = -0.03;
 
         let injected = inject(&start, &dx);
-        let expected = start.attitude.body_to_ned() * exp_quat(Vector3::new(0.01, 0.0, 0.0));
-        assert!(injected.attitude.body_to_ned().angle_to(&expected) < TOLERANCE);
+        let expected = start.attitude.quaternion() * exp_quat(Vector3::new(0.01, 0.0, 0.0));
+        assert!(injected.attitude.quaternion().angle_to(&expected) < TOLERANCE);
         assert_eq!(injected.gyro_bias.z(), 0.002);
         assert_eq!(injected.accel_bias.y(), -0.03);
     }

@@ -40,7 +40,7 @@ pub(crate) fn heading_innovation(
     declination: Radians,
 ) -> f32 {
     // (34): the measurement in navigation axes, where the horizontal part is a heading.
-    let m_n = state.attitude.body_to_ned().to_rotation_matrix() * field.vector();
+    let m_n = state.attitude.quaternion().to_rotation_matrix() * field.vector();
     // (35).
     -wrap_pi(RealField::atan2(m_n.y, m_n.x) - declination.as_radians())
 }
@@ -175,7 +175,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn attitude_of(roll: f32, pitch: f32, yaw: f32) -> Attitude {
-        Attitude::from_body_to_ned(UnitQuaternion::from_euler_angles(roll, pitch, yaw))
+        Attitude::from_quaternion(UnitQuaternion::from_euler_angles(roll, pitch, yaw))
     }
 
     /// What a magnetometer reads on a vehicle at `attitude` in the field of `declination`.
@@ -183,7 +183,7 @@ pub(crate) mod tests {
     /// Shared with `eskf.rs`, which needs a field that means a heading rather than an
     /// arbitrary vector, the way it shares `init::tests`' windows.
     pub(crate) fn measured(attitude: Attitude, declination: f32) -> MagField<Body> {
-        let body = attitude.body_to_ned().inverse() * field_ned(declination);
+        let body = attitude.quaternion().inverse() * field_ned(declination);
         MagField::body(body.x, body.y, body.z)
     }
 
@@ -462,14 +462,14 @@ pub(crate) mod tests {
     /// Navigation down in body axes, `R(q̂)ᵀe₃`, derived from the attitude rather than read
     /// off (36)'s row the way `heading_observation` reads it.
     fn down_of(attitude: Attitude) -> Vector3<f32> {
-        attitude.body_to_ned().inverse() * Vector3::z()
+        attitude.quaternion().inverse() * Vector3::z()
     }
 
     /// A body-frame covariance whose tilt block is anisotropic and correlated, the case in
     /// which a choice of axes shows: 0.02 about one horizontal direction, 0.002 about the
     /// other, on a vehicle rolled and pitched far enough that body x/y are not horizontal.
     fn anisotropic(attitude: &Attitude) -> Covariance {
-        let r = attitude.body_to_ned().to_rotation_matrix().into_inner();
+        let r = attitude.quaternion().to_rotation_matrix().into_inner();
         let azimuth = nalgebra::Rotation3::from_axis_angle(&Vector3::z_axis(), 0.6).into_inner();
         let ned = azimuth
             * nalgebra::Matrix3::from_diagonal(&Vector3::new(0.02, 0.002, 0.3))
@@ -497,7 +497,7 @@ pub(crate) mod tests {
             Radians::from_radians(1.7),
             HeadingNoise::from_sigma(0.05),
         );
-        let r = attitude.body_to_ned().to_rotation_matrix().into_inner();
+        let r = attitude.quaternion().to_rotation_matrix().into_inner();
         let theta = ErrorState::AttitudeX.index();
         let ned = r * covariance.as_matrix().fixed_view::<3, 3>(theta, theta) * r.transpose();
         let largest = ned
