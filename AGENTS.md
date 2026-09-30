@@ -74,9 +74,19 @@ scenario (`mission` 0.414° → 0.330); `7ce66f0d` recovers 28 times rather than
 a reader who has never computed a NEES. Every number and table comes through a placeholder in
 `validation/src/`, and every figure through `replay_report.py --figures`. `tools/validation.sh`
 regenerates them from the gates it runs, and `--check` re-derives them. The pages state the
-losses: `correlated` (#51) is overconfident and `7ce66f0d` levels wrong (#59). Order: #183, then #47. #183 takes nalgebra, 0.x and so a semver break per minor, out of the public surface (plain arrays, optional `mint` interop) and is the *API frozen* milestone's one open issue: #174 became bad vertical-accelerometer
-detection, internal and reported through `Diagnostics`, so it left the milestone (clipping, its first
-shape, is 22 samples on the corpus); #41 needs a board.
+losses: `correlated` (#51) is overconfident and `7ce66f0d` levels wrong (#59). #47, the release,
+is next: the *API frozen* milestone is closed. #174 became bad vertical-accelerometer detection,
+internal and reported through `Diagnostics`, so it left the milestone (clipping, its first shape,
+is 22 samples on the corpus); #41 needs a board.
+#183 landed (#185): no public item names an `nalgebra` type, since it is 0.x and each minor is a
+semver break. Vectors and noise cross as `[f32; 3]`, the covariance as rows (`from_rows`,
+`to_rows`), and a quaternion as `Quaternion { w, x, y, z }`, at the root and out of the prelude.
+The plan was a scalar-first `[f32; 4]`; review found glam's `to_array` and `nalgebra`'s
+`From<[f32; 4]>` are scalar-last, so `.into()` compiled and seeded a finite, wrong attitude. An
+array's order is a convention too, and a named field is the type that states it. `mint` was
+deferred as additive. The constructors normalize prescaled by the largest component: `nalgebra`
+alone turns one `f32::MAX` component into a finite zero, which a seed accepts. Every corpus log,
+scenario and page was byte-identical.
 #44 landed (#179), with the attitude renaming #47 asked for before the freeze. `Eskf::new` returns
 `Result<_, ConfigError>`, and `Config::validate` destructures `Config` without `..`, so a new field
 does not compile until it is bounded. The constructors are `Attitude::from_*`, and the getters carry
@@ -970,7 +980,7 @@ the declination table, and CI builds and tests without it too.
   have callers as of (16)–(22), so none carries a dead-code allowance any more. Neither does
   anything else in `src/`: the gate of (37) took the last one when it became
   `record_rejected`'s first caller.
-- `src/state.rs` — `State` (nominal, 16 values), `Covariance`/`CovarianceMatrix` (15×15), and
+- `src/state.rs` — `State` (nominal, 16 values), `Covariance` (15×15, public as rows), and
   `ErrorState`, whose discriminants define the covariance ordering `[δp δv δθ δβa δβg]`; also
   `Offset`, the barometric offset's row of (30′) (`P_xb`, `P_bb`), crate-private and beside the
   covariance rather than in it, so the public 15 × 15 stays the navigation state's.
@@ -980,8 +990,9 @@ the declination table, and CI builds and tests without it too.
   Vector constructors name the frame (`Position::ned`, `AngularRate::body`) and convert ENU/FLU
   input (`Position::enu(..).to_ned()`, `AngularRate::flu`); noise types are built `from_sigma`
   or `from_variance`. No `From<[f32; 3]>` on framed types: `.into()` would claim a frame
-  silently. Payloads are `nalgebra` `Vector3<f32>` / `UnitQuaternion<f32>`, with `.to_array()`
-  for callers on another version.
+  silently. Payloads are `nalgebra` `Vector3<f32>` / `UnitQuaternion<f32>` inside and never in a
+  public signature: `from_array`/`to_array` and `Quaternion` at the boundary, crate-private
+  `from_vector`/`vector()` and `from_quaternion`/`quaternion()` for the equations.
 - `src/frames.rs` — `Ned`, `Enu`, `Body` as sealed zero-sized type parameters on quantities.
 - `src/geodetic.rs` — `Geodetic` (f64 lat/lon/height) and `LocalOrigin`, the tangent plane of
   equations (43)–(44), exact via ECEF (fixed-iteration inverse, no data-dependent loops). The filter owns the origin: `fuse_gnss_geodetic` places it on the first
