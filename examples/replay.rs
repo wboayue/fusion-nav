@@ -5700,6 +5700,9 @@ mod tests {
             judge(1.0625, [1.923_880, 0.382_683, 0.5]).expect("rows 0.25 s apart");
         assert!(horizontal.error < 1e-3, "{}", horizontal.error);
         assert!((height.error - 0.5).abs() < 1e-6, "{}", height.error);
+        // 3 m north and 4 m east of it is 5 m off: the distance, not either axis.
+        let [off, _] = judge(1.0625, [4.923_880, 4.382_683, 0.5]).expect("the same instant");
+        assert!((off.error - 5.0).abs() < 1e-3, "{}", off.error);
         // A row at the fix's own time is read as written, not blended with its neighbour.
         let [at_row, _] = judge(1.25, [4.0, 1.0, 0.0]).expect("a row at 1.25 s");
         assert!(at_row.error < 1e-6, "{}", at_row.error);
