@@ -1,10 +1,11 @@
 //! Filter tuning.
 //!
-//! Every default here is a **placeholder** chosen to make the shape of the API concrete,
-//! and none has been validated against flight data — with three exceptions:
-//! [`SourceHealth::timeout`](crate::SourceHealth::timeout)'s missed-update count and
-//! [`Initialization`]'s stationarity tolerances, both read off the PX4 replay corpus, and
-//! [`ImuNoise`], which follows the defaults PX4 and ArduPilot ship.
+//! Each default's doc comment says where its number came from: the PX4 or ArduPilot source it
+//! follows, the replay measurement that chose it, or that it is a **placeholder**, as
+//! [`Accuracy`]'s are, being the mission's to supply. The measurements themselves are in
+//! [`DESIGN.md`], or beside the `GOALS.md` decision that owns the default.
+//!
+//! [`DESIGN.md`]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#defaults-and-their-evidence
 
 use crate::display::{Decimals, Fixed};
 use crate::units::{Meters, MetersPerSecond, MetersPerSecond2, Radians, RadiansPerSecond, Seconds};
@@ -101,46 +102,22 @@ impl Default for ImuNoise {
     /// 2.0e-2 (`AP_NavEKF3.cpp:30-31`) to 1.1e-4 and 2.2e-3. These are ArduPilot's, the
     /// larger pair.
     ///
-    /// What the conversion is worth: read unconverted as a density, the accelerometer-bias
-    /// walk is 33 times PX4's in σ, and on `2c42096b` — grounded for two hours, where only
-    /// `tilt · g + b_a` is observed — `σ_ba` grows to 0.63 m s⁻², the bias estimate walks to
-    /// 0.56 and drags tilt from 0.95° to a peak of 5.2°, against EKF2's 1.08°. Converted, the
-    /// ten-minute mean tilt holds between 0.89° and 1.11°, and the 2.5° peak is a 3.5 g knock
-    /// at 4757 s. PX4's own pair gives 2.4°. A ceiling on `σ_ba` at PX4's 0.35 gives 3.3°
-    /// and a clamp on the bias at its 0.4 gives 4.4°, and neither is reached once the walk
-    /// is converted.
+    /// The conversion is worth most where only `tilt · g + b_a` is observed: read unconverted, the
+    /// walk drags a grounded vehicle's tilt to a 5.2° peak against EKF2's 1.08° (`2c42096b`), and
+    /// converted it peaks at 2.5°.
     ///
-    /// The white noise is PX4's per-step σ taken as a density, which is ten times the density
-    /// PX4's 1.5e-2 rad s⁻¹ and 0.35 m s⁻² stand for at its 10 ms step (`module.yaml:118-131`),
-    /// and the factor is kept because replay measured it being spent. Scaling
-    /// `accel_white` down breaks the one thing each source can say: at 0.3×, `2c42096b` — a
-    /// real airframe vibrating on the ground — reads a tilt peak of 4.6° against 2.5° (EKF2
-    /// never leaves 1.08°), and still 4.5° with PX4's `R` floors applied, so the vibration
-    /// needs it; `a299e722` ends `Degraded`, rejecting 493 velocity solutions against 283,
-    /// which PX4's floors cure (43, `Healthy`), so the receiver's raw `R` needs it.
-    /// `gnss_latency` does not: with each fix fused at the time it was taken, (23′), it reads
-    /// `false_valid` 0 at 0.3× as at 1×, where fused as current it read 888 at 0.3×. Scaling
-    /// `gyro_white` down to 0.7× improves `tilt` and `yaw` on every scenario, but `harsh_imu`'s
-    /// `nees_att` crosses 1 (1.07), and on the corpus `f16771dd` grows a 14.1° tilt at
-    /// t = 51 s where EKF2 reads 2.6°.
-    /// The simulator's IMU is 58 times quieter than this figure, so the scenarios favouring
-    /// less gyroscope noise are the simulator's preference rather than an airframe's.
+    /// The white noise is PX4's per-step σ taken as a density, which is ten times the density PX4's
+    /// 1.5e-2 rad s⁻¹ and 0.35 m s⁻² stand for at its 10 ms step (`module.yaml:118-131`). The
+    /// factor stands for two things this filter does not model: the floors both estimators put
+    /// under a receiver's reported accuracy (#105), and vibration, which PX4 meets only by
+    /// inflating accelerometer noise on clipping (`covariance.cpp:125-133`). Replay measured both
+    /// spending it: at 0.3× `accel_white`, `2c42096b` peaks at 4.6° of tilt against 2.5°. A change
+    /// that models either is the moment to measure this again.
     ///
-    /// So the factor stands for two things this filter does not model: the floors both
-    /// estimators put under a receiver's reported accuracy (#105), and vibration, which PX4
-    /// meets only by inflating accelerometer noise on clipping (`covariance.cpp:125-133`). A
-    /// change that models either is the moment to measure this again.
-    ///
-    /// What the sensors themselves measure, still, is the floor
-    /// [`StaticWindow::noise`](crate::StaticWindow::noise) reports, and on the corpus it sits far below
-    /// these figures: on the worst axis of the nine real logs whose window is still, less
-    /// `a299e722`, whose rows each average 2.5 ms while standing for 20 ms and so read `√8` high
-    /// (#177), gyroscopes read 8.4e-5 to 1.6e-3 rad s⁻¹/√Hz and accelerometers 1.5e-3 to
-    /// 5.6e-2 m s⁻²/√Hz, so the default is 9 to 180 times the one and 6 to 230 times the
-    /// other. That is the factor this comment argues for, measured from below; a default
-    /// under the floor would be the error. Against PX4's own densities, a tenth of these, the
-    /// floor comes within reach: `2c42096b`'s accelerometer, a grounded airframe with its
-    /// props spinning, reads 1.6 times PX4's, and `f16771dd`'s gyroscope 1.1 times.
+    /// The floor the sensors themselves measure,
+    /// [`StaticWindow::noise`](crate::StaticWindow::noise), sits 6 to 230 times below these on the
+    /// corpus, so the factor is measured from below too
+    /// ([evidence](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#imunoise)).
     fn default() -> Self {
         Self {
             gyro_white: 1.5e-2,
@@ -275,15 +252,15 @@ impl Gate<3> {
 /// those correlations — a yaw error couples north and east, so the region `S` describes is an
 /// ellipsoid rather than a box aligned with the navigation axes.
 ///
-/// A GNSS position fix is the exception, split into a horizontal `Gate<2>` and a vertical
-/// `Gate<1>` as ArduPilot splits it, because the joint test's cost is all or nothing: a
-/// height the estimate disagrees with rejects a good horizontal fix. That cost is measured.
-/// `2c42096b` is a stationary vehicle whose barometer and receiver drift ~20 m apart in
-/// height; with both fused under one `Gate<3>` it rejects 3945 of its 4616 fixes, and the
-/// horizontal pair alone fails a `Gate<2>` at [`Percentile::P999`] on none of them. The
-/// split keeps the joint test within each half, so north and east are still tested as the
-/// ellipse `S` describes; what it gives up is the north–down and east–down correlation, which
-/// a position fix barely carries. See [`GnssFusion`](crate::GnssFusion).
+/// A GNSS position fix is the exception, split into a horizontal `Gate<2>` and a vertical `Gate<1>`
+/// as ArduPilot splits it, because the joint test's cost is all or nothing: a height the estimate
+/// disagrees with rejects a good horizontal fix, 3945 of 4616 on a vehicle whose barometer and
+/// receiver drift apart ([evidence]). The split keeps the joint test within each half, so north and
+/// east are still tested as the ellipse `S` describes; what it gives up is the north–down and
+/// east–down correlation, which a position fix barely carries. See
+/// [`GnssFusion`](crate::GnssFusion).
+///
+/// [evidence]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#gates
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Gates {
     /// GNSS position, horizontal: north and east.
@@ -320,36 +297,15 @@ impl Gates {
 impl Default for Gates {
     /// The 99.9th percentile: the tightest gate that costs nothing measurable on good data.
     ///
-    /// GNSS position was replayed at 95 %, 99 %, 99.9 % and a 5σ equivalent (`γ` = 31.81 at
-    /// three degrees of freedom, the two-sided tail of 5σ in one), tested as one joint
-    /// three-axis `Gate<3>` rather than the split [`Gates`] describes. The figures below are
-    /// that test's; the percentile applies to both halves of the split unchanged.
+    /// Replayed at 95 %, 99 %, 99.9 % and 5σ, the corpus could not tell them apart and the
+    /// simulator prices the tight end: on `mission` 95 % turns away one good fix in thirty for
+    /// worse accuracy, and 99.9 % and 5σ give what 99 % does ([evidence]). 99.9 % is still tighter
+    /// than both production estimators, which test each axis at 5σ (PX4
+    /// `src/modules/ekf2/EKF/common.h:348-374` at `c4e4ef98e9`; ArduPilot `*_I_GATE_DEFAULT 500`,
+    /// in hundredths of σ, `libraries/AP_NavEKF3/AP_NavEKF3.cpp:34-36` at `368dc0c428`): a one-axis
+    /// outlier fails `γ` = 16.27 at 4.0σ.
     ///
-    /// The corpus cannot tell them apart. No log rejects a fix at any of the four, because
-    /// PX4's `eph` and `epv` are far wider than the innovations they come with: the mean test
-    /// ratio at 95 % is 0.0023–0.0449 across the three logs carrying GNSS and the largest is
-    /// 0.33, where a consistent `R` would put the mean near 0.38.
-    ///
-    /// Those figures move as the filter gains aiding, and the direction is the one to expect:
-    /// every source that tightens `P` tightens `S = H P Hᵀ + R`, so the same innovation reads
-    /// as a larger ratio. They were 0.005–0.02 and 0.21 when position was the only gated
-    /// source. `nis_gnss_pos=` on the `summary` line is the maintained form of this claim —
-    /// per log, pinned in `data/manifest.txt`, and stated as a distribution rather than as a
-    /// distance from a threshold that itself moves.
-    ///
-    /// The simulator, whose GNSS errors are exactly the Gaussian `R` claims, can, and it prices
-    /// the tight end. On `mission`, 95 % rejects 30 of 915 good fixes and 99 % rejects 4,
-    /// with horizontal RMSE 0.716 m and 0.702 m and vertical 0.796 m and 0.749 m. 99.9 %
-    /// rejects 1 and 5σ none, and both give the same 0.702 m and 0.749 m that 99 % does. So
-    /// 95 % buys worse accuracy, and one good fix in thirty turned away, for protection
-    /// against outliers that nothing here contains.
-    ///
-    /// Between 99.9 % and 5σ the good data says nothing, and only hostile measurements can
-    /// decide, which is #60's. 99.9 % stays the tighter of the two. It is still tighter than
-    /// both production estimators, which test each axis at 5σ (PX4
-    /// `src/modules/ekf2/EKF/common.h:348-374` at `c4e4ef98e9`; ArduPilot `*_I_GATE_DEFAULT
-    /// 500`, in hundredths of σ, `libraries/AP_NavEKF3/AP_NavEKF3.cpp:34-36` at `368dc0c428`):
-    /// a one-axis outlier fails `γ` = 16.27 at 4.0σ.
+    /// [evidence]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#gates
     fn default() -> Self {
         Self::at(Percentile::P999)
     }
@@ -390,18 +346,15 @@ impl Default for Timeouts {
 /// How long each source's measurement error persists: the time constant `τ` of equation
 /// (24′), per source. `None` fuses that source as white, which is (24) as written.
 ///
-/// Equation (24) treats each measurement's error as independent of the last, and almost no
-/// source in the corpus is. Fused as white, the lag-1 autocorrelation of every real log's
-/// innovations (the `acf1_` keys of the replay `summary` line) is positive on GNSS position on
-/// every log but `89a498ce`'s, an RTK receiver, and on the barometer and magnetometer on
-/// nearly every one. A filter that fuses such measurements as white averages down an error it cannot
-/// observe, and its covariance claims the averaging worked. (24′) fuses each at the variance
-/// that makes a run of them carry what they actually carry, which is less the shorter the
-/// interval is against `τ`.
+/// Equation (24) treats each measurement's error as independent of the last, and almost no source
+/// in the corpus is: fused as white, the lag-1 autocorrelation of its innovations (the `acf1_` keys
+/// of the replay `summary` line) is positive on nearly every real log. A filter that fuses such
+/// measurements as white averages down an error it cannot observe, and its covariance claims the
+/// averaging worked. (24′) fuses each at the variance that makes a run of them carry what they
+/// actually carry, which is less the shorter the interval is against `τ`.
 ///
 /// Inflating `R` rather than flooring `P`, and in the gain rather than the gate, is measured; the
-/// [decision](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#correlated-measurement-error-as-equivalent-white-noise)
-/// records what each alternative read.
+/// [decision] records what each alternative read.
 ///
 /// Per source, like [`Recovery`] and [`Gates`], because a source is what the gate judges and
 /// what (24′) times. Configured rather than derived, as [`ImuNoise`] is: it is a property of
@@ -409,6 +362,8 @@ impl Default for Timeouts {
 /// harness measures it offline, `τ = −T / ln ρ` at a log's sample interval `T` and its `acf1_`
 /// value `ρ`. That reading is a lower bound: an innovation is whiter than the error behind it,
 /// because the filter follows part of that error.
+///
+/// [decision]: https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#correlated-measurement-error-as-equivalent-white-noise
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Correlation {
     /// GNSS horizontal position.
@@ -443,36 +398,12 @@ impl Correlation {
 }
 
 impl Default for Correlation {
-    /// The corpus's: `τ = −T / ln ρ` from each real log's `acf1_` for the source, read with
-    /// every measurement fused as white, at that log's own sample interval, and the median over
-    /// the real logs whose autocorrelation is positive (the SITL log excluded, and `89a498ce`'s
-    /// GNSS, an RTK receiver whose innovations alternate), on the twelve logs before `2b2ad123`:
+    /// The corpus's: `τ = −T / ln ρ` from each real log's `acf1_` for the source, read with every
+    /// measurement fused as white, at that log's own sample interval, and the median over the real
+    /// logs whose autocorrelation is positive. GNSS heading and the course constraint rest on one
+    /// log each. The table, and the logs left out, are the [decision's].
     ///
-    /// | source | logs | range, s | median, s |
-    /// | ------ | ---- | -------- | --------- |
-    /// | GNSS horizontal position | 8 | 2.1–15.8 | 4.2 |
-    /// | GNSS height | 8 | 3.7–70 | 14 |
-    /// | GNSS velocity | 5 | 0.31–2.2 | 0.50 |
-    /// | barometer | 10 | 0.006–4.2 | 0.20 |
-    /// | magnetometer | 10 | 0.006–14.6 | 1.2 |
-    /// | dual-antenna GNSS heading | 1 | 0.25 | 0.25 |
-    /// | course constraint | 1 | 1.37 | 1.37 |
-    ///
-    /// Three receivers' velocity innovations and one magnetometer's alternate in sign, which no
-    /// `τ` describes, and are left out rather than read as white.
-    ///
-    /// `2b2ad123`, the second RTK log, reads a GNSS-position `τ` of 0.51 s, under the range
-    /// above, and alternates on height and velocity. Taken into the medians it would move GNSS
-    /// position's from 4.2 s toward 3 s; whether the defaults follow the corpus as it grows, or
-    /// become per-sensor, is #51's.
-    ///
-    /// GNSS heading rests on one log, `a299e722`, the only one whose EKF2 fused a dual-antenna
-    /// yaw: `acf1_gnss_yaw` 0.6696 at 10 Hz. The course constraint rests on one too,
-    /// `093e806a`, the fixed-wing, replayed as a vehicle without a magnetometer
-    /// (`--without mag --course 3`): `acf1_course` 0.4818 at 1 Hz, `τ` 1.37 s, and 0.4965 with
-    /// its magnetometer, 1.43 s. What persists there is the sideslip, which the constraint cannot observe, and fused
-    /// white the simulator's `no_mag` read a heading NEES of 2.7 on a sideslip it averaged as
-    /// noise.
+    /// [decision's]: https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#correlated-measurement-error-as-equivalent-white-noise
     fn default() -> Self {
         Self {
             gnss_position: Some(Seconds::from_secs(4.2)),
@@ -619,21 +550,11 @@ impl Default for Coast {
     /// either needed. Both are properties of an airframe's manoeuvres, so a vehicle more
     /// agile than these is the reason to raise them.
     ///
-    /// `4b473e91`, a VTOL at 30 m/s with eight logging dropouts of 1.0–3.1 s, is what sets
-    /// both, since in the simulator any value passes. Refused, its gaps cost 12 recoveries,
-    /// 39 rejected positions and 28 velocities. Coasted with `rotation` at zero, the first
-    /// fix after every gap is accepted at any `acceleration`, and what follows it is not: the
-    /// course turns 44° across the 3.1 s gap at 954 s, the heading innovation afterwards sits
-    /// at −0.60 rad under an `S` that did not grow, and the stale heading steers velocity off
-    /// until the gate turns it down (7 recoveries at `acceleration` 1.0). With `rotation` at
-    /// 0.02 or more and `acceleration` at 2.0 no gap causes a rejection or a recovery; the
-    /// two positions and two velocities still rejected are fixes timestamped inside a gap,
-    /// fused before the IMU sample that ends it. `acceleration` at 1.0 still needs `rotation`
-    /// at 0.1, and at 0.5 leaves 7 recoveries at any `rotation`.
+    /// `rotation` is the corpus's finding rather than the simulator's: `4b473e91`'s course turns
+    /// 44° across a 3.1 s gap, and coasted without it the stale heading steers velocity off until
+    /// the gate turns it down, 7 recoveries ([evidence]).
     ///
-    /// `logging_dropout` (1.2 s at 20 m/s in a turn) passes at `acceleration` 0.5 or more
-    /// whatever the rotation, and reads the same across the whole range: `pos_h_max` 23.25 m
-    /// refused, 2.74 m coasted, `false_valid` 1946 → 0.
+    /// [evidence]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#coast
     fn default() -> Self {
         Self {
             acceleration: 2.0,
@@ -647,11 +568,10 @@ impl Default for Coast {
 pub struct Initialization {
     /// How long the vehicle must have been still.
     ///
-    /// A duration rather than a sample count, because the same count means very
-    /// different things across IMU rates: 100 samples is 2 s at 50 Hz and 0.25 s at
-    /// 400 Hz, and a quarter second is too short to average sensor noise down or to
-    /// tell stillness from a slow drift. The five logs in `data/manifest.txt` alone span
-    /// 50 Hz to 250 Hz.
+    /// A duration rather than a sample count, because the same count means very different things
+    /// across IMU rates: 100 samples is 2 s at 50 Hz and 0.25 s at 400 Hz, and a quarter second is
+    /// too short to average sensor noise down or to tell stillness from a slow drift. The logs in
+    /// `data/manifest.txt` alone span 50 Hz to 250 Hz.
     pub min_duration: Seconds,
     /// Largest angular rate magnitude still considered stationary.
     ///
@@ -686,27 +606,20 @@ pub struct Initialization {
     /// `AP_NavEKF3.cpp:567`, `368dc0c4`). A static window cannot measure it, since (5) reads a
     /// horizontal bias as tilt, which is why the tilt carries its correlation with it.
     ///
-    /// At 0.1 the `harsh_imu` scenario's 0.186 m/s² sat at 1.86σ, and its attitude was
-    /// overconfident on 50 seeds wherever (24′) did not inflate the covariance past it: 2281
-    /// epochs over the family-wise bound at `Correlation::WHITE`, none at 0.2 with the
-    /// correlation. On the corpus it is worth most on `7ce66f0d`, the hand launch levelled
-    /// 12° wrong: 69 recoveries → 28, and aligned at 17.7 s rather than 32.7.
+    /// At 0.1, `harsh_imu`'s 0.186 m/s² bias sat at 1.86σ and its attitude was overconfident on 50
+    /// seeds ([evidence]).
+    ///
+    /// [evidence]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#initialization
     pub sigma_accel_bias: MetersPerSecond2,
     /// Initial gyroscope bias standard deviation.
     pub sigma_gyro_bias: RadiansPerSecond,
 }
 
 impl Default for Initialization {
-    /// The stationarity tolerances are PX4 EKF2's — 15°/s and 20% of gravity — chosen
-    /// against the replay corpus.
-    ///
-    /// Tighter ones fail parked vehicles: at 0.05 rad s⁻¹ and 0.5 m s⁻², four of the five
-    /// logs in `data/manifest.txt` are called moving while sitting on the ground, on peaks
-    /// of 0.026–0.172 rad s⁻¹ and 0.15–1.04 m s⁻² that are idle vibration and prop wash,
-    /// not motion. A tolerance that calls a parked quadrotor moving does not protect the
-    /// alignment, it just denies it. At these values four of the five align statically,
-    /// and the fifth — peak deviation 6.2 m s⁻² — stays coarse, correctly: 6 m s⁻² is a
-    /// vehicle being handled, not a vehicle vibrating.
+    /// The stationarity tolerances are PX4 EKF2's — 15°/s and 20% of gravity — chosen against the
+    /// replay corpus: tighter ones called four of its first five logs moving while they sat on the
+    /// ground, on idle vibration and prop wash
+    /// ([evidence](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#initialization)).
     fn default() -> Self {
         Self {
             min_duration: Seconds::from_secs(2.0),
@@ -768,9 +681,10 @@ pub struct Accuracy {
     /// current answer widened by whatever source is being accepted — rather than reducing it
     /// to [`validity`](crate::Eskf::validity).
     ///
-    /// Out past 6.4 s the projection takes longer steps rather than more of them and drifts
-    /// further onto the optimistic side; `propagate.rs`'s `MAX_PROJECTION_STEPS` measures by
-    /// how much.
+    /// Out past 6.4 s the projection takes longer steps rather than more of them and drifts further
+    /// onto the optimistic side, about 5 % in σ at minutes ([measured]).
+    ///
+    /// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#max_projection_steps
     pub horizon: Seconds,
 }
 

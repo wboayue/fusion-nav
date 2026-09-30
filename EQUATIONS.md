@@ -351,7 +351,7 @@ the rates' standard deviation.
 Blocks of $`T = 50`$ ms rather than single samples, because a still airframe's samples are not
 white: vibration aliased near the sample rate cancels within a block, and filtered noise
 accumulates across it, where one sample's scatter would read the first as noise and miss the
-second. `WindowNoise::BLOCK` carries the corpus figures. The barometer's floor is the plain
+second. `DESIGN.md`, [`WindowNoise`](DESIGN.md#windownoise), carries the corpus figures. The barometer's floor is the plain
 sample variance of its distinct readings, the scatter (30) already takes for $`\alpha_0`$ before
 dividing by their count.
 
@@ -519,8 +519,8 @@ $`\sigma_{\text{sample}}`$ at that estimator's own prediction step — 10 ms for
 ArduPilot — so the density it stands for is $`\sigma_{\text{sample}} \sqrt{\Delta t}`$, about a
 tenth of it. The random walks carry the same per-step form, $`(\sigma \Delta t)^2`$ in both
 estimators. `ImuNoise`'s bias walks are converted this way. Its white noise is kept at ten times PX4's
-density, because replay measured this filter needing it; its `Default` doc comment carries the
-figures and what each choice measured.
+density, because replay measured this filter needing it; `DESIGN.md`,
+[`ImuNoise`](DESIGN.md#imunoise), carries the figures and what each choice measured.
 
 The velocity block of (21) is the rotated accelerometer noise $`R \Sigma_a R^\mathsf{T}`$. Writing
 it as $`\sigma_a^2 I`$ is exact only when the accelerometer noise is **isotropic**, since
@@ -835,10 +835,11 @@ writing $`h(x)`$ as minus the height of $`\hat{p}`$ above $`h_0`$, by the invers
 $`p_D - (p_N^2 + p_E^2) / 2R`$ to second order — so both sides are heights; $`H`$ is unchanged to
 first order.
 
-`altitude_observation` does not write it, and its doc comment carries the measurements behind
-that: the corpus reaches the term, but the
-simulator generates its reading from $`-p_D`$ on a flat plane, so no scenario could score the
-correction. That comment owns the numbers, and #124 owns the change.
+`altitude_observation` does not write it: the corpus reaches the term (`2b2ad123` flies 5.13 km
+from its origin, a rise of 2.07 m, and `89a498ce` 4.07 km, 1.30 m, both on RTK receivers whose
+height is reported to centimetres), but the simulator generates its reading from $`-p_D`$ on a
+flat plane and `circuit()` reaches 144 m, worth 1.6 mm, so no scenario could score the
+correction. #124 owns the change.
 
 ### Magnetometer, three-axis
 

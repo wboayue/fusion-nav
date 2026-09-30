@@ -91,11 +91,11 @@ impl StaticSample {
 
 /// The initialization window, accumulated one sample at a time.
 ///
-/// [`Eskf::initialize`](crate::Eskf::initialize) needs only what the window reduces to:
-/// sums, peaks, the span, the barometer's scatter and the first and last GNSS velocity. So
-/// the samples are folded in as they arrive rather than buffered. A buffered window at the
-/// default [`Initialization::min_duration`] is more RAM than a Cortex-M0 has; this one is the
-/// same size at any rate and any length ([measured](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function)).
+/// [`Eskf::initialize`](crate::Eskf::initialize) needs only what the window reduces to: sums,
+/// peaks, the span, the barometer's scatter and the first and last GNSS velocity. So the samples
+/// are folded in as they arrive rather than buffered. A buffered window at the default
+/// [`Initialization::min_duration`] is more RAM than a Cortex-M0 has; this one is the same size at
+/// any rate and any length ([measured]).
 ///
 /// ```
 /// # use fusion_nav::prelude::*;
@@ -129,11 +129,14 @@ impl StaticSample {
 /// [`try_extend`](Self::try_extend) or [`TryFrom`] builds a window from one.
 ///
 /// Each [`push`](Self::push) costs a few dozen floating-point operations, some in `f64`
-/// ([counted](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function)). On a core with no floating-point unit every one is a library call,
-/// inside the loop that is already reading the IMU: the price of not buffering, paid only
-/// until the window commits. `level_variance` and `BaroReadings` say why their sums need
-/// `f64`. For the averages it is precaution: summing a few thousand readings near `γ` in
-/// `f32` costs on the order of 10⁻⁵ rad of tilt, against a 0.02 rad prior.
+/// ([counted]). On a core with no floating-point unit every one is a library call, inside the loop
+/// that is already reading the IMU: the price of not buffering, paid only until the window commits.
+/// `level_variance` and `BaroReadings` say why their sums need `f64`. For the averages it is
+/// precaution: summing a few thousand readings near `γ` in `f32` costs on the order of 10⁻⁵ rad of
+/// tilt, against a 0.02 rad prior.
+///
+/// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function
+/// [counted]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function
 #[derive(Clone, Debug)]
 pub struct StaticWindow {
     /// `Σ f fᵀ`, for the window's scatter about `f̄`; see [`level_variance`].
@@ -401,10 +404,10 @@ pub struct WindowNoise {
     /// are merged by the same test, so a barometer quantized coarsely enough to repeat itself
     /// reads a variance larger than its own.
     ///
-    /// Fused as `R_m` it is too small, which is what calling it a floor claims and the corpus
-    /// measured: in place of the 2 m the converter substitutes, it takes `nis_baro` past 1 on
-    /// five of the six real logs that report it (1.54 to 34.56, against 1 for an `R` the
-    /// residuals agree with), and the gate refuses 45 to 1976 readings on each of those five.
+    /// Fused as `R_m` it is too small, which is what calling it a floor claims: on five of the six
+    /// real logs that report it, `nis_baro` reads past 1 ([evidence]).
+    ///
+    /// [evidence]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#windownoise
     pub baro: Option<AltitudeNoise>,
     /// The [`BLOCK`](Self::BLOCK)s the densities were taken over, the fewer of the two
     /// sensors'.
@@ -442,27 +445,24 @@ impl WindowNoise {
     /// twice that. Fewer is the two-sample variance a window too short to measure anything
     /// would otherwise report as a measurement.
     ///
-    /// The barometric reference `α₀` does not wait for it, and takes a variance from two
-    /// readings: that variance starts an estimate (30′) goes on refining, where a figure
-    /// reported here is final. Holding `α₀` to nine was measured: it moves `2c42096b` (six
-    /// readings in its 0.80 s), `4b473e91` (seven) and `eb799954` (four) to a reference read
-    /// from the estimate, moving no rejection or transition count, and leaves the corpus no
-    /// real vehicle whose short still start sets its own reference, where these three were all
-    /// of them.
+    /// The barometric reference `α₀` does not wait for it, and takes a variance from two readings:
+    /// that variance starts an estimate (30′) goes on refining, where a figure reported here is
+    /// final. Holding `α₀` to nine would leave the corpus no real vehicle whose short still start
+    /// sets its own reference ([evidence]).
+    ///
+    /// [evidence]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#windownoise
     pub const MIN_READINGS: u64 = 9;
 
     /// The span an IMU's increments are summed over before their scatter is taken: the time
     /// scale its white-noise density is read at, `T` of (8″).
     ///
-    /// Long enough to average out what a still airframe adds near the sample rate, and short
-    /// enough that a 2 s window holds 40 blocks. At 25 ms the aliasing is still being read
-    /// (`093e806a`'s accelerometer 4.8e-3 m s⁻²/√Hz against 1.7e-3 at 50 ms). Past 50 ms the
-    /// figure is not settled either, and that is its real uncertainty, larger than the ±11 % of
-    /// its 40 blocks: across 50, 100 and 125 ms the worst-axis figures of the seven real logs
-    /// whose windows hold nine blocks at all three move by up to 2.3× (`4b473e91`'s
-    /// accelerometer), 2.2× (`f16771dd`'s gyroscope) and 1.8× (`285ee2e7`'s accelerometer),
-    /// the other eleven by under 1.5×: noise that is not white below 20 Hz either. A time
-    /// rather than a count, so the figure means the same at every IMU rate.
+    /// Long enough to average out what a still airframe adds near the sample rate, and short enough
+    /// that a 2 s window holds 40 blocks. Shorter still reads the aliasing; longer does not settle
+    /// the figure either, which moves by up to 2.3× between 50 and 125 ms on the corpus: that is
+    /// its real uncertainty, larger than the ±11 % of its 40 blocks ([evidence]). A time rather
+    /// than a count, so the figure means the same at every IMU rate.
+    ///
+    /// [evidence]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#windownoise
     pub const BLOCK: Seconds = Seconds::from_secs(0.05);
 
     /// The gyroscope's worst axis, the one density [`ImuNoise::gyro_white`] takes.
@@ -596,15 +596,11 @@ impl Measured {
 /// window at worst. A steady turn is still charged exactly: the halves' centres sit half the
 /// window apart wherever the split falls.
 ///
-/// Measured against an exact split (4096 blocks, which no window the replay harness builds
-/// fills, and which reproduces every scenario and corpus output byte for byte). The halves'
-/// disagreement moves, exact to 8 blocks, on the coarse starts: `7ce66f0d` 26.50° → 22.45° of
-/// tilt and 26.27° → 27.13° of heading, `cd7e0001` 0.29° → 0.50° and 1.27° → 1.70°,
-/// `moving_start` 0.00° → 0.02° and 12.23° → 11.94°.
-/// The outputs barely do, because it reaches only
-/// [`coarse_sigmas`] and only where it is the largest bound: at 8 blocks and at 16, one corpus
-/// log, `7ce66f0d`, moves by one in the last printed digit of three innovation keys, and no
-/// scenario moves.
+/// Eight is measured against an exact split: the halves' disagreement moves by up to 4° on the
+/// coarse starts, and the outputs barely do, because it reaches only [`coarse_sigmas`] and only
+/// where it is the largest bound ([evidence]).
+///
+/// [evidence]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#blocks
 const BLOCKS: usize = 8;
 
 /// The window's `Σ f` and `Σ m`, kept so that [`Halves`] can be taken from them in a window
@@ -690,8 +686,8 @@ impl BlockSums {
     /// Merge adjacent pairs, which halves the blocks in use and doubles their size, and start
     /// filling the first block the merge left empty.
     fn halve(&mut self) {
-        // In place, since pair `i` is read from `2i` and `2i + 1`, never from below `i`: a copy
-        // of the blocks would be a stack temporary.
+        // In place, since pair `i` is read from `2i` and `2i + 1`, never from below `i`: a copy of
+        // the blocks would be a stack temporary.
         for pair in 0..BLOCKS / 2 {
             if let (Some(&first), Some(&second)) =
                 (self.blocks.get(2 * pair), self.blocks.get(2 * pair + 1))
@@ -780,23 +776,20 @@ impl Velocities {
 /// summed into blocks of [`WindowNoise::BLOCK`], and their scatter weighted by each block's
 /// length.
 ///
-/// Blocks rather than samples because a still airframe's samples are not white, and one
-/// sample's scatter then measures the noise at the sample rate rather than the density that
-/// integrates into attitude and velocity error. Taken on each real log's window, the rows the
-/// filter started on (`a299e722` aside, #177), the lag-one autocorrelation runs from −0.98 to
-/// +0.96 across the axes, and on the worst axis one sample's scatter reads `093e806a`'s
-/// accelerometer 6.0 times the blocks' figure and `4b473e91`'s 2.9 (vibration aliased near the
-/// sample rate, which cancels within a block), `89a498ce`'s gyroscope 2.9 times low (filtered
-/// or rocking noise, which accumulates). Correcting one sample's scatter by its lag-one
-/// autocorrelation, `(1 + ρ)/(1 − ρ)` as (24′) does for a source, misses the blocks' figure by
-/// up to 3.3× on the same windows (`89a498ce`'s accelerometer) and 6.5× on the simulated
-/// `3949f175`, whose `ρ` nears one.
+/// Blocks rather than samples because a still airframe's samples are not white, and one sample's
+/// scatter then measures the noise at the sample rate rather than the density that integrates into
+/// attitude and velocity error. On the corpus's windows the lag-one autocorrelation runs from −0.98
+/// to +0.96 across the axes, and one sample's scatter misreads the blocks' figure by up to 6× high
+/// and 2.9× low; correcting it by the lag-one `(1 + ρ)/(1 − ρ)` of (24′) still misses by up to 3.3×
+/// ([evidence]).
 ///
 /// About zero rather than about the first increment, unlike [`BaroReadings`]: the loss is at
 /// most `J ε γ² T / N²` of the scatter, under 10⁻⁷ in `f64` even at a datasheet
 /// accelerometer's 7 × 10⁻⁴ m s⁻²/√Hz, where the barometer's metres above sea level cost
 /// 5 × 10⁻⁴. A constant in the rate, the bias, gravity, the Earth's rotation, cancels in the
 /// scatter.
+///
+/// [evidence]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#windownoise
 #[derive(Clone, Copy, Debug)]
 struct Density {
     /// The increment and interval of the block filling.
@@ -1603,7 +1596,9 @@ fn coarse_sigmas(
 /// measures no scatter, and keeps the whole of `σ_tilt²` independent instead.
 ///
 /// Writing the blocks after construction costs a copy of `P`, on a chain that stays well under
-/// `update`'s, so the crate's peak does not move ([measured](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function)).
+/// `update`'s, so the crate's peak does not move ([measured]).
+///
+/// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function
 pub(crate) fn initial_covariance(
     init: &Initialization,
     attitude: &Attitude,

@@ -111,38 +111,56 @@ heading_slugs() {
 # the middle would arrive as a missing one, shifting the anchor into the path.
 document_links() {
     awk -v blob="$2" '
+        function emit(target,   ref, kind, anchor) {
+            if (blob != "" && index(target, blob) == 1) {
+                target = substr(target, length(blob) + 1)
+                ref = index(target, "/")
+                if (ref == 0) return
+                target = substr(target, ref + 1)
+                if (target !~ /\.md($|#)/) return
+                kind = "root"
+            } else if (substr(target, 1, 1) == "#") {
+                kind = "root"
+                target = FILENAME target
+            } else if (target ~ /:\/\//) {
+                return
+            } else if (target ~ /\.md($|#)/) {
+                kind = "rel"
+            } else {
+                return
+            }
+
+            anchor = ""
+            if (index(target, "#") > 0) {
+                anchor = substr(target, index(target, "#") + 1)
+                target = substr(target, 1, index(target, "#") - 1)
+            }
+            print FNR "\t" kind "\t" target "\t" anchor
+        }
         /^[ \t]*(```|~~~)/ { fence = !fence; next }
         fence { next }
         {
             rest = $0
             while (match(rest, /\]\([^()]*\)/)) {
-                target = substr(rest, RSTART + 2, RLENGTH - 3)
+                emit(substr(rest, RSTART + 2, RLENGTH - 3))
                 rest = substr(rest, RSTART + RLENGTH)
+            }
 
-                if (blob != "" && index(target, blob) == 1) {
-                    target = substr(target, length(blob) + 1)
-                    ref = index(target, "/")
-                    if (ref == 0) continue
-                    target = substr(target, ref + 1)
-                    if (target !~ /\.md($|#)/) continue
-                    kind = "root"
-                } else if (substr(target, 1, 1) == "#") {
-                    kind = "root"
-                    target = FILENAME target
-                } else if (target ~ /:\/\//) {
-                    continue
-                } else if (target ~ /\.md($|#)/) {
-                    kind = "rel"
-                } else {
-                    continue
-                }
-
-                anchor = ""
-                if (index(target, "#") > 0) {
-                    anchor = substr(target, index(target, "#") + 1)
-                    target = substr(target, 1, index(target, "#") - 1)
-                }
-                print FNR "\t" kind "\t" target "\t" anchor
+            # A reference definition, `[label]: target`, which is how a doc comment keeps a
+            # long URL off the line it is cited from. Taken apart by `index` rather than a
+            # bracket expression, whose `]` handling differs between the awks this runs on.
+            line = $0
+            sub(/^[ \t]*/, "", line)
+            if (substr(line, 1, 3) == "///" || substr(line, 1, 3) == "//!") {
+                line = substr(line, 4)
+                sub(/^[ \t]*/, "", line)
+            }
+            split_at = index(line, "]: ")
+            if (substr(line, 1, 1) == "[" && split_at > 0) {
+                line = substr(line, split_at + 3)
+                sub(/^[ \t]*/, "", line)
+                sub(/[ \t].*$/, "", line)
+                emit(line)
             }
         }
     ' "$1"
@@ -369,6 +387,12 @@ EOF
     t 1 'a doc comment, relative link' '/// [a](target.md#repeated)' src/lib.rs '*RELATIVE*src/lib.rs:1*'
     t 1 'a doc comment, bad anchor' "/// [a](${blob_prefix}main/target.md#gone)" src/lib.rs '*NO ANCHOR*'
     t 0 'a doc comment, absolute link' "/// [a](${blob_prefix}main/target.md#repeated)" src/lib.rs
+
+    # A reference definition is a link too, in a doc comment and in Markdown alike: without
+    # reading one, the long URLs doc comments keep off their prose lines go unchecked.
+    t 1 'a reference definition, bad anchor' "/// [a]: ${blob_prefix}main/target.md#gone" src/lib.rs '*NO ANCHOR*target.md#gone*'
+    t 0 'a reference definition' "/// [a]: ${blob_prefix}main/target.md#repeated" src/lib.rs
+    t 1 'a Markdown reference definition' '[a]: target.md#gone' doc.md '*NO ANCHOR*'
 
     # A document that cannot be read contributes no links, and must not therefore contribute
     # no complaint: "0 links, all resolved" is the shape of every check that checks nothing.

@@ -471,11 +471,10 @@ pub(crate) fn error_dynamics(state: &State, omega: Vector3<f32>, a_b: Vector3<f3
 /// `Q`, the discrete process noise of equation (21), as its diagonal, over the intervals the
 /// sample integrated: the accelerometer's densities over `Δt_v`, the gyroscope's over `Δt_θ`.
 ///
-/// A diagonal rather than a 15 x 15 matrix because (21) has twelve nonzero entries: the matrix
-/// form would spend a 15 × 15 temporary and 225 additions to add twelve numbers, and "the
-/// diagonal of `Q` lands on the diagonal of `P`" is closer to the equation than a dense sum.
-/// What makes that legitimate is the isotropy below; a per-axis `Σ_a` is what would make this
-/// a matrix again.
+/// A diagonal rather than a 15 x 15 matrix because (21) has twelve nonzero entries: the matrix form
+/// would spend a 15 × 15 temporary and 225 additions to add twelve numbers, and "the diagonal of
+/// `Q` lands on the diagonal of `P`" is closer to the equation than a dense sum. What makes that
+/// legitimate is the isotropy below; a per-axis `Σ_a` is what would make this a matrix again.
 ///
 /// **`Δt`, not `Δt²`.** [`ImuNoise`]'s four fields are spectral densities, and a density's
 /// contribution over a step is `σ² Δt` — for the white-noise blocks and the two random walks
@@ -527,13 +526,15 @@ fn process_noise(noise: &ImuNoise, imu: Corrected) -> [f32; STATES] {
 /// `P ← F P Fᵀ + Q`, equation (22), with the symmetry enforcement (42) asks for afterwards.
 ///
 /// Written as (22) reads, which is the most expensive thing the filter does: three 15 × 15
-/// temporaries per IMU sample, at up to 400 Hz. (20) is sparse enough (two identity blocks,
-/// two zero rows) that a block-wise form would cut them, at the cost of the one equation a
-/// reader of this crate is most likely to have come for. What it costs is
-/// [measured](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function); a block-wise form waits on #41's figures from hardware.
+/// temporaries per IMU sample, at up to 400 Hz. (20) is sparse enough (two identity blocks, two
+/// zero rows) that a block-wise form would cut them, at the cost of the one equation a reader of
+/// this crate is most likely to have come for. What it costs is [measured]; a block-wise form waits
+/// on #41's figures from hardware.
 ///
 /// `Q` arrives as a diagonal and is added as one, which keeps those temporaries to three
 /// rather than four.
+///
+/// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function
 fn propagate_covariance(p: Covariance, f: &Transition, q: [f32; STATES]) -> Covariance {
     let mut next = f * p.as_matrix() * f.transpose();
 
@@ -557,37 +558,29 @@ fn propagate_covariance(p: Covariance, f: &Transition, q: [f32; STATES]) -> Cova
 /// picks up and a single long one never does. Position is the state that suffers, being the
 /// doubly integrated one.
 ///
-/// So the step is fixed and the count follows from the horizon, rather than the other way
-/// round: a fixed count would make the answer's accuracy depend on the question's length.
-/// Measured against the same horizon propagated at 100 Hz, as the fraction of the position
-/// *variance* the projection reaches:
-///
-/// ```text
-///  horizon    0.2 s step   0.1 s step   0.05 s step
-///    1 s        0.989        0.994        0.997
-///    2 s        0.953        0.977        0.989
-///    5 s        0.873        0.938        0.953
-/// ```
-///
-/// 0.1 s is where that stops buying much per step: it holds the projection within 6.5 % of
-/// the variance, 3.2 % of the sigma, out to a 5 s horizon, against an
-/// [`Accuracy`](crate::Accuracy) bar that is a mission's choice and carries far more than
-/// 3.2 % of latitude itself. What the shortfall is not is symmetric — a first-order step
-/// always understates, so the projection reads slightly *optimistic*, and
+/// So the step is fixed and the count follows from the horizon, rather than the other way round: a
+/// fixed count would make the answer's accuracy depend on the question's length. 0.1 s is where a
+/// shorter step stops buying much: against the same horizon propagated at 100 Hz it holds the
+/// projection within 3.2 % of the sigma out to a 5 s horizon ([measured]), against an
+/// [`Accuracy`](crate::Accuracy) bar that is a mission's choice and carries far more than 3.2 % of
+/// latitude itself. What the shortfall is not is symmetric — a first-order step always understates,
+/// so the projection reads slightly *optimistic*, and
 /// [`Eskf::predicted_validity`](crate::Eskf::predicted_validity) says so.
+///
+/// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#projection_step
 const PROJECTION_STEP: Seconds = Seconds::from_secs(0.1);
 
 /// The most steps [`project`] will take, which bounds what one query costs.
 ///
-/// 64 steps of [`PROJECTION_STEP`] is 6.4 s of horizon at the step the accuracy above was
-/// measured at, past any arming question this is meant to answer. A longer horizon is
-/// projected in 64 longer steps rather than more of them, so it costs the same and leaves
-/// that measured range — gracefully rather than without bound, because the count stays fixed
-/// while `dt` stretches. Position variance against the same 100 Hz reference: 0.950 at 6.4 s,
-/// 0.935 at 10 s, 0.913 at 30 s, 0.907 at 60 s, 0.902 at 120 s. So a horizon of minutes is
-/// answered about 10 % optimistic in the variance, 5 % in the sigma, rather than 5 % — worth
-/// knowing if [`Accuracy::horizon`](crate::Accuracy::horizon) is set out there, and not worth
-/// a longer loop on an arming query to fix.
+/// 64 steps of [`PROJECTION_STEP`] is 6.4 s of horizon at the step the accuracy above was measured
+/// at, past any arming question this is meant to answer. A longer horizon is projected in 64 longer
+/// steps rather than more of them, so it costs the same and leaves that measured range — gracefully
+/// rather than without bound, because the count stays fixed while `dt` stretches. A horizon of
+/// minutes is answered about 5 % optimistic in the sigma ([measured]): worth knowing if
+/// [`Accuracy::horizon`](crate::Accuracy::horizon) is set out there, and not worth a longer loop on
+/// an arming query to fix.
+///
+/// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#max_projection_steps
 const MAX_PROJECTION_STEPS: usize = 64;
 
 /// Grow `P` over `horizon` as if nothing were measured and the vehicle stayed put.
@@ -608,17 +601,19 @@ const MAX_PROJECTION_STEPS: usize = 64;
 /// at the current attitude. That is what makes the tilt-to-velocity coupling of (17) the
 /// gravity leak it is in flight, rather than zero.
 ///
-/// So a projection grows `P` as a [`coast`] allowing no unmeasured acceleration or rotation
-/// would, since `F` does not read velocity and an unaccelerated vehicle and one standing still
-/// grow it alike. It does not call [`coast`], which carries a state and an offset the query
-/// discards, and through which the arming query's stack passed `update`'s. The nominal state is
-/// untouched and no timer moves. A projection is not time passing.
+/// So a projection grows `P` as a [`coast`] allowing no unmeasured acceleration or rotation would,
+/// since `F` does not read velocity and an unaccelerated vehicle and one standing still grow it
+/// alike. It does not call [`coast`], which carries a state and an offset the query discards, and
+/// through which the arming query's stack passed `update`'s. The nominal state is untouched and no
+/// timer moves. A projection is not time passing.
 ///
-/// What it costs, and why that is acceptable on a query and would not be on the hot path:
-/// one `F` and one `Q`, built once because an unaccelerated vehicle does not rotate, then one
+/// What it costs, and why that is acceptable on a query and would not be on the hot path: one `F`
+/// and one `Q`, built once because an unaccelerated vehicle does not rotate, then one
 /// [`propagate_covariance`] per step — ten of them at the default 1 s horizon, up to
-/// [`MAX_PROJECTION_STEPS`]. So an arming check is ten times the arithmetic of an IMU epoch,
-/// on a stack that stays under `update`'s ([measured](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function)).
+/// [`MAX_PROJECTION_STEPS`]. So an arming check is ten times the arithmetic of an IMU epoch, on a
+/// stack that stays under `update`'s ([measured]).
+///
+/// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function
 pub(crate) fn project(
     state: &State,
     covariance: Covariance,
@@ -678,15 +673,17 @@ fn repeat_covariance(
 /// sample and neither moves.
 ///
 /// What it costs is up to [`MAX_PROJECTION_STEPS`] runs of (22) in one call, 64 IMU epochs'
-/// arithmetic landing on the step after the loop has already overrun. Worst case, not
-/// typical: a 1.2 s gap is 12 runs, on a stack under `update`'s ([measured](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function)). The exact
-/// `F` of an unaccelerated vehicle is a four-term polynomial in `Δt`, since `ω = 0` makes the
-/// error dynamics nilpotent, and is the lever if #41 finds the spike too costly; until then the
-/// steps are (22) as it reads.
+/// arithmetic landing on the step after the loop has already overrun. Worst case, not typical: a
+/// 1.2 s gap is 12 runs, on a stack under `update`'s ([measured]). The exact `F` of an
+/// unaccelerated vehicle is a four-term polynomial in `Δt`, since `ω = 0` makes the error dynamics
+/// nilpotent, and is the lever if #41 finds the spike too costly; until then the steps are (22) as
+/// it reads.
 ///
 /// A gap that is not a positive duration coasts nothing, for [`project`]'s reason: a negative
 /// `Δt` subtracts `Q`. [`Eskf::predict`](crate::Eskf::predict) coasts only past a positive
 /// limit, so the guard holds a bound no caller in the crate crosses.
+///
+/// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function
 pub(crate) fn coast(
     state: State,
     covariance: Covariance,

@@ -92,11 +92,11 @@ pub(crate) enum Update {
 /// Gate a measurement and, if it passes, fold it into the state. Equations (23)–(27) and
 /// (37)–(41).
 ///
-/// `S` is factored by Cholesky, and the factor serves both the gate and the gain:
-/// `ε = yᵀ S⁻¹ y` and `K = P Hᵀ S⁻¹` each need a solve against `S`, and neither needs `S⁻¹`
-/// itself. A correlated measurement is the exception, gated on its own `R_m` and gained on the
-/// larger `R̃` of (24′), so its gain is solved against a second factor; where `r_gain` is
-/// `r_m` the second factor is the first.
+/// `S` is factored by Cholesky, and the factor serves both the gate and the gain: `ε = yᵀ S⁻¹ y`
+/// and `K = P Hᵀ S⁻¹` each need a solve against `S`, and neither needs `S⁻¹` itself. A correlated
+/// measurement is the exception, gated on its own `R_m` and gained on the larger `R̃` of (24′), so
+/// its gain is solved against a second factor; where `r_gain` is `r_m` the second factor is the
+/// first.
 ///
 /// The factorization is also the check that `S` is positive-definite. With `R_m > 0` and `P`
 /// positive semi-definite it always is, so a failure means `P` has lost that property in f32 —
@@ -116,17 +116,18 @@ pub(crate) enum Update {
 /// zero. The unit tests show the difference on an ill-conditioned `P` rather than asserting
 /// it here.
 ///
-/// Every quantity is the sixteen-state one of (30′), the error state and the barometric
-/// offset `b`, and is taken in blocks: `P`, `P_xb` and `P_bb`; `K` as `K_x` and `K_b`; and
-/// `A = I − K H` as `A_xx`, `a_xb`, `a_bx` and `a_bb`, so that (27) is `A P Aᵀ + K R Kᵀ` block by
-/// block. The augmented matrix written out is the obvious form, and the tests compare against
-/// exactly that; formed here it costs a 16 × 16 for every 15 × 15 temporary, on the frame that is
-/// already the crate's largest
-/// ([measured](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function)).
+/// Every quantity is the sixteen-state one of (30′), the error state and the barometric offset `b`,
+/// and is taken in blocks: `P`, `P_xb` and `P_bb`; `K` as `K_x` and `K_b`; and `A = I − K H` as
+/// `A_xx`, `a_xb`, `a_bx` and `a_bb`, so that (27) is `A P Aᵀ + K R Kᵀ` block by block. The
+/// augmented matrix written out is the obvious form, and the tests compare against exactly that;
+/// formed here it costs a 16 × 16 for every 15 × 15 temporary, on the frame that is already the
+/// crate's largest ([measured]).
 ///
 /// `M` is a type parameter so that a `Gate<M>` of the wrong dimension is a compile error (#58).
 /// What that costs is one monomorphization per dimension, so a dimension costs flash and a new
 /// source of an existing dimension does not.
+///
+/// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function
 pub(crate) fn update<const M: usize>(
     state: &State,
     covariance: &Covariance,
@@ -292,10 +293,9 @@ fn reset_jacobian(delta_theta: Vector3<f32>) -> Matrix3<f32> {
 
 /// `G P Gᵀ` with `G` the identity outside its attitude block. Equation (41).
 ///
-/// Applied to the attitude rows and columns only, which is all of `G P Gᵀ` that differs from
-/// `P`. The full product is the more obvious form and costs a 15 × 15 `G` and two more
-/// temporaries of `P`'s size, on `update`'s frame, already the largest in the crate
-/// ([measured](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function)).
+/// Applied to the attitude rows and columns only, which is all of `G P Gᵀ` that differs from `P`.
+/// The full product is the more obvious form and costs a 15 × 15 `G` and two more temporaries of
+/// `P`'s size, on `update`'s frame, already the largest in the crate ([measured]).
 ///
 /// Which `G_θ` to use is the caller's, because the two resets in the crate move the nominal
 /// attitude by different amounts: [`update`] injects a correction and uses (41)'s first-order
@@ -307,6 +307,8 @@ fn reset_jacobian(delta_theta: Vector3<f32>) -> Matrix3<f32> {
 ///
 /// (42) runs last, as after every covariance operation: both products of (27) and this one
 /// drift off symmetry in f32.
+///
+/// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function
 pub(crate) fn reparameterize(mut p: CovarianceMatrix, g_theta: Matrix3<f32>) -> Covariance {
     let theta = ErrorState::AttitudeX.index();
 

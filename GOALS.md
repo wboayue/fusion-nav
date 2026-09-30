@@ -589,6 +589,34 @@ barometer that does drift. On the corpus, `285ee2e7`'s barometer, at a `τ` a se
 height's, holds the height 4 m from GNSS through a back-transition until the receiver is rejected
 and adopted. A sensor characterized as white is the reason to set its source's `τ` to `None`.
 
+**Where the defaults come from.** `τ = −T / ln ρ` from each real log's `acf1_` for the source,
+read with every measurement fused as white, at that log's own sample interval, and the median
+over the real logs whose autocorrelation is positive (the SITL log excluded, and `89a498ce`'s
+GNSS, an RTK receiver whose innovations alternate), on the twelve logs before `2b2ad123`:
+
+| source | logs | range, s | median, s |
+| ------ | ---- | -------- | --------- |
+| GNSS horizontal position | 8 | 2.1–15.8 | 4.2 |
+| GNSS height | 8 | 3.7–70 | 14 |
+| GNSS velocity | 5 | 0.31–2.2 | 0.50 |
+| barometer | 10 | 0.006–4.2 | 0.20 |
+| magnetometer | 10 | 0.006–14.6 | 1.2 |
+| dual-antenna GNSS heading | 1 | 0.25 | 0.25 |
+| course constraint | 1 | 1.37 | 1.37 |
+
+Three receivers' velocity innovations and one magnetometer's alternate in sign, which no `τ`
+describes, and are left out rather than read as white. `2b2ad123`, the second RTK log, reads a
+GNSS-position `τ` of 0.51 s, under the range above, and alternates on height and velocity. Taken
+into the medians it would move GNSS position's from 4.2 s toward 3 s; whether the defaults follow
+the corpus as it grows, or become per-sensor, is #51's.
+
+GNSS heading rests on one log, `a299e722`, the only one whose EKF2 fused a dual-antenna yaw:
+`acf1_gnss_yaw` 0.6696 at 10 Hz. The course constraint rests on one too, `093e806a`, the
+fixed-wing, replayed as a vehicle without a magnetometer (`--without mag --course 3`):
+`acf1_course` 0.4818 at 1 Hz, `τ` 1.37 s, and 0.4965 with its magnetometer, 1.43 s. What persists
+there is the sideslip, which the constraint cannot observe, and fused white the simulator's
+`no_mag` read a heading NEES of 2.7 on a sideslip it averaged as noise.
+
 ### Measurement latency
 
 GNSS solutions reach an autopilot 100–200 ms after the epoch they describe, and fused as though
@@ -704,7 +732,13 @@ and not a setter beside the origin, which would hold one antenna: PX4 carries th
 GNSS message (`antenna_offset_x/y/z`, `src/modules/sensors/vehicle_gps_position/VehicleGPSPosition.cpp:198`
 at `c4e4ef98`) because a second receiver has its own, and here it travels with the fix as `R`
 does. The update carries the arm's dependence on attitude and gyroscope bias in `H`, where PX4
-corrects the measurement alone; `observation/gnss.rs` records the corpus figures that chose it.
+corrects the measurement alone. Measured against PX4's form on the four corpus logs whose antenna
+is off the IMU, as agreement with each log's own EKF2, which applies the same arm: on `a299e722`
+(0.30 m left) under PX4's `R` floors, `pos_e_rms` was 0.650 m with no arm, 0.448 in PX4's form and
+0.408 in this one; on `cd7e0001` (0.29 m aft) the median heading gap was 1.61° with no arm, 0.85°
+and 0.81°. `2c42096b` and `eb799954` read the same either way to the third digit. The simulator
+cannot choose: on `lever_arm`, a 1 m mast, both give `pos_h` 0.291 m, and `yaw` reads 0.289° in
+PX4's form against 0.296° here, inside the noise of one seed.
 The estimate stays the IMU's, and `Eskf::angular_rate` is what moves it to any other point.
 
 ### Rejection handling: recover by default, opt out per source

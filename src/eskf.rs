@@ -390,9 +390,9 @@ impl Eskf {
     /// [`InitError::NotFinite`] if the sample carries a value that is not a number, and
     /// [`InitError::InvalidInterval`] for an integration interval under a microsecond.
     pub fn initialize_coarse(&mut self, imu: ImuSample) -> Result<Alignment, InitError> {
-        // Treated as a window of one, so the same finiteness, motion and averaging
-        // measures apply — an average of one sample being that sample. The window is most
-        // of this frame, which stays well under `update`'s.
+        // Treated as a window of one, so the same finiteness, motion and averaging measures apply —
+        // an average of one sample being that sample. The window is most of this frame, which stays
+        // well under `update`'s.
         let mut window = StaticWindow::new();
         window.push(StaticSample {
             imu,
@@ -975,9 +975,11 @@ impl Eskf {
     /// commits nothing and the measurement is refused as [`Fusion::NotFinite`]: a finite fix
     /// carried to now by (28′) can still overflow, a lever arm of `f32::MAX` rotated.
     ///
-    /// Out of line for the reason [`observe`](Self::observe) is: inlined, the `Update` it takes
-    /// sat in each `fuse_*` frame beneath `update::<3>`, and `fuse_gnss_velocity` into
-    /// `update::<3>` is the crate's high-water mark ([measured](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function)).
+    /// Out of line for the reason [`observe`](Self::observe) is: inlined, the `Update` it takes sat
+    /// in each `fuse_*` frame beneath `update::<3>`, and `fuse_gnss_velocity` into `update::<3>` is
+    /// the crate's high-water mark ([measured]).
+    ///
+    /// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function
     #[inline(never)]
     fn apply_or_recover(
         &mut self,
@@ -1215,8 +1217,9 @@ impl Eskf {
     /// at the mean rates over the age, which the same history gives.
     ///
     /// Out of line, so that it sits beside `update` rather than beneath it: inlined into
-    /// `fuse_gnss_velocity`, it raised the crate's high-water mark by its own frame
-    /// ([measured](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function)).
+    /// `fuse_gnss_velocity`, it raised the crate's high-water mark by its own frame ([measured]).
+    ///
+    /// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function
     #[inline(never)]
     fn observe<const M: usize>(
         &self,
@@ -1832,7 +1835,9 @@ impl Eskf {
     /// too and whose adopted heading is only as good as the velocity it was taken along.
     ///
     /// Out of line for the reason [`observe`](Self::observe) is; the scalar sources' peak stays
-    /// under `fuse_gnss_velocity`'s ([measured](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function)).
+    /// under `fuse_gnss_velocity`'s ([measured]).
+    ///
+    /// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function
     #[inline(never)]
     fn fuse_heading(
         &mut self,
@@ -2313,9 +2318,8 @@ impl Eskf {
     /// Take the `axes` of a checked fix as the position, with the fix's variances on them:
     /// every axis on a first adoption or a caller's reset, north and east or down alone on a
     /// recovery, since a fix is two sources gated apart.
-    // Out of line, as `adopt_velocity`: inlined, its copy of `P` lands in the `fuse_*` frame
-    // that `update` then stacks on. Called after `update` returns, it adds nothing to the
-    // deepest path.
+    // Out of line, as `adopt_velocity`: inlined, its copy of `P` lands in the `fuse_*` frame that
+    // `update` then stacks on. Called after `update` returns, it adds nothing to the deepest path.
     #[inline(never)]
     fn adopt_position<const N: usize>(
         &mut self,

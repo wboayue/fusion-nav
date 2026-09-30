@@ -48,13 +48,11 @@ pub(crate) fn heading_innovation(
 /// A magnetic heading as the update reads it: `y` from (35), `H` from (36), and the
 /// caller's variance widened by the levelling of (36′).
 ///
-/// One degree of freedom, because the three-axis field is reduced to a single scalar
-/// before the update sees it. That is the decision `GOALS.md` records under
-/// [magnetometer without magnetic-field states](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#magnetometer-without-magnetic-field-states):
-/// this crate carries no field states to absorb hard- and soft-iron error, so a
-/// disturbance that reached roll and pitch would corrupt the two quantities gravity
-/// determines well. Equations (31)–(33) describe the three-axis alternative and are
-/// deliberately not built.
+/// One degree of freedom, because the three-axis field is reduced to a single scalar before the
+/// update sees it. That is the decision `GOALS.md` records under [magnetometer without
+/// magnetic-field states]: this crate carries no field states to absorb hard- and soft-iron error,
+/// so a disturbance that reached roll and pitch would corrupt the two quantities gravity determines
+/// well. Equations (31)–(33) describe the three-axis alternative and are deliberately not built.
 ///
 /// # Why `R` is not the caller's number alone
 ///
@@ -65,22 +63,23 @@ pub(crate) fn heading_innovation(
 /// never sees the rotation applied to it — the filter performs the levelling and holds
 /// the tilt covariance, so the filter is the only layer that can price it.
 ///
-/// (36′) adds it to `R` rather than to `H`. The exact Jacobian of (35) carries the term
-/// too, and using it is worse than dropping it: it corrects tilt — which gravity already
-/// determines an order of magnitude better — from a scalar carrying 3° of noise, and
-/// measured `mission` at 9.0° of tilt error and 1.26 m/s² of accelerometer bias against
-/// 0.58° and 0.053 for the form here. Widening `S` says the heading is less trustworthy
-/// than its own noise suggests without claiming it observes the tilt that made it so.
-/// That is `R` inflation with no cross-covariance, and it suffices because velocity fusion
-/// keeps correcting the tilt it prices; an error shared unchanged across readings needs the
-/// cross-covariance too, which is (30′). On `moving_start`, whose coarse start is where an unpriced levelling error
-/// is largest, it is worth tilt 2.653° → 1.720, yaw 3.777° → 0.940, `nees_att`
-/// 1.634 → 0.231, and 840 falsely-valid attitude quantity-epochs → 0.
+/// (36′) adds it to `R` rather than to `H`. The exact Jacobian of (35) carries the term too, and
+/// using it is worse than dropping it: it corrects tilt — which gravity already determines an order
+/// of magnitude better — from a scalar carrying 3° of noise, and measured `mission` at 9.0° of tilt
+/// error against 0.58° for the form here. Widening `S` says the heading is less trustworthy than
+/// its own noise suggests without claiming it observes the tilt that made it so. That is `R`
+/// inflation with no cross-covariance, and it suffices because velocity fusion keeps correcting the
+/// tilt it prices; an error shared unchanged across readings needs the cross-covariance too, which
+/// is (30′). `EQUATIONS.md`, [What the levelling costs], has what the term is worth on a coarse
+/// start.
 ///
 /// `R(q̂)` is formed twice, once for (35) and once for (36). Sharing it would thread a
 /// rotation matrix through both signatures to save about twenty multiplications on a call
 /// that already runs a 15 × 15 update; the obvious form wins that trade under
 /// `AGENTS.md`'s rule, and a measurement is what would reopen it.
+///
+/// [magnetometer without magnetic-field states]: https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#magnetometer-without-magnetic-field-states
+/// [What the levelling costs]: https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#what-the-levelling-costs
 pub(crate) fn heading_observation(
     state: &State,
     covariance: &Covariance,
@@ -113,21 +112,18 @@ pub(crate) fn heading_observation(
 /// transposed — `e₃ᵀR(q̂)` read as a column is `R(q̂)ᵀe₃`. It must be a unit vector, as a
 /// row of a rotation is, or `d × f̂` below is not one.
 ///
-/// `σ_tilt²` is the largest eigenvalue of the tilt block, the attitude covariance on the
-/// horizontal plane: the variance of tilt about the worst horizontal axis. To first order
-/// only tilt about the field's own horizontal direction `f̂` leaks, so `f̂ᵀ P f̂` is the exact
-/// price of one reading. The bound is kept because it is the bound, not for a margin: fused
-/// as white, the exact form lost (`gnss_outage` `pos_h` 2.630 m against 2.227), since
-/// consecutive headings share a tilt error velocity fusion corrects only over seconds; under
-/// (24′), which prices that sharing as the magnetometer's `τ`, the two agree to 0.3 % on
-/// position and neither is overconfident on 50 seeds. `EQUATIONS.md` has the derivation and
-/// both measurements.
+/// `σ_tilt²` is the largest eigenvalue of the tilt block, the attitude covariance on the horizontal
+/// plane: the variance of tilt about the worst horizontal axis. To first order only tilt about the
+/// field's own horizontal direction `f̂` leaks, so `f̂ᵀ P f̂` is the exact price of one reading.
+/// The bound is kept because it is the bound, not for a margin: under (24′) the two agree to 0.3 %
+/// on position, and fused as white the exact form lost, since consecutive headings share a tilt
+/// error. `EQUATIONS.md` has the derivation and both measurements.
 ///
-/// The eigenvalue depends on no choice of axes, where the larger of two diagonals does: on
-/// an anisotropic block the north/east and body x/y pairs give different maxima, and the
-/// north/east one moves with yaw. It is never below either diagonal, so it errs toward an
-/// `R` too large, which only slows the heading's correction, rather than too small, which is
-/// what produced 840 falsely-valid attitude epochs on `moving_start` without the term.
+/// The eigenvalue depends on no choice of axes, where the larger of two diagonals does: on an
+/// anisotropic block the north/east and body x/y pairs give different maxima, and the north/east
+/// one moves with yaw. It is never below either diagonal, so it errs toward an `R` too large, which
+/// only slows the heading's correction, rather than too small, which is the falsely valid attitude
+/// the term exists to remove.
 ///
 /// The block is taken on the basis `f̂`, `down × f̂` in body axes; the eigenvalue is the same on any orthonormal basis of the plane, and
 /// this one needs no rotation of `P`, which stays in the body axes of (2).

@@ -328,18 +328,15 @@ fn ratio(test_ratio: f32) -> Fixed {
 /// What one GNSS position fix did: its horizontal and vertical halves, each gated and
 /// reported on its own.
 ///
-/// A fix carries two measurements that fail independently. A receiver's height wanders
-/// further than its horizontal position, and it disagrees with a barometer about height
-/// without either saying anything about north or east — so a single verdict over all three
-/// axes turns a height disagreement into lost horizontal aiding. `2c42096b` is a stationary
-/// vehicle whose barometer and receiver drift ~20 m apart in height over the first hour;
-/// fusing both under one joint test rejects 3945 of its 4616 fixes, and every one of them
-/// passes a test of the horizontal pair alone. Both production estimators split the same way: PX4 runs GNSS
-/// position as a two-dimensional source and GNSS height as a one-dimensional one
-/// (`_aid_src_gnss_pos` and `_aid_src_gnss_hgt`, `src/modules/ekf2/EKF/ekf.h:621-622` at
-/// `c4e4ef98e9`), and ArduPilot tests the horizontal pair and the height separately
-/// (`libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp:904-906` and `:1023` at
-/// `368dc0c428`).
+/// A fix carries two measurements that fail independently. A receiver's height wanders further than
+/// its horizontal position, and it disagrees with a barometer about height without either saying
+/// anything about north or east — so a single verdict over all three axes turns a height
+/// disagreement into lost horizontal aiding, 3945 fixes of 4616 on one corpus log ([evidence]).
+/// Both production estimators split the same way: PX4 runs GNSS position as a two-dimensional
+/// source and GNSS height as a one-dimensional one (`_aid_src_gnss_pos` and `_aid_src_gnss_hgt`,
+/// `src/modules/ekf2/EKF/ekf.h:621-622` at `c4e4ef98e9`), and ArduPilot tests the horizontal pair
+/// and the height separately (`libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp:904-906` and
+/// `:1023` at `368dc0c428`).
 ///
 /// Each half is a [`Fusion`] with its own gate in [`Gates`](crate::Gates) and its own
 /// [`SourceHealth`] in [`Diagnostics`]: [`gnss_position`](Diagnostics::gnss_position) for
@@ -348,6 +345,8 @@ fn ratio(test_ratio: f32) -> Fixed {
 /// with `epv = 0` reads `horizontal: Accepted` beside `height: InvalidNoise`. What reads the
 /// same in both is what concerns the fix as a whole — an adoption, an origin placed, a filter
 /// not initialized, and any refusal on those paths, which write all three axes at once.
+///
+/// [evidence]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#gates
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GnssFusion {
@@ -601,10 +600,9 @@ fn seconds(value: Seconds) -> Fixed {
 /// window with no magnetometer has no heading until a heading source is fused, and a tight prior on a
 /// number nobody set is not validity.
 ///
-/// Horizontal and vertical are separate because sources are: a vehicle with a barometer
-/// and no GNSS has a usable height and no horizontal position at all, which describes one
-/// of the thirteen logs in the replay corpus. Another carries neither source, so it has no
-/// position of either kind.
+/// Horizontal and vertical are separate because sources are: a vehicle with a barometer and no GNSS
+/// has a usable height and no horizontal position at all, as one log in the replay corpus does.
+/// Another carries neither source, so it has no position of either kind.
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Validity {
@@ -1128,17 +1126,18 @@ pub struct Diagnostics {
     /// Variances raised to the floor of equation (42′), counted per entry rather than per
     /// covariance.
     ///
-    /// Expected to stay at zero, and it does across the whole corpus — the floor is set well
-    /// below anything the filter reaches there, and `math.rs`'s `FLOOR` is where that margin
-    /// is measured and recorded. So a count climbing here says a variance is collapsing for a
-    /// reason of its own — an `R` far smaller than what the measurement actually observes, or
-    /// a source fused faster than it carries independent information — and that the floor is
-    /// masking it rather than protecting against it. It is the one number here whose
+    /// Expected to stay at zero, and it does across the whole corpus — the floor is set well below
+    /// anything the filter reaches there ([measured]). So a count climbing here says a variance is
+    /// collapsing for a reason of its own — an `R` far smaller than what the measurement actually
+    /// observes, or a source fused faster than it carries independent information — and that the
+    /// floor is masking it rather than protecting against it. It is the one number here whose
     /// interesting value is the one it does not have.
     ///
     /// Not counted per state, which would say *which* variance collapsed: a count that
     /// should be zero needs only to be non-zero to be worth reading, and the `sigma_*`
     /// columns of `examples/replay.rs` name the state as soon as anybody looks.
+    ///
+    /// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#floor
     pub floored: u32,
     /// Time since initialization, the clock a source never accepted is locked out on.
     pub(crate) since_initialized: Seconds,

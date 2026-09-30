@@ -12,10 +12,8 @@
 //! corpus, so the replay harness's `declination_model=` key compares this lookup against that
 //! one on every log with a fix.
 //!
-//! It costs about 2.5 KB of flash
-//! ([measured](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function)).
-//! Hence the feature, which GOALS.md's derived-configuration table asks for, "optional, for its
-//! flash cost": off, none of it is linked.
+//! It costs about 2.5 KB of flash ([measured]). Hence the feature, which GOALS.md's
+//! derived-configuration table asks for, "optional, for its flash cost": off, none of it is linked.
 //!
 //! ArduPilot ships the same shape (`AP_Declination`, a `float[19][37]` regenerated from IGRF),
 //! and neither takes a date: a table is fixed at the epoch it was generated for, and secular
@@ -52,6 +50,8 @@
 //! ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 //! POSSIBILITY OF SUCH DAMAGE.
 //! ```
+//!
+//! [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function
 
 use crate::geodetic::Geodetic;
 use crate::units::Radians;
@@ -191,9 +191,9 @@ const TABLE: [[i16; 37]; 19] = [
 /// is ignored, as both upstream tables ignore it: the field's direction changes by well under
 /// the table's own interpolation error across any altitude a vehicle flies at.
 pub(crate) fn declination_at(site: Geodetic) -> Option<Radians> {
-    // In f32, as PX4 computes it. The converter's f64 port agrees to 1e-4° (the test below),
-    // and in f64 the lookup links four times the `.text` in software doubles (DESIGN.md,
-    // "Measured cost, by function").
+    // In f32, as PX4 computes it. The converter's f64 port agrees to 1e-4° (the test below), and in
+    // f64 the lookup links four times the `.text` in software doubles (DESIGN.md, "Measured cost,
+    // by function").
     let (latitude, longitude) = (site.latitude_deg() as f32, site.longitude_deg() as f32);
     if !latitude.is_finite() || !longitude.is_finite() {
         return None;
