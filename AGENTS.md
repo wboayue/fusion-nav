@@ -134,7 +134,13 @@ gravity 5–17° from vertical, and its timeline lags the IMU by 80–170 ms, wh
 barometer and magnetometer (on its logged axes: the calibration's extrinsic made heading
 worse), no GNSS velocity (horizontal only, no accuracy). The finding is (24′)'s: `nees_pos`
 0.47 / 0.35 / 0.44, where fused white reads 39.2 / 11.6 / 16.1, at 0.05–0.37 m of horizontal
-RMS over the fixes' own error. That comparison is hand-computed until #184 makes it a key.
+RMS over the fixes' own error, which is `rms_gnss_pos`/`rms_gnss_hgt` since #184 (#186): each
+decided fix against truth at its time, interpolated between rows at most `TRUTH_SPAN` (0.3 s)
+apart where none lands on it, so INSANE's fixes are judged too (unjudged 1799 → 451 on
+`mars_19`, the rest outside its truth). It found `mars_1` accepting 143 of 483 fixes its own `R`
+cannot explain, height held by the barometer against fixes 2.7–8.8 m off (`--without baro`
+reads the fixes' own), and UrbanNav's M8T at 258 m against its fixes' 145 m, worse than its
+receiver, which is #181's.
 `tools/replay_format.py` is the one replay/truth writer for all three converters,
 `tools/rotations.py` their geometry, and `data/truth-runs.sh` the runner `urbannav.sh` and
 `insane.sh` share.
