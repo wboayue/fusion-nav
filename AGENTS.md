@@ -69,7 +69,7 @@ assertion tripped when #52 landed, and it now passes all three blocks;
 floors the tilt the bias does not explain at the window's own scatter across gravity, without
 which the defaults' `P₀` was singular. The evidence is the run that could fail, `harsh_imu`
 fused white on 50 seeds: `any_att` 2281 → 0 (214 at the prior alone). Tilt tightened on every
-scenario (`mission` 0.414° → 0.330); `7ce66f0d` recovers 28 times rather than 69.
+scenario (`mission` 0.414° → 0.330); `7ce66f0d` recovered 28 times rather than 69 (36 since (23′), #52).
 #123 landed (#161): `VALIDATION.md` and `validation/{accuracy,honesty,robustness,ekf2}.md`, for
 a reader who has never computed a NEES. Every number and table comes through a placeholder in
 `validation/src/`, and every figure through `replay_report.py --figures`. `tools/validation.sh`
@@ -242,7 +242,7 @@ of two diagonals. The exact field-axis term `f̂ᵀPf̂` lost while headings wer
 under (24′) the two agree (1.255 against 1.252, #153), and the eigenvalue stays as the bound
 rather than for a margin. Only `f16771dd` re-pinned (`nu_mag_yaw` −0.025485 → −0.024121).
 #86's PR 2 (#141) made the corpus eight logs: `89a498ce` is the real baseline (RTK, 4.07 km, #124's
-log), `eb799954` carries the first `rejected_mag` (3), and `cd7e0001` is the coarse start and the
+log), `eb799954` carried the first `rejected_mag` (3 then, 2 now), and `cd7e0001` is the coarse start and the
 first `floored=` (21, a raw 0.43 mm/s σ_v). `2c42096b` now starts `short` on a 0.80 s still prefix:
 the harness waits `PATIENCE` for a static window and falls back to the prefix, and `classify`
 measures motion before length. Declination is read per log (`declination=`), which took the median
@@ -275,7 +275,8 @@ The gate turns a fix down rather than taking everything offered — on the corpu
 `a299e722` refuses 287 of its 609 velocity solutions, a receiver its own differenced positions
 contradict (#105 settled that the harness does *not* floor `R` as both production estimators do,
 and `r_policy=raw` pins that). The multirotors barely reach the other gates: the magnetometer
-three times on `eb799954`, single samples 1.1 rad out, and never the barometer. The four
+twice on `eb799954`, consecutive samples at 245.6 s (its earlier single samples 1.1 rad out now
+pass at a fraction of their weight, #145), and never the barometer. The four
 airframe logs of #86's PR 3 reach all of them, each for a cause its manifest entry names:
 a dishonest receiver at speed, a logging dropout that locks a 30 m/s vehicle out (#116's
 case), a hand launch levelled wrong ((5′)'s), and a tailsitter's back-transitions reaching the
