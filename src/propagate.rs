@@ -604,7 +604,7 @@ const MAX_PROJECTION_STEPS: usize = 64;
 /// So a projection grows `P` as a [`coast`] allowing no unmeasured acceleration or rotation would,
 /// since `F` does not read velocity and an unaccelerated vehicle and one standing still grow it
 /// alike. It does not call [`coast`], which carries a state and an offset the query discards, and
-/// through which the arming query's stack passed `update`'s. The nominal state is untouched and no
+/// which raised the arming query's stack past `update`'s. The nominal state is untouched and no
 /// timer moves. A projection is not time passing.
 ///
 /// What it costs, and why that is acceptable on a query and would not be on the hot path: one `F`

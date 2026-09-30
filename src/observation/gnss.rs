@@ -17,8 +17,8 @@ use crate::update::Observation;
 /// there never observes attitude through the arm. Here it does, and a zero arm is exactly (28).
 ///
 /// Measured against PX4's form as agreement with each log's own EKF2, which applies the same arm:
-/// on `a299e722`, 0.30 m of arm, `pos_e_rms` is 0.408 m here against 0.448 in PX4's form and 0.650
-/// with no arm ([evidence]).
+/// on `a299e722`, 0.30 m of arm, under PX4's `R` floors, `pos_e_rms` is 0.408 m here against 0.448
+/// in PX4's form and 0.650 with no arm ([evidence]).
 ///
 /// [evidence]: https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#sensor-offsets-as-per-call-arguments
 fn arm(state: &State, antenna: Position<Body>) -> (Vector3<f32>, Matrix3<f32>) {

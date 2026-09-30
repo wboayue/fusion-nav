@@ -913,7 +913,8 @@ the first score, and state what the truth cannot judge.
 ## How defaults get decided
 
 Three defaults were the first to stop being placeholders, and each carries its deciding figure in
-its doc comment and the rest in `DESIGN.md`, "Defaults and their evidence":
+its doc comment (the rest of `ImuNoise`'s and `Initialization`'s in `DESIGN.md`, "Defaults and
+their evidence"):
 `SourceHealth::timeout`'s 2.5 periods (replay showed `eb799954`'s bursting magnetometer flapping
 2826 times at 2.0, and a median period flapping it 14025), `ImuNoise`
 (ArduPilot's bias walks converted from per-step σ to density, which took `2c42096b`'s tilt

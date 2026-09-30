@@ -137,7 +137,7 @@ its own `SourceHealth`. A receiver's height is the half that wanders and the hal
 disputes, and one joint test turns every such dispute into lost horizontal aiding — on
 `2c42096b`, with its barometer fused, 3945 of 4616 fixes, every one of them vertical. PX4 runs
 GNSS position and GNSS height as separate aid sources and ArduPilot gates them apart; `Gates`
-carries the citations and the measurement.
+carries the citations.
 
 The first fix places the origin, under the estimate where there is one, and at the fix itself
 after a start whose window did not show the vehicle at rest, where it is adopted rather than
@@ -273,10 +273,10 @@ chosen the *difference* against the rejected one is the figure that carries the 
 | `reparameterize` (in `update`) | | | the full `G P Gᵀ` cost 864 more of `update`'s frame |
 | `fuse_gnss_velocity` → `update::<3>` | 9504 | | the crate's high-water mark; `fuse_gnss_velocity` is 1416 with `apply_or_recover` out of line, 2384 inlined |
 | `Eskf::observe::<3>` | 1464 | | `Observation::delayed` 752 and `error_dynamics` 400 beneath it; inlined into `fuse_gnss_velocity` it put the high-water mark at 10800 |
-| `Eskf::fuse_heading` | 1224 over `update::<1>`'s 6368 | | with `fuse_course`'s 264 above it, 7856 at the peak, against 7624 when `fuse_mag_heading` did the work in its own 1240-byte frame |
+| `Eskf::fuse_heading` | 1224 over `update::<1>` (6368 in that build) | | with `fuse_course`'s 264 above it, 7856 at the peak, against 7624 when `fuse_mag_heading` did the work in its own 1240-byte frame |
 | `Eskf::adopt_position`, `adopt_velocity` | | | inlined, +976 on `fuse_gnss_position` and +952 on `fuse_gnss_velocity`; out of line they follow `update` rather than stacking on it |
 | `propagate_covariance` | 2832 | 2760 | the largest frame propagation reaches; with `predict` (2168, 2160) and `propagate` (1056) above it the chain is 6056 (5976). With one caller it inlined and the same three temporaries sat in `predict` |
-| `project` | 1952 | 1936 | with `predicted_validity`'s 1856 above and `propagate_covariance` below, 6640; through `coast` the arming query's chain measured 9 KB |
+| `project` | 1952 | 1936 | with `predicted_validity`'s 1856 above and `propagate_covariance` below, 6640; through `coast` the arming query's chain measured 9 KB, over `update::<3>` |
 | `coast` | 2144 | 2136 | with `predict` above and `propagate_covariance` below, 7144 |
 | `enforce_symmetry` | 108 | 0 | the equation form, `(P + Pᵀ)/2`, is 1884 (1820): two 15 × 15 temporaries under `predict` |
 | `init::initial_covariance` | 1120 | | a diagonal-only `P₀` inlined to 80; `Eskf::initialize` is 1224 above it |
@@ -359,8 +359,9 @@ accelerometer, a grounded airframe with its props spinning, reads 1.6 times PX4'
 ### `Gates`
 
 **The split of a GNSS fix.** `2c42096b` is a stationary vehicle whose barometer and receiver
-drift ~20 m apart in height; with both fused under one `Gate<3>` it rejects 3945 of its 4616
-fixes, and the horizontal pair alone fails a `Gate<2>` at `Percentile::P999` on none of them.
+drift ~20 m apart in height; the 3945 of its 4616 fixes a joint `Gate<3>` rejects (above, under
+[GNSS position](#gnss-position)) each pass a `Gate<2>` of the horizontal pair at
+`Percentile::P999`.
 
 **The default percentile, 99.9 %.** GNSS position was replayed at 95 %, 99 %, 99.9 % and a 5σ
 equivalent (`γ` = 31.81 at three degrees of freedom, the two-sided tail of 5σ in one), tested as

@@ -155,9 +155,9 @@ document_links() {
                 line = substr(line, 4)
                 sub(/^[ \t]*/, "", line)
             }
-            split_at = index(line, "]: ")
+            split_at = index(line, "]:")
             if (substr(line, 1, 1) == "[" && split_at > 0) {
-                line = substr(line, split_at + 3)
+                line = substr(line, split_at + 2)
                 sub(/^[ \t]*/, "", line)
                 sub(/[ \t].*$/, "", line)
                 emit(line)
@@ -393,6 +393,7 @@ EOF
     t 1 'a reference definition, bad anchor' "/// [a]: ${blob_prefix}main/target.md#gone" src/lib.rs '*NO ANCHOR*target.md#gone*'
     t 0 'a reference definition' "/// [a]: ${blob_prefix}main/target.md#repeated" src/lib.rs
     t 1 'a Markdown reference definition' '[a]: target.md#gone' doc.md '*NO ANCHOR*'
+    t 1 'a reference definition with no space' '[a]:target.md#gone' doc.md '*NO ANCHOR*'
 
     # A document that cannot be read contributes no links, and must not therefore contribute
     # no complaint: "0 links, all resolved" is the shape of every check that checks nothing.

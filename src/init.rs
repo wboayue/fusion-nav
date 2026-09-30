@@ -72,9 +72,8 @@ pub struct StaticSample {
     /// and a held reading dates from before the epoch it sits on. Holding costs up to one
     /// GNSS interval of span, in either direction.
     ///
-    /// **Stub.** Measured and reported on
-    /// [`Coarse::NotStationary`](Coarse::NotStationary); nothing levels with it. Not built:
-    /// equation (5′), #59.
+    /// **Stub.** Measured and reported on [`Coarse::NotStationary`](Coarse::NotStationary); nothing
+    /// levels with it. Not built: equation (5′), #59.
     pub velocity: Option<Velocity<Ned>>,
 }
 
@@ -595,7 +594,7 @@ impl Measured {
 /// window at worst. A steady turn is still charged exactly: the halves' centres sit half the
 /// window apart wherever the split falls.
 ///
-/// Eight is measured against an exact split: the halves' disagreement moves by up to 4° on the
+/// Eight is measured against an exact split: the halves' disagreement moves by about 4° on the
 /// coarse starts, and the outputs barely do, because it reaches only [`coarse_sigmas`] and only
 /// where it is the largest bound ([evidence]).
 ///
@@ -1064,8 +1063,8 @@ pub enum Coarse {
         /// reads both, and only one of them spoils tilt.
         ///
         /// **Stub.** Reported, not subtracted (equation (5′), #59), so it narrows nothing:
-        /// [`attitude_sigmas`] bounds tilt by how far the window's *averaged* specific
-        /// force is from gravity, and a real `ā_n` is part of what puts it there.
+        /// [`attitude_sigmas`] bounds tilt by how far the window's *averaged* specific force is
+        /// from gravity, and a real `ā_n` is part of what puts it there.
         inertial_accel: Option<Acceleration<Ned>>,
     },
 }
@@ -2861,8 +2860,9 @@ pub(crate) mod tests {
         }
     }
 
-    /// Measured on `thumbv6m` with `-Zprint-type-sizes`, where `u64` and `f64` align to 8 as
-    /// they do on the 64-bit hosts CI runs, so the host's `size_of` pins the same figure.
+    /// The figures `DESIGN.md`, "Measured cost, by function", quotes. Measured on `thumbv6m` with
+    /// `-Zprint-type-sizes`, where `u64` and `f64` align to 8 as they do on the 64-bit hosts CI
+    /// runs, so the host's `size_of` pins the same figure.
     #[test]
     fn the_window_is_the_size_its_documentation_quotes() {
         assert_eq!(core::mem::size_of::<StaticWindow>(), 936);

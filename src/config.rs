@@ -111,12 +111,14 @@ impl Default for ImuNoise {
     /// factor stands for two things this filter does not model: the floors both estimators put
     /// under a receiver's reported accuracy (#105), and vibration, which PX4 meets only by
     /// inflating accelerometer noise on clipping (`covariance.cpp:125-133`). Replay measured both
-    /// spending it: at 0.3× `accel_white`, `2c42096b` peaks at 4.6° of tilt against 2.5°. A change
+    /// spending it: at 0.3× `accel_white`, `2c42096b` vibrating on the ground peaks at 4.6° of tilt
+    /// against 2.5°, and `a299e722`'s raw `R` rejects 493 velocity solutions against 283. A change
     /// that models either is the moment to measure this again.
     ///
     /// The floor the sensors themselves measure,
-    /// [`StaticWindow::noise`](crate::StaticWindow::noise), sits 6 to 230 times below these on the
-    /// corpus, so the factor is measured from below too
+    /// [`StaticWindow::noise`](crate::StaticWindow::noise), sits 9 to 180 times below the
+    /// gyroscope's and 6 to 230 times below the accelerometer's on the corpus, so the factor is
+    /// measured from below too
     /// ([evidence](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#imunoise)).
     fn default() -> Self {
         Self {
