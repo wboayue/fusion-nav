@@ -87,7 +87,7 @@ pub use state::STATES;
 /// ```
 ///
 /// Deliberately excluded, because their names are too generic to glob-import safely:
-/// [`Frame`], [`STATES`], and [`CovarianceMatrix`]. Import those by path, as
+/// [`Frame`] and [`STATES`]. Import those by path, as
 /// [`ConfigBound`], which a caller reads off a [`ConfigError`] far more often than it names.
 pub mod prelude {
     pub use crate::config::{

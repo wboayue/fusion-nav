@@ -231,7 +231,9 @@ The implementation therefore favors:
 
 The only dependency is [`nalgebra`](https://crates.io/crates/nalgebra), built `no_std` with its
 `libm` feature, which supplies the fixed-size matrix algebra and the quaternion type. It fixes the
-MSRV at 1.89. [`defmt`](https://crates.io/crates/defmt) is the one optional dependency, behind a
+MSRV at 1.89. It stays behind the API: `nalgebra` is 0.x, so each minor version is a semver break,
+and a public `Vector3` would make its upgrade this crate's. Vectors, quaternions and the covariance
+cross as arrays, which convert to and from any version's types. [`defmt`](https://crates.io/crates/defmt) is the one optional dependency, behind a
 feature of the same name and off by default, for a target that logs through it.
 
 A 15-state filter requires a `15 × 15` covariance matrix containing 225 scalar values, which in
