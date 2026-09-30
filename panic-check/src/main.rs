@@ -282,7 +282,6 @@ fn surface(state: State, diagnostics: Diagnostics, covariance: &Covariance) {
     let _ = black_box(state.position.x());
     let _ = black_box(state.position.y());
     let _ = black_box(state.position.z());
-    let _ = black_box(state.velocity.vector());
     let _ = black_box(state.gyro_bias.to_array());
     let _ = black_box(Position::<Ned>::zero());
     let _ = black_box(Position::enu(black_box(1.0), black_box(2.0), black_box(3.0)).to_ned());
@@ -298,8 +297,8 @@ fn surface(state: State, diagnostics: Diagnostics, covariance: &Covariance) {
         black_box(2.0),
         black_box(3.0),
     ));
-    let _ = black_box(Velocity::<Ned>::from_vector(black_box(
-        state.velocity.vector(),
+    let _ = black_box(Velocity::<Ned>::from_array(black_box(
+        state.velocity.to_array(),
     )));
     let _ = black_box(VelocityNoise::<Ned>::from_variance(
         black_box(0.1),
@@ -307,6 +306,7 @@ fn surface(state: State, diagnostics: Diagnostics, covariance: &Covariance) {
         black_box(0.3),
     ));
     let _ = black_box(AltitudeNoise::from_variance(black_box(4.0)).variance());
+    let _ = black_box(VelocityNoise::<Ned>::from_sigma(black_box(0.1), 0.2, 0.3).variance());
     let _ = black_box(Radians::from_degrees(black_box(30.0)));
 
     let _ = black_box(Covariance::from_matrix(black_box(*covariance.as_matrix())));

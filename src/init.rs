@@ -340,8 +340,8 @@ impl StaticWindow {
             return None;
         }
         Some(WindowNoise {
-            gyro_white: self.gyro_noise.density()?,
-            accel_white: self.accel_noise.density()?,
+            gyro_white: self.gyro_noise.density()?.into(),
+            accel_white: self.accel_noise.density()?.into(),
             baro: self.baro.noise(),
             blocks: self.gyro_noise.blocks.min(self.accel_noise.blocks),
             baro_readings: self.baro.count,
@@ -393,10 +393,10 @@ impl TryFrom<&[StaticSample]> for StaticWindow {
 pub struct WindowNoise {
     /// Gyroscope white noise per body axis, rad s⁻¹ / √Hz: a floor under
     /// [`ImuNoise::gyro_white`](crate::ImuNoise::gyro_white).
-    pub gyro_white: Vector3<f32>,
+    pub gyro_white: [f32; 3],
     /// Accelerometer white noise per body axis, m s⁻² / √Hz: a floor under
     /// [`ImuNoise::accel_white`](crate::ImuNoise::accel_white).
-    pub accel_white: Vector3<f32>,
+    pub accel_white: [f32; 3],
     /// The barometer readings' variance: a floor under the `R_m` a barometric altitude is
     /// fused with, the white part (24′) multiplies by its correlation factor. `None` under
     /// [`MIN_READINGS`](Self::MIN_READINGS) distinct readings, where the IMU's figures can
@@ -425,12 +425,12 @@ impl defmt::Format for WindowNoise {
         defmt::write!(
             f,
             "WindowNoise {{ gyro_white: ({=f32}, {=f32}, {=f32}), accel_white: ({=f32}, {=f32}, {=f32}), baro: {}, blocks: {=u64}, baro_readings: {=u64} }}",
-            g.x,
-            g.y,
-            g.z,
-            a.x,
-            a.y,
-            a.z,
+            g[0],
+            g[1],
+            g[2],
+            a[0],
+            a[1],
+            a[2],
             self.baro.map(AltitudeNoise::variance),
             self.blocks,
             self.baro_readings
@@ -475,7 +475,7 @@ impl WindowNoise {
     /// [`ImuNoise::gyro_white`]: crate::ImuNoise::gyro_white
     #[must_use]
     pub fn worst_gyro_white(&self) -> f32 {
-        self.gyro_white.max()
+        Vector3::from(self.gyro_white).max()
     }
 
     /// The accelerometer's worst axis, the one density [`ImuNoise::accel_white`] takes.
@@ -483,7 +483,7 @@ impl WindowNoise {
     /// [`ImuNoise::accel_white`]: crate::ImuNoise::accel_white
     #[must_use]
     pub fn worst_accel_white(&self) -> f32 {
-        self.accel_white.max()
+        Vector3::from(self.accel_white).max()
     }
 }
 
@@ -2613,7 +2613,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn assert_close(got: Vector3<f32>, want: Vector3<f32>, tolerance: f32) {
+    fn assert_close(got: [f32; 3], want: Vector3<f32>, tolerance: f32) {
         for (g, w) in got.iter().zip(want.iter()) {
             assert!(((g - w) / w).abs() < tolerance, "{got:?} against {want:?}");
         }
@@ -2653,12 +2653,12 @@ pub(crate) mod tests {
         );
         let reported = noise(&window).expect("twenty still blocks");
         assert!(
-            reported.gyro_white.max() < 1e-6,
+            Vector3::from(reported.gyro_white).max() < 1e-6,
             "{:?}",
             reported.gyro_white
         );
         assert!(
-            reported.accel_white.max() < 1e-5,
+            Vector3::from(reported.accel_white).max() < 1e-5,
             "{:?}",
             reported.accel_white
         );
@@ -2701,8 +2701,8 @@ pub(crate) mod tests {
             |i| accel * flip(i, 5),
         );
         let reported = noise(&window).expect("ten still blocks");
-        assert_eq!(reported.worst_gyro_white(), reported.gyro_white.y);
-        assert_eq!(reported.worst_accel_white(), reported.accel_white.x);
+        assert_eq!(reported.worst_gyro_white(), reported.gyro_white[1]);
+        assert_eq!(reported.worst_accel_white(), reported.accel_white[0]);
     }
 
     /// `seconds` of white noise of density `n_gyro` and `n_accel` on every axis, as a sensor

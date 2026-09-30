@@ -16,10 +16,12 @@
 //! supplies something else — degrees, a receiver's σ. A component of a position is an
 //! `f32` in meters, not a `Meters`.
 //!
-//! The numeric payloads are `nalgebra` types — [`Vector3<f32>`] and
-//! [`UnitQuaternion<f32>`] — so an application already using `nalgebra` can unwrap a
-//! quantity and keep working, and the filter's internals get `nalgebra`'s fixed-size
-//! matrix algebra without a second vector type to convert through.
+//! Components cross the boundary as plain arrays, `[f32; 3]` and a scalar-first `[f32; 4]`,
+//! never as `nalgebra` types. `nalgebra` is 0.x, so each of its minor versions is a semver
+//! break, and a public `Vector3` would tie every integrator to the one this crate builds
+//! against. Arrays convert to and from any version's `SVector`, and glam's and cgmath's
+//! vectors, with `.into()`. Inside, the payloads stay `nalgebra` types, so the equations
+//! keep its fixed-size algebra.
 
 use core::f32::consts::FRAC_1_SQRT_2;
 use core::fmt;
@@ -499,11 +501,16 @@ macro_rules! framed {
         }
 
         impl<F: Frame> $name<F> {
-            #[doc = concat!("From an `nalgebra` vector whose components are in ", $unit, ".")]
+            #[doc = concat!("From components on the axes of `F`, in ", $unit, ".")]
             ///
-            /// The frame is the type parameter, so name it: `Position::<Ned>::from_vector` or
+            /// The frame is the type parameter, so name it: `Position::<Ned>::from_array` or
             /// a binding with a stated type. The frame-named constructors say it for you.
-            pub const fn from_vector(value: Vector3<f32>) -> Self {
+            pub fn from_array(components: [f32; 3]) -> Self {
+                Self::from_vector(components.into())
+            }
+
+            /// Wrap a vector the filter computed on the axes of `F`.
+            pub(crate) const fn from_vector(value: Vector3<f32>) -> Self {
                 Self {
                     value,
                     frame: PhantomData,
@@ -515,15 +522,12 @@ macro_rules! framed {
                 Self::from_vector(Vector3::zeros())
             }
 
-            #[doc = concat!("The components as an `nalgebra` vector, in ", $unit, ".")]
-            pub const fn vector(self) -> Vector3<f32> {
+            /// The components, for the filter's own algebra.
+            pub(crate) const fn vector(self) -> Vector3<f32> {
                 self.value
             }
 
-            #[doc = concat!("The components as an array, in ", $unit, ".")]
-            ///
-            /// For an application on a different `nalgebra` version, or none, so nothing
-            /// ties it to this crate's.
+            #[doc = concat!("The components on the axes of `F`, in ", $unit, ".")]
             pub fn to_array(self) -> [f32; 3] {
                 self.value.into()
             }
@@ -737,8 +741,8 @@ macro_rules! noise3 {
             }
 
             #[doc = concat!("The per-axis variances, in ", $variance_unit, ".")]
-            pub const fn variance(self) -> Vector3<f32> {
-                self.variance
+            pub fn variance(self) -> [f32; 3] {
+                self.variance.into()
             }
 
             /// Whether every variance is a number, neither NaN nor infinite.
@@ -1269,7 +1273,7 @@ mod tests {
         );
         assert_eq!(
             VelocityNoise::from_speed_accuracy(0.5).variance(),
-            Vector3::repeat(0.25)
+            [0.25; 3]
         );
         assert_eq!(
             AltitudeNoise::from_sigma(2.0),
@@ -1295,7 +1299,7 @@ mod tests {
         );
         assert_eq!(
             VelocityNoise::clamped(0.02, 0.02, within(0.5, 50.0), within(0.5, 50.0)).variance(),
-            Vector3::repeat(0.25)
+            [0.25; 3]
         );
         // Per axis, so PX4's 1.5 vertical ratio survives the bounds it is applied under.
         assert_eq!(
@@ -1339,7 +1343,7 @@ mod tests {
     fn bounds_the_wrong_way_round_saturate_rather_than_panicking() {
         assert_eq!(
             VelocityNoise::clamped(1.0, 1.0, within(10.0, 5.0), within(10.0, 5.0)).variance(),
-            Vector3::repeat(25.0)
+            [25.0; 3]
         );
     }
 

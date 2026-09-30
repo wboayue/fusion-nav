@@ -153,8 +153,8 @@ pub(crate) fn velocity_observation(
         y: solution.vector() - (state.velocity.vector() + r * turning),
         h,
         h_b: SVector::<f32, 3>::zeros(),
-        r_m: noise.variance(),
-        r_gain: noise.variance(),
+        r_m: noise.variance().into(),
+        r_gain: noise.variance().into(),
     }
 }
 

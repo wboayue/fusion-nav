@@ -2013,8 +2013,12 @@ impl Eskf {
     /// IMU the same way, and corrects each aiding source with this bias-corrected rate
     /// (`EKF/aid_sources/gnss/gps_control.cpp:313-318` at `c4e4ef98`).
     ///
+    /// The algebra is the application's own; `nalgebra` here, reached through arrays so that
+    /// its version is the application's too.
+    ///
     /// ```
     /// use fusion_nav::prelude::*;
+    /// use nalgebra::Vector3;
     /// # let mut filter = Eskf::default();
     /// # let dt = Seconds::from_secs(0.0025);
     /// # let (level, gravity) = (AngularRate::zero(), Acceleration::body(0.0, 0.0, -GRAVITY));
@@ -2030,15 +2034,16 @@ impl Eskf {
     /// # let imu = ImuSample::from_rates(at(801), AngularRate::body(0.0, 0.0, 0.5), gravity, dt);
     /// # assert!(filter.predict(imu).is_propagated());
     /// // The centre of mass, 0.2 m behind the IMU: measured on the airframe.
-    /// let r = Position::body(-0.2, 0.0, 0.0).vector();
+    /// let r = Vector3::from(Position::body(-0.2, 0.0, 0.0).to_array());
     ///
     /// // None before the first step and across a gap, where no sample says how fast the
     /// // vehicle turned.
     /// if let Some(omega) = filter.angular_rate() {
     ///     let state = filter.state();
     ///     let rotation = state.attitude.body_to_ned();
-    ///     let position = state.position.vector() + rotation * r;
-    ///     let velocity = state.velocity.vector() + rotation * omega.vector().cross(&r);
+    ///     let position = Vector3::from(state.position.to_array()) + rotation * r;
+    ///     let omega = Vector3::from(omega.to_array());
+    ///     let velocity = Vector3::from(state.velocity.to_array()) + rotation * omega.cross(&r);
     ///     // Yawing at 0.5 rad/s, a point 0.2 m aft swings sideways at 0.1 m/s.
     ///     assert!((velocity.norm() - 0.1).abs() < 1e-3);
     /// #   let _ = position;
@@ -2376,7 +2381,7 @@ impl Eskf {
                 ErrorState::VelocityEast,
                 ErrorState::VelocityDown,
             ],
-            noise.variance().into(),
+            noise.variance(),
         );
     }
 

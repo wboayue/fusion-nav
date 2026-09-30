@@ -549,7 +549,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     replay.site = origin_of(&text);
     if antenna_from_header {
         replay.antenna = antenna_of(&text).unwrap_or_default();
-        if !replay.antenna.vector().iter().all(|v| v.is_finite()) {
+        if !replay.antenna.to_array().iter().all(|v| v.is_finite()) {
             return Err("the `# GNSS antenna` header is not a finite offset".into());
         }
     }
@@ -1916,7 +1916,7 @@ impl Replay {
                                 "GNSS puts the vehicle's own acceleration at {:.3} m/s^2 \
                                  ({:.2}, {:.2}, {:.2} NED), which in-motion levelling would \
                                  subtract",
-                                accel.vector().norm(),
+                                Vector3::from(accel.to_array()).norm(),
                                 accel.x(),
                                 accel.y(),
                                 accel.z(),
@@ -2612,11 +2612,11 @@ fn error_state(state: &State, truth: &TruthRow) -> SVector<f32, STATES> {
     let blocks = [
         (
             ErrorState::PositionNorth,
-            truth.position - state.position.vector(),
+            truth.position - Vector3::from(state.position.to_array()),
         ),
         (
             ErrorState::VelocityNorth,
-            truth.velocity - state.velocity.vector(),
+            truth.velocity - Vector3::from(state.velocity.to_array()),
         ),
         (
             ErrorState::AttitudeX,
@@ -2626,15 +2626,15 @@ fn error_state(state: &State, truth: &TruthRow) -> SVector<f32, STATES> {
         // it does, so the zero is never scored as a perfect estimate.
         (
             ErrorState::AccelBiasX,
-            truth
-                .accel_bias
-                .map_or_else(Vector3::zeros, |bias| bias - state.accel_bias.vector()),
+            truth.accel_bias.map_or_else(Vector3::zeros, |bias| {
+                bias - Vector3::from(state.accel_bias.to_array())
+            }),
         ),
         (
             ErrorState::GyroBiasX,
-            truth
-                .gyro_bias
-                .map_or_else(Vector3::zeros, |bias| bias - state.gyro_bias.vector()),
+            truth.gyro_bias.map_or_else(Vector3::zeros, |bias| {
+                bias - Vector3::from(state.gyro_bias.to_array())
+            }),
         ),
     ];
     for (first, values) in &blocks {
@@ -3307,7 +3307,8 @@ impl Scoring {
             return None;
         }
         let truth = self.truth.near(t)?;
-        let e = fix.vector() - (truth.position + truth.attitude * antenna.vector());
+        let e = Vector3::from(fix.to_array())
+            - (truth.position + truth.attitude * Vector3::from(antenna.to_array()));
         let horizontal = e.x * e.x / variance[0] + e.y * e.y / variance[1];
         let height = e.z * e.z / variance[2];
         let bar = accuracy.position.as_meters();
@@ -3945,20 +3946,20 @@ mod tests {
         // A 5 cm RTK fix: horizontal floored at p, vertical at 1.5 p — not at p, which is
         // what one floor for both axes would give.
         let fix = px4.position([0.0025, 0.0025, 0.0025]).variance();
-        assert_eq!(sigmas([fix.x, fix.y, fix.z]), [0.5, 0.5, 0.75]);
+        assert_eq!(sigmas(fix), [0.5, 0.5, 0.75]);
         // A 40 m claim is capped at `no_aid` on both axes.
         let wild = px4.position([1600.0, 1600.0, 1600.0]).variance();
-        assert_eq!(sigmas([wild.x, wild.y, wild.z]), [10.0, 10.0, 10.0]);
+        assert_eq!(sigmas(wild), [10.0, 10.0, 10.0]);
         // Velocity floors first, then widens vertical: 0.1 m/s reads 0.3 / 0.45, where
         // widening first and flooring after would read 0.3 / 0.3.
         let slow = px4.velocity([0.01, 0.01, 0.01]).variance();
-        assert_eq!(sigmas([slow.x, slow.y, slow.z]), [0.3, 0.3, 0.45]);
+        assert_eq!(sigmas(slow), [0.3, 0.3, 0.45]);
         // A NaN is not floored into a fix: `f32::max` would return the floor.
-        assert!(px4.position([f32::NAN, 1.0, 1.0]).variance().x.is_nan());
-        assert!(px4.velocity([-1.0, 1.0, 1.0]).variance().x < 0.0);
+        assert!(px4.position([f32::NAN, 1.0, 1.0]).variance()[0].is_nan());
+        assert!(px4.velocity([-1.0, 1.0, 1.0]).variance()[0] < 0.0);
         // `Raw` is the row, untouched.
         let raw = RPolicy::Raw.velocity([0.01, 0.01, 0.01]).variance();
-        assert_eq!(sigmas([raw.x, raw.y, raw.z]), [0.1, 0.1, 0.1]);
+        assert_eq!(sigmas(raw), [0.1, 0.1, 0.1]);
     }
 
     #[test]
@@ -4273,9 +4274,9 @@ mod tests {
         assert_eq!(key(&replay.summary(), "an"), "measured");
         let accel = replay.inertial_accel().expect("ā_n measured");
         assert!(
-            (accel.x() - 2.0).abs() < 1e-3 && accel.vector().norm() > 1.9,
+            (accel.x() - 2.0).abs() < 1e-3 && Vector3::from(accel.to_array()).norm() > 1.9,
             "2 m/s over 1 s, north: {:?}",
-            accel.vector()
+            Vector3::from(accel.to_array())
         );
     }
 
