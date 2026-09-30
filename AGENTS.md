@@ -469,15 +469,31 @@ per question answered, never per importance.
   deciding figure in a sentence; the per-log breakdown, the table, the alternatives measured and
   rejected go to the document that owns the decision, and the comment links the heading. That
   document is one of three: the `GOALS.md` decision, where one exists; `DESIGN.md`, "Defaults and
-  their evidence", under a heading named for the item (a repeated heading's bare anchor is
-  refused by `tools/check-anchors.sh`, since it moves); or a `data/manifest.txt` note. Stack frames, `.text` and operation counts go to `DESIGN.md`,
-  "Measured cost, by function", and the comment keeps why its form was chosen. Pending work is one
-  line, "Not built: #N", with at most a clause naming what would build it; the argument for waiting belongs to the issue, or to `GOALS.md` if it
-  outlives it. The test is a paragraph's subject: a log or a byte count, rather than the code, is
-  the paragraph that moves. Test modules are exempt: a fixture's comment saying which mutation it
+  their evidence", under a heading named for the item (a repeated heading's bare anchor is refused
+  by `tools/check-anchors.sh`, since it moves); or a `data/manifest.txt` note. Stack frames, `.text`
+  and operation counts go to `DESIGN.md`, "Measured cost, by function", and the comment keeps why
+  its form was chosen. Pending work is one line, "Not built: #N", with at most a clause naming what
+  would build it; the argument for waiting belongs to the issue, or to `GOALS.md` if it outlives
+  it. The test is a paragraph's subject: a log or a byte count, rather than the code, is the
+  paragraph that moves. Test modules are exempt: a fixture's comment saying which mutation it
   survives stays. Links are absolute (docs.rs serves no siblings) and reference-style
   (`[measured]: https://…` at the block's end), and `tools/check-anchors.sh` resolves them in
   `src/` as in the Markdown.
+
+**Moving evidence is an audit, not a cut and paste.** #187 moved 263 figures, and the move found
+three things a copy would have carried over:
+- **Two copies had already diverged.** `mag.rs` and `EQUATIONS.md` both quoted `moving_start`'s
+  gain from (36′), from the same commit, and disagreed (1.720° against 1.665°); only
+  `data/scenarios.txt` said why. A figure with two homes is the rot one home prevents: when a
+  destination already states it, cut the copy rather than moving it.
+- **Context was carrying a date.** "The five logs in `data/manifest.txt`", "the thirteen scenarios",
+  fixes "still rejected" that #52 now refuses as `OutOfHorizon`: each was true where it sat, beside
+  code of its time, and read as current once lifted into a section of its own. A moved figure
+  takes a label for what it was measured on, or is re-measured.
+- **Deleted evidence fails silently**, so the PR proves nothing was lost. A script took every log
+  hash, `#N` and multi-digit number on the removed comment lines and required each to appear in
+  `src/` or a tracked document, and every removed sentence's figures to share one paragraph
+  there. Name each miss in the PR as placed or as a cut duplicate, with where the original lives.
 
 ## Commands
 
