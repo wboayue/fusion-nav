@@ -201,9 +201,9 @@ use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
+use fusion_nav::STATES;
 use fusion_nav::prelude::*;
-use fusion_nav::{CovarianceMatrix, STATES};
-use nalgebra::{Quaternion, SVector, UnitQuaternion, Vector3};
+use nalgebra::{Quaternion, SMatrix, SVector, UnitQuaternion, Vector3};
 
 /// Capacity of the initialization window, in samples.
 ///
@@ -332,6 +332,16 @@ impl RPolicy {
 
 /// Reads one estimate column out of a `State`.
 type Column = fn(&State) -> f32;
+
+/// The error covariance as the harness's own algebra reads it.
+type CovarianceMatrix = SMatrix<f32, STATES, STATES>;
+
+/// The filter's covariance as `nalgebra`'s. Built entry by entry because `to_array` is rows
+/// and `nalgebra`'s `From` for an array reads columns, which would score the transpose.
+fn matrix(covariance: &Covariance) -> CovarianceMatrix {
+    let p = covariance.to_array();
+    CovarianceMatrix::from_fn(|row, column| p[row][column])
+}
 
 /// The filter's attitude as `nalgebra`'s, for the harness's own algebra. Unchecked, so the
 /// rotation scored is the filter's to the last bit: the getter hands back what it stores.
@@ -2914,7 +2924,7 @@ impl Score {
                 f64::from(error.fixed_rows::<BLOCK>(GyroBiasX.index()).norm_squared());
         }
 
-        let p = covariance.as_matrix();
+        let p = matrix(covariance);
         for i in 0..STATES {
             let unknown = match i / BLOCK {
                 3 => truth.accel_bias.is_none(),
@@ -2937,7 +2947,7 @@ impl Score {
             .into_iter()
             .enumerate()
         {
-            epsilon[block] = nees(&error, p, first);
+            epsilon[block] = nees(&error, &p, first);
             if let Some(nees) = epsilon[block] {
                 self.nees[block] += nees;
                 self.nees_epochs[block] += 1;
@@ -5336,7 +5346,7 @@ mod tests {
         let mut p = CovarianceMatrix::identity();
         p[(0, 1)] = 0.99;
         p[(1, 0)] = 0.99;
-        let covariance = Covariance::from_matrix(p);
+        let covariance = Covariance::from_array(p.transpose().into());
         let truth = truth_offset(1.0, -1.0, 0.0);
         let score = score_one(&state_at(0.0, 0.0, 0.0), &covariance, &truth);
         assert_eq!(
@@ -5355,7 +5365,7 @@ mod tests {
         for i in 0..3 {
             p[(i, i)] = 0.0;
         }
-        let covariance = Covariance::from_matrix(p);
+        let covariance = Covariance::from_array(p.transpose().into());
         let score = score_one(
             &state_at(0.0, 0.0, 0.0),
             &covariance,

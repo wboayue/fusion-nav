@@ -29,7 +29,7 @@ pub use prelude::*;
 
 pub use config::ConfigBound;
 pub use frames::Frame;
-pub use state::{CovarianceMatrix, STATES};
+pub use state::STATES;
 
 /// Everything needed to write an integration loop, in one import.
 ///

@@ -2887,7 +2887,7 @@ mod tests {
 
     #[test]
     fn a_seed_that_is_not_symmetric_is_committed_symmetric() {
-        let mut p = crate::CovarianceMatrix::from_diagonal_element(0.1);
+        let mut p = crate::state::CovarianceMatrix::from_diagonal_element(0.1);
         p[(0, 1)] = 0.01;
         p[(1, 0)] = 0.03;
         let mut filter = Eskf::default();

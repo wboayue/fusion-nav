@@ -309,8 +309,7 @@ fn surface(state: State, diagnostics: Diagnostics, covariance: &Covariance) {
     let _ = black_box(VelocityNoise::<Ned>::from_sigma(black_box(0.1), 0.2, 0.3).variance());
     let _ = black_box(Radians::from_degrees(black_box(30.0)));
 
-    let _ = black_box(Covariance::from_matrix(black_box(*covariance.as_matrix())));
-    let _ = black_box(covariance.as_matrix());
+    let _ = black_box(Covariance::from_array(black_box(covariance.to_array())));
     let _ = black_box(covariance.get(ErrorState::PositionNorth, ErrorState::VelocityDown));
     let _ = black_box(covariance.variance(ErrorState::GyroBiasZ));
     let _ = black_box(ErrorState::GyroBiasZ.index());

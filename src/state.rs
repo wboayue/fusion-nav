@@ -102,7 +102,7 @@ pub enum ErrorState {
 }
 
 impl ErrorState {
-    /// The index of this component, for indexing [`Covariance::as_matrix`].
+    /// The index of this component, for indexing [`Covariance::to_array`].
     pub const fn index(self) -> usize {
         self as usize
     }
@@ -110,8 +110,8 @@ impl ErrorState {
 
 /// The 15 x 15 error covariance `P`, in the [`ErrorState`] ordering.
 ///
-/// 900 bytes in `f32`. Returned by reference for that reason.
-pub type CovarianceMatrix = SMatrix<f32, STATES, STATES>;
+/// 900 bytes in `f32`, so the filter hands it around by reference.
+pub(crate) type CovarianceMatrix = SMatrix<f32, STATES, STATES>;
 
 /// The error covariance, with named access to its components.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -130,8 +130,15 @@ impl Covariance {
         Self(CovarianceMatrix::from_diagonal(&variances))
     }
 
-    /// Wrap a matrix. Not checked for symmetry or positive-definiteness.
-    pub const fn from_matrix(p: CovarianceMatrix) -> Self {
+    /// From rows, `p[row][column]` in the [`ErrorState`] ordering. Not checked for symmetry
+    /// or positive-definiteness here; [`Eskf::initialize_from`](crate::Eskf::initialize_from)
+    /// checks what it needs of a seed.
+    pub fn from_array(p: [[f32; STATES]; STATES]) -> Self {
+        Self(CovarianceMatrix::from_fn(|row, column| p[row][column]))
+    }
+
+    /// Wrap a matrix the filter computed.
+    pub(crate) const fn from_matrix(p: CovarianceMatrix) -> Self {
         Self(p)
     }
 
@@ -219,8 +226,21 @@ impl Covariance {
         }
     }
 
-    /// The whole matrix, for callers that want to do their own algebra.
-    pub const fn as_matrix(&self) -> &CovarianceMatrix {
+    /// The whole matrix as rows, `p[row][column]` in the [`ErrorState`] ordering, for callers
+    /// that do their own algebra.
+    ///
+    /// Rows rather than `nalgebra`'s storage, which is an array of columns, because `P` is
+    /// symmetric only to its last bit: a caller indexing columns as rows would read the
+    /// transpose, and nothing would say so. The same trap is on the way into `nalgebra`, whose
+    /// `From<[[f32; 15]; 15]>` also reads columns: `SMatrix::from_fn(|i, j| p[i][j])` is the
+    /// conversion. A copy, 900 bytes on the caller's stack; [`get`](Self::get) reads one entry
+    /// without it.
+    pub fn to_array(&self) -> [[f32; STATES]; STATES] {
+        core::array::from_fn(|row| core::array::from_fn(|column| self.0[(row, column)]))
+    }
+
+    /// The whole matrix, for the filter's own algebra.
+    pub(crate) const fn as_matrix(&self) -> &CovarianceMatrix {
         &self.0
     }
 
@@ -378,6 +398,23 @@ mod tests {
 
     fn attitude_of(roll: f32, pitch: f32, yaw: f32) -> Attitude {
         Attitude::from_quaternion(UnitQuaternion::from_euler_angles(roll, pitch, yaw))
+    }
+
+    #[test]
+    fn the_array_is_rows_in_and_out() {
+        // Asymmetric, so an array read as columns anywhere reads the transpose and fails.
+        let mut rows = [[0.0; STATES]; STATES];
+        rows[ErrorState::PositionNorth.index()][ErrorState::GyroBiasZ.index()] = 1.0;
+        let covariance = Covariance::from_array(rows);
+        assert_eq!(
+            covariance.get(ErrorState::PositionNorth, ErrorState::GyroBiasZ),
+            1.0
+        );
+        assert_eq!(
+            covariance.get(ErrorState::GyroBiasZ, ErrorState::PositionNorth),
+            0.0
+        );
+        assert_eq!(covariance.to_array(), rows);
     }
 
     #[test]
