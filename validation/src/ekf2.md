@@ -105,14 +105,14 @@ EKF2 refuses more than this filter under either setting.
 
 A quadrotor with a second RTK receiver, flying {{summary 2b2ad123/raw extent}} m out at up to
 {{summary 2b2ad123/raw speed_max}} m/s. The receiver reports centimetre accuracy on every fix,
-yet its position now and then slips one or two tenths of a second against its own velocity: at
-10 m/s, a metre along the track and nothing across it, and the slip later comes straight back.
-Trusting the receiver fully, this filter refuses
-{{summary 2b2ad123/raw rejected_gnss_pos}} fixes, and every one sits on such a slip or on the
-receiver's return from one. Half refuse the slip itself, and those refusals can be seen to be
-right: a step that reverts within seconds was never the vehicle moving. The other half are the
-cost of trusting the receiver: twice the filter followed a slip small enough to pass the gate,
-then refused the receiver's return until it adopted a fix. With EKF2's
+yet its position now and then runs one or two tenths of a second off its own velocity, for
+seconds at a time: at 10 m/s, a metre or two along the track and nothing across it, before it
+comes back. Trusting the receiver fully, this filter refuses
+{{summary 2b2ad123/raw rejected_gnss_pos}} fixes, and every one is such a fix or the receiver's
+return from one. Some refuse the offset fix itself, and those refusals can be seen to be right:
+a step that reverts within seconds was never the vehicle moving. The others are the cost of
+trusting the receiver: where an offset was small enough to pass the gate the filter followed it,
+then refused the receiver's return, once until it adopted a fix. With EKF2's
 floors it refuses {{summary 2b2ad123/px4 rejected_gnss_pos}}, and EKF2 refuses none. Over the
 whole flight the two filters agree to
 {{agreement 2b2ad123/raw pos_n_rms}} m RMS north.

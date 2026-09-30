@@ -607,13 +607,13 @@ for three measured reasons:
 - **It costs most or all of the only GNSS rejections the multirotors have.** `a299e722` (314
   velocities, 70 positions) and `2b2ad123` (18 positions, 1 velocity) are the only non-zero GNSS
   counts across the nine multirotor and SITL logs, and under their own floors they read 40 and 0.
-  `2b2ad123`'s show what that erases in both directions. Its receiver's position slips whole
-  100 ms epochs against its own velocity, 0.3 to 2 m under a 1.4 to 2.0 cm σ, and the gate sees
-  each slip. Nine rejections refuse a slip, which the floors would fuse. The other nine refuse the
-  receiver's return after the state followed a slip the gate let through, and end in the log's one
-  recovery, which the floors would have prevented (#169, its manifest entry). So raw `R` pays for
-  a receiver whose σ does not cover its own epoch errors with a lockout, where a floor hides the
-  fault from the gate altogether. (Of
+  `2b2ad123`'s show what that erases in both directions. Its receiver's position runs one or two
+  epochs off its own velocity for seconds at a time, under its centimetre σ. Eight rejections
+  refuse an offset fix, which the floors would fuse. Ten refuse the receiver's return after the
+  state followed an offset the gate let through, and one such episode locks the filter out until
+  the log's one recovery, which the floors would have prevented (#169; its manifest entry has the
+  figures, taken at the converter's 1 Hz, #194). So raw `R` pays for a receiver whose σ does not
+  cover its own epoch errors with a lockout, where a floor hides the fault from the gate. (Of
   the four airframe logs, measured at `Recovery::OFF` with every fix fused as white, the floors
   correct one: `093e806a`'s 860 position rejections read 92 under them, where recovery alone read
   291, and 278 with (24′). They leave `4b473e91`'s
