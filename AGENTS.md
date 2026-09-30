@@ -254,12 +254,16 @@ first real check) and `093e806a` (fixed-wing, 1.14 km, a receiver PX4's R floors
 Declination now follows EKF2's own rule, PX4's table at the first fix. What #86 left open is #145:
 `9eb08bdb`'s unexplained position rejections and a heavy-lift log pairing vibration with a
 magnetometer glitch. Its `2b2ad123` entered in #168, the thirteenth log: its old lockout was the
-IMU gaps, which coasting removes, and it is the corpus's second RTK receiver, 5.13 km out. Its 18
-raw rejections split evenly. Nine are right, fixes stepping metres beyond the receiver's own
-velocity and returning, held through while EKF2 under its floor is pulled toward them. Nine are
-this filter lagging a hard acceleration after a GNSS velocity rejection and refusing fixes EKF2
-agrees with until recovery (#169). The review of #168 found the first draft had called all 18
-right; comparing each refusal with EKF2 at the fix's own time is what split them.
+IMU gaps, which coasting removes, and it is the corpus's second RTK receiver, 5.13 km out.
+#169 (#193) found what its 18 raw rejections are: the receiver's position runs one or two 100 ms
+epochs off its own velocity for seconds at a time, under a 1.4–2.0 cm σ. Eight refuse an offset
+fix; ten refuse the receiver's return after the filter followed one, one episode into
+`recovered=1`. It is the price of `r_policy=raw` (`data/README.md`), and detecting it is #181's,
+for which `2b2ad123` is the case to fire on and `89a498ce` the one not to. The investigation
+found #194: the converter fuses `sensor_gps`, which the default logger keeps at 1 Hz, where EKF2
+fused `vehicle_gps_position`, kept at 5–10 Hz, on 9 of 13 logs, so every GNSS key there reads a
+filter aided a fifth to a tenth as often as EKF2 (`2b2ad123` at 6.1 Hz: 741 rejections, none
+recovered).
 
 **Every source the crate publishes is fused; no `fuse_*` is a stub.** Initialization is real —
 equations (5)–(8), so the filter starts at the attitude and biases the window yields — `predict`
@@ -826,6 +830,12 @@ under the correction, so the figure was identical either way and could not have 
 error it was cited as ruling out. `f16771dd`, where the period moved 12 ms → 10 ms, was the log
 that could have. A statistic that reads the same whether or not the code is right is not weak
 evidence, it is none, and quoting it is worse than quoting nothing because it reads as checked.
+
+**An ablation that removes the rows it counts proves nothing about them.** #169's first draft
+dropped eleven off-level fixes and quoted 19 rejections falling to 2, but seven of the eleven
+were rejections themselves. The review's version drops only the four *accepted* ones, the
+claimed cause, and a control of four ordinary fixes: 19 → 9 against 19 → 19. Remove the cause,
+count the effect elsewhere, and run the same removal on rows that should not matter.
 
 **A simulator's IMU cannot judge a method that reads one sample.** Its noise is ~58 times under
 `ImuNoise`'s defaults and it has no vibration, so a method that uses the last IMU sample and one
