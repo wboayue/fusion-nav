@@ -2332,7 +2332,7 @@ const TRUTH_COLUMNS: [&str; STATES + 1] = [
 /// How near a truth row must be to a GNSS fix to be taken as the truth at its time, in
 /// seconds.
 ///
-/// A fix is judged against truth taken at its own time, never at a neighbouring row: the
+/// A fix is judged against truth taken at its own time, never at the nearest row alone: the
 /// simulator writes both at the same instants, and UrbanNav's receivers and its SPAN-CPT
 /// both report on the UTC second. So this only absorbs a writer's rounding, the simulator's
 /// four decimals. A fix between truth rows is judged against the two interpolated, within
@@ -2342,13 +2342,13 @@ const TRUTH_TOLERANCE: f64 = 1e-4;
 
 /// The widest pair of truth rows a fix between them is interpolated across, in seconds.
 ///
-/// INSANE's truth is at RTK2's epochs, 125 ms apart with one in a hundred intervals at
-/// 250 ms, and its fixes land between them: without interpolation 1799 of `mars_19`'s 1801
-/// went unjudged. 0.3 s spans one dropped row and not a gap. Linear over it, a vehicle
-/// accelerating at `a` is misplaced by at most `a h² / 8`, 3 cm at 3 m s⁻². On the three
-/// sequences `rms_gnss_pos` moves by at most 0.019 m between a 0.2 s span and none at all,
-/// while 0.2 s judges 753 of `outdoor_1`'s fixes where 0.3 s judges 958 and no limit 968:
-/// the rest are outside the truth's time range.
+/// INSANE's truth is at RTK2's epochs, 125 ms apart and 250 ms at up to one interval in
+/// eight (12 % on `outdoor_1`, 6 % on `mars_19`, 0.5 % on `mars_1`), and its fixes land
+/// between them: without interpolation 1799 of `mars_19`'s 1801 went unjudged. 0.3 s spans
+/// one dropped row and not a gap. Linear over it, a vehicle accelerating at `a` is misplaced
+/// by at most `a h² / 8`, 3 cm at 3 m s⁻². On the three sequences `rms_gnss_pos` moves by at
+/// most 0.019 m across a 0.2 s span, 0.3 s and none at all, while 0.2 s judges 753 of
+/// `outdoor_1`'s fixes where 0.3 s judges 958 and no limit 968.
 const TRUTH_SPAN: f64 = 0.3;
 
 /// Components in one NEES block: position, velocity and attitude are three each.
@@ -2407,21 +2407,29 @@ impl TruthRow {
     }
 }
 
+/// Where the truth puts the IMU and how it is turned: all a fix is judged on, since the
+/// antenna is `p + R(q) a`.
+#[derive(Clone, Copy)]
+struct Pose {
+    position: Vector3<f32>,
+    attitude: UnitQuaternion<f32>,
+}
+
 impl TruthRow {
-    /// The truth at `t` between this row and a later one: linear in position, velocity and
-    /// bias, and along the shortest rotation in attitude. A bias neither row knows stays
-    /// unknown.
-    fn between(&self, later: &Self, t: f64) -> Self {
+    fn pose(&self) -> Pose {
+        Pose {
+            position: self.position,
+            attitude: self.attitude,
+        }
+    }
+
+    /// The pose at `t` between this row and a later one: linear in position, and along the
+    /// shortest rotation in attitude.
+    fn pose_between(&self, later: &Self, t: f64) -> Pose {
         let f = ((t - self.t) / (later.t - self.t)) as f32;
-        let lerp = |a: Vector3<f32>, b: Vector3<f32>| a + (b - a) * f;
-        let bias = |a: Option<Vector3<f32>>, b: Option<Vector3<f32>>| Some(lerp(a?, b?));
-        Self {
-            t,
-            position: lerp(self.position, later.position),
-            velocity: lerp(self.velocity, later.velocity),
+        Pose {
+            position: self.position + (later.position - self.position) * f,
             attitude: self.attitude.slerp(&later.attitude, f),
-            accel_bias: bias(self.accel_bias, later.accel_bias),
-            gyro_bias: bias(self.gyro_bias, later.gyro_bias),
         }
     }
 }
@@ -2632,23 +2640,23 @@ impl Truth {
         }
     }
 
-    /// The truth at a fix's instant, found by search: a fix is asked for out of step with the
-    /// epochs' cursor, and at most once.
+    /// The truth's pose at a fix's instant, found by search: a fix is asked for out of step
+    /// with the epochs' cursor, and at most once.
     ///
     /// The row within [`TRUTH_TOLERANCE`] where there is one, so a file written at the fixes'
     /// own times is read as written. Otherwise the two rows either side interpolated, where
     /// they are at most [`TRUTH_SPAN`] apart, and `None` across a gap or outside the file.
-    fn at_fix(&self, t: f64) -> Option<TruthRow> {
+    fn at_fix(&self, t: f64) -> Option<Pose> {
         let after = self.rows.partition_point(|row| row.t < t - TRUTH_TOLERANCE);
         if let Some(row) = self
             .rows
             .get(after)
             .filter(|row| (row.t - t).abs() <= TRUTH_TOLERANCE)
         {
-            return Some(*row);
+            return Some(row.pose());
         }
         let (a, b) = (self.rows.get(after.checked_sub(1)?)?, self.rows.get(after)?);
-        (b.t - a.t <= TRUTH_SPAN).then(|| a.between(b, t))
+        (b.t - a.t <= TRUTH_SPAN).then(|| a.pose_between(b, t))
     }
 }
 
@@ -3151,8 +3159,8 @@ const BAD_HEIGHT: Gate<1> = Gate::<1>::at(Percentile::P999);
 ///
 /// Counts of verdicts, like `rejected_`, and only of those the gate or an adoption decided:
 /// a refusal (before initialization, outside the history) judged nothing. A decided fix with
-/// no truth at its time ([`Truth::at_fix`]) is `unjudged_`, so a clock or a truth rate that misses the fixes
-/// reads as that rather than as nothing bad.
+/// no truth at its time ([`Truth::at_fix`]) is `unjudged_`, so a clock or a truth rate that
+/// misses the fixes reads as that rather than as nothing bad.
 ///
 /// The recovery split reads the run of rejections since the last accepted or adopted fix,
 /// the adopted fix included: an adoption ending a run mostly of good fixes ended a lockout,

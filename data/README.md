@@ -772,7 +772,9 @@ truth is built from. Two things it does that no other converter does: it moves t
 the IMU's clock by a lag it measures per sequence (80 to 170 ms), and it builds the truth's
 velocity from the RTK baseline's midpoint so the truth's tilt error stays out of it.
 
-The truth is written at RTK2's epochs, about 7 Hz, and knows no bias. Both files carry a
+The truth is written at RTK2's epochs, about 7 Hz, and knows no bias. The fixes land between
+them, so the harness judges each on the two rows either side interpolated, within
+`TRUTH_SPAN` (`examples/replay.rs`), and `rms_gnss_pos`/`rms_gnss_hgt` are the fixes' own error. Both files carry a
 `fusion-nav` marker naming the sequence and a digest of its archive and the calibrations. The
 replay runs under `--declination model`, since the dataset's own declination has the wrong sign
 at Klagenfurt, and under raw `R` only: every fix claims more than PX4's floors, so `px4`

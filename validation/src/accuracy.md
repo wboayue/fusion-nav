@@ -121,9 +121,8 @@ themselves are, where fused that way it would match them. Velocity is more conse
 still, because the dataset's GNSS velocity is horizontal only and states no accuracy, so none
 is fused and velocity is observed only through the fixes.
 Height is where the filter does better than its receiver, because it has a second height
-source: the fixes' height errs by metres, one receiver sitting 8 m high on average, and
-without the barometer the filter's height is as far off as the fixes. The barometers depart
-from the truth by metres too, during the airfield flight's climb and slowly
+source: the fixes' height errs by metres, and the barometer holds the estimate where they
+wander. The barometers depart from the truth by metres too, during the airfield flight's climb and slowly
 through the hover, which is the case the filter's estimated barometric offset exists for.
 
 Attitude is not scored. INSANE builds its attitude truth from the RTK baseline and the same

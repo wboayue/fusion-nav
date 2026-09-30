@@ -560,8 +560,8 @@ flights where (24′) reads 0.47, 0.35 and 0.44, and `outdoor_1`'s `pos_v` is 8.
 1.88. `mars_1`'s receiver claims 0.77 m and errs by 1.87 m RMS (`rms_gnss_pos`, the fixes
 against truth), so what covers it is the correlation (24′) prices, not the receiver's claim. It
 is not free: white, the horizontal error matches the fixes' own (3.95 m against their 3.92 on
-`outdoor_1`), and under (24′) it is 0.05 to 0.37 m RMS worse, which is what an honest covariance cost on a receiver whose error
-persists.
+`outdoor_1`), and under (24′) it is 0.05 to 0.37 m RMS worse, which is what an honest
+covariance cost on a receiver whose error persists.
 
 **What it did not buy.** `harsh_imu` (#149) and `gnss_latency` stopped failing on attitude
 because the covariance widened, not because the error shrank: `harsh_imu`'s tilt moved 1.19° to

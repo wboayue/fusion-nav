@@ -15,17 +15,19 @@
 # horizontal RMS for a covariance that is honest. mars_1's receiver claims 0.77 m and errs by
 # 1.87 m, so it is the correlation that covers it, not the receiver's claim: 143 of its 483
 # fixes are bad against their own R (bad_gnss_pos), and the gate rejects none: it tests a fix
-# against the estimate, which follows the receiver's persistent error, not against truth. Height is the barometer's to hold: the fixes are 8.80, 2.68 and 5.57 m off
-# vertically (rms_gnss_hgt; outdoor_1's receiver 8 m high) against pos_v 1.88, 0.39, 2.04;
-# `--without baro`, outdoor_1 and mars_19 read pos_v 9.35 and 5.72, the fixes' own.
-# The unjudged fixes fall outside the truth's time range (mars_19's truth covers 280 s of 371).
+# against the estimate, which follows the receiver's persistent error, not against truth.
+# Height is the barometer's to hold: the fixes are 8.80, 2.68 and 5.57 m off vertically
+# (rms_gnss_hgt; on average 8.0 m high, 1.9 m low and 5.3 m high) against pos_v 1.88, 0.39
+# and 2.04, and `--without baro` outdoor_1 and mars_19 read pos_v 9.35 and 5.72, the fixes'
+# own. The unjudged fixes fall outside the truth's time range (mars_19's truth covers 280 s of
+# 371), all but 10 and 13, in truth gaps wider than `TRUTH_SPAN` (examples/replay.rs).
 # Velocity is more conservative still (nees_vel 0.03 to 0.07): no GNSS velocity is fused,
 # since the dataset's is horizontal with no accuracy, so velocity is observed only through
 # fixes claiming a median 0.8 to 3.9 m of horizontal sigma.
 #
-# outdoor_1: Klagenfurt's model airfield, 52 s still, a 24 m climb, a receiver 8 m high on
-# average, and a barometer that departs from truth by up to 2.8 m during the climb and
-# returns (5 s means).
+# outdoor_1: Klagenfurt's model airfield, 52 s still, a 24 m climb, a receiver high by
+# metres, and a barometer that departs from truth by up to 2.8 m during the climb and returns
+# (5 s means).
 # mars_1: the receiver claiming the smallest error.
 # mars_19: 280 s of truth over a hover; a barometer drifting 1.8 m from truth, start to end
 # (5 s means); and logging that drops IMU, magnetometer and barometer samples, each gap past
