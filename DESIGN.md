@@ -261,7 +261,9 @@ by the function it measures; the comment keeps the one sentence saying why its f
 These are host-side measurements: #41 measures stack high-water and execution time on hardware,
 and its figures land in this section.
 
-**Stack frames**, `-Zemit-stack-sizes` at `opt-level = 3` (the recipe is under Commands in
+#### Stack frames
+
+Measured with `-Zemit-stack-sizes` at `opt-level = 3` (the recipe is under Commands in
 `AGENTS.md`). A frame moves by tens of bytes with codegen that touches nothing in it (adding
 `update::<1>` moved `reparameterize`'s share without a line of it changing), so where a form was
 chosen the *difference* against the rejected one is the figure that carries the decision.
@@ -292,19 +294,25 @@ block-wise forms that would cut it (of (22), where (20)'s identity and zero bloc
 error dynamics nilpotent; a runtime `M` for `update` in place of a type parameter) are each written
 as the equation reads until #41's figures say a target needs them.
 
-**Sizes.** `P` is 900 bytes, so it is passed by reference, and `Covariance::to_rows` is a copy of
+#### Sizes
+
+`P` is 900 bytes, so it is passed by reference, and `Covariance::to_rows` is a copy of
 that size on the caller's stack. `StaticWindow` is 936 bytes at any rate and length
 (`the_window_is_the_size_its_documentation_quotes` pins it), where a buffered 2 s window at 400 Hz
 is 800 `StaticSample`s of 80 bytes, 64 KB. The history of (23′) is 1.5 KB of `Eskf`.
 
-**Flash**, `.text` on `panic-check`'s ELF (fat LTO) linking the whole public API for `thumbv6m`. A
+#### Flash
+
+`.text` on `panic-check`'s ELF (fat LTO) linking the whole public API for `thumbv6m`. A
 measurement dimension is what costs flash, not a source: the barometer brought `update::<1>` into
 existence for 4.1 %, and the magnetic heading of (34)–(36), sharing it, added 1204 bytes, 2.4 %.
 The `magnetic-model` table is 1408 bytes of `.rodata` and its lookup 1096 of `.text` (1520 on
 `thumbv7em`), about 2.5 KB, at `opt-level = "s"`; the same lookup in `f64` linked 4496 bytes of
 `.text` in software doubles.
 
-**Arithmetic.** (22) as written is of order 6750 multiplications and three 900-byte temporaries
+#### Arithmetic
+
+(22) as written is of order 6750 multiplications and three 900-byte temporaries
 per IMU sample, at up to 400 Hz; a dense `Q` would add 900 bytes and 225 additions to add twelve
 numbers. `project` is ten runs of (22) at the default 1 s horizon, up to 64; a coast is up to 64
 runs landing on one step, 12 for a 1.2 s gap. Each `StaticWindow::push` costs 32 `f64` additions,
@@ -359,8 +367,8 @@ accelerometer, a grounded airframe with its props spinning, reads 1.6 times PX4'
 ### `Gates`
 
 **The split of a GNSS fix.** `2c42096b` is a stationary vehicle whose barometer and receiver
-drift ~20 m apart in height; the 3945 of its 4616 fixes a joint `Gate<3>` rejects (above, under
-[GNSS position](#gnss-position)) each pass a `Gate<2>` of the horizontal pair at
+drift ~20 m apart in height; the 3945 of its 4616 fixes a joint `Gate<3>` rejects
+([GNSS Position](#gnss-position)) each pass a `Gate<2>` of the horizontal pair at
 `Percentile::P999`.
 
 **The default percentile, 99.9 %.** GNSS position was replayed at 95 %, 99 %, 99.9 % and a 5σ
@@ -397,9 +405,10 @@ in the simulator any value passes. Refused, its gaps cost 12 recoveries, 39 reje
 `acceleration`, and what follows it is not: the course turns 44° across the 3.1 s gap at 954 s,
 the heading innovation afterwards sits at −0.60 rad under an `S` that did not grow, and the stale
 heading steers velocity off until the gate turns it down (7 recoveries at `acceleration` 1.0).
-With `rotation` at 0.02 or more and `acceleration` at 2.0 no gap causes a rejection or a recovery;
-the two positions and two velocities still rejected are fixes timestamped inside a gap, fused
-before the IMU sample that ends it. `acceleration` at 1.0 still needs `rotation` at 0.1, and at
+With `rotation` at 0.02 or more and `acceleration` at 2.0 no gap causes a rejection or a recovery.
+When this was measured (#144), two positions and two velocities were still rejected, fixes
+timestamped inside a gap and fused before the IMU sample that ends it; since #52 those are refused
+as `Fusion::OutOfHorizon`, and the log reads `rejected_gnss_pos=0 rejected_gnss_vel=0`. `acceleration` at 1.0 still needs `rotation` at 0.1, and at
 0.5 leaves 7 recoveries at any `rotation`.
 
 `logging_dropout` (1.2 s at 20 m/s in a turn) passes at `acceleration` 0.5 or more whatever the
@@ -426,11 +435,11 @@ correlation. On the corpus it is worth most on `7ce66f0d`, the hand launch level
 
 The floor of (42′) is PX4's values, and the corpus says they sit below anything an honest source
 drives the filter to: across the thirteen logs of `data/manifest.txt` and the thirteen scenarios
-of `examples/simulate.rs`, the smallest variance any state reaches at an epoch is 1.9e-4 m² of
+`examples/simulate.rs` had before `lever_arm` (#170), the smallest variance any state reaches at an epoch is 1.9e-4 m² of
 position on `89a498ce`, an RTK receiver, 1.7e-6 (rad/s)² of gyroscope bias, the bias walk's steady
 state, reached on six logs, 9.0e-5 rad² of attitude on `gnss_heading`, 7.3e-4 (m s⁻²)² of
 accelerometer bias on `093e806a` and 5.6e-4 (m/s)² of velocity on `cd7e0001`. Two to six decades
-of headroom, so `Diagnostics::floored` reads zero on all thirteen, `cd7e0001` included, whose
+of headroom, so `Diagnostics::floored` reads zero on all thirteen logs, `cd7e0001` included, whose
 receiver reports a 0.43 mm/s velocity after touchdown and is fused raw. Measured as σ² from the
 replay output's six-decimal σ columns.
 
@@ -454,7 +463,7 @@ variance, 3.2 % of the sigma, out to a 5 s horizon.
 Past 64 steps of `PROJECTION_STEP`, 6.4 s, a horizon is projected in 64 longer steps. Position
 variance against the same 100 Hz reference: 0.950 at 6.4 s, 0.935 at 10 s, 0.913 at 30 s, 0.907
 at 60 s, 0.902 at 120 s. So a horizon of minutes is answered about 10 % optimistic in the
-variance, 5 % in the sigma, rather than 5 %.
+variance, 5 % in the sigma, where a 5 s horizon at `PROJECTION_STEP` is 6.5 % and 3.2 %.
 
 ### `WindowNoise`
 

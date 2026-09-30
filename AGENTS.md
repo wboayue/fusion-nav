@@ -467,11 +467,12 @@ per question answered, never per importance.
   describes.
 - **One sentence of evidence, and a link to the rest** (#187). Where the number came from is the
   deciding figure in a sentence; the per-log breakdown, the table, the alternatives measured and
-  rejected go to the document that owns the decision (`GOALS.md` Decisions, `DESIGN.md`,
-  "Defaults and their evidence", keyed by the item's name, or a `data/manifest.txt` note), and
-  the comment links the heading. Stack frames, `.text` and operation counts go to `DESIGN.md`,
+  rejected go to the document that owns the decision, and the comment links the heading. That
+  document is one of three: the `GOALS.md` decision, where one exists; `DESIGN.md`, "Defaults and
+  their evidence", under a heading named for the item (a repeated heading's bare anchor is
+  refused by `tools/check-anchors.sh`, since it moves); or a `data/manifest.txt` note. Stack frames, `.text` and operation counts go to `DESIGN.md`,
   "Measured cost, by function", and the comment keeps why its form was chosen. Pending work is one
-  line, "Not built: #N"; the argument for waiting belongs to the issue, or to `GOALS.md` if it
+  line, "Not built: #N", with at most a clause naming what would build it; the argument for waiting belongs to the issue, or to `GOALS.md` if it
   outlives it. The test is a paragraph's subject: a log or a byte count, rather than the code, is
   the paragraph that moves. Test modules are exempt: a fixture's comment saying which mutation it
   survives stays. Links are absolute (docs.rs serves no siblings) and reference-style
@@ -986,11 +987,11 @@ the declination table, and CI builds and tests without it too.
   is tested against a synthetic `H`. One Cholesky factorization of `S` serves the gate and the
   gain, and the gate runs first, so a rejection computes nothing it could commit. `Eskf::apply` is
   the one path that commits what it returns and records it. Its stack frame is the largest in the
-  crate — `update::<3>`, 8088 bytes on `thumbv6m`, `Eskf::apply` itself
-  inlining away, and the high-water mark is `fuse_gnss_velocity` into it at 9504, with `observe`
-  and `apply_or_recover` kept out of line beside it rather than beneath (inlined, 10800) — which is why `reparameterize` applies `G P Gᵀ` block-wise and (30′)'s offset
-  enters (27) in blocks rather than as a 16 × 16 (+4168 bytes measured); every figure is in
-  `DESIGN.md`, "Measured cost, by function", which is where #41's will land.
+  crate (`update::<3>`, `Eskf::apply` itself inlining away), and the high-water mark is
+  `fuse_gnss_velocity` into it, with `observe` and `apply_or_recover` kept out of line beside it
+  rather than beneath; which is why `reparameterize` applies `G P Gᵀ` block-wise and (30′)'s
+  offset enters (27) in blocks rather than as a 16 × 16. Every figure is in `DESIGN.md`,
+  "Measured cost, by function", which is where #41's will land.
 - `src/observation/` — one module per sensor, each forming `y`, `H` and diagonal `R_m` and
   nothing else. `gnss.rs` holds (28) and (29) at the antenna, (28′) and (29′), `baro.rs` holds (30), `mag.rs` holds (34), (35)
   and the levelling variance (36′), and `heading.rs` holds (36), which every heading source

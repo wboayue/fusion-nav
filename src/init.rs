@@ -134,7 +134,7 @@ impl StaticSample {
 /// tilt, against a 0.02 rad prior.
 ///
 /// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function
-/// [counted]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function
+/// [counted]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#arithmetic
 #[derive(Clone, Debug)]
 pub struct StaticWindow {
     /// `Σ f fᵀ`, for the window's scatter about `f̄`; see [`level_variance`].

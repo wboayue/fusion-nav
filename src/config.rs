@@ -554,7 +554,7 @@ impl Default for Coast {
     ///
     /// `rotation` is the corpus's finding rather than the simulator's: `4b473e91`'s course turns
     /// 44° across a 3.1 s gap, and coasted without it the stale heading steers velocity off until
-    /// the gate turns it down, 7 recoveries ([evidence]).
+    /// the gate turns it down, 7 recoveries at half the default `acceleration` ([evidence]).
     ///
     /// [evidence]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#coast
     fn default() -> Self {

@@ -736,7 +736,7 @@ corrects the measurement alone. Measured against PX4's form on the four corpus l
 is off the IMU, as agreement with each log's own EKF2, which applies the same arm: on `a299e722`
 (0.30 m left) under PX4's `R` floors, `pos_e_rms` was 0.650 m with no arm, 0.448 in PX4's form and
 0.408 in this one; on `cd7e0001` (0.29 m aft) the median heading gap was 1.61° with no arm, 0.85°
-and 0.81°. `2c42096b` and `eb799954` read the same either way to the third digit. The simulator
+and 0.81°. `2c42096b` and `eb799954` read the same in either form, to the third digit. The simulator
 cannot choose: on `lever_arm`, a 1 m mast, both give `pos_h` 0.291 m, and `yaw` reads 0.289° in
 PX4's form against 0.296° here, inside the noise of one seed.
 The estimate stays the IMU's, and `Eskf::angular_rate` is what moves it to any other point.
