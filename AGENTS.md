@@ -218,7 +218,7 @@ leaves the window as it was, and answers `is_long_enough` and `is_at_rest` per s
 collects at 400 Hz. The halves `window_drift` compares split at the nearest of 8 block
 boundaries, since a stream does not know its middle: exact at 4096 blocks, every output is
 byte-identical to main, and at 8 only `7ce66f0d` moves, in a last digit, while the drift itself
-moves up to 4° (`BLOCKS` owns the table). That last figure is why the outputs alone were not the
+moves up to 4° (`DESIGN.md`'s `BLOCKS` section owns the table). That last figure is why the outputs alone were not the
 evidence: the drift reaches `coarse_sigmas` only where it is the largest bound, so an unchanged
 line could not have shown the approximation. The barometer's scatter is summed about the first
 reading; the naive one-pass form is 5 × 10⁻⁴ out at 10 km, and the first fixture, 11 levels,
@@ -318,7 +318,7 @@ has been floored* — and reaches the ones no product built: an adoption, a `res
 window commits. An honest source never reaches it, and that is measured: `floored=0` on all thirteen
 corpus logs, 1.4 M epochs on the 2 h one. `cd7e0001`, whose receiver claims 0.43 mm/s after
 touchdown and is fused raw, read 21 until (23′)'s carried-back `H` spread each velocity fix over
-attitude and bias. `math.rs`'s `FLOOR` owns the headroom figures and every other mention cites it.
+attitude and bias. `DESIGN.md`'s `FLOOR` section owns the headroom figures and every other mention cites it.
 And `predicted_validity` stopped meaning *aiding is arriving*: `P` is projected
 `Accuracy::horizon` forward with nothing fusing and each quantity tested at the far end, **or**
 counted because a constraining source is being accepted. Tilt is what it bought — a static start
@@ -465,6 +465,18 @@ per question answered, never per importance.
 - **A stale *why* is worse than none**, because it reads as evidence. Evidence in a comment (a
   corpus count, a PX4 default, a `**Stub.**` marker) moves in the commit that moves the thing it
   describes.
+- **One sentence of evidence, and a link to the rest** (#187). Where the number came from is the
+  deciding figure in a sentence; the per-log breakdown, the table, the alternatives measured and
+  rejected go to the document that owns the decision (`GOALS.md` Decisions, `DESIGN.md`,
+  "Defaults and their evidence", keyed by the item's name, or a `data/manifest.txt` note), and
+  the comment links the heading. Stack frames, `.text` and operation counts go to `DESIGN.md`,
+  "Measured cost, by function", and the comment keeps why its form was chosen. Pending work is one
+  line, "Not built: #N"; the argument for waiting belongs to the issue, or to `GOALS.md` if it
+  outlives it. The test is a paragraph's subject: a log or a byte count, rather than the code, is
+  the paragraph that moves. Test modules are exempt: a fixture's comment saying which mutation it
+  survives stays. Links are absolute (docs.rs serves no siblings) and reference-style
+  (`[measured]: https://…` at the block's end), and `tools/check-anchors.sh` resolves them in
+  `src/` as in the Markdown.
 
 ## Commands
 
@@ -900,7 +912,8 @@ the first score, and state what the truth cannot judge.
 
 ## How defaults get decided
 
-Three defaults are no longer placeholders, and each records its evidence in its doc comment:
+Three defaults were the first to stop being placeholders, and each carries its deciding figure in
+its doc comment and the rest in `DESIGN.md`, "Defaults and their evidence":
 `SourceHealth::timeout`'s 2.5 periods (replay showed `eb799954`'s bursting magnetometer flapping
 2826 times at 2.0, and a median period flapping it 14025), `ImuNoise`
 (ArduPilot's bias walks converted from per-step σ to density, which took `2c42096b`'s tilt
@@ -975,8 +988,8 @@ the declination table, and CI builds and tests without it too.
   crate — `update::<3>`, 8088 bytes on `thumbv6m`, `Eskf::apply` itself
   inlining away, and the high-water mark is `fuse_gnss_velocity` into it at 9504, with `observe`
   and `apply_or_recover` kept out of line beside it rather than beneath (inlined, 10800) — which is why `reparameterize` applies `G P Gᵀ` block-wise and (30′)'s offset
-  enters (27) in blocks rather than as a 16 × 16 (+4168 bytes measured); the figure
-  and the #41 that would revisit it are in the doc comments.
+  enters (27) in blocks rather than as a 16 × 16 (+4168 bytes measured); every figure is in
+  `DESIGN.md`, "Measured cost, by function", which is where #41's will land.
 - `src/observation/` — one module per sensor, each forming `y`, `H` and diagonal `R_m` and
   nothing else. `gnss.rs` holds (28) and (29) at the antenna, (28′) and (29′), `baro.rs` holds (30), `mag.rs` holds (34), (35)
   and the levelling variance (36′), and `heading.rs` holds (36), which every heading source
@@ -1005,9 +1018,10 @@ the declination table, and CI builds and tests without it too.
   fix (under the estimate of the antenna, or at the fix after a coarse start), a static start clears it.
 - `src/magnetic.rs` — PX4's WMM declination table and its lookup, behind the `magnetic-model`
   feature; `Eskf::place_origin` reads it at every origin placement.
-- `src/config.rs` — tuning. Defaults are **placeholders** except the three listed under "How
-  defaults get decided"; each doc comment records why. Preserve that habit: a default
-  justified by data says so.
+- `src/config.rs` — tuning. Each default's doc comment says where its number came from (a cited
+  PX4/ArduPilot source, a replay measurement, or **placeholder**, as `Accuracy`'s are). Preserve
+  that habit: a default justified by data says so, in a sentence, and `DESIGN.md`, "Defaults and
+  their evidence", holds the measurement.
 - `src/health.rs` — `Propagation` (`#[must_use]`), `Fusion` (not, deliberately — see its doc
   comment), `SourceHealth`, `Status`.
 - `examples/replay.rs` — the normalized CSV format and the offline harness. Two output files:
@@ -1287,7 +1301,7 @@ while it started coarse); the LPE log
 The same window also *measures* the barometer and IMU noise, `StaticWindow::noise` (#50, equation
 (8″)), under GOALS.md differentiator 7, "Configuration derived, not demanded". What it hands back
 is a floor, not a starting `R`/`Q`: a vehicle on the ground is quieter than one in flight, and the
-corpus measured both directions (`WindowNoise`'s doc). Keep its boundary: derived at a defined
+corpus measured both directions (`DESIGN.md`, `WindowNoise`). Keep its boundary: derived at a defined
 moment and reported, never silently retuned in flight, which would cost the determinism claim; a
 recovery is an adoption on a schedule `Config::recovery` fixes in advance, not a retuning.
 Anything the window cannot honestly measure, the noise to configure above the floor included,
