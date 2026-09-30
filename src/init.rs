@@ -73,9 +73,8 @@ pub struct StaticSample {
     /// GNSS interval of span, in either direction.
     ///
     /// **Stub.** Measured and reported on
-    /// [`Coarse::NotStationary`](Coarse::NotStationary); nothing levels with it yet.
-    /// That is equation (5′), and the attitude it needs to rotate `ā_n` into body axes
-    /// now exists.
+    /// [`Coarse::NotStationary`](Coarse::NotStationary); nothing levels with it. Not built:
+    /// equation (5′), #59.
     pub velocity: Option<Velocity<Ned>>,
 }
 
@@ -1064,7 +1063,7 @@ pub enum Coarse {
         /// and this is the part of it GNSS can account for. A launch off a moving deck
         /// reads both, and only one of them spoils tilt.
         ///
-        /// **Stub.** Reported, not yet subtracted, so it narrows nothing today:
+        /// **Stub.** Reported, not subtracted (equation (5′), #59), so it narrows nothing:
         /// [`attitude_sigmas`] bounds tilt by how far the window's *averaged* specific
         /// force is from gravity, and a real `ā_n` is part of what puts it there.
         inertial_accel: Option<Acceleration<Ned>>,

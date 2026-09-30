@@ -528,8 +528,8 @@ fn process_noise(noise: &ImuNoise, imu: Corrected) -> [f32; STATES] {
 /// Written as (22) reads, which is the most expensive thing the filter does: three 15 × 15
 /// temporaries per IMU sample, at up to 400 Hz. (20) is sparse enough (two identity blocks, two
 /// zero rows) that a block-wise form would cut them, at the cost of the one equation a reader of
-/// this crate is most likely to have come for. What it costs is [measured]; a block-wise form waits
-/// on #41's figures from hardware.
+/// this crate is most likely to have come for. What it costs is [measured]; the block-wise form is
+/// not built, until #41's figures from hardware ask for it.
 ///
 /// `Q` arrives as a diagonal and is added as one, which keeps those temporaries to three
 /// rather than four.
@@ -676,8 +676,7 @@ fn repeat_covariance(
 /// arithmetic landing on the step after the loop has already overrun. Worst case, not typical: a
 /// 1.2 s gap is 12 runs, on a stack under `update`'s ([measured]). The exact `F` of an
 /// unaccelerated vehicle is a four-term polynomial in `Δt`, since `ω = 0` makes the error dynamics
-/// nilpotent, and is the lever if #41 finds the spike too costly; until then the steps are (22) as
-/// it reads.
+/// nilpotent; not built, until #41 finds the spike too costly.
 ///
 /// A gap that is not a positive duration coasts nothing, for [`project`]'s reason: a negative
 /// `Δt` subtracts `Q`. [`Eskf::predict`](crate::Eskf::predict) coasts only past a positive
