@@ -828,7 +828,7 @@ instead.
 
 The barometer measures height, and the navigation frame is a plane. Written as above, (30)
 treats $`-p_D`$ as height, which is off by the plane's rise above the surface, $`d^2 / 2R`$ at a
-horizontal distance $`d`$ from the origin (see [geodetic origin](#geodetic-origin)): 8 cm at 1 km,
+horizontal distance $`d`$ from the origin (see [geodetic origin](#geodetic-origin)): 1 cm at 357 m, 8 cm at 1 km,
 7.8 m at 10 km. GNSS positions converted by (43) carry that rise and the barometer does not, so
 beyond a few kilometres the two disagree about height by exactly that amount. Removing it means
 writing $`h(x)`$ as minus the height of $`\hat{p}`$ above $`h_0`$, by the inverse of (43) —
