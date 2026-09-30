@@ -78,6 +78,11 @@ losses: `correlated` (#51) is overconfident and `7ce66f0d` levels wrong (#59). #
 is next: the *API frozen* milestone is closed. #174 became bad vertical-accelerometer detection,
 internal and reported through `Diagnostics`, so it left the milestone (clipping, its first shape,
 is 22 samples on the corpus); #41 needs a board.
+#187 landed (#189): doc comments keep one sentence of evidence and link the rest. Cost figures
+are `DESIGN.md`, "Measured cost, by function", one table keyed by function (where #41's land);
+defaults' evidence is `DESIGN.md`, "Defaults and their evidence", or beside the `GOALS.md`
+decision that owns it. `tools/check-anchors.sh` now resolves links in `src/*.rs`, reference
+definitions, and refuses the bare anchor of a repeated heading. Every output byte-identical.
 #183 landed (#185): no public item names an `nalgebra` type, since it is 0.x and each minor is a
 semver break. Vectors and noise cross as `[f32; 3]`, the covariance as rows (`from_rows`,
 `to_rows`), and a quaternion as `Quaternion { w, x, y, z }`, at the root and out of the prelude.
