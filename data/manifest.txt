@@ -202,8 +202,9 @@
 # are an attitude levelled wrong that no position or velocity reset can fix,
 # which it goes on getting wrong between them. 285ee2e7's one is a GNSS height
 # its barometer held 4 m away (the (24') paragraph below). 2b2ad123's one is
-# the finding this key exists for: a state that lagged an acceleration refused
-# fixes EKF2 agreed with until it adopted one (#169). A recovery
+# a receiver whose position runs two epochs off its velocity under a
+# centimetre sigma: the state follows the offset and refuses the receiver's
+# return until it adopts a fix (#169). A recovery
 # on a log whose sources are honest is a finding against the covariance
 # rather than a working filter, which is what a zero here guards. With
 # Config::recovery off and Correlation::WHITE, every entry reads as it did before #116, byte for
@@ -918,20 +919,41 @@ b7c7c97eefc3bb421ceae6e50cac8bd5a4851b3f6f98dc2c5a7b91bb326930c9  eb799954-4743-
 # 1358 s quadrotor (SYS_AUTOSTART 4001) on CUAV_X7PRO, PX4 v1.15.2, EKF2, flying
 # 5.1 km from its origin at up to 10.6 m/s on an RTK receiver that reports fix
 # type 6 with a 1.41-2.04 cm sigma on every message. What nothing else here covers:
-#   - Rejections whose correctness the data shows, both ways. Fifteen fixes step
-#     0.55-2.23 m more than the receiver's own velocity accounts for (a step
-#     being the fix-to-fix change less the mean velocity times the interval),
-#     some stepping back: -1.75 N, +1.37 E at 277.8 s, then +1.63, -1.24 at
-#     281.8 s. Of rejected_gnss_pos=18, nine are right: the single-fix steps at
-#     95.8, 100.7, 101.8, 117.8 and 162.8 s, and 277.8-280.8 s, where the state
-#     holds and the returning fix at 281.8 s is accepted at 0.10 m while EKF2,
-#     under its 0.5 m floor, is pulled to 0.40 m of the stepped fixes. Nine are
-#     wrong, this filter's lag: at 61.7 s a GNSS velocity is rejected during a
-#     1.7-2.0 m/s^2 acceleration, the state falls 1.84 m behind EKF2, and 63.7-68.8 s
-#     refuses fixes EKF2 converges onto (0.01 m by 67.7 s) until recovery adopts
-#     one at 69.8 s (recovered=1, #169); 164.7-166.7 s is the same shape after
-#     a half-reverted fix is accepted at 163.8 s. PX4's floors accept all 18.
-#     89a498ce, the other RTK log, steps no more than 0.70 m.
+#   - Rejections whose correctness the data shows, both ways, and why the
+#     receiver's R cannot. Its position runs one or two 100 ms epochs off its
+#     own velocity for seconds at a time. In the 6.1 Hz log of its 10 Hz epochs
+#     (vehicle_gps_position), the offset changes 45 times at over 2 m/s, where
+#     one epoch is 0.2 m or more, in six episodes (60.8-63.5, 81.0-81.4,
+#     95.5-101.4, 117.1-118.0, 162.6-164.2 and 277.2-281.6 s), each change
+#     k x 0.1 s x speed along track (k = -2..+2, 0.21-2.03 m) and at most
+#     2.3 cm across it. 89a498ce, the other RTK receiver, has none in 6675
+#     epochs at speed. It is the position, not the message: time_utc less the
+#     arrival time steps at most 42 ms at the 45 (40 ms p99 over every
+#     message), and the velocity fits its own time (3.305 m/s at 60.8 s against
+#     3.311 interpolated, where one epoch late reads 3.16). Which level is
+#     right the log cannot say; the filter refuses the one it did not follow.
+#     Of rejected_gnss_pos=18, eight refuse an offset fix: 95.8, 100.7, 117.8
+#     and 162.8 s, and 277.8-280.8 s, after which the fix at 281.8 s is
+#     accepted at 0.10 m while EKF2, under its 0.5 m floor, is pulled to
+#     0.40 m of the offset fixes. Ten refuse the receiver's return after the
+#     state followed it. The fixes at 60.8, 61.7 and 62.7 s sit 1, 2 and 2
+#     epochs back during a 1.6-2.0 m/s^2 acceleration (steps of 0.31 m at
+#     3.1 m/s and 0.49 m at 4.7 m/s) and are accepted; the covariance carries
+#     them into velocity, the receiver's velocity at 61.7 s is rejected
+#     1.1 m/s away, and 63.7-68.8 s refuses the return, which EKF2 converges
+#     onto (0.01 m by 67.7 s), until recovery adopts a fix at 69.8 s
+#     (recovered=1, #169). 101.8 s refuses the return after 96.8-99.8 s were
+#     followed, and 164.7-166.7 s after 163.8 s was, until 167.7 s passes the
+#     gate. Dropping the four accepted offset fixes (60.8, 61.7, 62.7,
+#     163.8 s) from the input takes rejected=19 to 9, the eight offset
+#     refusals and 101.8 s, and recovered=1 to 0; dropping four ordinary fixes
+#     moves nothing, and dropping all sixteen offset fixes leaves none. A
+#     0.3 m/s floor on velocity alone still refuses nine positions, a different
+#     nine, and moves the velocity rejection to 282.8 s. PX4's floors accept
+#     all 18. Measured on the converter's 1 Hz sensor_gps, on which 16 of 1345
+#     fixes are offset: at the 6.1 Hz of vehicle_gps_position the log refuses
+#     741 positions, under a fifth of them inside the episodes, and recovers
+#     none (#194).
 #   - A second lockout on real data that coasting removes, on a slow vehicle
 #     under a centimetre R. Ten IMU gaps past max_predict_dt, 0.12-2.37 s
 #     (coasted=10); with Config::coast and Config::recovery off and every fix
