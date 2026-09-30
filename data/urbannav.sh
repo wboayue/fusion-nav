@@ -24,7 +24,8 @@ pins="$root/data/urbannav-pins.txt"
 die() { echo "urbannav: $*" >&2; exit 1; }
 
 # What a pin line carries. The `summary` keys a hostile receiver moves, and every truth-scored
-# key on the `score` line that says what the gate did; the per-key meanings are in
+# key on the `score` line that says what the gate did and how far off the receiver was
+# (`rms_`); the per-key meanings are in
 # examples/replay.rs. The rest of either line is on the terminal when this runs, and pinning
 # all of it would re-pin on every change that touched a figure nobody reads for this.
 keys="recovered rejected_gnss_pos rejected_gnss_hgt rejected_gnss_vel rejected_course
@@ -32,7 +33,7 @@ aligned_at degraded_s dead_reckoning_s transitions status
 pos_h pos_v pos_h_max yaw nees_pos"
 for half in gnss_pos gnss_hgt; do
     for count in offered bad rejected_bad rejected_good accepted_far adopted_bad \
-        recovered_after_bad recovered_after_lockout unjudged; do
+        recovered_after_bad recovered_after_lockout unjudged rms; do
         keys="$keys ${count}_$half"
     done
 done

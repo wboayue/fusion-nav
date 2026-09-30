@@ -80,10 +80,11 @@ The three sequences, each covering what the others do not (the screen of all twe
 sequences is in #9):
 
 * `outdoor_1`, the Klagenfurt model airfield, the only other site: 52 s still, a 24 m climb,
-  a receiver 8 m high on average, and a barometer that departs from truth by up to 2.8 m
+  a receiver high by metres (`data/insane-pins.txt`), and a barometer that departs from truth by up to 2.8 m
   during the climb and returns (5 s means; 0.35 m start to end).
 * `mars_1`, Negev desert: the receiver claiming the smallest error (sigma 0.77 m
-  horizontally) and 1.86 m RMS out, a mean normalized squared error of 3.9.
+  horizontally) and furthest outside it (`rms_gnss_pos` and `bad_gnss_pos` in
+  `data/insane-pins.txt`).
 * `mars_19`, the longest log (371 s, 280 s of it with truth), hovering within 6 m: a
   barometer drifting 1.8 m from truth start to end (5 s means), and logging dropouts (596
   IMU intervals over two and a half periods) that flicker `Degraded`.

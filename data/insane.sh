@@ -27,10 +27,13 @@ pins="$root/data/insane-pins.txt"
 die() { echo "insane: $*" >&2; exit 1; }
 
 # What a pin line carries: the `summary` keys that say what the filter did with each
-# source, and the truth-scored keys a position, height and velocity truth can support.
+# source, the truth-scored keys a position, height and velocity truth can support, and what
+# truth says of the fixes themselves, the receiver's own error beside the filter's.
 keys="rejected_gnss_pos rejected_gnss_hgt rejected_baro rejected_mag recovered alpha0
 floored degraded_s dead_reckoning_s transitions status
-pos_h pos_v vel pos_h_max nees_pos nees_vel"
+pos_h pos_v vel pos_h_max nees_pos nees_vel
+offered_gnss_pos bad_gnss_pos unjudged_gnss_pos rms_gnss_pos
+offered_gnss_hgt bad_gnss_hgt unjudged_gnss_hgt rms_gnss_hgt"
 
 pin=0
 case "${1:-}" in
