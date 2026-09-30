@@ -2345,9 +2345,10 @@ const TRUTH_TOLERANCE: f64 = 1e-4;
 /// INSANE's truth is at RTK2's epochs, 125 ms apart with one in a hundred intervals at
 /// 250 ms, and its fixes land between them: without interpolation 1799 of `mars_19`'s 1801
 /// went unjudged. 0.3 s spans one dropped row and not a gap. Linear over it, a vehicle
-/// accelerating at `a` is misplaced by at most `a h² / 8`, 3 cm at 3 m s⁻². Measured on the
-/// three sequences, the fixes' own horizontal RMS moves by at most 0.02 m between a 0.2 s
-/// span and none at all, while 0.2 s leaves a third of `outdoor_1`'s fixes unjudged.
+/// accelerating at `a` is misplaced by at most `a h² / 8`, 3 cm at 3 m s⁻². On the three
+/// sequences `rms_gnss_pos` moves by at most 0.019 m between a 0.2 s span and none at all,
+/// while 0.2 s judges 753 of `outdoor_1`'s fixes where 0.3 s judges 958 and no limit 968:
+/// the rest are outside the truth's time range.
 const TRUTH_SPAN: f64 = 0.3;
 
 /// Components in one NEES block: position, velocity and attitude are three each.
@@ -3239,7 +3240,10 @@ impl FixScore {
         let rms = if self.offered == 0 {
             "none".to_string()
         } else {
-            format!("{:.3}", (self.squared_error / f64::from(self.offered)).sqrt())
+            format!(
+                "{:.3}",
+                (self.squared_error / f64::from(self.offered)).sqrt()
+            )
         };
         let counts: String = [
             ("offered", self.offered),
@@ -5727,7 +5731,10 @@ mod tests {
                 .is_some()
         };
         assert!(!judged(1.1), "inside the gap");
-        assert!(judged(1.35005), "on the later row, within `TRUTH_TOLERANCE`");
+        assert!(
+            judged(1.35005),
+            "on the later row, within `TRUTH_TOLERANCE`"
+        );
     }
 
     #[test]

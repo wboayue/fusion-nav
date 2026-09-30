@@ -101,14 +101,15 @@ receivers 1.2 m apart, which place it to centimetres while their corrections hol
 here on the autopilot's own sensors, the ones a flight controller fuses: its IMU, its ordinary
 GNSS receiver, its barometer and its magnetometer. The RTK receivers are only the truth.
 
-| Flight | Horizontal (m RMS) | Height (m RMS) | Velocity (m/s RMS) | Position NEES | Velocity NEES |
-|---|---|---|---|---|---|
-| Model airfield, Klagenfurt, 24 m climb | {{score insane-outdoor_1/raw pos_h}} | {{score insane-outdoor_1/raw pos_v}} | {{score insane-outdoor_1/raw vel}} | {{score insane-outdoor_1/raw nees_pos}} | {{score insane-outdoor_1/raw nees_vel}} |
-| Desert, a receiver that overstates its accuracy | {{score insane-mars_1/raw pos_h}} | {{score insane-mars_1/raw pos_v}} | {{score insane-mars_1/raw vel}} | {{score insane-mars_1/raw nees_pos}} | {{score insane-mars_1/raw nees_vel}} |
-| Desert, a long hover | {{score insane-mars_19/raw pos_h}} | {{score insane-mars_19/raw pos_v}} | {{score insane-mars_19/raw vel}} | {{score insane-mars_19/raw nees_pos}} | {{score insane-mars_19/raw nees_vel}} |
+| Flight | Horizontal (m RMS) | Its fixes, horizontal (m RMS) | Height (m RMS) | Its fixes, height (m RMS) | Velocity (m/s RMS) | Position NEES | Velocity NEES |
+|---|---|---|---|---|---|---|---|
+| Model airfield, Klagenfurt, 24 m climb | {{score insane-outdoor_1/raw pos_h}} | {{score insane-outdoor_1/raw rms_gnss_pos}} | {{score insane-outdoor_1/raw pos_v}} | {{score insane-outdoor_1/raw rms_gnss_hgt}} | {{score insane-outdoor_1/raw vel}} | {{score insane-outdoor_1/raw nees_pos}} | {{score insane-outdoor_1/raw nees_vel}} |
+| Desert, a receiver that overstates its accuracy | {{score insane-mars_1/raw pos_h}} | {{score insane-mars_1/raw rms_gnss_pos}} | {{score insane-mars_1/raw pos_v}} | {{score insane-mars_1/raw rms_gnss_hgt}} | {{score insane-mars_1/raw vel}} | {{score insane-mars_1/raw nees_pos}} | {{score insane-mars_1/raw nees_vel}} |
+| Desert, a long hover | {{score insane-mars_19/raw pos_h}} | {{score insane-mars_19/raw rms_gnss_pos}} | {{score insane-mars_19/raw pos_v}} | {{score insane-mars_19/raw rms_gnss_hgt}} | {{score insane-mars_19/raw vel}} | {{score insane-mars_19/raw nees_pos}} | {{score insane-mars_19/raw nees_vel}} |
 
-Horizontal error here is mostly the receiver's: an ordinary receiver is off by a metre or
-more for tens of seconds at a time, and no filter can remove an error its only position
+Horizontal error here is mostly the receiver's, and the table sets the two side by side: the
+fixes' own error against the truth at each fix's time. An ordinary receiver is off by a metre
+or more for tens of seconds at a time, and no filter can remove an error its only position
 source shares. What the filter owes is to know it, and it does: position NEES under 1 means
 the reported uncertainty covers the error, conservatively (the
 [honesty page](honesty.md#how-it-is-measured) says what NEES is). That rests on the filter
@@ -119,7 +120,10 @@ It costs a little accuracy: the filter ends slightly further from the truth than
 themselves are, where fused that way it would match them. Velocity is more conservative
 still, because the dataset's GNSS velocity is horizontal only and states no accuracy, so none
 is fused and velocity is observed only through the fixes.
-The barometers depart from the truth by metres, during the airfield flight's climb and slowly
+Height is where the filter does better than its receiver, because it has a second height
+source: the fixes' height errs by metres, one receiver sitting 8 m high on average, and
+without the barometer the filter's height is as far off as the fixes. The barometers depart
+from the truth by metres too, during the airfield flight's climb and slowly
 through the hover, which is the case the filter's estimated barometric offset exists for.
 
 Attitude is not scored. INSANE builds its attitude truth from the RTK baseline and the same
