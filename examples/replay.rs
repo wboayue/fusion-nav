@@ -116,12 +116,15 @@
 //! | `accepted_far_<half>` | fixes accepted while past `Accuracy::position` on some axis |
 //! | `adopted_bad_<half>` | bad fixes taken by an adoption, a recovery's or a first one |
 //! | `recovered_after_bad_<half>`, `recovered_after_lockout_<half>` | recoveries by the run they ended; see [`FixScore`] |
+//! | `rms_<half>` | RMS of those fixes' own error against truth, m: `pos_h` and `pos_v` for the receiver |
 //!
 //! `<half>` is `gnss_pos` or `gnss_hgt`, the two verdicts one fix meets. These are the only keys
 //! that say whether a rejection was *right*, which needs hostile fixes and truth together
 //! (GOALS.md, "Three questions"): on the simulator they read a handful of bad fixes in a
 //! thousand, and on UrbanNav's M8T most of them (`data/urbannav-pins.txt`). The fusion file
-//! carries each verdict in its `truth` column.
+//! carries each verdict in its `truth` column. `rms_` is the other thing only truth can say of
+//! a fix: how far off the receiver was, so a filter's `pos_h` can be read against what its
+//! only position source gave it (on INSANE, `data/insane-pins.txt`).
 //!
 //! Convergence is **not** here: `aligned_at=` is on the `summary` line, it needs no truth,
 //! and the corpus pins it. One statistic, one implementation (`AGENTS.md`).
@@ -2326,15 +2329,26 @@ const TRUTH_COLUMNS: [&str; STATES + 1] = [
     "ba_y", "ba_z", "bg_x", "bg_y", "bg_z",
 ];
 
-/// How near a truth row must be to a GNSS fix to judge it, in seconds.
+/// How near a truth row must be to a GNSS fix to be taken as the truth at its time, in
+/// seconds.
 ///
 /// A fix is judged against truth taken at its own time, never at a neighbouring row: the
 /// simulator writes both at the same instants, and UrbanNav's receivers and its SPAN-CPT
 /// both report on the UTC second. So this only absorbs a writer's rounding, the simulator's
-/// four decimals, and a fix between truth rows goes unjudged rather than being judged
-/// against a truth it did not share. Epochs are matched within an IMU period instead; see
-/// [`Truth::at`].
+/// four decimals. A fix between truth rows is judged against the two interpolated, within
+/// [`TRUTH_SPAN`]. Epochs are matched within an IMU period instead, and never interpolated;
+/// see [`Truth::at`].
 const TRUTH_TOLERANCE: f64 = 1e-4;
+
+/// The widest pair of truth rows a fix between them is interpolated across, in seconds.
+///
+/// INSANE's truth is at RTK2's epochs, 125 ms apart with one in a hundred intervals at
+/// 250 ms, and its fixes land between them: without interpolation 1799 of `mars_19`'s 1801
+/// went unjudged. 0.3 s spans one dropped row and not a gap. Linear over it, a vehicle
+/// accelerating at `a` is misplaced by at most `a h² / 8`, 3 cm at 3 m s⁻². Measured on the
+/// three sequences, the fixes' own horizontal RMS moves by at most 0.02 m between a 0.2 s
+/// span and none at all, while 0.2 s leaves a third of `outdoor_1`'s fixes unjudged.
+const TRUTH_SPAN: f64 = 0.3;
 
 /// Components in one NEES block: position, velocity and attitude are three each.
 const BLOCK: usize = 3;
@@ -2389,6 +2403,25 @@ impl TruthRow {
             accel_bias: group(9)?,
             gyro_bias: group(12)?,
         })
+    }
+}
+
+impl TruthRow {
+    /// The truth at `t` between this row and a later one: linear in position, velocity and
+    /// bias, and along the shortest rotation in attitude. A bias neither row knows stays
+    /// unknown.
+    fn between(&self, later: &Self, t: f64) -> Self {
+        let f = ((t - self.t) / (later.t - self.t)) as f32;
+        let lerp = |a: Vector3<f32>, b: Vector3<f32>| a + (b - a) * f;
+        let bias = |a: Option<Vector3<f32>>, b: Option<Vector3<f32>>| Some(lerp(a?, b?));
+        Self {
+            t,
+            position: lerp(self.position, later.position),
+            velocity: lerp(self.velocity, later.velocity),
+            attitude: self.attitude.slerp(&later.attitude, f),
+            accel_bias: bias(self.accel_bias, later.accel_bias),
+            gyro_bias: bias(self.gyro_bias, later.gyro_bias),
+        }
     }
 }
 
@@ -2598,14 +2631,23 @@ impl Truth {
         }
     }
 
-    /// The row at one instant within [`TRUTH_TOLERANCE`], found by search: a fix is asked
-    /// for out of step with the epochs' cursor, and at most once.
-    fn near(&self, t: f64) -> Option<TruthRow> {
+    /// The truth at a fix's instant, found by search: a fix is asked for out of step with the
+    /// epochs' cursor, and at most once.
+    ///
+    /// The row within [`TRUTH_TOLERANCE`] where there is one, so a file written at the fixes'
+    /// own times is read as written. Otherwise the two rows either side interpolated, where
+    /// they are at most [`TRUTH_SPAN`] apart, and `None` across a gap or outside the file.
+    fn at_fix(&self, t: f64) -> Option<TruthRow> {
         let after = self.rows.partition_point(|row| row.t < t - TRUTH_TOLERANCE);
-        self.rows
+        if let Some(row) = self
+            .rows
             .get(after)
-            .copied()
             .filter(|row| (row.t - t).abs() <= TRUTH_TOLERANCE)
+        {
+            return Some(*row);
+        }
+        let (a, b) = (self.rows.get(after.checked_sub(1)?)?, self.rows.get(after)?);
+        (b.t - a.t <= TRUTH_SPAN).then(|| a.between(b, t))
     }
 }
 
@@ -3088,10 +3130,15 @@ fn seconds_in(transitions: &[(f64, Status)], end: f64, status: Status) -> f64 {
 /// `far` is the answer to "wrong by metres" in the shape the filter states it:
 /// [`Accuracy::position`] per axis, the bar `Validity` reads, so an accepted fix that is
 /// `far` is one that could move a valid estimate out of its own claim.
+///
+/// `error` is how far the fix is from the truth at the antenna, m: the horizontal distance
+/// for the horizontal half, the height difference's magnitude for the other. It is what
+/// `rms_<half>` reads, the receiver's own accuracy beside the filter's `pos_h` and `pos_v`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Judged {
     bad: bool,
     far: bool,
+    error: f32,
 }
 
 /// The gates [`Judged::bad`] reads, fixed at [`Percentile::P999`].
@@ -3103,7 +3150,7 @@ const BAD_HEIGHT: Gate<1> = Gate::<1>::at(Percentile::P999);
 ///
 /// Counts of verdicts, like `rejected_`, and only of those the gate or an adoption decided:
 /// a refusal (before initialization, outside the history) judged nothing. A decided fix with
-/// no truth row at its time is `unjudged_`, so a clock or a truth rate that misses the fixes
+/// no truth at its time ([`Truth::at_fix`]) is `unjudged_`, so a clock or a truth rate that misses the fixes
 /// reads as that rather than as nothing bad.
 ///
 /// The recovery split reads the run of rejections since the last accepted or adopted fix,
@@ -3124,12 +3171,14 @@ struct FixScore {
     recovered_after_bad: u32,
     recovered_after_lockout: u32,
     unjudged: u32,
+    /// The sum of every judged fix's squared [`Judged::error`], over the `offered` fixes.
+    squared_error: f64,
     /// Bad and good fixes rejected since the last one accepted or adopted.
     run: (u32, u32),
 }
 
 impl FixScore {
-    /// Count one verdict. `judged` is `None` where truth had no row at the fix's time;
+    /// Count one verdict. `judged` is `None` where truth had nothing at the fix's time;
     /// `recovery` says an adoption was `Config::recovery`'s rather than a first one.
     fn record(&mut self, outcome: Fusion, judged: Option<Judged>, recovery: bool) {
         if !decided(outcome) {
@@ -3179,11 +3228,20 @@ impl FixScore {
         }
         self.offered += 1;
         self.bad += u32::from(judged.bad);
+        self.squared_error += f64::from(judged.error).powi(2);
     }
 
-    /// ` offered_<source>=… recovered_after_lockout_<source>=…`, for the `score` line.
+    /// ` offered_<source>=… unjudged_<source>=… rms_<source>=…`, for the `score` line.
+    ///
+    /// `rms_` is `none` where no fix was judged, rather than a zero that would claim a
+    /// perfect receiver.
     fn keys(&self, source: &str) -> String {
-        [
+        let rms = if self.offered == 0 {
+            "none".to_string()
+        } else {
+            format!("{:.3}", (self.squared_error / f64::from(self.offered)).sqrt())
+        };
+        let counts: String = [
             ("offered", self.offered),
             ("bad", self.bad),
             ("rejected_bad", self.rejected_bad),
@@ -3196,7 +3254,8 @@ impl FixScore {
         ]
         .iter()
         .map(|(key, value)| format!(" {key}_{source}={value}"))
-        .collect()
+        .collect();
+        format!("{counts} rms_{source}={rms}")
     }
 }
 
@@ -3323,7 +3382,7 @@ impl Scoring {
         if !variance.iter().all(|v| v.is_finite() && *v > 0.0) {
             return None;
         }
-        let truth = self.truth.near(t)?;
+        let truth = self.truth.at_fix(t)?;
         let e = Vector3::from(fix.to_array())
             - (truth.position + truth.attitude * Vector3::from(antenna.to_array()));
         let horizontal = e.x * e.x / variance[0] + e.y * e.y / variance[1];
@@ -3333,10 +3392,12 @@ impl Scoring {
             Judged {
                 bad: horizontal > BAD_HORIZONTAL.threshold(),
                 far: e.x.abs() > bar || e.y.abs() > bar,
+                error: e.xy().norm(),
             },
             Judged {
                 bad: height > BAD_HEIGHT.threshold(),
                 far: e.z.abs() > bar,
+                error: e.z.abs(),
             },
         ])
     }
@@ -5503,7 +5564,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fix_between_truth_rows_or_without_a_variance_is_not_judged() {
+    fn a_fix_past_the_truth_or_without_a_variance_is_not_judged() {
         let scoring = heading_truth(1.0, 0.0);
         let at = |t: f64, variance: [f32; 3]| {
             scoring.judge(
@@ -5515,7 +5576,7 @@ mod tests {
             )
         };
         assert!(at(1.0, [1.0; 3]).is_some());
-        assert!(at(1.01, [1.0; 3]).is_none(), "no truth row at 1.01 s");
+        assert!(at(1.01, [1.0; 3]).is_none(), "no truth after 1.0 s");
         assert!(
             at(1.0, [1.0, 0.0, 1.0]).is_none(),
             "a zero variance divides nothing"
@@ -5527,10 +5588,12 @@ mod tests {
         const GOOD: Option<Judged> = Some(Judged {
             bad: false,
             far: false,
+            error: 1.0,
         });
         const BAD: Option<Judged> = Some(Judged {
             bad: true,
             far: true,
+            error: 3.0,
         });
         let accepted = Fusion::Accepted { test_ratio: 0.1 };
         let rejected = Fusion::Rejected { test_ratio: 3.0 };
@@ -5579,6 +5642,9 @@ mod tests {
                 recovered_after_bad: 2,
                 recovered_after_lockout: 2,
                 unjudged: 1,
+                // Seven good fixes at 1 m and five bad at 3 m, the unjudged and the refused
+                // left out: √(52 / 12) = 2.082 m.
+                squared_error: 52.0,
                 run: (0, 0),
             }
         );
@@ -5587,8 +5653,78 @@ mod tests {
             " offered_gnss_pos=12 bad_gnss_pos=5 rejected_bad_gnss_pos=3 \
              rejected_good_gnss_pos=2 accepted_far_gnss_pos=1 adopted_bad_gnss_pos=1 \
              recovered_after_bad_gnss_pos=2 recovered_after_lockout_gnss_pos=2 \
-             unjudged_gnss_pos=1"
+             unjudged_gnss_pos=1 rms_gnss_pos=2.082"
         );
+    }
+
+    #[test]
+    fn a_receiver_nothing_judged_has_no_rms() {
+        // `rms_gnss_pos=0.000` would claim a perfect receiver on a run whose fixes all fell
+        // outside the truth.
+        let mut fixes = FixScore::default();
+        fixes.record(Fusion::Accepted { test_ratio: 0.1 }, None, false);
+        assert!(fixes.keys("gnss_pos").ends_with(" rms_gnss_pos=none"));
+    }
+
+    #[test]
+    fn a_fix_between_truth_rows_is_judged_on_the_two_interpolated() {
+        // Rows 0.25 s apart, north 0 → 4 m and heading 0 → 90°. A fix a quarter of the way,
+        // at 1.0625 s, sits on truth 1 m north heading 22.5°, where a metre-forward antenna
+        // is 0.924 m north and 0.383 m east: a fix at 1.924 m north is exactly there. Not
+        // halfway, so a fraction taken from the wrong end reads 3 m, not 1. The error is the
+        // horizontal distance and the height apart.
+        let row = |t: f64, north: f32, yaw: f32| {
+            let mut values = [0.0; STATES];
+            values[0] = north;
+            values[8] = yaw;
+            (t, values)
+        };
+        let mut log = TruthLog::new();
+        for (t, values) in [
+            row(1.0, 0.0, 0.0),
+            row(1.25, 4.0, core::f32::consts::FRAC_PI_2),
+        ] {
+            log = log.row(t, values);
+        }
+        let scoring = log.scoring();
+        let judge = |t: f64, fix: [f32; 3]| {
+            scoring.judge(
+                t,
+                Position::ned(fix[0], fix[1], fix[2]),
+                [1.0; 3],
+                Position::body(1.0, 0.0, 0.0),
+                &Accuracy::default(),
+            )
+        };
+        let [horizontal, height] =
+            judge(1.0625, [1.923_880, 0.382_683, 0.5]).expect("rows 0.25 s apart");
+        assert!(horizontal.error < 1e-3, "{}", horizontal.error);
+        assert!((height.error - 0.5).abs() < 1e-6, "{}", height.error);
+        // A row at the fix's own time is read as written, not blended with its neighbour.
+        let [at_row, _] = judge(1.25, [4.0, 1.0, 0.0]).expect("a row at 1.25 s");
+        assert!(at_row.error < 1e-6, "{}", at_row.error);
+    }
+
+    #[test]
+    fn a_fix_across_a_gap_in_the_truth_is_not_judged_and_one_on_a_row_is() {
+        // Rows 0.35 s apart, past `TRUTH_SPAN`: a gap, not a dropped row, and what the
+        // vehicle did inside it is not the line between its ends. A fix on a row is judged
+        // however far its neighbour is, rounding included, which is all of UrbanNav's 1 Hz
+        // truth.
+        let scoring = TruthLog::new().still(1.0, 2, 0.35).scoring();
+        let judged = |t: f64| {
+            scoring
+                .judge(
+                    t,
+                    Position::zero(),
+                    [1.0; 3],
+                    Position::zero(),
+                    &Accuracy::default(),
+                )
+                .is_some()
+        };
+        assert!(!judged(1.1), "inside the gap");
+        assert!(judged(1.35005), "on the later row, within `TRUTH_TOLERANCE`");
     }
 
     #[test]
