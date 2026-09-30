@@ -16,13 +16,11 @@ use crate::update::Observation;
 /// `H = [I 0 0 0 0]` (`EKF/aid_sources/gnss/gps_control.cpp:351-354` at `c4e4ef98`), so a fix
 /// there never observes attitude through the arm. Here it does, and a zero arm is exactly (28).
 ///
-/// Measured against PX4's form on the four corpus logs whose antenna is off the IMU, as
-/// agreement with each log's own EKF2, which applies the same arm. On `a299e722` (0.30 m
-/// left) under PX4's `R` floors, `pos_e_rms` was 0.650 m with no arm, 0.448 in PX4's form
-/// and 0.408 in this one; on `cd7e0001` (0.29 m aft) the median heading gap was 1.61° with no
-/// arm, 0.85° and 0.81°. `2c42096b` and `eb799954` read the same either way to the third
-/// digit. The simulator cannot choose: on `lever_arm`, a 1 m mast, both give `pos_h` 0.291 m,
-/// and `yaw` reads 0.289° in PX4's form against 0.296° here, inside the noise of one seed.
+/// Measured against PX4's form as agreement with each log's own EKF2, which applies the same arm:
+/// on `a299e722`, 0.30 m of arm, under PX4's `R` floors, `pos_e_rms` is 0.408 m here against 0.448
+/// in PX4's form and 0.650 with no arm ([evidence]).
+///
+/// [evidence]: https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#sensor-offsets-as-per-call-arguments
 fn arm(state: &State, antenna: Position<Body>) -> (Vector3<f32>, Matrix3<f32>) {
     let r = state
         .attitude

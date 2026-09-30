@@ -130,16 +130,15 @@ pub(crate) fn wrap_pi(angle: f32) -> f32 {
 /// Equation (42): `P ← ½(P + Pᵀ)`, which (42) asks for after every covariance operation.
 ///
 /// Swept over the upper triangle in place rather than written as the equation reads,
-/// `*p = (*p + p.transpose()) * 0.5`, which materializes two 15×15 temporaries. At
-/// `opt-level = 3` the equation form's stack frame measures 1884 bytes on
-/// `thumbv6m-none-eabi` and 1820 on `thumbv7em-none-eabihf`, against 108 and 0 for the
-/// sweep. (42) runs after every covariance operation, so that frame sits under `predict`
-/// beneath the temporaries propagation needs of its own, and 1884 bytes is a quarter of
-/// the RAM on an 8 KB Cortex-M0 part.
+/// `*p = (*p + p.transpose()) * 0.5`, which materializes two 15×15 temporaries. (42) runs after
+/// every covariance operation, so that frame would sit under `predict` beneath the temporaries
+/// propagation needs of its own; the sweep needs almost none ([measured]).
 ///
 /// The two forms agree bit for bit — `a + a` and a multiplication by ½ are both exact in
 /// binary floating point — so an already-symmetric `P` is unchanged either way and the
 /// cheaper one costs no accuracy.
+///
+/// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function
 pub(crate) fn enforce_symmetry<const N: usize>(p: &mut SMatrix<f32, N, N>) {
     // Both indices stay below `N`, which is the dimension of `P`, so neither the read nor
     // the write can be out of range: `nalgebra` indexing panics, and nothing in `src/` may.
@@ -165,16 +164,10 @@ pub(crate) fn enforce_symmetry<const N: usize>(p: &mut SMatrix<f32, N, N>) {
 /// `POS_STATE_MIN_VARIANCE` and `VEL_STATE_MIN_VARIANCE` are `1e-4` at
 /// `AP_NavEKF3_core.h:84-85`.
 ///
-/// These are PX4's values, and the corpus says they sit below anything an honest source
-/// drives the filter to: across the thirteen logs of `data/manifest.txt` and the thirteen
-/// scenarios of `examples/simulate.rs`, the smallest variance any state reaches at an epoch
-/// is 1.9e-4 m² of position on `89a498ce`, an RTK receiver, 1.7e-6 (rad/s)² of gyroscope
-/// bias, the bias walk's steady state, reached on six logs, 9.0e-5 rad² of attitude on
-/// `gnss_heading`, 7.3e-4 (m s⁻²)² of accelerometer bias on `093e806a` and 5.6e-4 (m/s)² of
-/// velocity on `cd7e0001`. Two to six decades of headroom, so
-/// [`Diagnostics::floored`](crate::Diagnostics::floored) reads zero on all thirteen,
-/// `cd7e0001` included, whose receiver reports a 0.43 mm/s velocity after touchdown and is
-/// fused raw. Measured as σ² from the replay output's six-decimal σ columns.
+/// These are PX4's values, and they sit two to six decades below the smallest variance any state
+/// reaches on the corpus or the scenarios, so [`Diagnostics::floored`](crate::Diagnostics::floored)
+/// reads zero on every log
+/// ([evidence](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#floor)).
 #[rustfmt::skip]
 const FLOOR: [f32; STATES] = [
     1e-6, 1e-6, 1e-6, // δp, m²
@@ -225,12 +218,12 @@ pub(crate) fn below_floor(p: &CovarianceMatrix) -> bool {
 /// In `f32` that is reachable by rounding rather than by arithmetic — the Joseph form of (27)
 /// keeps `P` positive semi-definite, and semi-definite includes zero.
 ///
-/// Raising a diagonal entry adds a positive semi-definite diagonal matrix to `P`, so it
-/// preserves the property (27) was chosen to protect and can only widen the `S` of (24). The
-/// floor can make the filter more uncertain than it should be and never more confident, which
-/// is why it is a constant of the arithmetic and not a [`Config`](crate::Config) field: there
-/// is no mission whose answer is a different number, only a filter whose numbers should never
-/// reach this one. [`FLOOR`] records what the corpus says about that.
+/// Raising a diagonal entry adds a positive semi-definite diagonal matrix to `P`, so it preserves
+/// the property (27) was chosen to protect and can only widen the `S` of (24). The floor can make
+/// the filter more uncertain than it should be and never more confident, which is why it is a
+/// constant of the arithmetic and not a [`Config`](crate::Config) field: there is no mission whose
+/// answer is a different number, only a filter whose numbers should never reach this one. [`FLOOR`]
+/// says how far below them it sits.
 pub(crate) fn floor_diagonal(p: &mut CovarianceMatrix) -> u32 {
     let mut raised = 0;
 

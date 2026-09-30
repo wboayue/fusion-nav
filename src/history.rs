@@ -85,7 +85,7 @@ impl History {
     /// Forget everything: a new start has no past.
     ///
     /// The count alone, since nothing reads an entry past `len`: rebuilding the ring put a
-    /// 1552-byte temporary in `Eskf::apply_alignment`'s frame on `thumbv6m-none-eabi`.
+    /// temporary the size of the history in `Eskf::apply_alignment`'s frame.
     pub(crate) fn clear(&mut self) {
         self.len = 0;
         self.next = 0;

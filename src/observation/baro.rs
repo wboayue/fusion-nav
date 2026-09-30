@@ -26,22 +26,13 @@ pub(crate) fn altitude_jacobian() -> SMatrix<f32, 1, STATES> {
 /// as its negation and `α₀` is what makes it relative to the origin rather than to whatever
 /// pressure the sensor was built around.
 ///
-/// # The curvature term of (30), deferred
+/// # The curvature term of (30), not built
 ///
 /// (30) treats `−p_D` as height, which is off by the tangent plane's rise above the surface,
-/// `(p_N² + p_E²)/2R` — 1 cm at 357 m from the origin, 8 cm at 1 km, 7.8 m at 10 km. A GNSS
-/// position converted by (43) carries that rise and the barometer does not, so far enough out
-/// the two disagree about height by exactly that amount. Writing `h(x) = p_D − (p_N² + p_E²)/2R`
-/// would remove it, with `H` unchanged to first order.
-///
-/// It is not written yet. The corpus travels far enough to see it: `2b2ad123` flies 5.13 km
-/// from its origin, where the rise is 2.07 m, and `89a498ce` 4.07 km, where it is 1.30 m, both
-/// on RTK receivers whose height is reported to centimetres. The simulator still cannot, twice
-/// over: `circuit()` reaches 144 m, worth 1.6 mm, and `Baro::sample` generates its reading from `−p_D` on a flat plane, so truth
-/// carries no curvature for the term to recover. A correction with a real log to show it
-/// and no scenario to score it is #124's to measure, with the simulator generating `α` from
-/// a geodetic height rather than from `−p_D` — without that a scenario scores the term as
-/// error.
+/// `(p_N² + p_E²)/2R`: 8 cm at 1 km, 7.8 m at 10 km. A GNSS position converted by (43) carries that
+/// rise and the barometer does not, so far enough out the two disagree about height by exactly that
+/// amount. `h(x) = p_D − (p_N² + p_E²)/2R` would remove it, with `H` unchanged to first order. Not
+/// built: #124.
 pub(crate) fn altitude_observation(
     state: &State,
     altitude: Altitude,

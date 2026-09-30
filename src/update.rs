@@ -92,13 +92,11 @@ pub(crate) enum Update {
 /// Gate a measurement and, if it passes, fold it into the state. Equations (23)–(27) and
 /// (37)–(41).
 ///
-/// `S` is factored by Cholesky, and the factor serves both the gate and the gain:
-/// `ε = yᵀ S⁻¹ y` and `K = P Hᵀ S⁻¹` each need a solve against `S`, and neither needs `S⁻¹`
-/// itself. A correlated measurement is the exception, gated on its own `R_m` and gained on the
-/// larger `R̃` of (24′), so its gain is solved against a second factor; where `r_gain` is
-/// `r_m` the second factor is the first. The second costs 272 bytes of `update::<3>`'s frame
-/// on `thumbv6m` and 64 on `thumbv7em`, 320 and 64 of `update::<1>`'s, measured by building
-/// each without it.
+/// `S` is factored by Cholesky, and the factor serves both the gate and the gain: `ε = yᵀ S⁻¹ y`
+/// and `K = P Hᵀ S⁻¹` each need a solve against `S`, and neither needs `S⁻¹` itself. A correlated
+/// measurement is the exception, gated on its own `R_m` and gained on the larger `R̃` of (24′), so
+/// its gain is solved against a second factor; where `r_gain` is `r_m` the second factor is the
+/// first.
 ///
 /// The factorization is also the check that `S` is positive-definite. With `R_m > 0` and `P`
 /// positive semi-definite it always is, so a failure means `P` has lost that property in f32 —
@@ -118,31 +116,18 @@ pub(crate) enum Update {
 /// zero. The unit tests show the difference on an ill-conditioned `P` rather than asserting
 /// it here.
 ///
-/// Every quantity is the sixteen-state one of (30′), the error state and the barometric
-/// offset `b`, and is taken in blocks: `P`, `P_xb` and `P_bb`; `K` as `K_x` and `K_b`; and
-/// `A = I − K H` as `A_xx`, `a_xb`, `a_bx` and `a_bb`, so that (27) is `A P Aᵀ + K R Kᵀ` block by
-/// block. The augmented matrix written out is the obvious form, and the tests compare against
-/// exactly that. Formed here, it cost 4168 bytes more of stack on `thumbv6m` — a 1024-byte
-/// 16 × 16 for each 900-byte temporary, and a copy in and out of it.
+/// Every quantity is the sixteen-state one of (30′), the error state and the barometric offset `b`,
+/// and is taken in blocks: `P`, `P_xb` and `P_bb`; `K` as `K_x` and `K_b`; and `A = I − K H` as
+/// `A_xx`, `a_xb`, `a_bx` and `a_bb`, so that (27) is `A P Aᵀ + K R Kᵀ` block by block. The
+/// augmented matrix written out is the obvious form, and the tests compare against exactly that;
+/// formed here it costs a 16 × 16 for every 15 × 15 temporary, on the frame that is already the
+/// crate's largest ([measured]).
 ///
-/// The frame is the largest in the crate: `update::<3>` is 8088 bytes on `thumbv6m-none-eabi`
-/// and 7960 on `thumbv7em-none-eabihf` at `opt-level = 3`, against 2832 for
-/// `propagate_covariance`, the largest single frame propagation reaches. Most of it is (27),
-/// whose `A_xx`, its two products and `K R Kᵀ` are each a 900-byte 15 × 15; the offset's blocks
-/// are vectors, and cost 968 bytes over the fifteen-state update. That is comfortable on the
-/// STM32H7 class `DESIGN.md` names and nearly all the RAM of an 8 KB Cortex-M0 part. #41, stack
-/// high-water on hardware, is what would say a less obvious form is worth writing.
+/// `M` is a type parameter so that a `Gate<M>` of the wrong dimension is a compile error (#58).
+/// What that costs is one monomorphization per dimension, so a dimension costs flash and a new
+/// source of an existing dimension does not.
 ///
-/// `M` is what the rest scales with, and a scalar source is cheaper rather than free:
-/// `update::<1>` takes 6384 bytes on `thumbv6m` and 6240 on `thumbv7em`, so neither scalar
-/// source moves the crate's high-water mark — `update::<3>` still sets it. The two scalar
-/// sources share that one monomorphization: the barometer of (30) paid for it, and the
-/// magnetic heading of (34)–(36) added 1204 bytes of `.text` linking the whole public API for
-/// `thumbv6m` under fat LTO, 2.4 %, against the 4.1 % the barometer cost when it brought
-/// `update::<1>` into existence. A dimension is what costs flash, not a source. That is the
-/// price of the dimension being a type parameter, which is what makes a `Gate<M>` of the
-/// wrong dimension a compile error (#58); trading it back for a runtime `M` is #41's call to
-/// make with hardware numbers, not one to take on a 2 KB estimate.
+/// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function
 pub(crate) fn update<const M: usize>(
     state: &State,
     covariance: &Covariance,
@@ -308,12 +293,9 @@ fn reset_jacobian(delta_theta: Vector3<f32>) -> Matrix3<f32> {
 
 /// `G P Gᵀ` with `G` the identity outside its attitude block. Equation (41).
 ///
-/// Applied to the attitude rows and columns only, which is all of `G P Gᵀ` that differs from
-/// `P`. The full product is the more obvious form and costs a 15 × 15 `G` and two more
-/// temporaries of `P`'s size: at `opt-level = 3` it measured 864 bytes more of stack for
-/// `update` on `thumbv6m-none-eabi`, on a frame that is already the largest in the crate. The
-/// difference is quoted rather than the two totals, which move by tens of bytes with codegen
-/// — adding `update::<1>` for (30) moved this one without touching a line of it.
+/// Applied to the attitude rows and columns only, which is all of `G P Gᵀ` that differs from `P`.
+/// The full product is the more obvious form and costs a 15 × 15 `G` and two more temporaries of
+/// `P`'s size, on `update`'s frame, already the largest in the crate ([measured]).
 ///
 /// Which `G_θ` to use is the caller's, because the two resets in the crate move the nominal
 /// attitude by different amounts: [`update`] injects a correction and uses (41)'s first-order
@@ -325,6 +307,8 @@ fn reset_jacobian(delta_theta: Vector3<f32>) -> Matrix3<f32> {
 ///
 /// (42) runs last, as after every covariance operation: both products of (27) and this one
 /// drift off symmetry in f32.
+///
+/// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function
 pub(crate) fn reparameterize(mut p: CovarianceMatrix, g_theta: Matrix3<f32>) -> Covariance {
     let theta = ErrorState::AttitudeX.index();
 

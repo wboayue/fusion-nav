@@ -66,7 +66,9 @@ SLUG_DROPS='!"#$%&'\''()*+,./:;<=>?@[\]^`{|}~'
 workspace=$(mktemp -d)
 trap 'rm -rf "$workspace"' EXIT
 
-# Every heading in a file, as the anchor it can be reached by, in document order.
+# Every heading in a file, as the anchor it can be reached by, in document order. The first of
+# a repeated heading is marked `<TAB>ambiguous`: its bare anchor is whichever copy comes first,
+# so a heading added above it later takes the link over and nothing fails.
 #
 # Fenced blocks are skipped, which is the whole reason this is a parser and not a grep:
 # `AGENTS.md` and `data/README.md` are full of shell in fences, and every comment in it
@@ -93,7 +95,13 @@ heading_slugs() {
             anchor = slug($0)
             seen[anchor]++
             if (seen[anchor] > 1) anchor = anchor "-" (seen[anchor] - 1)
-            print anchor
+            order[++n] = anchor
+        }
+        END {
+            for (i = 1; i <= n; i++) {
+                if (seen[order[i]] > 1) print order[i] "\tambiguous"
+                else print order[i]
+            }
         }
     ' "$1"
 }
@@ -111,38 +119,60 @@ heading_slugs() {
 # the middle would arrive as a missing one, shifting the anchor into the path.
 document_links() {
     awk -v blob="$2" '
-        /^[ \t]*(```|~~~)/ { fence = !fence; next }
+        function emit(target,   ref, kind, anchor) {
+            if (blob != "" && index(target, blob) == 1) {
+                target = substr(target, length(blob) + 1)
+                ref = index(target, "/")
+                if (ref == 0) return
+                target = substr(target, ref + 1)
+                if (target !~ /\.md($|#)/) return
+                kind = "root"
+            } else if (substr(target, 1, 1) == "#") {
+                kind = "root"
+                target = FILENAME target
+            } else if (target ~ /:\/\//) {
+                return
+            } else if (target ~ /\.md($|#)/) {
+                kind = "rel"
+            } else {
+                return
+            }
+
+            anchor = ""
+            if (index(target, "#") > 0) {
+                anchor = substr(target, index(target, "#") + 1)
+                target = substr(target, 1, index(target, "#") - 1)
+            }
+            print FNR "\t" kind "\t" target "\t" anchor
+        }
+        # A doc comment opens its fences behind `///` or `//!`, so the marker is stripped
+        # once, for the fence test and the definition test alike.
+        {
+            line = $0
+            sub(/^[ \t]*/, "", line)
+            if (substr(line, 1, 3) == "///" || substr(line, 1, 3) == "//!") {
+                line = substr(line, 4)
+                sub(/^[ \t]*/, "", line)
+            }
+        }
+        line ~ /^(```|~~~)/ { fence = !fence; next }
         fence { next }
         {
             rest = $0
             while (match(rest, /\]\([^()]*\)/)) {
-                target = substr(rest, RSTART + 2, RLENGTH - 3)
+                emit(substr(rest, RSTART + 2, RLENGTH - 3))
                 rest = substr(rest, RSTART + RLENGTH)
+            }
 
-                if (blob != "" && index(target, blob) == 1) {
-                    target = substr(target, length(blob) + 1)
-                    ref = index(target, "/")
-                    if (ref == 0) continue
-                    target = substr(target, ref + 1)
-                    if (target !~ /\.md($|#)/) continue
-                    kind = "root"
-                } else if (substr(target, 1, 1) == "#") {
-                    kind = "root"
-                    target = FILENAME target
-                } else if (target ~ /:\/\//) {
-                    continue
-                } else if (target ~ /\.md($|#)/) {
-                    kind = "rel"
-                } else {
-                    continue
-                }
-
-                anchor = ""
-                if (index(target, "#") > 0) {
-                    anchor = substr(target, index(target, "#") + 1)
-                    target = substr(target, 1, index(target, "#") - 1)
-                }
-                print FNR "\t" kind "\t" target "\t" anchor
+            # A reference definition, `[label]: target`, which is how a doc comment keeps a
+            # long URL off the line it is cited from. Taken apart by `index` rather than a
+            # bracket expression, whose `]` handling differs between the awks this runs on.
+            split_at = index(line, "]:")
+            if (substr(line, 1, 1) == "[" && split_at > 0) {
+                line = substr(line, split_at + 2)
+                sub(/^[ \t]*/, "", line)
+                sub(/[ \t].*$/, "", line)
+                emit(line)
             }
         }
     ' "$1"
@@ -155,7 +185,7 @@ document_links() {
 # broken link rather than the first: a heading rename breaks several at once, and one run
 # should name all of them.
 check_documents() {
-    local root=$1 blob=$2 doc file line kind target anchor rc=0 links=0
+    local root=$1 blob=$2 doc file line kind target anchor rustdoc rc=0 links=0
     shift 2
     local cache=$workspace/cache
     rm -rf "$cache"
@@ -177,8 +207,13 @@ check_documents() {
                 root) file=$target ;;
             esac
 
+            # A Rust source is rustdoc by definition.
             case " $INCLUDED_IN_RUSTDOC " in
-                *" $doc "*)
+                *" $doc "*) rustdoc=1 ;;
+                *) case $doc in *.rs) rustdoc=1 ;; *) rustdoc=0 ;; esac ;;
+            esac
+            case $rustdoc in
+                1)
                     if [ "$kind" = rel ]; then
                         echo "  RELATIVE   $doc:$line -> $target${anchor:+#$anchor} (rustdoc" \
                             "includes this file; use the repository URL)" >&2
@@ -197,7 +232,11 @@ check_documents() {
 
             local key=$cache/${file//\//_}
             [ -f "$key" ] || heading_slugs "$root/$file" > "$key"
-            if ! grep -qxF -- "$anchor" "$key"; then
+            if grep -qxF -- "$anchor"$'\t'ambiguous "$key"; then
+                echo "  AMBIGUOUS  $doc:$line -> $target#$anchor (a repeated heading; link" \
+                    "a unique one, or its -N)" >&2
+                rc=1
+            elif ! grep -qxF -- "$anchor" "$key"; then
                 echo "  NO ANCHOR  $doc:$line -> $target#$anchor" >&2
                 rc=1
             fi
@@ -286,7 +325,7 @@ EOF
 
     t 0 'file and anchor resolve'     '[a](target.md#health-reporting)'
     t 0 'file with no anchor'         '[a](target.md)'
-    t 0 'two links on one line'       '[a](target.md) and [b](target.md#repeated)'
+    t 0 'two links on one line'       '[a](target.md) and [b](target.md#health-reporting)'
 
     # Each failure is asserted by message as well as by status, because the two refusals reach
     # the same exit code by different paths: drop the existence check and a missing file still
@@ -315,7 +354,9 @@ EOF
     t 0 'an anchor opening with a hyphen' '[a](target.md#-the-operator)'
 
     # GitHub numbers a repeated heading from the second one.
-    t 0 'repeated heading, first'     '[a](target.md#repeated)'
+    # The first of a repeated heading owns the bare anchor only until another is added above
+    # it, so a link to it is refused rather than left to move.
+    t 1 'repeated heading, first'     '[a](target.md#repeated)' '' '*AMBIGUOUS*'
     t 0 'repeated heading, second'    '[a](target.md#repeated-1)'
     t 1 'repeated heading, third'     '[a](target.md#repeated-2)'
 
@@ -341,13 +382,13 @@ EOF
     # A relative link resolves from the linking file's directory. Resolving from the root
     # instead would report `data/README.md`'s `../GOALS.md` as missing, and -- worse -- would
     # resolve a `data/`-relative path that does not exist.
-    t 0 'relative to the linking file' '[a](../target.md#repeated)' sub/doc.md
+    t 0 'relative to the linking file' '[a](../target.md#health-reporting)' sub/doc.md
 
     # The absolute form, one link per fixture so that a verdict names which half failed, and
     # past whatever ref the link pins. A tag is checked too: the ref is skipped rather than
     # matched, so a link pinned to a release resolves against the working tree.
-    t 0 'an absolute link'         "[a](${blob_prefix}main/target.md#repeated)" sub/doc.md
-    t 0 'an absolute link, tagged' "[a](${blob_prefix}v1.2.3/target.md#repeated)" sub/doc.md
+    t 0 'an absolute link'         "[a](${blob_prefix}main/target.md#health-reporting)" sub/doc.md
+    t 0 'an absolute link, tagged' "[a](${blob_prefix}v1.2.3/target.md#health-reporting)" sub/doc.md
     t 1 'an absolute link, bad anchor' "[a](${blob_prefix}main/target.md#gone)" sub/doc.md
 
     # A source permalink is a citation, not an anchor: `#L696-L698` names lines in a file
@@ -357,8 +398,25 @@ EOF
 
     # A document rustdoc includes must link absolutely. Relative works on GitHub and 404s on
     # docs.rs, where the sibling file is not served -- invisible to everything else here.
-    t 1 'an included document, relative link' '[a](target.md#repeated)' README.md '*RELATIVE*README.md:1*'
-    t 0 'an included document, absolute link' "[a](${blob_prefix}main/target.md#repeated)" README.md
+    t 1 'an included document, relative link' '[a](target.md#health-reporting)' README.md '*RELATIVE*README.md:1*'
+    t 0 'an included document, absolute link' "[a](${blob_prefix}main/target.md#health-reporting)" README.md
+
+    # A doc comment is rustdoc too, and cites the documents that own its evidence.
+    t 1 'a doc comment, relative link' '/// [a](target.md#health-reporting)' src/lib.rs '*RELATIVE*src/lib.rs:1*'
+    t 1 'a doc comment, bad anchor' "/// [a](${blob_prefix}main/target.md#gone)" src/lib.rs '*NO ANCHOR*'
+    t 0 'a doc comment, absolute link' "/// [a](${blob_prefix}main/target.md#health-reporting)" src/lib.rs
+
+    # A reference definition is a link too, in a doc comment and in Markdown alike: without
+    # reading one, the long URLs doc comments keep off their prose lines go unchecked.
+    t 1 'a reference definition, bad anchor' "/// [a]: ${blob_prefix}main/target.md#gone" src/lib.rs '*NO ANCHOR*target.md#gone*'
+    t 0 'a reference definition' "/// [a]: ${blob_prefix}main/target.md#health-reporting" src/lib.rs
+    t 1 'a Markdown reference definition' '[a]: target.md#gone' doc.md '*NO ANCHOR*'
+    t 1 'a reference definition with no space' '[a]:target.md#gone' doc.md '*NO ANCHOR*'
+
+    # A doctest's fence sits behind `///`: a link inside one is code, not a link.
+    t 0 'a link in a doc-comment fence' '/// ```
+/// [a](missing.md#nowhere)
+/// ```' src/lib.rs
 
     # A document that cannot be read contributes no links, and must not therefore contribute
     # no complaint: "0 links, all resolved" is the shape of every check that checks nothing.
@@ -400,7 +458,9 @@ case "${1:-}" in
         # the same reason the missing prefix above is.
         # Less validation/src/: a template's links are written for the path its page is
         # published to (tools/validation.py), so the rendered page is the one that resolves.
-        documents=$(cd "$repo_root" && git ls-files '*.md' ':!validation/src/*')
+        # And every Rust source, whose doc comments cite the documents that own their
+        # evidence, and are rustdoc itself, so held to the absolute form.
+        documents=$(cd "$repo_root" && git ls-files '*.md' ':!validation/src/*' 'src/*.rs')
         if [ -z "$documents" ]; then
             echo "check-anchors.sh: no tracked Markdown files to check" >&2
             exit 2
