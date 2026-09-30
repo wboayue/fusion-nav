@@ -155,7 +155,7 @@ document_links() {
 # broken link rather than the first: a heading rename breaks several at once, and one run
 # should name all of them.
 check_documents() {
-    local root=$1 blob=$2 doc file line kind target anchor rc=0 links=0
+    local root=$1 blob=$2 doc file line kind target anchor rustdoc rc=0 links=0
     shift 2
     local cache=$workspace/cache
     rm -rf "$cache"
@@ -177,8 +177,13 @@ check_documents() {
                 root) file=$target ;;
             esac
 
+            # A Rust source is rustdoc by definition.
             case " $INCLUDED_IN_RUSTDOC " in
-                *" $doc "*)
+                *" $doc "*) rustdoc=1 ;;
+                *) case $doc in *.rs) rustdoc=1 ;; *) rustdoc=0 ;; esac ;;
+            esac
+            case $rustdoc in
+                1)
                     if [ "$kind" = rel ]; then
                         echo "  RELATIVE   $doc:$line -> $target${anchor:+#$anchor} (rustdoc" \
                             "includes this file; use the repository URL)" >&2
@@ -360,6 +365,11 @@ EOF
     t 1 'an included document, relative link' '[a](target.md#repeated)' README.md '*RELATIVE*README.md:1*'
     t 0 'an included document, absolute link' "[a](${blob_prefix}main/target.md#repeated)" README.md
 
+    # A doc comment is rustdoc too, and cites the documents that own its evidence.
+    t 1 'a doc comment, relative link' '/// [a](target.md#repeated)' src/lib.rs '*RELATIVE*src/lib.rs:1*'
+    t 1 'a doc comment, bad anchor' "/// [a](${blob_prefix}main/target.md#gone)" src/lib.rs '*NO ANCHOR*'
+    t 0 'a doc comment, absolute link' "/// [a](${blob_prefix}main/target.md#repeated)" src/lib.rs
+
     # A document that cannot be read contributes no links, and must not therefore contribute
     # no complaint: "0 links, all resolved" is the shape of every check that checks nothing.
     local got=0
@@ -400,7 +410,9 @@ case "${1:-}" in
         # the same reason the missing prefix above is.
         # Less validation/src/: a template's links are written for the path its page is
         # published to (tools/validation.py), so the rendered page is the one that resolves.
-        documents=$(cd "$repo_root" && git ls-files '*.md' ':!validation/src/*')
+        # And every Rust source, whose doc comments cite the documents that own their
+        # evidence, and are rustdoc itself, so held to the absolute form.
+        documents=$(cd "$repo_root" && git ls-files '*.md' ':!validation/src/*' 'src/*.rs')
         if [ -z "$documents" ]; then
             echo "check-anchors.sh: no tracked Markdown files to check" >&2
             exit 2

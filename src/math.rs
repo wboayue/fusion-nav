@@ -130,12 +130,10 @@ pub(crate) fn wrap_pi(angle: f32) -> f32 {
 /// Equation (42): `P ← ½(P + Pᵀ)`, which (42) asks for after every covariance operation.
 ///
 /// Swept over the upper triangle in place rather than written as the equation reads,
-/// `*p = (*p + p.transpose()) * 0.5`, which materializes two 15×15 temporaries. At
-/// `opt-level = 3` the equation form's stack frame measures 1884 bytes on
-/// `thumbv6m-none-eabi` and 1820 on `thumbv7em-none-eabihf`, against 108 and 0 for the
-/// sweep. (42) runs after every covariance operation, so that frame sits under `predict`
-/// beneath the temporaries propagation needs of its own, and 1884 bytes is a quarter of
-/// the RAM on an 8 KB Cortex-M0 part.
+/// `*p = (*p + p.transpose()) * 0.5`, which materializes two 15×15 temporaries. (42) runs
+/// after every covariance operation, so that frame would sit under `predict` beneath the
+/// temporaries propagation needs of its own; the sweep needs almost none
+/// ([measured](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function)).
 ///
 /// The two forms agree bit for bit — `a + a` and a multiplication by ½ are both exact in
 /// binary floating point — so an already-symmetric `P` is unchanged either way and the

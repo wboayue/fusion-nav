@@ -472,7 +472,7 @@ pub(crate) fn error_dynamics(state: &State, omega: Vector3<f32>, a_b: Vector3<f3
 /// sample integrated: the accelerometer's densities over `Δt_v`, the gyroscope's over `Δt_θ`.
 ///
 /// A diagonal rather than a 15 x 15 matrix because (21) has twelve nonzero entries: the matrix
-/// form would spend 900 bytes of stack and 225 additions to add twelve numbers, and "the
+/// form would spend a 15 × 15 temporary and 225 additions to add twelve numbers, and "the
 /// diagonal of `Q` lands on the diagonal of `P`" is closer to the equation than a dense sum.
 /// What makes that legitimate is the isotropy below; a per-axis `Σ_a` is what would make this
 /// a matrix again.
@@ -526,22 +526,11 @@ fn process_noise(noise: &ImuNoise, imu: Corrected) -> [f32; STATES] {
 
 /// `P ← F P Fᵀ + Q`, equation (22), with the symmetry enforcement (42) asks for afterwards.
 ///
-/// Written as (22) reads, which is the most expensive thing the filter does: of order 6750
-/// multiplications and three 900-byte temporaries per IMU sample, at up to 400 Hz. (20) is
-/// sparse enough — two identity blocks, two zero rows — that a block-wise form would cut
-/// both, at the cost of the one equation a reader of this crate is most likely to have come
-/// for.
-///
-/// The measurement, since the trade was made here (`-Zemit-stack-sizes`, `opt-level = 3`):
-/// this function's own frame is 2832 bytes on `thumbv6m-none-eabi` and 2760 on
-/// `thumbv7em-none-eabihf`, and the chain that reaches it from
-/// [`Eskf::predict`](crate::Eskf::predict) — `predict` at 2168 and 2160, `propagate` at 1056
-/// — comes to 6056 and 5976. It is a frame of its own rather than part of `predict`'s because
-/// [`project`] is a second caller; with one caller it inlined, and the same three
-/// temporaries sat in `predict` instead. That is the "few kilobytes rather than one"
-/// `DESIGN.md` predicts for the working set, comfortable on the STM32H7 class it names and
-/// most of the RAM on an 8 KB Cortex-M0 part. The block-wise form is the lever if a target
-/// needs it, and #41 — stack high-water measured on hardware — is what would say so.
+/// Written as (22) reads, which is the most expensive thing the filter does: three 15 × 15
+/// temporaries per IMU sample, at up to 400 Hz. (20) is sparse enough (two identity blocks,
+/// two zero rows) that a block-wise form would cut them, at the cost of the one equation a
+/// reader of this crate is most likely to have come for. What it costs is
+/// [measured](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function); a block-wise form waits on #41's figures from hardware.
 ///
 /// `Q` arrives as a diagonal and is added as one, which keeps those temporaries to three
 /// rather than four.
@@ -622,19 +611,14 @@ const MAX_PROJECTION_STEPS: usize = 64;
 /// So a projection grows `P` as a [`coast`] allowing no unmeasured acceleration or rotation
 /// would, since `F` does not read velocity and an unaccelerated vehicle and one standing still
 /// grow it alike. It does not call [`coast`], which carries a state and an offset the query
-/// discards: through it the arming query's chain measured 9 KB of stack on
-/// `thumbv6m-none-eabi`, over `update::<3>`. The nominal state is untouched and no timer
-/// moves. A projection is not time passing.
+/// discards, and through which the arming query's stack passed `update`'s. The nominal state is
+/// untouched and no timer moves. A projection is not time passing.
 ///
 /// What it costs, and why that is acceptable on a query and would not be on the hot path:
 /// one `F` and one `Q`, built once because an unaccelerated vehicle does not rotate, then one
 /// [`propagate_covariance`] per step — ten of them at the default 1 s horizon, up to
-/// [`MAX_PROJECTION_STEPS`]. So an arming check is ten times the arithmetic of an IMU epoch.
-/// The stack is a frame of 1952 bytes on `thumbv6m-none-eabi` and 1936 on
-/// `thumbv7em-none-eabihf`, which with
-/// [`Eskf::predicted_validity`](crate::Eskf::predicted_validity)'s 1856 above it and
-/// [`propagate_covariance`]'s 2832 below comes to 6640 — under `update::<3>`, so the
-/// crate's high-water mark is where it was.
+/// [`MAX_PROJECTION_STEPS`]. So an arming check is ten times the arithmetic of an IMU epoch,
+/// on a stack that stays under `update`'s ([measured](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function)).
 pub(crate) fn project(
     state: &State,
     covariance: Covariance,
@@ -695,12 +679,10 @@ fn repeat_covariance(
 ///
 /// What it costs is up to [`MAX_PROJECTION_STEPS`] runs of (22) in one call, 64 IMU epochs'
 /// arithmetic landing on the step after the loop has already overrun. Worst case, not
-/// typical: a 1.2 s gap is 12 runs. The stack is a frame of 2144 bytes on
-/// `thumbv6m-none-eabi` and 2136 on `thumbv7em-none-eabihf`, which with
-/// [`Eskf::predict`](crate::Eskf::predict)'s 2168 above it and [`propagate_covariance`]'s 2832
-/// below comes to 7144, under `update::<3>`. The exact `F` of an unaccelerated vehicle is a
-/// four-term polynomial in `Δt`, since `ω = 0` makes the error dynamics nilpotent, and is the
-/// lever if #41 finds the spike too costly; until then the steps are (22) as it reads.
+/// typical: a 1.2 s gap is 12 runs, on a stack under `update`'s ([measured](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function)). The exact
+/// `F` of an unaccelerated vehicle is a four-term polynomial in `Δt`, since `ω = 0` makes the
+/// error dynamics nilpotent, and is the lever if #41 finds the spike too costly; until then the
+/// steps are (22) as it reads.
 ///
 /// A gap that is not a positive duration coasts nothing, for [`project`]'s reason: a negative
 /// `Δt` subtracts `Q`. [`Eskf::predict`](crate::Eskf::predict) coasts only past a positive

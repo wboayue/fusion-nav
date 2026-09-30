@@ -245,13 +245,75 @@ The covariance is not the whole cost. A measurement update in Joseph form also n
 transition matrix, the `(I − KH)` product, and at least one `15 × 15` temporary, each another
 900 bytes, so the realistic working set is a few kilobytes rather than one. Peak stack usage
 depends on how aggressively temporaries are reused, which is exactly why the intent is to
-**measure and publish** the figure per operation rather than estimate it here.
+**measure and publish** the figure per operation rather than estimate it here; the
+[measured figures](#measured-cost-by-function) follow.
 
 A few kilobytes is still comfortable on an STM32H7-class flight controller while providing a full
 inertial-navigation state.
 
 `Status` is a payload-free enum and `state()` stays small and `Copy`, so reading it in a control
 loop costs nothing. Timing detail lives in `diagnostics()`, which is not on the hot path.
+
+### Measured cost, by function
+
+Every figure a doc comment would otherwise carry about stack, flash or arithmetic lives here, keyed
+by the function it measures; the comment keeps the one sentence saying why its form was chosen.
+These are host-side measurements: #41 measures stack high-water and execution time on hardware,
+and its figures land in this section.
+
+**Stack frames**, `-Zemit-stack-sizes` at `opt-level = 3` (the recipe is under Commands in
+`AGENTS.md`). A frame moves by tens of bytes with codegen that touches nothing in it (adding
+`update::<1>` moved `reparameterize`'s share without a line of it changing), so where a form was
+chosen the *difference* against the rejected one is the figure that carries the decision.
+
+| function | `thumbv6m` | `thumbv7em` | against the rejected form |
+| --- | --- | --- | --- |
+| `update::<3>` | 8088 | 7960 | the offset of (30′) in blocks costs 968 over the fifteen-state update; the augmented 16 × 16 written out cost 4168 more (a 1024-byte matrix per 900-byte temporary, plus a copy in and out); (24′)'s second Cholesky factor costs 272 (64 on `thumbv7em`) |
+| `update::<1>` | 6384 | 6240 | the second factor costs 320 (64) |
+| `reparameterize` (in `update`) | | | the full `G P Gᵀ` cost 864 more of `update`'s frame |
+| `fuse_gnss_velocity` → `update::<3>` | 9504 | | the crate's high-water mark; `fuse_gnss_velocity` is 1416 with `apply_or_recover` out of line, 2384 inlined |
+| `Eskf::observe::<3>` | 1464 | | `Observation::delayed` 752 and `error_dynamics` 400 beneath it; inlined into `fuse_gnss_velocity` it put the high-water mark at 10800 |
+| `Eskf::fuse_heading` | 1224 over `update::<1>`'s 6368 | | with `fuse_course`'s 264 above it, 7856 at the peak, against 7624 when `fuse_mag_heading` did the work in its own 1240-byte frame |
+| `Eskf::adopt_position`, `adopt_velocity` | | | inlined, +976 on `fuse_gnss_position` and +952 on `fuse_gnss_velocity`; out of line they follow `update` rather than stacking on it |
+| `propagate_covariance` | 2832 | 2760 | the largest frame propagation reaches; with `predict` (2168, 2160) and `propagate` (1056) above it the chain is 6056 (5976). With one caller it inlined and the same three temporaries sat in `predict` |
+| `project` | 1952 | 1936 | with `predicted_validity`'s 1856 above and `propagate_covariance` below, 6640; through `coast` the arming query's chain measured 9 KB |
+| `coast` | 2144 | 2136 | with `predict` above and `propagate_covariance` below, 7144 |
+| `enforce_symmetry` | 108 | 0 | the equation form, `(P + Pᵀ)/2`, is 1884 (1820): two 15 × 15 temporaries under `predict` |
+| `init::initial_covariance` | 1120 | | a diagonal-only `P₀` inlined to 80; `Eskf::initialize` is 1224 above it |
+| `Eskf::initialize_coarse` | 1984 | | most of it the `StaticWindow` of one sample |
+| `History::clear` | | | rebuilding the ring put a 1552-byte temporary in `Eskf::apply_alignment` |
+| `StaticWindow::halve` | | | a copy of the blocks is 512 bytes |
+
+Every initialization frame stays under the 9504 of `fuse_gnss_velocity` into `update::<3>`, and so
+do the arming query and a coast, so no path but an update moves the crate's peak. That peak is
+comfortable on the STM32H7 class above and nearly all the RAM of an 8 KB Cortex-M0 part. The
+block-wise forms that would cut it (of (22), where (20)'s identity and zero blocks make most of
+`F P Fᵀ` known; of a coast, whose `F` is a four-term polynomial in `Δt` since `ω = 0` makes the
+error dynamics nilpotent; a runtime `M` for `update` in place of a type parameter) are each written
+as the equation reads until #41's figures say a target needs them.
+
+**Sizes.** `P` is 900 bytes, so it is passed by reference, and `Covariance::to_rows` is a copy of
+that size on the caller's stack. `StaticWindow` is 936 bytes at any rate and length
+(`the_window_is_the_size_its_documentation_quotes` pins it), where a buffered 2 s window at 400 Hz
+is 800 `StaticSample`s of 80 bytes, 64 KB. The history of (23′) is 1.5 KB of `Eskf`.
+
+**Flash**, `.text` on `panic-check`'s ELF (fat LTO) linking the whole public API for `thumbv6m`. A
+measurement dimension is what costs flash, not a source: the barometer brought `update::<1>` into
+existence for 4.1 %, and the magnetic heading of (34)–(36), sharing it, added 1204 bytes, 2.4 %.
+The `magnetic-model` table is 1408 bytes of `.rodata` and its lookup 1096 of `.text` (1520 on
+`thumbv7em`), about 2.5 KB, at `opt-level = "s"`; the same lookup in `f64` linked 4496 bytes of
+`.text` in software doubles.
+
+**Arithmetic.** (22) as written is of order 6750 multiplications and three 900-byte temporaries
+per IMU sample, at up to 400 Hz; a dense `Q` would add 900 bytes and 225 additions to add twelve
+numbers. `project` is ten runs of (22) at the default 1 s horizon, up to 64; a coast is up to 64
+runs landing on one step, 12 for a 1.2 s gap. Each `StaticWindow::push` costs 32 `f64` additions,
+9 multiplications, 2 comparisons, a subtraction and 18 widenings (the barometer's share only on a
+fresh reading), and 27 operations in `f32`: 7 divisions, 6 multiplications, 5 additions,
+4 comparisons, 2 maxima, 2 square roots and a conversion. Each `WindowNoise::BLOCK` closed costs its
+sensor 7 additions, 6 multiplications and a division more. Counted in the `thumbv6m` disassembly,
+less the merge a doubling adds; on a core with no FPU each is a library call, paid only until the
+window commits.
 
 ## Initial Scope
 

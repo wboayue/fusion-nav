@@ -94,9 +94,8 @@ impl StaticSample {
 /// [`Eskf::initialize`](crate::Eskf::initialize) needs only what the window reduces to:
 /// sums, peaks, the span, the barometer's scatter and the first and last GNSS velocity. So
 /// the samples are folded in as they arrive rather than buffered. A buffered window at the
-/// default [`Initialization::min_duration`] of 2 s is 800 [`StaticSample`]s at 400 Hz, 64 KB
-/// at 80 bytes each on `thumbv6m`, more RAM than a Cortex-M0 has; this is 936 bytes at any
-/// rate and any length (`the_window_is_the_size_its_documentation_quotes`).
+/// default [`Initialization::min_duration`] is more RAM than a Cortex-M0 has; this one is the
+/// same size at any rate and any length ([measured](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function)).
 ///
 /// ```
 /// # use fusion_nav::prelude::*;
@@ -129,14 +128,10 @@ impl StaticSample {
 /// why it cannot slide. A buffered slice can, at the cost of the buffer, and
 /// [`try_extend`](Self::try_extend) or [`TryFrom`] builds a window from one.
 ///
-/// Each [`push`](Self::push) costs 32 `f64` additions, 9 multiplications, 2 comparisons, a
-/// subtraction and 18 widenings, the barometer's share only on a fresh reading, and 27
-/// operations in `f32`: 7 divisions, 6 multiplications, 5 additions, 4 comparisons, 2 maxima,
-/// 2 square roots and a conversion; and each [`WindowNoise::BLOCK`] closed costs
-/// its sensor 7 additions, 6 multiplications and a division more (counted in the `thumbv6m`
-/// disassembly, less the merge a doubling adds). On a
-/// core with no floating-point unit every one is a library call, inside the loop that is
-/// already reading the IMU: the price of not buffering, paid only until the window commits. `level_variance` and `BaroReadings` say why their sums need
+/// Each [`push`](Self::push) costs a few dozen floating-point operations, some in `f64`
+/// ([counted](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function)). On a core with no floating-point unit every one is a library call,
+/// inside the loop that is already reading the IMU: the price of not buffering, paid only
+/// until the window commits. `level_variance` and `BaroReadings` say why their sums need
 /// `f64`. For the averages it is precaution: summing a few thousand readings near `γ` in
 /// `f32` costs on the order of 10⁻⁵ rad of tilt, against a 0.02 rad prior.
 #[derive(Clone, Debug)]
@@ -696,7 +691,7 @@ impl BlockSums {
     /// filling the first block the merge left empty.
     fn halve(&mut self) {
         // In place, since pair `i` is read from `2i` and `2i + 1`, never from below `i`: a copy
-        // of the blocks is 512 bytes of stack.
+        // of the blocks would be a stack temporary.
         for pair in 0..BLOCKS / 2 {
             if let (Some(&first), Some(&second)) =
                 (self.blocks.get(2 * pair), self.blocks.get(2 * pair + 1))
@@ -1607,10 +1602,8 @@ fn coarse_sigmas(
 /// would be left for the vibration or noise the average levelled through. A window of one
 /// measures no scatter, and keeps the whole of `σ_tilt²` independent instead.
 ///
-/// Writing the blocks after construction costs a copy of `P`: on `thumbv6m` this frame is
-/// 1120 bytes where a diagonal-only `P₀` inlined to 80, with `Eskf::initialize` at 1224
-/// above it. The initialization chain stays well under the 9.5 KB of `fuse_gnss_velocity`
-/// into `update::<3>`, so the crate's peak does not move.
+/// Writing the blocks after construction costs a copy of `P`, on a chain that stays well under
+/// `update`'s, so the crate's peak does not move ([measured](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function)).
 pub(crate) fn initial_covariance(
     init: &Initialization,
     attitude: &Attitude,
