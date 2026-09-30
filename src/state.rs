@@ -102,7 +102,7 @@ pub enum ErrorState {
 }
 
 impl ErrorState {
-    /// The index of this component, for indexing [`Covariance::to_array`].
+    /// The index of this component, for indexing [`Covariance::to_rows`].
     pub const fn index(self) -> usize {
         self as usize
     }
@@ -133,7 +133,7 @@ impl Covariance {
     /// From rows, `p[row][column]` in the [`ErrorState`] ordering. Not checked for symmetry
     /// or positive-definiteness here; [`Eskf::initialize_from`](crate::Eskf::initialize_from)
     /// checks what it needs of a seed.
-    pub fn from_array(p: [[f32; STATES]; STATES]) -> Self {
+    pub fn from_rows(p: [[f32; STATES]; STATES]) -> Self {
         Self(CovarianceMatrix::from_fn(|row, column| p[row][column]))
     }
 
@@ -235,7 +235,7 @@ impl Covariance {
     /// `From<[[f32; 15]; 15]>` also reads columns: `SMatrix::from_fn(|i, j| p[i][j])` is the
     /// conversion. A copy, 900 bytes on the caller's stack; [`get`](Self::get) reads one entry
     /// without it.
-    pub fn to_array(&self) -> [[f32; STATES]; STATES] {
+    pub fn to_rows(&self) -> [[f32; STATES]; STATES] {
         core::array::from_fn(|row| core::array::from_fn(|column| self.0[(row, column)]))
     }
 
@@ -405,7 +405,7 @@ mod tests {
         // Asymmetric, so an array read as columns anywhere reads the transpose and fails.
         let mut rows = [[0.0; STATES]; STATES];
         rows[ErrorState::PositionNorth.index()][ErrorState::GyroBiasZ.index()] = 1.0;
-        let covariance = Covariance::from_array(rows);
+        let covariance = Covariance::from_rows(rows);
         assert_eq!(
             covariance.get(ErrorState::PositionNorth, ErrorState::GyroBiasZ),
             1.0
@@ -414,7 +414,7 @@ mod tests {
             covariance.get(ErrorState::GyroBiasZ, ErrorState::PositionNorth),
             0.0
         );
-        assert_eq!(covariance.to_array(), rows);
+        assert_eq!(covariance.to_rows(), rows);
     }
 
     #[test]

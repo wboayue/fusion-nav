@@ -336,18 +336,18 @@ type Column = fn(&State) -> f32;
 /// The error covariance as the harness's own algebra reads it.
 type CovarianceMatrix = SMatrix<f32, STATES, STATES>;
 
-/// The filter's covariance as `nalgebra`'s. Built entry by entry because `to_array` is rows
-/// and `nalgebra`'s `From` for an array reads columns, which would score the transpose.
+/// The filter's covariance as `nalgebra`'s. Built entry by entry: `nalgebra`'s `From` for an
+/// array reads columns, and would score the transpose.
 fn matrix(covariance: &Covariance) -> CovarianceMatrix {
-    let p = covariance.to_array();
+    let p = covariance.to_rows();
     CovarianceMatrix::from_fn(|row, column| p[row][column])
 }
 
 /// The filter's attitude as `nalgebra`'s, for the harness's own algebra. Unchecked, so the
 /// rotation scored is the filter's to the last bit: the getter hands back what it stores.
 fn rotation(attitude: Attitude) -> UnitQuaternion<f32> {
-    let [w, x, y, z] = attitude.body_to_ned();
-    UnitQuaternion::new_unchecked(Quaternion::new(w, x, y, z))
+    let q = attitude.body_to_ned();
+    UnitQuaternion::new_unchecked(Quaternion::new(q.w, q.x, q.y, q.z))
 }
 
 /// The estimate columns: each name next to the value it reads. Drives both the header and
@@ -365,10 +365,10 @@ const ESTIMATE: [(&str, Column); 16] = [
     ("vel_n", |s| s.velocity.x()),
     ("vel_e", |s| s.velocity.y()),
     ("vel_d", |s| s.velocity.z()),
-    ("q0", |s| s.attitude.body_to_ned()[0]),
-    ("q1", |s| s.attitude.body_to_ned()[1]),
-    ("q2", |s| s.attitude.body_to_ned()[2]),
-    ("q3", |s| s.attitude.body_to_ned()[3]),
+    ("q0", |s| s.attitude.body_to_ned().w),
+    ("q1", |s| s.attitude.body_to_ned().x),
+    ("q2", |s| s.attitude.body_to_ned().y),
+    ("q3", |s| s.attitude.body_to_ned().z),
     ("ba_x", |s| s.accel_bias.x()),
     ("ba_y", |s| s.accel_bias.y()),
     ("ba_z", |s| s.accel_bias.z()),
@@ -3519,9 +3519,14 @@ fn default_output() -> PathBuf {
 mod tests {
     use super::*;
 
-    /// A test's rotation as the `[w, x, y, z]` every `Attitude` constructor takes.
-    fn components(q: UnitQuaternion<f32>) -> [f32; 4] {
-        [q.w, q.i, q.j, q.k]
+    /// A test's rotation as the components every `Attitude` constructor takes.
+    fn components(q: UnitQuaternion<f32>) -> fusion_nav::Quaternion {
+        fusion_nav::Quaternion {
+            w: q.w,
+            x: q.i,
+            y: q.j,
+            z: q.k,
+        }
     }
 
     /// The rate the fixtures run at, which is `data/flight.csv`'s.
@@ -5346,7 +5351,7 @@ mod tests {
         let mut p = CovarianceMatrix::identity();
         p[(0, 1)] = 0.99;
         p[(1, 0)] = 0.99;
-        let covariance = Covariance::from_array(p.transpose().into());
+        let covariance = Covariance::from_rows(p.transpose().into());
         let truth = truth_offset(1.0, -1.0, 0.0);
         let score = score_one(&state_at(0.0, 0.0, 0.0), &covariance, &truth);
         assert_eq!(
@@ -5365,7 +5370,7 @@ mod tests {
         for i in 0..3 {
             p[(i, i)] = 0.0;
         }
-        let covariance = Covariance::from_array(p.transpose().into());
+        let covariance = Covariance::from_rows(p.transpose().into());
         let score = score_one(
             &state_at(0.0, 0.0, 0.0),
             &covariance,

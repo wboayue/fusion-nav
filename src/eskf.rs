@@ -2037,8 +2037,8 @@ impl Eskf {
     /// // vehicle turned.
     /// if let Some(omega) = filter.angular_rate() {
     ///     let state = filter.state();
-    ///     let [w, x, y, z] = state.attitude.body_to_ned();
-    ///     let rotation = UnitQuaternion::new_normalize(Quaternion::new(w, x, y, z));
+    ///     let q = state.attitude.body_to_ned();
+    ///     let rotation = UnitQuaternion::new_normalize(Quaternion::new(q.w, q.x, q.y, q.z));
     ///     let position = Vector3::from(state.position.to_array()) + rotation * r;
     ///     let omega = Vector3::from(omega.to_array());
     ///     let velocity = Vector3::from(state.velocity.to_array()) + rotation * omega.cross(&r);
@@ -2666,6 +2666,7 @@ mod tests {
     use crate::observation::mag::tests::{attitude_of, measured};
     use crate::state::ErrorState;
     use crate::state::STATES;
+    use crate::units::Quaternion;
     use crate::units::{Acceleration, AngularRate, Radians};
 
     const DT: Seconds = Seconds::from_secs(0.01);
@@ -4470,22 +4471,41 @@ mod tests {
     #[test]
     fn a_seed_quaternion_is_normalized_and_a_zero_one_is_refused() {
         let (state, covariance) = seed();
-        // `nalgebra` would normalize a zero quaternion to a finite zero.
+        // A zero quaternion is no rotation.
         let zero = State {
-            attitude: Attitude::from_body_to_ned([0.0; 4]),
+            attitude: Attitude::from_body_to_ned(Quaternion {
+                w: 0.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
             ..state
         };
         let mut filter = Eskf::default();
         assert_eq!(filter.seed(zero, covariance), Err(InitError::NotFinite));
         assert!(!filter.is_initialized());
 
-        // One `f32::MAX` component overflows the norm, and is still the half turn about z.
+        // One `f32::MAX` component overflows the norm, which `nalgebra` alone normalizes to a
+        // finite zero the seed would accept. It is the half turn about z.
         let huge = State {
-            attitude: Attitude::from_body_to_ned([0.0, 0.0, 0.0, f32::MAX]),
+            attitude: Attitude::from_body_to_ned(Quaternion {
+                w: 0.0,
+                x: 0.0,
+                y: 0.0,
+                z: f32::MAX,
+            }),
             ..state
         };
         assert!(filter.seed(huge, covariance).is_ok());
-        assert_eq!(filter.state().attitude.body_to_ned(), [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(
+            filter.state().attitude.body_to_ned(),
+            Quaternion {
+                w: 0.0,
+                x: 0.0,
+                y: 0.0,
+                z: 1.0
+            }
+        );
     }
 
     #[test]

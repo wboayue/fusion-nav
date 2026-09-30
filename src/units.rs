@@ -16,33 +16,65 @@
 //! supplies something else — degrees, a receiver's σ. A component of a position is an
 //! `f32` in meters, not a `Meters`.
 //!
-//! Components cross the boundary as plain arrays, `[f32; 3]` and a scalar-first `[f32; 4]`,
-//! never as `nalgebra` types. `nalgebra` is 0.x, so each of its minor versions is a semver
-//! break, and a public `Vector3` would tie every integrator to the one this crate builds
-//! against. Arrays convert to and from any version's `SVector`, and glam's and cgmath's
-//! vectors, with `.into()`. Inside, the payloads stay `nalgebra` types, so the equations
-//! keep its fixed-size algebra.
+//! Components cross the boundary as plain numbers, never as `nalgebra` types. `nalgebra` is
+//! 0.x, so each of its minor versions is a semver break, and a public `Vector3` would tie
+//! every integrator to the one this crate builds against. A vector is an `[f32; 3]`, which
+//! converts to and from any version's `SVector`, and glam's and cgmath's vectors, with
+//! `.into()`. A quaternion is a [`Quaternion`] with named fields and no array conversion,
+//! because the libraries disagree on the order of four. Inside, the payloads stay
+//! `nalgebra` types, so the equations keep its fixed-size algebra.
 
 use core::f32::consts::FRAC_1_SQRT_2;
 use core::fmt;
 use core::marker::PhantomData;
 
-use nalgebra::{Quaternion, UnitQuaternion, Vector3};
+use nalgebra::{UnitQuaternion, Vector3};
 
 use crate::frames::{Body, Enu, Frame, Ned};
 
+/// The four components of a rotation quaternion, Hamilton convention, by name.
+///
+/// Named rather than an array because the order of four numbers is the one convention no
+/// type can check: PX4's `q[4]` and ArduPilot's `Quaternion` put the scalar first, while
+/// ROS, Eigen, glam's `to_array` and `nalgebra`'s `coords` and `From<[f32; 4]>` put it last.
+/// A quaternion read in the other order is still a finite unit quaternion, and rotates the
+/// wrong way. So there is no conversion from an array and no positional constructor: a
+/// caller writes `Quaternion { w: q.w, x: q.i, y: q.j, z: q.k }` from `nalgebra`, or
+/// `{ w: q[0], x: q[1], .. }` from PX4, and the order is on the page.
+///
+/// It carries no frames; [`Attitude`]'s constructors say which rotation it is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct Quaternion {
+    /// The scalar part, `cos(θ/2)`.
+    pub w: f32,
+    /// The first vector component, `sin(θ/2)` times the axis's first.
+    pub x: f32,
+    /// The second vector component.
+    pub y: f32,
+    /// The third vector component.
+    pub z: f32,
+}
+
+impl Quaternion {
+    /// No rotation.
+    pub const IDENTITY: Self = Self {
+        w: 1.0,
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    };
+}
+
 /// Vehicle attitude: the rotation from [`Body`](crate::Body) to [`Ned`](crate::Ned).
 ///
-/// Equation (7). Hamilton convention, and a quaternion crosses the API as `[w, x, y, z]`,
-/// scalar first, the order of PX4's `q[4]` and of ArduPilot's `Quaternion`. ROS, Eigen and
-/// `nalgebra`'s `coords` store `[x, y, z, w]`, and an array in that order is a finite unit
-/// quaternion that rotates the wrong way, so build it by named components:
-/// `[q.w, q.x, q.y, q.z]` from ROS, `[q.w, q.i, q.j, q.k]` from `nalgebra`. Each constructor
-/// normalizes what it is given; a zero or non-finite quaternion comes out non-finite, and
+/// Equation (7). Hamilton convention, crossing the API as a [`Quaternion`], whose fields
+/// name the components. Each constructor normalizes what it is given; a zero or non-finite
+/// quaternion comes out non-finite, and
 /// [`Eskf::initialize_from`](crate::Eskf::initialize_from) refuses it as
 /// [`InitError::NotFinite`](crate::InitError::NotFinite).
 ///
-/// Every constructor names the convention it takes, and there is no `From<[f32; 4]>`, for
+/// Every constructor names the convention it takes, and there is no `From<Quaternion>`, for
 /// the reason the module docs give for keeping `From<[f32; 3]>` off the framed vectors:
 /// `.into()` would claim body-to-NED for a quaternion that is a stored inverse or an ENU
 /// one. A seed is where that costs most,
@@ -88,7 +120,7 @@ impl Attitude {
     /// constructors, `Convention::Ned` included.
     ///
     /// Read at PX4-Autopilot `c4e4ef98` (v1.18.0-beta1) and ardupilot `368dc0c4`.
-    pub fn from_body_to_ned(q: [f32; 4]) -> Self {
+    pub fn from_body_to_ned(q: Quaternion) -> Self {
         Self(unit(q))
     }
 
@@ -104,7 +136,7 @@ impl Attitude {
     /// reaches. An inverted attitude is finite, is a unit quaternion, and is identity
     /// wherever the true one is, so it survives every gate and every static test; it
     /// differs only in the sign of every rotation the vehicle actually has.
-    pub fn from_ned_to_body(q: [f32; 4]) -> Self {
+    pub fn from_ned_to_body(q: Quaternion) -> Self {
         Self(unit(q).inverse())
     }
 
@@ -115,7 +147,7 @@ impl Attitude {
     /// navigation frame is the half-applied form, and it is not obviously wrong: it
     /// reports the same heading as this one and the vehicle upside down, so a level bench
     /// check that reads a compass agrees with it.
-    pub fn from_flu_to_enu(q: [f32; 4]) -> Self {
+    pub fn from_flu_to_enu(q: Quaternion) -> Self {
         let r_nav = ned_from_enu();
         let r_body = frd_from_flu();
         Self(r_nav * unit(q) * r_body.inverse())
@@ -135,15 +167,15 @@ impl Attitude {
     /// same half turn here, so the conversion is a conjugation and a vehicle that is only
     /// rolled comes through unchanged — a second attitude that cannot tell a conversion
     /// from no conversion at all.
-    pub fn from_flu_to_nwu(q: [f32; 4]) -> Self {
+    pub fn from_flu_to_nwu(q: Quaternion) -> Self {
         let r_nav = ned_from_nwu();
         let r_body = frd_from_flu();
         Self(r_nav * unit(q) * r_body.inverse())
     }
 
-    /// The quaternion that rotates body FRD to NED, `[w, x, y, z]`: the convention
+    /// The quaternion that rotates body FRD to NED: the convention
     /// [`from_body_to_ned`](Self::from_body_to_ned) takes, and what PX4 and ArduPilot publish.
-    pub fn body_to_ned(self) -> [f32; 4] {
+    pub fn body_to_ned(self) -> Quaternion {
         components(self.0)
     }
 
@@ -155,7 +187,7 @@ impl Attitude {
     /// The quaternion that rotates NED to body FRD: the inverse of
     /// [`from_ned_to_body`](Self::from_ned_to_body), for a consumer that stores the
     /// direction-cosine matrix taking navigation vectors into the body.
-    pub fn ned_to_body(self) -> [f32; 4] {
+    pub fn ned_to_body(self) -> Quaternion {
         components(self.0.inverse())
     }
 
@@ -165,13 +197,13 @@ impl Attitude {
     /// Two-sided on the way out for the reason it is on the way in,
     /// `q = r_nav⁻¹ ⊗ q_{NED←FRD} ⊗ r_body`; rotating the navigation frame alone publishes
     /// the right heading and the vehicle upside down.
-    pub fn flu_to_enu(self) -> [f32; 4] {
+    pub fn flu_to_enu(self) -> Quaternion {
         components(ned_from_enu().inverse() * self.0 * frd_from_flu())
     }
 
     /// The quaternion that rotates body FLU to NWU, as Madgwick-family filters report it:
     /// the inverse of [`from_flu_to_nwu`](Self::from_flu_to_nwu).
-    pub fn flu_to_nwu(self) -> [f32; 4] {
+    pub fn flu_to_nwu(self) -> Quaternion {
         components(ned_from_nwu().inverse() * self.0 * frd_from_flu())
     }
 
@@ -188,25 +220,34 @@ impl Default for Attitude {
     }
 }
 
-/// `[w, x, y, z]` as a unit quaternion, normalized: the order every `Attitude` constructor
-/// takes. `Quaternion::new` is scalar first too, so the components pass straight through.
+/// A caller's [`Quaternion`] as a unit quaternion, normalized.
 ///
-/// Divided by the largest component first, because the norm is a sum of squares: one
-/// `f32::MAX` component overflows it and `nalgebra` returns zeros, and components near
-/// 1e-20 underflow it to zero. The division is also what refuses a quaternion that is no
-/// rotation: a zero one is `0 / 0` and an infinite one `∞ / ∞`, NaN either way, where
-/// `nalgebra` alone normalizes zero to a finite zero that would pass every check a seed
-/// meets. A NaN component is NaN already. So each comes out non-finite, which is the
-/// refusal the [`Attitude`] docs promise.
-fn unit(q: [f32; 4]) -> UnitQuaternion<f32> {
-    let largest = q.iter().fold(0.0f32, |m, c| m.max(c.abs()));
-    let [w, x, y, z] = q.map(|c| c / largest);
-    UnitQuaternion::from_quaternion(Quaternion::new(w, x, y, z))
+/// Divided by the largest component first, because the norm is a sum of squares. One
+/// `f32::MAX` component overflows it, and `nalgebra` alone returns a finite zero that would
+/// pass every check a seed meets; components near 1e-22 underflow it, and `nalgebra` returns
+/// a finite quaternion 1 % off unit. A zero quaternion is `0 / 0`, an infinite one `∞ / ∞`,
+/// and a NaN component stays NaN, so each comes out non-finite: the refusal the
+/// [`Attitude`] docs promise.
+pub(crate) fn unit(q: Quaternion) -> UnitQuaternion<f32> {
+    let largest = [q.w, q.x, q.y, q.z]
+        .iter()
+        .fold(0.0f32, |m, c| m.max(c.abs()));
+    UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+        q.w / largest,
+        q.x / largest,
+        q.y / largest,
+        q.z / largest,
+    ))
 }
 
-/// A unit quaternion as `[w, x, y, z]`, the order every `Attitude` getter returns.
-fn components(q: UnitQuaternion<f32>) -> [f32; 4] {
-    [q.w, q.i, q.j, q.k]
+/// A unit quaternion's components, by name.
+pub(crate) fn components(q: UnitQuaternion<f32>) -> Quaternion {
+    Quaternion {
+        w: q.w,
+        x: q.i,
+        y: q.j,
+        z: q.k,
+    }
 }
 
 /// `q_{NED←ENU}`: the half turn about the north-east bisector, `(1, 1, 0)/√2`.
@@ -217,7 +258,12 @@ fn components(q: UnitQuaternion<f32>) -> [f32; 4] {
 fn ned_from_enu() -> UnitQuaternion<f32> {
     // w = cos(π/2) = 0, vector = sin(π/2)·axis = the axis itself. Unit by construction,
     // so taken unchecked rather than normalized through a division by 1 ± ε.
-    UnitQuaternion::new_unchecked(Quaternion::new(0.0, FRAC_1_SQRT_2, FRAC_1_SQRT_2, 0.0))
+    UnitQuaternion::new_unchecked(nalgebra::Quaternion::new(
+        0.0,
+        FRAC_1_SQRT_2,
+        FRAC_1_SQRT_2,
+        0.0,
+    ))
 }
 
 /// `q_{NED←NWU}`: the half turn about north, which negates west and up to give east and
@@ -237,7 +283,7 @@ fn frd_from_flu() -> UnitQuaternion<f32> {
 /// Written once because NWU-to-NED and FLU-to-FRD are the same rotation on different
 /// frames, and named twice above so that a call site says which of the two it is.
 fn half_turn_about_first_axis() -> UnitQuaternion<f32> {
-    UnitQuaternion::new_unchecked(Quaternion::new(0.0, 1.0, 0.0, 0.0))
+    UnitQuaternion::new_unchecked(nalgebra::Quaternion::new(0.0, 1.0, 0.0, 0.0))
 }
 
 macro_rules! scalar {
@@ -1123,7 +1169,7 @@ mod tests {
     /// Two rotations agreeing to within a tolerance, compared as rotations: a quaternion
     /// and its negation are the same attitude, and the conversions below produce whichever
     /// sign the multiplication lands on.
-    fn assert_same_rotation(left: [f32; 4], right: UnitQuaternion<f32>) {
+    fn assert_same_rotation(left: Quaternion, right: UnitQuaternion<f32>) {
         let left = unit(left);
         assert!(
             left.angle_to(&right) < 1.0e-6,

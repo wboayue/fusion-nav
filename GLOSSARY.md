@@ -32,11 +32,13 @@ the difference is the kind that costs a day.
   `src/state.rs` owns the difference.
 * **Quaternion** — four numbers representing a rotation, used instead of Euler angles because
   they have no gimbal lock and compose cheaply. The cost is conventions that look alike and are
-  not. **Hamilton** vs JPL and **scalar-first** vs scalar-last storage are settled here as
-  Hamilton, `[w, x, y, z]`, and no constructor can see a caller who assumed otherwise. What `Attitude`'s constructors do name is the frame and the direction
-  (`from_body_to_ned`, `from_ned_to_body`, `from_flu_to_enu`, `from_flu_to_nwu`), because a stored inverse or an ENU
-  quaternion taken as body-to-NED produces a filter that runs and reports health while flying an
-  attitude that is, in the level case, a half turn out.
+  not. **Hamilton** vs JPL is settled here as Hamilton, and **scalar-first** vs scalar-last
+  storage is not settled at all: `Quaternion`'s fields are named `w`, `x`, `y`, `z`, so a caller
+  writes the order down rather than assuming one. What `Attitude`'s constructors name is the
+  frame and the direction (`from_body_to_ned`, `from_ned_to_body`, `from_flu_to_enu`,
+  `from_flu_to_nwu`), because a stored inverse or an ENU quaternion taken as body-to-NED produces
+  a filter that runs and reports health while flying an attitude that is, in the level case, a
+  half turn out.
 * **Specific force** — what an accelerometer actually measures: acceleration minus gravity, in
   body axes. A stationary level vehicle reads `[0, 0, −γ]`, not zero, which is what makes
   levelling from the accelerometer possible at all. See
