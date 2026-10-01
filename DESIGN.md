@@ -415,20 +415,22 @@ as `Fusion::OutOfHorizon`, and the log reads `rejected_gnss_pos=0 rejected_gnss_
 rotation, and reads the same across the whole range: `pos_h_max` 23.25 m refused, 2.74 m coasted,
 `false_valid` 1946 → 0.
 
-`replay --derive` reads the same question on a single scale for both fields, the smallest
-multiple of the default after which no GNSS position or velocity is rejected or adopted for 10 s
-past each gap. On `4b473e91` six of the eight gaps settle with no coasting noise at all or an
-eighth of the default, and the two longest late in the flight, 2.66 s at 772 s and 3.12 s at
-954 s, need the whole default: on that scale the default has no margin there, and the tool prints
-twice it, 4.0 and 0.2. The figures above were measured one field at a time (`rotation` at 0.02
-with `acceleration` at 2.0, `acceleration` at 1.0 with `rotation` at 0.1). `2b2ad123`'s ten gaps
-need at most a quarter (×0.5 printed); `f16771dd` has no GNSS after its gaps to say.
+`replay --derive` asks the same question a field at a time, the other at its default: the
+smallest multiple of each after which no GNSS position or velocity is rejected or adopted for
+10 s past each gap, and prints twice the largest a gap needed. On `4b473e91` six of the eight
+gaps settle with neither field's noise, and the two longest late in the flight need some:
+2.66 s at 772 s half the default `acceleration`, 3.12 s at 954 s all of it and a quarter of the
+`rotation`. So the tool prints 4.0 and 0.05 there, not the default: by its 10 s test the default
+`acceleration` has no margin on its own log, and the default `rotation` twice what it prints.
+`2b2ad123`'s gaps need neither field's noise, and `f16771dd` has no GNSS after its gaps to say;
+both keep the default.
 
 ### `Correlation`
 
 `replay --derive` reads `τ = −T / ln ρ` per source from the lag-one autocorrelation of its
-innovations with every source fused white, where `ρ` clears `2/√n`. On the `correlated` scenario,
-seed 1, whose sources are drawn at known `τ`, that reading is 1.7 to 6 times short:
+innovations with every source fused white, where `ρ` clears `2/√n` and `T` is the median interval
+between the source's rows. On the `correlated` scenario, seed 1, whose sources are drawn at known
+`τ`, that reading is 1.7 to 6 times short:
 
 | source | scenario's τ, s | read, s |
 | ------ | --------------- | ------- |
@@ -441,39 +443,52 @@ seed 1, whose sources are drawn at known `τ`, that reading is 1.7 to 6 times sh
 The autocorrelation decays faster than the error's at every lag out to twelve, not by a constant
 factor, so a ratio of lags is short too. On 50 seeds of `correlated`, `anees_pos` is 1.45 at the
 defaults, 3.16 at the values read, 1.38 at `max(default, read)` and 0.78 at the scenario's own.
-On INSANE the values read moved `nees_pos` from 0.47 to 0.23, 0.35 to 0.57 and 0.44 to 0.39. So
-`--derive` raises a source's `τ` above the default where the reading exceeds it and otherwise
-prints the default; an estimator the filter does not bias is #195.
+On INSANE the values read move `nees_pos` from 0.47 to 0.24, 0.35 to 0.57 and 0.44 to 0.40, and
+`max(default, read)` to 0.22, 0.35 and 0.32. So `--derive` raises a source's `τ` above the
+default where the reading exceeds it and otherwise prints the default; an estimator the filter
+does not bias is #195.
 
 ### `baro_offset_walk`
 
 `replay --derive` fits `D(L) = c + q² L`, the mean squared change of barometric altitude plus
-GNSS down over a lag `L`, at eight lags from `max(60 s, 3 τ)` to four times that, `τ` being the
-log's GNSS-height reading, and prints `q` where the two overlap for half an hour. On simulated
-walks of known density the estimate scatters ±11 % over 2 h, ±17 % over 1 h and ±37 % over
-20 min (40 seeds each); out to a fifth of the span it scattered ±18 % over 2 h and read 14 % low.
-GNSS height's own wander is in the slope, so `q` is an upper bound on the barometer's.
+GNSS down over a lag `L`, at eight lags from a shortest one to four times it, and prints `q`
+where the two overlap for half an hour. GNSS height's own correlated error lifts `D` to a plateau
+over a few of its `τ`, so the shortest lag is ten of that `τ` as the derived `Config` holds it,
+and a minute at least. On `2c42096b`, `D` climbs to 27 m² by 120 s, holds near 40 m² from 360 to
+900 s, and grows linearly past 1200 s at `√(D/L)` 0.20; a slope read at 60 to 240 s, inside the
+plateau, reported its rise as a walk of 0.30 (`7ce66f0d`'s read 0.20 the same way).
 
-`2c42096b`, 7126 s, reads 0.15 against PX4's 0.13, its barometer climbing 22.9 m on GNSS height
-first minute to last; read at 60–240 s, inside its own 120 s GNSS-height `τ`, it was 0.30. The
-log rejects no GNSS height at 0.13 or 0.15, 7 at 0.05 and 14 at zero. `7ce66f0d`, 1942 s, reads
-0.20, which turns down 13 GNSS heights against 17 at the default. No other corpus log overlaps
-for half an hour.
+`cargo test --example replay -- --ignored drift_scatter --nocapture` measures the estimate on
+simulated walks of known density with white noise on top, 40 seeds each: from a 60 s lag it
+scatters ±37 % over 20 min, ±25 % over 30 min, ±22 % over 1 h and ±11 % over 2 h; from 780 s
+over 2 h, ±46 %, and three seeds resolved no walk. Reading out to half the span instead scattered
+±37 % to ±49 % and read low. GNSS height's own wander is in the slope, so `q` is an upper bound
+on the barometer's.
+
+`2c42096b`, 7126 s, reads 0.21 from 780 s, its barometer climbing 22.9 m on GNSS height first
+minute to last, against PX4's 0.13 and inside the ±46 % its lags allow; the log rejects no GNSS
+height at either, 7 at 0.05 and 14 at zero. `7ce66f0d`, 1942 s, reads 0.081 from 140 s, under the
+default, and that walk turns down 24 GNSS heights against 17 at the default. No other corpus log
+overlaps for half an hour.
 
 ### `max_predict_dt`
 
-`replay --derive` takes the IMU intervals after the first epoch, sorted, as ordinary up to the
-first step of five times or more: on the corpus the largest step among ordinary intervals is
-3.0× (`093e806a`, 5.0 → 14.8 ms) and the smallest from ordinary to a dropout 7.1× (`f16771dd`,
-48 → 340 ms). It prints the longest ordinary interval with 10 % margin, never below the default,
-which covers every corpus log (longest ordinary after the start: `2c42096b` 90.5 ms, `7592c9b2`
-64.8, `285ee2e7` 25.2, the rest 22.6 ms or less), and replays the log under it: the steps it
-coasts match the intervals over it on all thirteen. A lower limit catches no dropout the default
-misses, the smallest being 121.5 ms (`2b2ad123`), and the same bound limits how far a measurement
-is carried forward. PX4 (`estimator_interface.cpp:103-108`, `ekf.cpp:154-157` at `c4e4ef98e9`)
-and ArduPilot (`AP_NavEKF3_core.cpp:1053` at `368dc0c428`) bound the step at twice a fixed
-downsampled period of 10 and 12 ms and clamp it rather than coast, an absolute ~20 ms; this filter
-integrates the raw samples, whose ordinary worst runs to 18 times their median.
+`replay --derive` takes the IMU intervals after the first epoch, as `predict` differences them
+in whole microseconds, sorted, as ordinary up to the first step of five times or more. On the
+corpus the widest step among ordinary intervals is 4.9× (`f16771dd`, 4.1 → 20.0 ms, an interval
+inside its dropout cluster at 36.9 s) and the narrowest from ordinary to a dropout 17.0×
+(`f16771dd` again, 20 → 340 ms; `2b2ad123` 18.5×, `4b473e91` 100×); the other ten logs have no
+dropout after the start. It prints the longest ordinary interval with 10 % margin, never below
+the default, which covers every corpus log (longest ordinary after the start: `2c42096b` 90.5 ms,
+`7592c9b2` 64.8, `285ee2e7` 25.2, the rest 22.6 ms or less), and replays the log under it: the
+steps it coasts match the intervals over it on all thirteen. Where the default sits above the
+ordinary tail it says how many dropouts it integrates as one step that a limit at the tail would
+coast: none on the corpus, the smallest dropout being 121.5 ms (`2b2ad123`). The same bound
+limits how far a measurement is carried forward. PX4 (`estimator_interface.cpp:103-108`,
+`ekf.cpp:154-157` at `c4e4ef98e9`) and ArduPilot (`AP_NavEKF3_core.cpp:1053` at `368dc0c428`)
+bound the step at twice a fixed downsampled period of 10 and 12 ms and clamp it rather than
+coast, an absolute ~20 ms; this filter integrates the raw samples, whose ordinary worst runs to
+18 times their median.
 
 ### `Initialization`
 

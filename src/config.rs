@@ -357,9 +357,9 @@ impl Default for Timeouts {
 /// the sensor, and the filter cannot measure it in flight without retuning itself. The replay
 /// harness's `--derive` reads it offline, `τ = −T / ln ρ` at a log's sample interval `T` and its
 /// lag-one innovation autocorrelation `ρ`, and that reading is a lower bound: an innovation is
-/// whiter than the error behind it, because the filter follows part of that error. It falls 1.7
-/// to 6 times short of a simulated sensor's own `τ`, so `--derive` prints it only above the
-/// default ([measured]); an estimator the filter does not bias is #195.
+/// whiter than the error behind it, because the filter follows part of that error. It falls
+/// well short of a simulated sensor's own `τ`, so `--derive` prints it only above the default
+/// ([measured]); an estimator the filter does not bias is #195.
 ///
 /// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#correlation
 ///
@@ -812,19 +812,17 @@ pub struct Config {
     /// is configured as [`ImuNoise`] is.
     ///
     /// The default is PX4's `baro_bias_nsd`, `src/modules/ekf2/EKF/common.h:347` at
-    /// `c4e4ef98e9`, and the corpus's one drifting barometer agrees with it: `2c42096b`'s
-    /// climbs about 12 m start to end over 2 h, and at 0.02 the filter rejects 20 of its GNSS
-    /// heights, at 0.05 five, at this value none. Zero is a constant reference, which on that
-    /// log rejects 3825 — the estimate settles on the barometer and then refuses the receiver
-    /// the barometer has drifted away from.
+    /// `c4e4ef98e9`, and the corpus's one long drifting barometer agrees with it within what a
+    /// log can say: the replay harness's `--derive` reads `2c42096b`'s walk as 0.21, an upper
+    /// bound good to about half, and the log rejects no GNSS height at either value, where a
+    /// constant reference, zero, rejects 14
+    /// ([measured](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#baro_offset_walk)).
     ///
     /// What it costs is height where the barometer does not drift. The simulator's never
     /// does, and there `mission` scores 0.170 m of vertical RMSE here against 0.085 at zero:
     /// the offset walks away from what the barometer knew, and GNSS height takes over the low
     /// frequencies. A barometer characterized on the bench as more stable than this is the
-    /// reason to lower it. The replay harness's `--derive` reads it off a log of half an hour or
-    /// more, as an upper bound: `2c42096b` reads 0.15
-    /// ([measured](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#baro_offset_walk)).
+    /// reason to lower it.
     pub baro_offset_walk: f32,
     /// Whether a filter holding no barometric reference takes one from the estimate, at the
     /// first altitude once position is established. Equations (30) and (30′).

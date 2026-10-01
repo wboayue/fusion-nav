@@ -30,7 +30,7 @@ use fusion_nav::{Seconds, Timestamp};
 
 use super::settings::{self, PerSource};
 use super::{
-    GNSS_HGT, GNSS_POS, GNSS_VEL, Options, Record, Replay, SOURCES, Sinks, Verdict, decided, drive,
+    GNSS_POS, GNSS_VEL, Options, Record, Replay, SOURCES, Sinks, Verdict, decided, drive,
     origin_of, prepare,
 };
 
@@ -48,9 +48,11 @@ const INTERVAL_MARGIN: f64 = 1.1;
 /// ([evidence](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#baro_offset_walk)).
 const DRIFT_SPAN: f64 = 1800.0;
 
-/// The shortest lag the drift is read at, seconds, where the log's GNSS-height `τ` does not
-/// push it further: a minute, over three of the default's 14 s. The lags run to four times
-/// the shortest, where the estimate is both tighter and less biased than at longer ones.
+/// The shortest lag the drift is read at, seconds, where ten of the log's GNSS-height `τ` do
+/// not push it further. GNSS height's correlated error lifts `D(L)` to a plateau over a few of
+/// its `τ`, which a slope read inside reports as walk. The lags run to four times the
+/// shortest, past which they hold too few independent increments to read
+/// ([evidence](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#baro_offset_walk)).
 const DRIFT_LAG: f64 = 60.0;
 
 /// How long after a gap the GNSS verdicts are read for its cost, seconds: past the 7 s
@@ -275,10 +277,11 @@ pub fn derive(input: &Path, text: &str, options: &Options) -> Result<Derived, Bo
         .initialized_at
         .ok_or("--derive: the log never initialized, so it has no run to derive from")?;
     let correlation = taus(&white);
+    let derived_correlation = correlation_from(defaults.correlation, &correlation);
     let drift = drift(
         &rows.baro,
         &rows.gnss_down,
-        shortest_lag(correlation[GNSS_HGT]),
+        shortest_lag(derived_correlation.gnss_height),
     );
     let derived_walk = walk_from(drift.as_ref());
     let intervals = Intervals::of(&rows.imu, started);
@@ -358,7 +361,7 @@ pub fn derive(input: &Path, text: &str, options: &Options) -> Result<Derived, Bo
 
     let config = Config {
         imu: imu_from(defaults.imu, baseline.noise.as_ref()),
-        correlation: correlation_from(defaults.correlation, &correlation),
+        correlation: derived_correlation,
         gravity: site.map_or(defaults.gravity, |(_, gamma)| rounded(f64::from(gamma), 6)),
         max_predict_dt,
         coast: Some(coast_from(coast, &gaps)),
@@ -495,14 +498,13 @@ fn walk_from(drift: Option<&Drift>) -> Option<f32> {
         .filter(|walk| *walk > 0.0)
 }
 
-/// The drift's shortest lag: [`DRIFT_LAG`], or three of the log's GNSS-height `τ` where that is
-/// longer. That `τ` is read through the filter and so is short; the lags can still sit inside
-/// the true one, which pushes `q` up, and `q` is an upper bound either way.
-fn shortest_lag(gnss_height: Tau) -> f64 {
-    match gnss_height {
-        Tau::Measured { tau, .. } => DRIFT_LAG.max((3.0 * tau).ceil()),
-        _ => DRIFT_LAG,
-    }
+/// The drift's shortest lag: [`DRIFT_LAG`], or ten of GNSS height's `τ` as the derived `Config`
+/// holds it, where that is longer. That `τ` is a lower bound; where the lags still sit inside
+/// the plateau GNSS height's error makes, `q` reads high, and it is an upper bound either way.
+fn shortest_lag(gnss_height: Option<Seconds>) -> f64 {
+    gnss_height.map_or(DRIFT_LAG, |tau| {
+        DRIFT_LAG.max((10.0 * f64::from(tau.as_secs())).ceil())
+    })
 }
 
 /// Whether GNSS settled over `[from, until)`: a position was accepted and no position or
@@ -679,7 +681,7 @@ impl Intervals {
 
 /// The barometer's drift against GNSS height, as a random walk: `D(L) = c + q² L`, the mean
 /// squared change of `baro + down` over a lag `L`, fitted over eight lags from `shortest` to
-/// four times it. A walk's structure function grows linearly in the lag, and the constant takes
+/// four times it, which has to fit in half the overlap. A walk's structure function grows linearly in the lag, and the constant takes
 /// both sensors' white noise. GNSS height's own slow wander is in the slope as well, so `q` is
 /// an upper bound on the barometer's.
 fn drift(baro: &[(f64, f64)], gnss_down: &[(f64, f64)], shortest: f64) -> Option<Drift> {
@@ -737,13 +739,13 @@ fn drift_over(
         (!kept.is_empty()).then(|| kept.iter().sum::<f64>() / kept.len() as f64)
     };
     let minute = 60;
-    if 4.0 * shortest >= span / 2.0 {
+    let longest = 4.0 * shortest;
+    if longest > span / 2.0 {
         return None;
     }
     let start_to_end = mean_over(&grid[cells - minute..])? - mean_over(&grid[..minute])?;
 
     // Eight lags, geometric from `shortest` to four times it, each a whole second.
-    let longest = 4.0 * shortest;
     let lags: Vec<usize> = (0..8)
         // `libm` rather than `powf`, so the lags do not depend on the host's transcendentals.
         .map(|k| (shortest * libm::pow(longest / shortest, f64::from(k) / 7.0)).round() as usize)
@@ -1149,7 +1151,7 @@ impl Derived {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::BARO;
+    use crate::{BARO, GNSS_HGT};
 
     #[test]
     fn the_ordinary_intervals_end_at_the_first_fivefold_step() {
@@ -1399,7 +1401,13 @@ mod tests {
             let (u, v) = (uniform().max(1e-300), uniform());
             (-2.0 * u.ln()).sqrt() * (2.0 * core::f64::consts::PI * v).cos()
         };
-        for span in [1200, 1800, 3600, 7200] {
+        for (span, shortest) in [
+            (1200, 60.0),
+            (1800, 60.0),
+            (3600, 60.0),
+            (7200, 60.0),
+            (7200, 780.0),
+        ] {
             let estimates: Vec<f64> = (0..40)
                 .filter_map(|_| {
                     let mut level = 0.0;
@@ -1412,7 +1420,7 @@ mod tests {
                     let gnss: Vec<(f64, f64)> =
                         (0..span).map(|t| (f64::from(t) + 0.5, 0.0)).collect();
                     // Read at any span, to see the scatter below the floor as well.
-                    drift_over(&baro, &gnss, DRIFT_LAG, 0.0).and_then(|d| d.walk)
+                    drift_over(&baro, &gnss, shortest, 0.0).and_then(|d| d.walk)
                 })
                 .collect();
             let n = estimates.len() as f64;
@@ -1424,7 +1432,7 @@ mod tests {
                 / (n - 1.0))
                 .sqrt();
             println!(
-                "{span} s: {} seeds, mean {mean:.4}, sd {sd:.4}, {:.0} %",
+                "{span} s from {shortest} s: {} seeds, mean {mean:.4}, sd {sd:.4}, {:.0} %",
                 estimates.len(),
                 100.0 * sd / 0.1
             );

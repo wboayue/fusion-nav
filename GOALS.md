@@ -196,11 +196,12 @@ reads and commits.
 | accelerometer and gyroscope white noise, as a floor | the scatter of the increments over 50 ms blocks of a still window; a still airframe's samples are not white, so one sample's scatter misreads the density, 6× high to 3× low on the corpus | `StaticWindow::noise`, reported and never applied |
 | barometer measurement noise, as a floor | the variance of a still window's distinct readings; fused as `R` it pushes `nis_baro` past 1 on five of six real logs | `StaticWindow::noise`, reported and never applied |
 | `max_predict_dt` | the IMU intervals up to the first fivefold step in their sorted tail, with 10 % margin, never below the default | offline, `--derive`; the default covers every corpus log |
+| `coast`, what a gap may hide | per field, twice the largest multiple of the default after which GNSS settles past each of a log's gaps | offline, `--derive`; one VTOL log's figure until then |
 | gate thresholds | chi-square quantile for a chosen percentile and dimension | a constructor, not a number |
 | a source's timeout | its mean interval between measurements, published as `SourceHealth::period`; it tunes no noise, reaches the estimate only through the recovery guards that ask whether a source is arriving and through the course, which is refused along a velocity no fresh GNSS velocity holds, and is a function of the measurement times alone, so a replay reproduces it | the filter, per arrival |
 | GNSS `R` | the receiver; bounding it is the caller's (`PositionNoise::clamped`), and the replay harness fuses it raw (`r_policy=`), or at the log's own EKF2 floors to compare with EKF2 (`--r-policy px4`) | per measurement |
 | `correlation`, how long each source's error persists | `τ = −T / ln ρ` from a replay log's innovation autocorrelation per source, read with every measurement fused as white: a lower bound, so it raises a source's `τ` above the corpus median and never lowers it | offline, `--derive`; an estimator the filter does not bias is #195 |
-| `baro_offset_walk`, the barometric offset's drift | the structure function of barometer against GNSS height over at least half an hour, at lags past GNSS height's own `τ`: an upper bound | offline, `--derive`; PX4's 0.13 below 30 min |
+| `baro_offset_walk`, the barometric offset's drift | the structure function of barometer against GNSS height over at least half an hour, at lags from ten of GNSS height's `τ`: an upper bound | offline, `--derive`; PX4's 0.13 below 30 min |
 | local gravity `γ` | the site's latitude and height, by the WGS-84 normal gravity formula (`Geodetic::normal_gravity`) | offline, `--derive`; `Config::gravity`, see the decision below |
 | magnetic declination | PX4's WMM table at the GNSS origin, at the table's fixed epoch | the filter, where it places its origin; the `magnetic-model` feature, on by default, for its 2.5 KB of flash |
 
@@ -553,8 +554,8 @@ and a scenario drawn at the filter's own value can only agree with it. Fused as 
 50-seed `anees_pos` 29.16 and `anees_att` 3.48, overconfident on every epoch; under (24′), 1.45
 and 0.23, with `pos_v` 2.350 m to 1.142, yaw 3.57° to 2.36° and 320 falsely valid epochs to none.
 The position residual is the slower sources. A sensor's own `τ` read offline does not remove
-it: read through the filter's innovations it is 1.7 to 6 times short, and `--derive`'s
-`max(default, read)` takes `anees_pos` to 1.38 where the scenario's own `τ` give 0.78 (#195). `moving_start`'s four headings sharing one levelling error (#150), a failure
+it, because read through the filter's innovations it falls short of the sensor's
+([DESIGN.md](DESIGN.md#correlation)); an estimator the filter does not bias is #195. `moving_start`'s four headings sharing one levelling error (#150), a failure
 `data/anees.txt` asserted, is this issue in miniature and went with it. On `2c42096b`, σ_pos_n is
 under `eph` at 1788 fixes of 4614, median ratio 1.039 against 0.726. On `7ce66f0d`, the
 magnetometer that kept pushing a wrongly levelled heading stops outvoting GNSS: `recovered=` 294
@@ -614,7 +615,8 @@ GNSS-position `τ` of 0.51 s, under the range above, and alternates on height an
 into the medians it would move GNSS position's from 4.2 s toward 3 s. The defaults stay the
 twelve logs' medians, and a vehicle's own goes through `--derive` (#51), which can only raise a
 source's `τ`: a reading under the default proves nothing about a lower bound, and taken as the
-value it took `correlated`'s `anees_pos` from 1.45 to 3.16.
+value it made `correlated` more overconfident than the defaults
+([DESIGN.md](DESIGN.md#correlation)).
 
 GNSS heading rests on one log, `a299e722`, the only one whose EKF2 fused a dual-antenna yaw:
 `acf1_gnss_yaw` 0.6696 at 10 Hz. The course constraint rests on one too, `093e806a`, the

@@ -217,8 +217,9 @@ default's heading. In short: the IMU white noise stays the default unless the wi
 (`noise_gyro=`, `noise_accel=`) sits above it; the bias walks stay the default, because an Allan
 variance needs a soak of hours; `correlation` is a lower bound and only ever raises a source's
 `τ` (#195 is the estimator that would do better); `gravity` is `Geodetic::normal_gravity` at the
-`# Navigation origin`; `max_predict_dt`, `coast` and `baro_offset_walk` are read off the IMU
-intervals, the coasted gaps and the barometer against GNSS height. The gates, the recovery
+`# Navigation origin`; `max_predict_dt` is read off the IMU intervals and never printed below
+the default, `coast` a field at a time off the GNSS verdicts after each coasted gap, and
+`baro_offset_walk` off the barometer against GNSS height, as an upper bound. The gates, the recovery
 timeouts, `timeouts`, `accuracy` and `init` print at their defaults, the first two with what the
 log says about them (the share of `ε` over each percentile's bound, the longest rejection run
 that ended in an acceptance).
