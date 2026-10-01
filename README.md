@@ -691,10 +691,12 @@ places the origin, so hand it one that passed); `EKF2_GYR_B_LIM`, `EKF2_ABL_LIM`
 magnetic-field states, airspeed, range, flow, wind, drag and multiple lanes are
 [non-goals](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#non-goals). Candidates
 neither refused nor built, each needing evidence first: a stationary or zero-velocity observation
-(`EKF2_POS_LOCK`, `EK3_NOAID_M_NSE`), a magnetometer disturbance check (`EKF2_MAG_CHECK`), a
-barometer ground-effect dead zone (`EKF2_GND_EFF_DZ`, `EK3_GND_EFF_DZ`), accelerometer clipping
-on `ImuSample`, and inhibiting accelerometer-bias learning under hard manoeuvres
-(`EKF2_ABL_ACCLIM`).
+(`EKF2_POS_LOCK`, `EK3_NOAID_M_NSE`), a magnetometer disturbance check (`EKF2_MAG_CHECK`),
+and bad vertical-accelerometer detection (PX4's `bad_acc_vertical`, ArduPilot's `badIMUdata`),
+reported through `Diagnostics`. A barometer ground-effect dead zone (`EKF2_GND_EFF_DZ`,
+`EK3_GND_EFF_DZ`) and inhibiting accelerometer-bias learning under hard manoeuvres
+(`EKF2_ABL_ACCLIM`) are declined until a log shows either is needed: each is a threshold on the
+airframe, a knob data could settle.
 
 ## Limitations
 

@@ -797,7 +797,7 @@ b7c7c97eefc3bb421ceae6e50cac8bd5a4851b3f6f98dc2c5a7b91bb326930c9  eb799954-4743-
 #     never passed 41. (34)-(36) and (36') level and price a heading through it
 #     with rejected_mag=0 and status=Healthy -- the claim #131 and #134 made on
 #     fixtures, on a real vehicle.
-#   - The corpus's first barometer rejections: rejected_baro=7, every one within
+#   - The corpus's first barometer rejections: rejected_baro=7 at #142 (9 now), every one within
 #     1.5 s of a back-transition (125.9-127.6 s around fw -> to_mc -> mc at
 #     125.4-126.8, and 190.8 and 192.8 around to_mc at 189.8). A tailsitter
 #     pitching back up sweeps airflow across its static port, and the gate
