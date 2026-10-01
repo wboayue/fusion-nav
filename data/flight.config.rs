@@ -31,7 +31,7 @@ fusion_nav::Config {
         course: Some(fusion_nav::Seconds::from_secs(7.0)), // no rejection resolved; recovered 0
     },
     correlation: fusion_nav::Correlation {
-        // τ = −T / ln ρ, from each source's lag-one autocorrelation fused white: a lower bound, since an innovation is whiter than the error behind it.
+        // τ = −T / ln ρ from each source's lag-one autocorrelation fused white, a lower bound since an innovation is whiter than the error behind it: printed only where it exceeds the default.
         gnss_position: Some(fusion_nav::Seconds::from_secs(4.2)), // ρ -0.030 over 20 rows, white within 2/√n: the default
         gnss_height: Some(fusion_nav::Seconds::from_secs(14.0)), // ρ 0.042 over 20 rows, white within 2/√n: the default
         gnss_velocity: Some(fusion_nav::Seconds::from_secs(0.5)), // ρ -0.045 over 20 rows, white within 2/√n: the default

@@ -7,6 +7,9 @@
 #   data/anees.sh --series DIR [scenario...]
 #                              also write DIR/<scenario>.csv, the per-epoch series, and
 #                              DIR/<scenario>.anees, the line; tools/validation.sh draws them
+#   REPLAY_ARGS="--set ..." data/anees.sh correlated
+#                              replay every seed under those flags, as a Config printed by
+#                              `replay --derive` is checked; the bounds are the default's
 #
 # data/bench.sh asks whether one pinned flight got less accurate. This asks whether the
 # covariance tells the truth about the error, which no ceiling can: a ceiling passes a filter
@@ -69,7 +72,9 @@ fly() {
     mkdir -p "$dir"
     "$simulate" "$name" "$dir" --seed "$seed" >/dev/null ||
         { echo "anees: simulate $name seed $seed failed" >&2; return 1; }
-    "$replay" "$dir/$name.csv" "$dir/replay.csv" "$dir/$name.truth.csv" >/dev/null ||
+    # Unquoted on purpose: REPLAY_ARGS is a list of flags.
+    # shellcheck disable=SC2086
+    "$replay" ${REPLAY_ARGS:-} "$dir/$name.csv" "$dir/replay.csv" "$dir/$name.truth.csv" >/dev/null ||
         { echo "anees: replay $name seed $seed failed" >&2; return 1; }
     # A lost run must fail rather than shrink the ensemble: fewer files is a looser bound.
     mv "$dir/replay.nees.csv" "$3/$2.nees.csv" ||
@@ -77,7 +82,7 @@ fly() {
     rm -rf "$dir"
 }
 export -f fly
-export simulate replay
+export simulate replay REPLAY_ARGS
 
 failed=0
 found=0

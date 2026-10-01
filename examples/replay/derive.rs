@@ -109,8 +109,8 @@ enum Tau {
     /// `|ρ|` inside `2/√n`, two standard errors of a lag-one autocorrelation of `n` independent
     /// rows: the log cannot tell the source from white, and the default stands.
     Unresolved { rho: f64, rows: usize },
-    /// `ρ` below `−2/√n`: successive innovations alternate, which no `τ` describes, and fusing
-    /// them white is the conservative reading.
+    /// `ρ` below `−2/√n`: successive innovations alternate, which no `τ` describes, and the
+    /// default stands.
     Alternating { rho: f64 },
     /// `τ = −T / ln ρ`.
     Measured { rho: f64, interval: f64, tau: f64 },
@@ -360,15 +360,20 @@ pub fn derive(input: &Path, text: &str, options: &Options) -> Result<Derived, Bo
         imu.accel_white = imu.accel_white.max(noise.worst_accel_white());
     }
 
+    // A measured `τ` is a lower bound, so it moves a source's `τ` only up: one above the
+    // default shows the default too short, and one below it shows nothing. Read as the value,
+    // it made the `correlated` scenario more overconfident, `anees_pos` 1.45 to 3.16 on 50
+    // seeds, where this rule reads 1.38 (`DESIGN.md`, `Correlation`).
     let mut derived_correlation = defaults.correlation;
     for (field, tau) in FIELDS.iter().zip(correlation) {
         let slot = derived_correlation
             .field_mut(field)
             .ok_or("--derive: a source with no correlation field")?;
-        match tau {
-            Tau::Absent | Tau::Unresolved { .. } => {}
-            Tau::Alternating { .. } => *slot = None,
-            Tau::Measured { tau, .. } => *slot = Some(Seconds::from_secs(rounded(tau, 2))),
+        if let Tau::Measured { tau, .. } = tau {
+            let measured = Seconds::from_secs(rounded(tau, 2));
+            if slot.is_some_and(|default| measured > default) {
+                *slot = Some(measured);
+            }
         }
     }
 
@@ -859,7 +864,8 @@ impl Derived {
         line("    },".into());
 
         line("    correlation: fusion_nav::Correlation {".into());
-        line("        // τ = −T / ln ρ, from each source's lag-one autocorrelation fused white: a lower bound, since an innovation is whiter than the error behind it.".into());
+        line("        // τ = −T / ln ρ from each source's lag-one autocorrelation fused white, a lower bound since an innovation is whiter than the error behind it: printed only where it exceeds the default.".into());
+        let defaults_correlation = defaults.correlation.fields().map(|(_, value)| value);
         for (source, (field, value)) in correlation.fields().into_iter().enumerate() {
             let why = match self.correlation[source] {
                 Tau::Absent => "not in this log: the default".to_string(),
@@ -867,7 +873,16 @@ impl Derived {
                     format!("ρ {rho:.3} over {rows} rows, white within 2/√n: the default")
                 }
                 Tau::Alternating { rho } => format!("ρ {rho:.3}: alternates, which no τ describes"),
-                Tau::Measured { rho, interval, .. } => format!("ρ {rho:.3} at {interval:.3} s"),
+                Tau::Measured { rho, interval, tau } => {
+                    let default = defaults_correlation[source];
+                    if default.is_some_and(|d| value != Some(d)) {
+                        format!("ρ {rho:.3} at {interval:.3} s, τ ≥ {tau:.2} s")
+                    } else {
+                        format!(
+                            "ρ {rho:.3} at {interval:.3} s, τ ≥ {tau:.2} s: under the default, which stands"
+                        )
+                    }
+                }
             };
             line(format!("        {field}: {}, // {why}", seconds(value)));
         }
