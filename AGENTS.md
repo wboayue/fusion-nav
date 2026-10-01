@@ -4,403 +4,66 @@ This file provides guidance to coding agents working with code in this repositor
 
 ## Status
 
-**`EQUATIONS.md` is implemented.** #31 closed with stage 9 (#110, #111): (1)–(44) are built
-except (31)–(33), the three-axis magnetometer, which is out of scope, and (5′)'s subtraction,
-which is #59's. The `**Stub.**` marker survives on those two and nowhere else, and every status
-banner says built rather than intended. What is left is mostly measurement and publication —
-#41 (cost on hardware) and #47 (the release); #8, the EKF2 comparison, landed in #156, and
-#123, the validation report that publishes it, in #161. The defect the
-consistency keys of #112 surfaced, no corpus source white while (24) fused each as white, is
-#117's, and #152 answered it with equation (24′): every source is fused at
-`R_m (1+ρ)/(1−ρ)`, `ρ = exp(−Δt/τ)`, gated on `R_m`, with `Δt` from the source's last fused
-measurement and one `τ` per source in `Config::correlation` (corpus medians of `−T/ln acf1`
-read as white). A posterior floor, the issue's option 3, was measured and lost: honest, but it
-raised the gain. The `correlated` scenario's residual (`anees_pos` 1.09 and `over_pos` 0.12 since
-#194 redrew it at the upper half of the corpus's readings, sources slower than the defaults) was to
-be #51's per-sensor τ; #51 measured that a τ read through the filter cannot remove
-it, and it is #195's. Overconfidence is the
-lockout precondition, and #116 (#143) recovers from lockout by default: per-source
-`Config::recovery` at PX4's timeouts, `Recovery::OFF` byte-identical to the filter that only
-reported, `recovered=` pinned on every scenario and log so a recovery masking #117 is a diff.
-`093e806a` (29) and `7ce66f0d` (28) recover from causes recovery does not remove, and their
-entries say so. #144 (#158) removed the lockout recovery was covering on `4b473e91`: a step past
-`max_predict_dt` is coasted by equation (22′), position on `v̂ Δt` and `P` grown by
-`Config::coast`'s acceleration and rotation densities, so the first fix after a gap is accepted
-(`4b473e91` recovered 12 → 0, rejected 67 → 4; `logging_dropout` `pos_h_max` 23.25 → 2.74 m).
-The rotation term is the corpus's finding, not the simulator's: the course turns 44° across
-`4b473e91`'s 3.1 s gap, and without it 7 recoveries remain. The 4 rejections it left, fixes
-timestamped inside a gap, are refused as `Fusion::OutOfHorizon` since #52: ahead of the state. #118 gated GNSS height apart from horizontal
-position, which removed the lockout fusing that barometer caused. #119 (#122) estimates the
-barometric offset beside the 15-state covariance, equation (30′), walking at
-`Config::baro_offset_walk` (PX4's 0.13); GOALS' "Barometric reference as an estimated offset"
-records why estimated rather than a consider state — 1.035 on `moving_start`, but 29310 barometer
-rejections on `2c42096b`. #115 (#127) seeds that offset from the estimate on any start that
-leaves no reference, correlated with the height it was read against (`P_xb = −P[:, D]`), behind
-`Config::baro_reference_from_estimate`: `2c42096b` fused its barometer that way while it started
-coarse (35575 rows refused → 4; 3825 rejected at `baro_offset_walk = 0`), and since it starts
-`short` it reads `alpha0=window`, so `cd7e0001` and `7ce66f0d` are the logs that cover the seed;
-`moving_start` `nees_pos` 1.0877.
-#8 landed (#156): `data/fetch.sh --compare` replays every log `raw` and `px4` (`--r-policy px4`,
-EKF2's own GNSS floors from the log's parameters) and asserts 26 `agreement` lines against
-`data/ekf2.txt`; the statistics are `tools/agreement.py`'s, and `replay_report.py --corpus` draws
-the table #123 consumes. On `2c42096b`, horizontal agrees to 0.30 / 0.27 m RMS north / east
-(EKF2's origin sits 3.67 m S, 2.14 m E, 4.21 m below ours), and height does not: `climb`,
-first 60 s mean to last, is +11.97 m for EKF2 on its barometer and −7.28 m for this filter on GNSS
-height's low frequencies (`height_reference_ekf2=baro`). The 24.2 m origin gap once quoted was
-mostly the geoid, the replay origin being ellipsoidal and `ref_alt` MSL; the converter now puts
-both on one datum. The `R` policy is most of the rejection disagreement (`093e806a` 278.8 s raw,
-27.1 px4, EKF2 304.9). `89a498ce`'s "EKF2 3.6 m north of its own fixes" was the converter (#167,
-#145 section 4): PX4's local x/y are `MapProjection`, azimuthal equidistant on a 6371 km sphere,
-not the tangent plane of (43), ~0.2 % apart in scale, so no origin shift aligns them. EKF2's
-position is now reprojected per row about its own origin and placed as a fix is; raw `pos_n_rms`
-4.67 → 0.130 m, and every log that flies far moved (`4b473e91` `pos_e_rms` 1.81 → 0.61).
-The sensor-boundary pass landed (#159): `clamped` takes a `SigmaBounds` per axis, so PX4's and
-ArduPilot's GNSS `R` rules are one call each and `RPolicy::Px4` holds no floor of its own (#157;
-`px4` replay byte-identical on all twelve logs); declination moved off `Config` onto `Eskf`,
-`set_magnetic_declination`, a site property like the origin (#125 part 1; the model landed in #170);
-`Eskf::angular_rate` is the bias-corrected `ω`, committed with the state through `Propagated`, so a
-caller can move the estimate to another point (the filter applies the antenna itself since #170); and #27's
-two boundary notes. No corpus or scenario output moved.
-#89 landed (#151): `data/anees.sh` gates per-epoch ensemble NEES on 50 seeds against χ² in CI,
-and asserts failures by cause: `correlated` (#117's residual) on position; `gnss_latency`'s
-assertion tripped when #52 landed, and it now passes all three blocks;
-`logging_dropout`'s assertion tripped when #144 coasted its gap, and it now passes all three. Of the two it found that no single seed showed, #150
-(`moving_start`'s first 0.2 s) was fixed by (24′), and #149 (`harsh_imu` attitude) by #160.
-#160 made (8) correlate tilt with accelerometer bias, since (5) levels a biased accelerometer
-(`P_θβa = −(σ_βa²/γ)[d̂]×`), raised `sigma_accel_bias` 0.1 → 0.2 (PX4's and ArduPilot's), and
-floors the tilt the bias does not explain at the window's own scatter across gravity, without
-which the defaults' `P₀` was singular. The evidence is the run that could fail, `harsh_imu`
-fused white on 50 seeds: `any_att` 2281 → 0 (214 at the prior alone). Tilt tightened on every
-scenario (`mission` 0.414° → 0.330); `7ce66f0d` recovered 28 times rather than 69 (36 since (23′), #52).
-#123 landed (#161): `VALIDATION.md` and `validation/{accuracy,honesty,robustness,ekf2}.md`, for
-a reader who has never computed a NEES. Every number and table comes through a placeholder in
-`validation/src/`, and every figure through `replay_report.py --figures`. `tools/validation.sh`
-regenerates them from the gates it runs, and `--check` re-derives them. The pages state the
-losses: `correlated` (#195) is overconfident and `7ce66f0d` levels wrong (#59). #47, the release,
-is next: the *API frozen* milestone is closed. #174 became bad vertical-accelerometer detection,
-internal and reported through `Diagnostics`, so it left the milestone (clipping, its first shape,
-is 22 samples on the corpus); #41 needs a board.
-#187 landed (#189): doc comments keep one sentence of evidence and link the rest. Cost figures
-are `DESIGN.md`, "Measured cost, by function", one table keyed by function (where #41's land);
-defaults' evidence is `DESIGN.md`, "Defaults and their evidence", or beside the `GOALS.md`
-decision that owns it. `tools/check-anchors.sh` now resolves links in `src/*.rs`, reference
-definitions, and refuses the bare anchor of a repeated heading. Every output byte-identical.
-#183 landed (#185): no public item names an `nalgebra` type, since it is 0.x and each minor is a
-semver break. Vectors and noise cross as `[f32; 3]`, the covariance as rows (`from_rows`,
-`to_rows`), and a quaternion as `Quaternion { w, x, y, z }`, at the root and out of the prelude.
-The plan was a scalar-first `[f32; 4]`; review found glam's `to_array` and `nalgebra`'s
-`From<[f32; 4]>` are scalar-last, so `.into()` compiled and seeded a finite, wrong attitude. An
-array's order is a convention too, and a named field is the type that states it. `mint` was
-deferred as additive. The constructors normalize prescaled by the largest component: `nalgebra`
-alone turns one `f32::MAX` component into a finite zero, which a seed accepts. Every corpus log,
-scenario and page was byte-identical.
-#44 landed (#179), with the attitude renaming #47 asked for before the freeze. `Eskf::new` returns
-`Result<_, ConfigError>`, and `Config::validate` destructures `Config` without `..`, so a new field
-does not compile until it is bounded. The constructors are `Attitude::from_*`, and the getters carry
-the bare frame-pair names. `src/eskf/adversarial.rs` is a proptest suite (`hostile`, and `ordinary`
-with `floored == 0`) that checks the invariants on `[P, P_xb; P_xbᵀ, P_bb]` after every public
-call. It found seven defects, all fixed and pinned by literals. Each one was a finite input the
-arithmetic overflows (one `f32::MAX` reading, a rotated `f32::MAX` arm, a 1e20 rad/s gyro) or a
-refusal that had already committed something. Only the (42) fix moved output: three corpus logs
-in the fourth figure of their EKF2 agreement.
-#50 landed (#178): `StaticWindow::noise(&init)` reports the white noise a still window measured,
-per axis, as `WindowNoise`: a **floor** under `Config::imu` and a barometer's `R`, never applied,
-and asked of the window so a `Config` can be derived before any filter exists. The IMU densities
-are equation (8″), the weighted scatter of increments over 50 ms blocks (`WindowNoise::BLOCK`),
-because real still windows are not white (lag-one −0.98 to +0.96 on the window rows) and one
-sample's scatter misread the density 6× high to 2.9× low; a lag-one `(1+ρ)/(1−ρ)` correction
-missed by up to 3.3×. The block length is the figure's real uncertainty, up to 2.3× between 50 and
-125 ms, against ±11 % from 40 blocks. `WindowNoise::MIN_READINGS` (9) gates each sensor; `α₀`
-keeps two, because (30′) refines it and holding it to nine left the corpus no real short still
-start with its own reference. The floor is a floor on the corpus in both directions it could fail:
-`ImuNoise::default` sits 9 to 180× above the gyroscope's and 6 to 230× above the accelerometer's,
-and fusing the barometer's as `R` took `nis_baro` to 1.54 to 34.56 on five of six real logs.
-`noise_gyro=`, `noise_accel=`, `noise_baro=` are pinned on all thirteen logs and bounded in
-`data/scenarios.txt` about the simulator's injected densities, the one two-sided truth bound
-there. `a299e722`'s rows average 2.5 ms while standing for 20 ms, so its figures read about √8
-high and are left out of the quoted ranges until #177 carries the converter's integral intervals.
-#60 landed (#180): UrbanNav Medium-Urban-1 is the gate benchmark, the one source with hostile GNSS
-*and* truth. It states no licence, so `data/urbannav.txt` is its own manifest
-(`data/fetch.sh --manifest`), nothing drawn from it is committed, and the pages publish scalars.
-`tools/urbannav2replay.py` reads the IMU CSV, each u-blox `$PUBX,00` and SPAN-CPT text, no rosbag.
-The harness judges each GNSS fix against truth (`Judged`: the gate's own test at P999 on the row's
-`R`, fixed whatever the run's gates, policy or `--recovery`), and the `score` line carries
-`bad_`, `rejected_bad_`, `rejected_good_`, `accepted_far_`, `adopted_bad_`,
-`recovered_after_{bad,lockout}_` and `unjudged_` per half; truth may leave bias columns blank and
-be sparser than the IMU. The F9P rejects none of its 654 good fixes. The M8T, 200–470 m out while
-claiming 5–25 m, captures the filter: 33 of 338 bad fixes rejected, 59 good ones, 257 m RMS,
-heading lost; 12 of 16 position recoveries end lockouts, and `--recovery off` is 70 km. No gate
-percentile helps, so P999 and recovery-on stand; the persistent-error failure is #181.
-#9 landed (#182): INSANE is the accuracy benchmark on a real UAV for position, height and
-velocity, **not attitude**. `data/insane.txt` is its own manifest (BSD-2 with a no-Sell
-condition and a citation requirement), three sequences, scalars published. The dataset's truth
-pipeline fits attitude to the RTK baseline *and the PX4 magnetometer the filter fuses*: yaw truth
-is the dual-RTK baseline, so `fuse_gnss_heading` cannot be scored there. At rest the truth tilts
-gravity 5–17° from vertical, and its timeline lags the IMU by 80–170 ms, which
-`tools/insane2replay.py` measures per sequence and removes. It fuses the PX4 receiver,
-barometer and magnetometer (on its logged axes: the calibration's extrinsic made heading
-worse), no GNSS velocity (horizontal only, no accuracy). The finding is (24′)'s: `nees_pos`
-0.23 / 0.21 / 0.23 at #194's defaults (0.47 / 0.35 / 0.44 at the 1 Hz ones), where fused white
-reads 39.2 / 11.6 / 16.1, at 0.08–0.64 m of horizontal RMS over the fixes' own error, which is `rms_gnss_pos`/`rms_gnss_hgt` since #184 (#186): each
-decided fix against truth at its time, interpolated between rows at most `TRUTH_SPAN` (0.3 s)
-apart where none lands on it, so INSANE's fixes are judged too (unjudged 1799 → 451 on
-`mars_19`, the rest outside its truth). It found `mars_1` accepting 143 of 483 fixes its own `R`
-cannot explain, height held by the barometer against fixes 2.7–8.8 m off (`--without baro`
-reads the fixes' own), and UrbanNav's M8T at 258 m against its fixes' 145 m, worse than its
-receiver, which is #181's.
-`tools/replay_format.py` is the one replay/truth writer for all three converters,
-`tools/rotations.py` their geometry, and `data/truth-runs.sh` the runner `urbannav.sh` and
-`insane.sh` share.
-#81, #125, #25 and #62 landed together (#170), the sensor boundary. The edge converts both ways
-(`flu_to_enu`, `to_enu`, `to_flu`). The filter reads PX4's WMM table (`src/magnetic.rs`, the
-`magnetic-model` feature, 2.5 KB) where it places its origin unless the caller set a declination,
-and turns a heading only the magnetometer set; fixed epoch, since the table is within 0.26° and
-drifts 0.42° in five years at the corpus origins, against a 3.1° heading σ (GOALS). Every GNSS
-`fuse_*` takes `antenna: Position<Body>`, (28′) and (29′), with the arm's attitude and gyro-bias
-terms in `H` where PX4 corrects the fix alone: `a299e722` px4 `pos_e_rms` to EKF2 0.650 → 0.408 m
-(PX4's form 0.448), `cd7e0001` heading gap 1.61° → 0.81 (0.85). Four logs carry an arm, and replayed
-`--antenna zero` each reproduces the old manifest; `eb799954` moves away from EKF2 (0.213 → 0.262 m),
-unexplained. `lever_arm` is the one scenario whose fixes are not the IMU's. The README's "Coming
-from PX4 or ArduPilot" maps every parameter; its audit found PX4 firmware's `EKF2_BARO_NOISE` is
-3.5 m, that PX4 gates GNSS height apart too, and that commander's `COM_POS_FS_EPH`/`COM_VEL_FS_EVH`
-are `Accuracy`'s counterparts. The review found a NaN `antenna` reaching the state on adoption and
-(44) placing the origin before the declination turn; both are tested.
-#21 and #52 landed together (#162), one time model for `predict` and `fuse_*`. `ImuSample` is
-PX4's `imuSample`: a `Timestamp` (u64 µs), delta angle and delta velocity, each with its own
-interval; `predict(imu)` differences timestamps for the step the timers and the gap test read,
-and integrates each increment over its own interval. Every `fuse_*` takes the measurement's time,
-and equation (23′) fuses it there: the innovation against `src/history.rs`, a 32-entry ring of
-the nominal state with every correction shifted through it, and `H` carried to today's error by
-`H(I − Aτ + ½A²τ²)` at the mean rates over the age. `gnss_latency` `pos_h` 2.197 → 0.295 m
-(`mission` 0.292), flat across 50–300 ms and half to twice the speed. Extrapolating back from
-the last IMU sample matched it in simulation and was refused on the corpus (`eb799954` 2 → 917
-rejections: one sample's vibration). Fixes are dated by each log's `EKF2_GPS_DELAY` (`t_meas_s`),
-which moves agreement with EKF2 closer on most logs; `a299e722` (266 → 396 rejections, 15.6 m
-from EKF2 under raw `R`) and `7ce66f0d` (1828 → 1966) prefer no delay in a per-log sweep, and
-both entries name causes latency does not touch. GOALS, "Measurement latency", owns the decision
-and why not PX4's delayed horizon. The four-lens review of #162 added what the corpus could not
-ask for: a measurement ahead of the state is carried forward on attitude (the last sample's rate)
-as well as position, since a heading 100 ms ahead in a 90°/s turn was 9° off (five logs re-pinned
-at noise level, all from this: zeroed, the old manifest passes); `OutOfHorizon { age }` names how
-far out; a window whose timestamps do not run forward is `InitError::InvalidStep`; a measurement
-dated before a start not at rest is refused, which no corpus log or scenario reaches; and
-`ImuSample::accumulate` sums a driver's batch, coning left out and cited against PX4's
-`ImuDownSampler`. `Eskf::commit_state` is the one writer that keeps the history in step, and a
-test fails without it.
-#24 and #53 landed together (#163): heading without a magnetometer, and the source set is 7.
-`fuse_gnss_heading` is (35′), a dual-antenna true heading on (36)'s row with no (36′);
-`fuse_course` is (35″), a *constraint* on the estimated velocity rather than a GNSS velocity
-handed in, which would count the fix's cross-track error twice. Both run through one private
-`Eskf::fuse_heading` with the magnetometer (`src/observation/heading.rs` holds (35′), (35″) and
-the shared (36)), both adopt a first heading, and `Fusion::Unobservable` refuses body x within 30°
-of vertical and a course under ArduPilot's 15° bar on `σ_χ`, so the speed threshold is the
-velocity's own accuracy. A course with no fresh GNSS velocity is
-`NoReference`, and `Status` does not count the course (`Diagnostics::aiding()`). `a299e722` turned
-out to be a real dual-antenna log (`EKF2_AID_MASK` bit 7, 0.010 rad from EKF2's yaw at rest): the
-converter writes `gnss_yaw` rows only where the log's own EKF2 enables GNSS yaw, and fusing them
-took its heading gap to EKF2 4.86° → 1.03° and `nu_mag_yaw` −0.127 → −0.002 rad, while px4
-`pos_e_rms` went 0.33 → 0.66 m, most of it the 0.30 m antenna lever arm #170 applied (0.41). #53's bar
-was met on the simulator's `no_mag` (heading 0.8 s after takeoff, 1.82° against 1.83), which
-measures the simulated sideslip as much as the filter; `093e806a --without mag --course 3` aligns
-where it never did, and the VTOL `4b473e91` shows the multirotor case it is not for. GOALS records
-option 6 (GSF) as not needed for option 5's vehicles.
-#56 landed (#164): `Status` times each source against its own rate, and `DeadReckoning` is
-horizontal. A source's timeout is 2.5 × `SourceHealth::period()`, a running mean of its arrival
-intervals (15, then weight 1/15), or `dead_reckoning_after` before it has one, and uncapped after;
-`degraded_after` is gone. `DeadReckoning` reads GNSS position and velocity alone
-(`Diagnostics::horizontal()`), as PX4's `inertial_dead_reckoning` and ArduPilot's
-`dead_reckoning` do, so a vehicle awaiting its first fix reads `DeadReckoning`, not `Aligning`.
-A median was the plan and lost on the corpus: `eb799954`'s magnetometer bursts, and a median of
-nine read its burst spacing as its rate (14025 transitions against 2). A neutral replay (2.5 s
-fixed, the old any-source rule) reproduced every summary, and only `transitions=`/`status=` moved,
-on six logs, each noted; `2c42096b` 888 → 48, since its mean interval is 1.54 s. The period
-reaches the estimate through the recovery guards and the course's `NoReference`, which GOALS'
-derived-configuration row records. `diagnostics()` and `sources()` return references
-(`Eskf::state`'s frame 688 → 56 bytes on `thumbv6m`).
-#155 landed (#166): the initialization window is folded in as it arrives. `StaticWindow` (936 B
-on `thumbv6m` since #50's sums, where a buffered 2 s window at 400 Hz is 64 KB of 80-byte `StaticSample`s) takes
-`push`, `try_extend` or `TryFrom<&[StaticSample]>`, refuses a sample with `SampleRefusal` and
-leaves the window as it was, and answers `is_long_enough` and `is_at_rest` per sample;
-`initialize` and `alignment_of` take it and can refuse only an empty one. `examples/embedded.rs`
-collects at 400 Hz. The halves `window_drift` compares split at the nearest of 8 block
-boundaries, since a stream does not know its middle: exact at 4096 blocks, every output is
-byte-identical to main, and at 8 only `7ce66f0d` moves, in a last digit, while the drift itself
-moves up to 4° (`DESIGN.md`'s `BLOCKS` section owns the table). That last figure is why the outputs alone were not the
-evidence: the drift reaches `coarse_sigmas` only where it is the largest bound, so an unchanged
-line could not have shown the approximation. The barometer's scatter is summed about the first
-reading; the naive one-pass form is 5 × 10⁻⁴ out at 10 km, and the first fixture, 11 levels,
-squared exactly and could not tell the two apart. `push`'s cost on a board is #41's.
-#48 and #49 landed (#154): `Display` on every outcome, an optional `defmt` feature, and
-`examples/embedded.rs`, built for both thumb targets in CI. `Display` prints numbers through
-`src/display.rs`'s `Fixed`, because core's `f32` formatting reaches `core::panicking` (the
-existing `InitError` impl did, unguarded). `panic-check` now formats every `Display` impl. #86's
-tailsitter is no longer blocked: #131 (#133) reads tilt and heading on navigation axes, `diag(R P_θθ Rᵀ)` through
-`AttitudeVariance`, in `Validity`, the latch, the heading adoption and (8)'s prior, and the
-`tilt`/`yaw`/`false_valid` score keys moved with it — tilt² + yaw² unchanged, the body split had
-booked heading error as tilt (`gnss_latency` `false_valid_att` 120 → 50). #134 (#135) made (36′)
-axis-free: its tilt variance is the largest eigenvalue of the horizontal tilt block, not the larger
-of two diagonals. The exact field-axis term `f̂ᵀPf̂` lost while headings were fused as white
-(`gnss_outage` `pos_h` 2.630 m against 2.227), because consecutive headings share a tilt error;
-under (24′) the two agree (1.255 against 1.252, #153), and the eigenvalue stays as the bound
-rather than for a margin. Only `f16771dd` re-pinned (`nu_mag_yaw` −0.025485 → −0.024121).
-#86's PR 2 (#141) made the corpus eight logs: `89a498ce` is the real baseline (RTK, 4.07 km, #124's
-log), `eb799954` carried the first `rejected_mag` (3 then, 2 now), and `cd7e0001` is the coarse start and the
-first `floored=` (21, a raw 0.43 mm/s σ_v). `2c42096b` now starts `short` on a 0.80 s still prefix:
-the harness waits `PATIENCE` for a static window and falls back to the prefix, and `classify`
-measures motion before length. Declination is read per log (`declination=`), which took the median
-heading gap to EKF2 on real GNSS logs from 4–13° to 0–2.5°. #142 closed #86 at twelve logs, the
-first fast vehicles, each pinned with its cause named: `285ee2e7` (tailsitter, 125° with every
-heading fused, the first `rejected_baro` at back-transitions), `4b473e91` (VTOL locked out after a
-1.18 s logging dropout, #116's acceptance line), `7ce66f0d` (hand launch levelled 12° wrong, (5′)'s
-first real check) and `093e806a` (fixed-wing, 1.14 km, a receiver PX4's R floors would correct).
-Declination now follows EKF2's own rule, PX4's table at the first fix. What #86 left open is #145:
-`9eb08bdb`'s unexplained position rejections and a heavy-lift log pairing vibration with a
-magnetometer glitch. Its `2b2ad123` entered in #168, the thirteenth log: its old lockout was the
-IMU gaps, which coasting removes, and it is the corpus's second RTK receiver, 5.13 km out.
-#169 (#193) found what its 18 raw rejections are: the receiver's position runs one or two 100 ms
-epochs off its own velocity for seconds at a time, under a 1.4–2.0 cm σ. Eight refuse an offset
-fix; ten refuse the receiver's return after the filter followed one, one episode into
-`recovered=1`. It is the price of `r_policy=raw` (`data/README.md`), and detecting it is #181's,
-for which `2b2ad123` is the case to fire on and `89a498ce` the one not to. The investigation
-found #194, which landed below: at the real rate and epoch, all 118 are offset fixes or returns.
-#51 landed (#196): differentiator 7's offline channel. `cargo run --example replay -- --derive
-<log>` replays the log in-process (`examples/replay/` is now `main.rs`, `derive.rs`, `settings.rs`)
-and prints a commented `Config` literal and the `--set` line that reproduces it, then replays the
-log under it and fails if it coasts a step its `max_predict_dt` did not predict. `--set
-<field>=<value>` writes any derivable field by its `Config` path (`set=` on the `summary` line),
-and `data/anees.sh` passes `REPLAY_ARGS`. `Config::gravity` exists, filled from
-`Geodetic::normal_gravity` (GOALS' local-gravity decision rewritten; `StaticWindow` keeps the
-least and most ‖f‖, 944 B, and its queries take `&Config`), and the simulator flies its site's
-9.80118, so every scenario now carries the 5.5 mm/s² the default is off by (`flight` re-pinned).
-The findings are `DESIGN.md`'s, one heading each: a `τ` read through the filter is 1.7–6× short
-of `correlated`'s own (`anees_pos` 3.16 read as the value), so `--derive` prints
-`max(default, read)` (1.38) and #195 owns the estimator; GNSS height's correlated error puts a
-plateau in the barometer's structure function, so the walk is read from ten of its `τ`
-(`2c42096b` 0.21, ±46 %, against PX4's 0.13); per field, `4b473e91` needs all of the default
-`acceleration` and a quarter of the `rotation`; `max_predict_dt`'s default covers all thirteen
-logs. `data/flight.config.rs` is `--derive data/flight.csv`, compiled and re-rendered by a test.
-#42 landed (#197): what the filter costs a target is pinned, not quoted. `tools/footprint.sh`
-reads type sizes, per-function stack frames and `panic-check`'s flash on both thumb targets, and
-the `footprint` job holds them to `data/footprint.txt` exactly, on a nightly the script pins, so
-a frame that shrinks fails as well as one that grows. Re-measuring found DESIGN's table already
-stale (`initialize_coarse` 1984 → 3576 B) with nothing noticing; the peak, `fuse_gnss_velocity`
-into `update::<3>`, is still 9504 B. `Eskf` is 3776 B on the targets and 3840 on the host, so
-the pin is the target's. A generic function's key is its largest instance, so a chain summed
-from keys is a bound. `bench/` is a non-default member because criterion's `num-traits/std`
-would reach the root's builds. Its first fixture fused every source at the instant it timed
-them, which (24′) prices at `MAX_INFLATION`, so it timed an update that moved nothing and still
-read `Accepted`; each bench now refuses an update moving no variance by 1e-4. #41 keeps the
-hardware: cycle counts and a painted stack.
-#194 and #177 landed (#198): the corpus is fused as EKF2 fused it. The converter takes
-`vehicle_gps_position`, EKF2's topic, at the 5–10 Hz the default logger keeps (`sensor_gps` is
-kept at 1 Hz), unless a `sensor_gps` instance is logged faster and holds every one of its
-messages (`a299e722`, `gnss_stream`). At that rate the log's arrival time was the finding: it
-jitters −17 to +30 ms behind the receiver's epoch on `89a498ce`, 0.27 m along track at 10 m/s,
-and dated by arrival the RTK log rejected 884 fixes. Each fix is now dated by `time_utc_usec`
-(`fix_timing`: arrival less a 51-message running median, so `EKF2_GPS_DELAY` keeps its meaning;
-UTC trusted only where it advances with the messages; never dated after it was logged, which
-`093e806a`'s epochs slipping against a 201 ms publication would otherwise do 284 times), and a
-fix republished unchanged is dropped (532 on `093e806a`). `89a498ce` rejects none, `2b2ad123`
-118, every one inside or just after #169's six episodes, `093e806a` 1164, still its receiver.
-`Config::correlation` was re-read on these streams and only raised, a reading being a lower
-bound: GNSS position 4.2 → 8.5 s, height 14 → 37, barometer 0.20 → 0.26, magnetometer 1.2 → 1.3;
-velocity's 0.31 and the course's 1.08 left 0.50 and 1.4, since taking velocity's cost every white
-scenario height and made `correlated` worse. `correlated` was redrawn at the upper half of the same
-readings (23 s, 106 s, 0.43, 1.3, 3.3): 1.57 at the old defaults, 1.09 at the new. The white
-scenarios pay (`mission` `pos_h` 0.292 → 0.325 m); EKF2 agreement improves on velocity and moves
-away on height. #177 is the `# IMU averaging interval` line: `a299e722` averages 2.5 ms per 20 ms
-row and its noise floor falls √8; the correction is capped at one, since overlapping averages
-(`f16771dd`) read high, not low, which review caught after the issue predicted the opposite.
+**`EQUATIONS.md` (1)–(44) is built**, except (31)–(33), the three-axis magnetometer, which is
+out of scope, and (5′)'s subtraction, in-motion levelling (#59). Those two carry the `**Stub.**`
+marker and nothing else does. Every source the crate publishes is fused: GNSS position, GNSS
+height (gated apart from horizontal), GNSS velocity, dual-antenna heading, course over ground,
+barometric altitude and magnetic heading. What remains is measurement and publication: #47, the
+release, and #41, cost on a board.
 
-**Every source the crate publishes is fused; no `fuse_*` is a stub.** Initialization is real —
-equations (5)–(8), so the filter starts at the attitude and biases the window yields — `predict`
-propagates the nominal state *and* its covariance, (9)–(22), and a GNSS position, a GNSS velocity,
-a barometric altitude or a magnetic heading corrects both: the update of (23)–(27) in Joseph form,
-the observation models (28), (29), (30) and (34)–(36) with the levelling variance (36′), the gate
-of (37)–(38) and the injection and reset of (39)–(41) all exist, in `src/update.rs` and
-`src/observation/{gnss,baro,mag}.rs`. So `mission` scores 0.244 m of horizontal RMSE, 0.187 m/s of
-velocity and 0.249 m of height where dead reckoning scored 1261 — 0.083 before (30′), whose
-walking offset hands the low frequencies to GNSS height, which a simulated barometer that never
-drifts reads as pure loss (`data/scenarios.txt`).
-The gate turns a fix down rather than taking everything offered — on the corpus, where
-`a299e722` refuses 287 of its 609 velocity solutions, a receiver its own differenced positions
-contradict (#105 settled that the harness does *not* floor `R` as both production estimators do,
-and `r_policy=raw` pins that). The multirotors barely reach the other gates: the magnetometer
-twice on `eb799954`, consecutive samples at 245.6 s (its earlier single samples 1.1 rad out now
-pass at a fraction of their weight, #145), and never the barometer. The four
-airframe logs of #86's PR 3 reach all of them, each for a cause its manifest entry names:
-a dishonest receiver at speed, a logging dropout that locks a 30 m/s vehicle out (#116's
-case), a hand launch levelled wrong ((5′)'s), and a tailsitter's back-transitions reaching the
-barometer. Between
-fixes — and on every axis a fix reaches only through the covariance — the estimate is still dead
-reckoning, which is what `Validity` and `attitude_lost=` stay honest about.
+What the filter does, and where each decision's evidence lives:
 
-**What (34)–(36) bought, and what (36′) cost to get it.** Yaw is the key that moved, and what a
-heading buys is a property of the start rather than of the filter. Where the window never observed
-yaw the magnetometer is the whole estimate: `moving_start` `yaw` 3.228° → 0.917 and `bg`
-0.004853 → 0.002660, `static` 1.715 → 0.508. Where a static window already fixed yaw and the flight
-is short it buys nothing and costs a little — `mission` `yaw` 0.644 → 0.651, `tilt` 0.519 → 0.576,
-`bg` 0.000677 → 0.001013 — because a heading carrying 3.1° of noise has nothing to tell an
-alignment that knew yaw to 0.6°, and its corrections reach tilt and gyroscope bias through (20).
-`nees_att` rose on every line (`mission` 0.0353 → 0.2005) and is still under 1 everywhere: an
-attitude that is finally observed approaches 1 from below, which `data/anees.txt` reads as a bound.
+- **Start.** `StaticWindow` folds a still window in as it arrives and seeds attitude, biases and
+  the barometric reference, (5)–(8), with tilt correlated to accelerometer bias; a short or moving
+  window starts coarse under `Status::Aligning`. `StaticWindow::noise` reports a noise floor,
+  (8″), never applied. Evidence: `DESIGN.md`, "Defaults and their evidence".
+- **Propagation.** (9)–(22) in increments; a step past `max_predict_dt` is coasted by (22′) on
+  `Config::coast`.
+- **Time.** Every measurement carries its own `Timestamp` and is fused at that time, (23′),
+  against `src/history.rs`; one beyond the history is `Fusion::OutOfHorizon`. `GOALS.md`,
+  "Measurement latency".
+- **Update.** (23)–(27) in Joseph form, gated at P999 per source, each source fused at its
+  equivalent white noise, (24′), with one `τ` per source in `Config::correlation`. The antenna
+  lever arm is in `H`, (28′)–(29′). The barometric offset is estimated beside the covariance,
+  (30′), seeded from the estimate when no window set one (`GOALS.md`, "Barometric reference as an
+  estimated offset"). A diagonal floor, (42′), holds every committed covariance and reads
+  `floored=0` on the whole corpus (`DESIGN.md`'s `FLOOR` section).
+- **Recovery.** Per source, by adoption, at PX4's timeouts (`Config::recovery`); `Recovery::OFF`
+  reproduces the filter that only reports, byte for byte.
+- **Health.** `Status` times each source against its own measured period; `DeadReckoning` reads
+  horizontal GNSS alone. `Validity` and `predicted_validity` answer per quantity.
+- **Boundary.** No public item names an `nalgebra` type. `Eskf::new` validates `Config`, a refused
+  call commits nothing, and `src/eskf/adversarial.rs` holds both. Declination comes from PX4's WMM
+  table (`magnetic-model`) unless the caller sets one.
 
-(36′) is what made the stage shippable rather than a refinement of it. Pricing the levelling error
-into `R` — `tan²δ · σ_tilt²`, the `tan δ` of (8′) read off the field rather than configured — is
-worth `moving_start` `tilt` 2.653° → 1.665, `yaw` 3.777 → 0.917, `nees_att` 1.634 → 0.226 and 840
-falsely-valid attitude quantity-epochs → 0. It widens `S` without claiming the heading observes the
-tilt that spoiled it — `R` inflation, which holds because velocity fusion keeps correcting the
-tilt it prices, where an error that persists needs (30′)'s cross-covariance; the alternative was measured, and the exact Jacobian took `mission` to 9.0° of tilt.
-The same `R` prices the **adoption**, where the tilt doing the levelling is worst — on
-`moving_start` the adopted yaw variance is 0.582 rather than 0.01, σ = 0.76 rad against an
-`Accuracy::heading` of 0.5236, so the heading is reported established and *invalid* rather than
-established and believed. One line loosened on a claim rather than a number: `gnss_latency`
-`false_valid` 340 → 413 and `false_valid_att` 57 → 120, the attitude covariance coming down where a
-late fix leaves the error (removed by (23′), #52: both read 0).
+Validation: thirteen PX4 logs (`data/manifest.txt`), the simulator's scenarios
+(`data/scenarios.txt`, and `data/anees.txt` for the covariance's honesty on 50 seeds), agreement
+with EKF2 on every log (`data/ekf2.txt`), UrbanNav for hostile GNSS against truth and INSANE for
+accuracy on a real UAV. `VALIDATION.md` and `validation/*.md` publish them, rendered by
+`tools/validation.sh`. Stack frames, type sizes and flash are pinned (`data/footprint.txt`), and
+replay derives a `Config` from a log (`--derive`).
 
-**What (30) bought, and what it cost.** Height was the key that moved — `mission` `pos_v` 0.273 m →
-0.083, `flight` 0.819 → 0.414 — and `moving_start` is byte-identical on all fifteen keys, because
-a start in motion fixes no `α₀` and fuses no altitude. Two figures loosened and both are honest.
-`gnss_outage`'s `pos_h_max` went 11.93 m → 29.69 while its RMSE barely moved: 20 s into the gap
-`σ_pos_n` is 95 m against a barometer-held `σ_pos_d` of 0.14, so a height measurement's horizontal
-gain is ~94× the correlation the two carry and the sensor's own noise arrives sideways in metres.
-It is still worth having — the end-of-gap error is 1.39 m against 11.93 without it. And `static`'s
-`nees_pos` went 1.06 → 2.04, more accurate and more overconfident in one diff, which is #89's case:
-a 20 Hz barometer averages its noise down faster than the true error falls, and the accelerometer
-bias walk is what stops the error following — or so it read; #119 showed the reference was most of
-it, `static` 2.04 → 1.02 once the offset walks. `baro_drift` was the same at full size, `nees_pos`
-257 → 1.19 under (30′). **What stage 9 added.** (42′), a per-group diagonal variance floor, applied at
-`Eskf::commit_covariance` so the invariant belongs to the filter — *every covariance it commits
-has been floored* — and reaches the ones no product built: an adoption, a `reset_*_to`, the (8) a
-window commits. An honest source never reaches it, and that is measured: `floored=0` on all thirteen
-corpus logs, 1.4 M epochs on the 2 h one. `cd7e0001`, whose receiver claims 0.43 mm/s after
-touchdown and is fused raw, read 21 until (23′)'s carried-back `H` spread each velocity fix over
-attitude and bias. `DESIGN.md`'s `FLOOR` section owns the headroom figures and every other mention cites it.
-And `predicted_validity` stopped meaning *aiding is arriving*: `P` is projected
-`Accuracy::horizon` forward with nothing fusing and each quantity tested at the far end, **or**
-counted because a constraining source is being accepted. Tilt is what it bought — a static start
-holds tilt 3.83 s, so a 1 s horizon arms and a 6 s one does not, where before it predicted its own
-current value. `Accuracy::horizon` is the one knob no data could settle.
+Known losses, stated in the published pages:
 
-Also real: the health bookkeeping (timers,
-`Status`, `Diagnostics`), the typed API surface, and the replay harness. The `**Stub.**` marker is
-now a convention with two live users, both (5′)'s (`src/init.rs`) — keep it accurate, and keep the
-status banners in `README.md`, `DESIGN.md`, `EQUATIONS.md` and `GOALS.md` saying what is true;
-`src/lib.rs` inherits the README's, since it includes the file. `EQUATIONS.md`'s
-is the one to watch: it sits above a mapping table that separately marks functions as unbuilt, so
-the two can contradict each other, and has twice — the banner once claimed no implementation
-existed while the table listed the geodetic origin as built, and stage 9's own first draft added
-(42′) to the table while leaving the banner describing symmetry alone. The example module docs
-carried the same rot: `basic.rs` and `degradation.rs` still told a reader heading and velocity
-accepted without correcting, two stages after they stopped. `GLOSSARY.md`
-repeats no caveat by design — it defines terms and defers status to the document that owns it —
-but a few entries do name what is unbuilt (the GSF yaw estimator), and those are on the
-list.
+- `correlated` is overconfident on position (`data/anees.txt` asserts the failure): a `τ` read
+  through the filter cannot remove it, and an unbiased estimator is #195.
+- `7ce66f0d`, a hand launch, levels 12° wrong: (5′), #59.
+- A receiver that is persistently wrong while claiming accuracy captures the filter (UrbanNav's
+  M8T); no gate percentile prevents it. Detecting it is #181, with `2b2ad123`'s offset epochs
+  the case to fire on and `89a498ce` the one not to.
+- On `2c42096b`, height disagrees with EKF2 because EKF2 follows its barometer and this filter
+  follows GNSS height's low frequencies; horizontal agrees to 0.3 m RMS.
+
+Keep the status banners in `README.md`, `DESIGN.md`, `EQUATIONS.md` and `GOALS.md` saying what is
+true (`src/lib.rs` inherits the README's). `EQUATIONS.md`'s is the one to watch: it sits above a
+mapping table that separately marks functions as unbuilt, so the two can contradict each other.
+The example module docs rot the same way, since `basic` and `degradation` compile in CI and never
+run. `GLOSSARY.md` repeats no caveat by design, but entries that name unbuilt work (the GSF yaw
+estimator, #165) are on the list.
 
 ## Backlog
 
-One tracking issue is still open and owns ordering for its area; read it before starting work
-there.
+One tracking issue is open and owns ordering for its area; read it before starting work there.
 
 - **#10** — replay validation. Carries which issue answers which question, and the measured
   numbers those answers are argued from. The questions themselves — self-consistency without
@@ -408,10 +71,8 @@ there.
   covariance's own honesty underneath all three — are `GOALS.md`, "Three questions, three kinds
   of source".
 
-**#31 is closed**, having landed all nine stages of `EQUATIONS.md` (#32–#40). Its closing comment
-carries what stage 9 left; *why* the order was what it was stayed in `DESIGN.md`, "Staging the
-implementation", which is the point of putting reasoning somewhere a tracker's closure cannot take
-it. What is left in that area is measurement and publication rather than mathematics.
+Why `EQUATIONS.md` was built in the order it was is `DESIGN.md`, "Staging the implementation":
+reasoning goes somewhere a tracker's closure cannot take it.
 
 **A merge is not finished until the issues it falsified are updated.** A tracker is not a
 changelog: it carries ordering, what each stage leaves its successors, and the measured numbers a
@@ -460,20 +121,10 @@ Put a query on the type whose data it reads. `Eskf::noise_of` read nothing of th
 became `StaticWindow::noise(&init)`, beside `is_at_rest(&init)` (#178). A method that forwards
 one field of `self` to another type is the sign.
 
-**Sequencing hazard, and what it taught:** #31's stages were stacked branches while the
-signature-changing issues (#21, #25) changed the API underneath them, so an API change had to land
-*before* the stage that built on it. The hazard is rebase cost between branches, not users: the
-stages are done and #21 and #25 have landed, but a branch stacked on a surface
-another branch is changing still inherits it. It
-held throughout: #58 landed before stage 5, the first code to read
-`Config::gates`, so the gate reads a `Gate<M>` typed by its degrees of freedom rather than a bare
-`f32`, and stage 5 then decided the default percentile from replay (`P999`) in the diff that first
-turned a fix down at all — the corpus stayed at `rejected=0` on all five logs until (29) reached a
-receiver whose velocity it refuses; #61 landed before stage 2, so a quaternion reaches `Attitude` only through
-a constructor naming its convention (`from_body_to_ned`, `from_ned_to_body`, `from_flu_to_enu`, `from_flu_to_nwu`) and
-the `q̂₀` of (5)–(7) is committed through the final shape; #59's signature landed with it, so
-`StaticSample` carries GNSS velocity and `Coarse::NotStationary` reports `ā_n`. What is left of #59
-is equation (5′), and the attitude it needs to rotate `ā_n` into body axes now exists.
+**Stacked branches inherit the surface beneath them.** When a branch builds on an API another
+branch is changing, land the API change first: the cost is rebase work between branches, not
+users. A typed surface landed early is what later stages are written against (`Gate<M>` typed by
+its degrees of freedom; `Attitude` reachable only through a constructor naming its convention).
 
 ## Goal: a reference to learn from
 

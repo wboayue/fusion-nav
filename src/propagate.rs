@@ -478,7 +478,7 @@ pub(crate) fn error_dynamics(state: &State, omega: Vector3<f32>, a_b: Vector3<f3
 ///
 /// **`Δt`, not `Δt²`.** [`ImuNoise`]'s four fields are spectral densities, and a density's
 /// contribution over a step is `σ² Δt` — for the white-noise blocks and the two random walks
-/// alike. The `Δt²` that (21) carried on the white-noise blocks is PX4's and ArduPilot's form,
+/// alike. A `Δt²` on the white-noise blocks is PX4's and ArduPilot's form,
 /// where the parameter is the σ of one sample's increment rather than a density: PX4
 /// `sq(dt) * accel_var` with `accel_var = sq(ekf2_acc_noise)`
 /// (`src/modules/ekf2/EKF/python/ekf_derivation/generated/predict_covariance.h:161-164`,
@@ -487,10 +487,10 @@ pub(crate) fn error_dynamics(state: &State, omega: Vector3<f32>, a_b: Vector3<f3
 /// the IMU rate — the variance it adds over `T` seconds is `σ² Δt T`, so the same airframe
 /// logged at 400 Hz is given eight times less process noise than at 50 Hz — and the corpus in
 /// `data/manifest.txt` spans 50 Hz to 250 Hz with `Config` shared across all of it. `Δt` is
-/// rate-independent, and `EQUATIONS.md` (21) is amended to it.
+/// rate-independent, and `EQUATIONS.md` (21) states it.
 ///
-/// Reading [`ImuNoise`] as densities is what `examples/simulate.rs` already does when it draws
-/// per-sample noise as `white / √Δt`, so filter and simulator now agree on what the numbers
+/// Reading [`ImuNoise`] as densities is what `examples/simulate.rs` does when it draws
+/// per-sample noise as `white / √Δt`, so filter and simulator agree on what the numbers
 /// mean. That file also states the consequence, which is the check on this decision: against
 /// its IMU table the filter's `Q` is two orders of magnitude conservative, so every scenario
 /// must come out *under*-confident, and a `nees_*` above one is a finding rather than a pass.

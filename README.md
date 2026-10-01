@@ -489,8 +489,7 @@ it does not.
 
 `Accuracy::horizon` is the one number in the crate no data could settle: how long after arming
 you need the estimate. It defaults to 1 s. Set it to zero and nothing is projected, leaving the
-aiding clause on its own — the current answer widened by what is being accepted, which is what
-`predicted_validity()` meant before it could project at all.
+aiding clause on its own: the current answer widened by what is being accepted.
 
 ### Detail
 
@@ -700,13 +699,13 @@ airframe, a knob data could settle.
 
 ## Limitations
 
-Known, and stated here rather than discovered in flight. Some are deliberate; the rest link the issue that removes them.
+Known, and stated here rather than discovered in flight. Some are deliberate; the rest link the issue that removes them, where one is open.
 
 * **A measurement's latency is the caller's to know.** Each is fused at the time it is given,
   against the state as it was then, so a late fix costs nothing, but the filter cannot measure how
   late a receiver is: PX4 takes a parameter and ArduPilot the driver's figure. A wrong one is an error
-  that grows with speed, and a receiver with none that fits is worse than fused as current: one
-  corpus log rejects 396 fixes at PX4's 110 ms and 267 at none. Anything older than
+  that grows with speed, and a receiver that no single latency fits can be worse at its
+  configured one than fused as current. Anything older than
   `LATENCY_HORIZON`, 0.3 s, is refused. See
   [measurement latency](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#measurement-latency).
 * **Barometer drift costs height where there is none.** The reference is estimated and allowed to
@@ -723,7 +722,9 @@ Known, and stated here rather than discovered in flight. Some are deliberate; th
   estimator, the general answer, is unbuilt. See
   [alignment beyond the static window](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#alignment-beyond-the-static-window).
 * **In-motion alignment is coarse.** A moving start runs and reports `Aligning`, but full
-  alignment of a bare vehicle in motion is not yet built; `initialize_from` covers a held
+  alignment of a bare vehicle in motion is not built: levelling with the vehicle's own
+  acceleration, equation (5′), is
+  [#59](https://github.com/wboayue/fusion-nav/issues/59). `initialize_from` covers a held
   estimate. See [alignment beyond the static window](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#alignment-beyond-the-static-window).
 * **Correlation times are configured, not measured.** Each source is fused at the variance its
   correlation with the last reading leaves ([equation (24′)](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#correlated-measurements)),
@@ -731,7 +732,9 @@ Known, and stated here rather than discovered in flight. Some are deliberate; th
   logs, and one log each for the dual-antenna heading and the course, the only logs that carry
   them. A sensor whose
   error persists longer than its `τ` still shrinks the covariance below what it supports, and one
-  reporting a σ too small is gated on that σ and weighted less besides. See
+  reporting a σ too small is gated on that σ and weighted less besides. A `τ` read off a log is
+  a lower bound: an estimator the filter does not bias is
+  [#195](https://github.com/wboayue/fusion-nav/issues/195). See
   [correlated measurement error](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#correlated-measurement-error-as-equivalent-white-noise).
 * **An IMU gap is coasted on an assumption.** Across a step longer than `Config::max_predict_dt`
   the filter assumes the vehicle neither accelerated nor turned, and prices what it may have done

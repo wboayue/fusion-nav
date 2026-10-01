@@ -3,7 +3,7 @@
 > **Status: the estimation mathematics is implemented.** Every equation below is built except
 > the three-axis magnetometer, (31)–(33), which is
 > [out of scope](GOALS.md#magnetometer-without-magnetic-field-states) rather than pending, and
-> equation (5′), whose subtraction is measured and reported but not yet applied. The
+> equation (5′), whose subtraction is measured and reported but not applied (not built: #59). The
 > [equation-to-code mapping](#equation-to-code-mapping) names the function implementing each,
 > and marks those two.
 
@@ -841,7 +841,7 @@ first order.
 from its origin, a rise of 2.07 m, and `89a498ce` 4.07 km, 1.30 m, both on RTK receivers whose
 height is reported to centimetres), but the simulator generates its reading from $`-p_D`$ on a
 flat plane and `circuit()` reaches 144 m, worth 1.6 mm, so no scenario could score the
-correction. #124 owns the change.
+correction. Not built: #124.
 
 ### Magnetometer, three-axis
 
@@ -975,9 +975,9 @@ bound rather than for a margin: it is never below either diagonal, it is the sam
 of the plane, and a $`\sigma`$ too large only slows the heading's correction while one too small
 is a filter claiming an attitude it does not have.
 
-The larger of the north and east diagonals is the axis-dependent form this replaces: on an
-anisotropic block it moves with the vehicle's yaw, which is what moved `f16771dd`'s mean heading
-innovation when the pair was re-chosen from body axes to north/east and nothing about the log
+The larger of the north and east diagonals is the axis-dependent alternative: on an
+anisotropic block it moves with the vehicle's yaw, so taking the pair on body axes or on north
+and east gives `f16771dd` a different mean heading innovation with nothing about the log
 changed. Against it the eigenvalue is ahead or level on every scenario but `flight`, 0.1–0.3 %
 behind there on `pos_h`, `vel` and `tilt` (`pos_h` 2.503 m against 2.499), and its `nees_att` sits up to 1.4 % lower, the direction of a
 larger `R`: a covariance a little more conservative about attitude, not a filter more certain of
@@ -992,9 +992,9 @@ its own noise suggests, without claiming it observes the tilt that made it so. T
 inflation with no cross-covariance, and it is enough here because the error it prices does not
 persist: velocity fusion keeps correcting the tilt between headings. An error that is shared
 unchanged across readings needs the cross-covariance as well, which is (30′). On the `moving_start`
-scenario, whose coarse start is where an unpriced levelling error is largest, it is worth
-2.653° → 1.665 of tilt, 3.777° → 0.917 of yaw, 1.634 → 0.226 of `nees_att`, and 840 falsely-valid
-attitude quantity-epochs → 0.
+scenario, whose coarse start is where an unpriced levelling error is largest, it holds tilt to
+1.665° against 2.653° with (36) alone, yaw to 0.917° against 3.777°, `nees_att` to 0.226 against
+1.634, and falsely-valid attitude quantity-epochs to none against 840.
 
 $`R_m`$ prices the **adoption** as well as the update. The first heading a filter with no
 established yaw receives is taken outright rather than gated — a yaw error of a radian is not a
@@ -1153,7 +1153,7 @@ keeps the exact block, and `reset` says why.
 
 $`I - [\tfrac{1}{2}\delta\hat{\theta}]_\times`$ is itself first order in the correction, which is
 sound for an update and not for an adoption. Where the nominal attitude is replaced rather than
-corrected — the first magnetic heading, which can turn it by half a circle — (41) still applies
+corrected (a heading adoption, which can turn it by half a circle), (41) still applies
 and $`G`$'s attitude block is the exact change of body frame, $`R(\hat{q}^+)^\mathsf{T} R(\hat{q})`$.
 The tilt block is near-isotropic and largely survives either choice; the attitude–bias
 cross-blocks do not, because the bias states are in physical body axes that do not turn with the
@@ -1270,7 +1270,7 @@ $`\hat{p} = 0`$, per (28).
 
 ## Equation-to-code mapping
 
-Intended layout. Each implementing function cites its equation numbers in a doc comment.
+Each implementing function cites its equation numbers in a doc comment.
 
 | equations | concept | module | function |
 | --------- | ------- | ------ | -------- |
@@ -1278,7 +1278,7 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | (5)–(8) | static initialization | `init.rs` | `StaticWindow::push` and `measured`, `level_from_accel`, `heading_from_mag`, `nominal_state`, `classify`, `attitude_sigmas`, `initial_covariance`, with `state.rs`'s `AttitudeVariance::in_body` and `Covariance::set_attitude_accel_bias_block` |
 | (8′) | what a coarse window supports | `init.rs` | `coarse_sigmas`, `window_drift`, `heading_sensitivity` — `tan δ` shared with (36′) |
 | (8″) | white noise a still window measures | `init.rs` | `Density`, `BaroReadings::noise`; reported by `StaticWindow::noise` as `WindowNoise` |
-| (5′) `ā_n` | in-motion levelling | `init.rs` | `Velocities::inertial_acceleration`; the correction itself is unbuilt — #59 |
+| (5′) `ā_n` | in-motion levelling | `init.rs` | `Velocities::inertial_acceleration`; the correction itself: not built, #59 |
 | (30) `α₀` | barometric reference and its variance | `init.rs` | `BaroReadings::reference`, through `StaticWindow::alpha0` |
 | (9)–(11) | bias correction, gravity | `propagate.rs` | `ImuSample`, `corrected_imu` |
 | (12)–(15) | nominal propagation | `propagate.rs` | `propagate_nominal` |
@@ -1288,8 +1288,8 @@ Intended layout. Each implementing function cites its equation numbers in a doc 
 | (22) | covariance propagation | `propagate.rs` | `propagate_covariance`, called with (9)–(15) by `propagate` |
 | (22′) | coasting across an IMU gap | `propagate.rs`, `eskf.rs` | `coast`, with `unaccelerated_sample` and `repeat_covariance`; chosen by `Eskf::predict` |
 | (23)–(27) | generic update, Joseph form | `update.rs` | `update` |
-| (23′) | delayed measurements | `eskf.rs`, `history.rs`, `update.rs`, `propagate.rs` | `Eskf::observe`, `Eskf::carried`, `Eskf::age_of`; `History`; `Observation::delayed`; `error_dynamics` |
-| (24′) | correlated measurements | `math.rs`, `update.rs`, `health.rs`, `eskf.rs` | `correlation_inflation`; `Observation::correlated` and `r_gain`; `SourceHealth::since_measured` for `Δt`; each `fuse_*` |
+| (23′) | delayed measurements | `eskf.rs`, `history.rs`, `update.rs`, `propagate.rs` | `Eskf::observe`, `Eskf::past`, `Eskf::carried_position` and `carried_velocity`; `History`; `Observation::delayed`; `error_dynamics` |
+| (24′) | correlated measurements | `math.rs`, `update.rs`, `health.rs`, `eskf.rs` | `correlation_inflation`; `Observation::correlated` and its `r_gain`; `SourceHealth`'s `since_measured` for `Δt`; each `fuse_*` |
 | (28) | GNSS position, as a horizontal and a height half | `observation/gnss.rs` | `horizontal_jacobian`, `horizontal_observation`, `height_jacobian`, `height_observation` |
 | (28′) | GNSS position at the antenna | `observation/gnss.rs`, `eskf.rs` | `arm`, within `horizontal_observation` and `height_observation`; `Eskf::carried_position` for an adoption |
 | (29) | GNSS velocity | `observation/gnss.rs` | `velocity_jacobian`, `velocity_observation` |

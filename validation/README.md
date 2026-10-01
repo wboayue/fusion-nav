@@ -35,5 +35,6 @@ download.
 ## Licences
 
 The corpus figures are drawn from PX4 Flight Review logs, CC BY 4.0, credited on the page that
-shows them. The simulator's are this repository's. INSANE (#9) will contribute measured scalars
-only; its licence keeps trajectory plots out of the repository.
+shows them. The simulator's are this repository's. INSANE and UrbanNav contribute measured
+scalars only: INSANE's licence and UrbanNav's lack of one keep plots and converted data out of
+the repository.

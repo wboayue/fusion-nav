@@ -1147,7 +1147,7 @@ impl Diagnostics {
     /// Every source, for iteration.
     ///
     /// By reference, since [`Status`] reads this on every
-    /// [`Eskf::state`](crate::Eskf::state) and a copy of seven [`SourceHealth`]s was most of
+    /// [`Eskf::state`](crate::Eskf::state) and a copy of seven [`SourceHealth`]s is most of
     /// that call's stack frame.
     pub const fn sources(&self) -> [(&'static str, &SourceHealth); 7] {
         [

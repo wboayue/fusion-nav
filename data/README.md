@@ -69,14 +69,11 @@ $ cargo run --example replay -- \
 ```
 
 ```text
-score pos_h=0.240 pos_v=0.273 vel=0.190 pos_h_max=0.878 tilt=0.509 yaw=0.636 …
+score pos_h=… pos_v=… vel=… pos_h_max=… tilt=… yaw=… …
 ```
 
-Those are figures for a filter aided by **GNSS position and velocity**: (23)–(29) correct the
-state at each fix and each velocity solution, and the barometer and the magnetometer are not
-fused yet. Aided by position alone the same 185 s read `pos_h=0.702`; unaided, `pos_h=1248.627`,
-because a 2° tilt error leaks gravity into the horizontal channel and integrates twice. They
-move again when a stage of #31 lands.
+Each scenario's figures are its ceilings in `data/scenarios.txt`, below, rather than restated
+here.
 
 What each key means, and what it can and cannot say on these scenarios, is in the module docs of
 `examples/replay/main.rs`, which owns the definitions. Two things about *using* it belong here:
@@ -84,10 +81,10 @@ What each key means, and what it can and cannot say on these scenarios, is in th
 - **No truth file, no `score` line** — not a line of zeros. Every log in the PX4 corpus below has
   no truth, and `pos_h=0.000` on one of them would claim a perfect filter where the honest answer
   is that nothing knows. `manifest.txt` is untouched by scoring, and `fetch.sh --check` reads
-  `summary` exactly as before. A truth file that was scored but matched no epoch is the same case:
+  `summary` alone. A truth file that was scored but matched no epoch is the same case:
   the line is `score scored=0` and no more.
 - **The truth has to belong to the log.** Both files carry their scenario and seed in a `#`
-  header, and a mismatch is refused rather than scored — nine `*.truth.csv` sit one
+  header, and a mismatch is refused rather than scored — every scenario's `*.truth.csv` sits one
   tab-completion apart in `target/sim/`, and the epoch timestamps of the wrong one line up
   perfectly often enough that nothing else would notice. A log with no such header — a corpus
   log, a converted one — is taken on trust, because there is nothing in it to check.
@@ -107,8 +104,8 @@ $ data/expect.sh --self-test                           # the comparator's own fi
 It generates every scenario first rather than reusing `target/sim/`, so no ceiling can be met by
 a flight produced before the change under test; it fails on a scenario the simulator generated and
 this file does not gate, and on a line carrying no ceilings at all, since either reads as a green
-run over a gate that is not there. It runs the debug build: the eleven scenarios
-are about ten seconds all told, against a minute to build the crate again under a second profile,
+run over a gate that is not there. It runs the debug build: the scenarios take seconds all
+told, against a minute to build the crate again under a second profile,
 and `score` is identical either way. `fetch.sh --check` uses `--release` for a reason that does
 not apply here — a two-hour log at 1.4M epochs.
 
@@ -126,10 +123,10 @@ rather than from the `libm` crate that pins the filter, and propagation integrat
 difference over tens of thousands of steps.
 
 Moving one is the same commitment as moving a manifest expectation: a sentence beside it saying
-what the data said. Both directions count. Stage 3 tightened `flight` across the board and
-loosened every 185 s scenario by an order of magnitude, and both were the same change: a filter
+what the data said. Both directions count, and one change can move them both at once: a filter
 that propagates nothing holds its position at zero, which beats integrating a tilt error for
-three minutes and loses to it over fourteen seconds.
+three minutes and loses to it over fourteen seconds, so propagation tightened `flight` across
+the board and loosened every 185 s scenario by an order of magnitude.
 
 The `seed` column pins which flight produced the numbers, checked against the header the
 generator wrote. It is the same guard as the truth-file header above, one level out: that one
@@ -159,7 +156,7 @@ measurement. Two keys per block are gated, one per shape of fault. `any_` counts
 bound made family-wise over the log by Bonferroni, which holds however correlated the epochs are
 and is what catches a transient. `over_` is the fraction past the per-epoch 95 % bound, which
 catches a mild overconfidence that never spikes. `data/anees.txt` says why each is set where it is, what
-`ImuNoise` scaled down by ten does to them, and which four scenarios fail today and why.
+`ImuNoise` scaled down by ten does to them, and which scenario fails and why.
 
 One-sided, because the simulator's IMU sits below `ImuNoise::default()` on purpose and every
 honest scenario is underconfident. The aggregator is standard-library Python run by `python3`,
@@ -188,7 +185,7 @@ they do not — an x86-64 and an arm64 build write identical scenarios on one ma
 ceilings above, measured on macOS/arm64, hold on CI's Linux/x86-64 runner, which is a second libm
 as well as a second architecture. That second half is weaker than it looks: a ceiling is an
 inequality, so it says the scores did not get worse, not that the same bytes were generated. Both
-are observations rather than the guarantee the filter has below, and they are now load-bearing:
+are observations rather than the guarantee the filter has below, and they are load-bearing:
 `data/bench.sh` regenerates every scenario in CI, so a platform whose `sin` differs in the last
 bit would move a ceiling with no diff to point at. The committed `flight.csv` is the one file
 that sidesteps it, which is why the determinism job compares that and not a generated one.
@@ -242,7 +239,7 @@ Replay output is bit-reproducible across architectures: the same input and the s
 byte-identical CSV on x86-64 and on aarch64. CI asserts it — the `replay determinism` jobs replay
 `flight.csv` twice on each of an x86-64 and an aarch64 Linux runner, then compare a sha256
 of the result across the two. So a diff in `target/replay.csv` is your change, not your laptop,
-which is what lets a stage of #31 be reviewed by asserting the file did not move.
+which is what lets a change be reviewed by asserting the file did not move.
 
 It holds by construction rather than by luck. The filter is `no_std` and takes `nalgebra` with
 `default-features = false`, so its transcendentals come from the `libm` crate — pure Rust, the same
@@ -256,9 +253,9 @@ machines running the same one, which is a bug.
 
 Matching hashes are a slightly weaker statement than matching state: the CSV is written at fixed
 precision, so a last-bit difference usually rounds away before it reaches the file. The check also
-only covers as much arithmetic as the harness exercises, and that grows with each stage that
-lands: before (9)–(15) the estimate columns were constant after the initialization window, so the
-hash could only see the window. Every row is now a propagated one.
+only covers as much arithmetic as the harness exercises: every row of `flight.csv` is propagated
+by (9)–(15) and corrected by the updates its sources reach, so the hash sees all of that, and
+nothing the file does not exercise.
 
 ## PX4 corpus
 
@@ -283,7 +280,7 @@ and a fix's `t_meas_s` also takes off how much later than usual it arrived after
 latency the delay parameter stands for. The arrival time jitters by tens of milliseconds behind
 the epoch (`89a498ce` -17 to +30 ms, p5 to p95), which at 10 m/s is 0.27 m along track, beyond a
 centimetre receiver's σ, so dated by arrival `89a498ce` rejects 884 fixes and dated by its epoch
-none (#194). A fix that arrived more promptly than the delay assumes is taken as current, never
+none. A fix that arrived more promptly than the delay assumes is taken as current, never
 as taken after it was logged: 284 of `093e806a`'s, whose 5 Hz epochs slip against the sensors
 module's steady 201 ms publication, so a fix usually waits up to an epoch to be published and now
 and then does not. The UTC is trusted only where it advances with the messages, and a lateness
@@ -317,7 +314,7 @@ crate's magnetic model up and what `--declination model` hands the filter as its
 
 ### Finding a candidate
 
-An entry exists because it covers something no other log does, and #86 names the gaps. A
+An entry exists because it covers something no other log does; the table below names the gaps. A
 candidate is found in three passes, each cheaper than the one after it, so most are refused
 before anything is downloaded whole.
 
@@ -390,9 +387,8 @@ that output together — one `--check` run and one manifest diff that names, per
 expectation, the change that moved it. Separately, each diff obscures the last: the second
 regeneration's manifest diff mixes its own movement with whatever the first left unexplained.
 
-Every column now reaches something the manifest pins. A variance the converter writes is the `R`
-a `fuse_*` gates against, so moving it moves `rejected_<source>=` and the consistency keys, where
-before the update existed it changed CSV bytes and no key.
+Every column reaches something the manifest pins. A variance the converter writes is the `R` a
+`fuse_*` gates against, so moving it moves `rejected_<source>=` and the consistency keys.
 
 ### What `--reference` writes, and what it cannot
 
@@ -406,7 +402,7 @@ names match the epoch file's, so a diff is by name.
 
 Attitude is a quaternion in both files — Hamilton, scalar-first, body to NED, the convention
 `Attitude::from_body_to_ned` names and `vehicle_attitude.q` already logs — rather than Euler angles,
-because ZYX Euler cannot separate roll from yaw at 90° of pitch, where a tailsitter cruises (#129).
+because ZYX Euler cannot separate roll from yaw at 90° of pitch, where a tailsitter cruises.
 On the `mission` scenario with the circuit's pitch amplitude raised from 0.12 rad to 1.9 rad (a
 local edit to `examples/simulate.rs`, default seed), which pitches to 109°, ZYX roll and yaw read
 off the epoch file's quaternion step 125° in one epoch at t = 113.885 s while the quaternion moves
@@ -460,7 +456,7 @@ Four boundaries follow, and they are properties of the logs rather than of the c
   4.07 km out. The converter reprojects each row about that row's own EKF2 origin, which
   `093e806a` moves once mid-log and `7ce66f0d` moves in height, and places it as it places a
   fix. `EKF2 position in replay frame:` says which axes it placed;
-  `EKF2 origin in replay frame: N E D m` still records where EKF2's first origin sits.
+  `EKF2 origin in replay frame: N E D m` records where EKF2's first origin sits.
 - **Two of thirteen logs report no origin** (`xy_global` false, the reference fields all zero), so
   EKF2's `x,y,z` there are origin-relative with no origin, and stay in EKF2's frame.
 - **The two origins are on different vertical datums.** The replay input's origin is the first
@@ -516,7 +512,7 @@ map. The rounding itself rests on PX4 source rather than on that number: it move
 filter rejects 266 of 609 solutions from, so its own bias wanders by ±0.01 rad/s and cannot
 adjudicate anything.
 
-Tilt agreed with EKF2 within 0.13° on the five logs it was checked on (#129) at EKF2's first attitude sample after the
+Tilt agrees with EKF2 within 0.13° on the five logs it was checked on, at EKF2's first attitude sample after the
 initialization window — read with the report's own `tilt_heading` and `rotation_difference`, so
 no second implementation of either — which is what confirms the quaternion convention and the
 timebase rebasing at once. A magnitude cannot see a tilt in the wrong direction, so the direction is read
@@ -527,9 +523,9 @@ and `f16771dd` reads 1.84° and 2.39° there with its headings 162° apart at 1�
 **Absolute yaw does not compare at an instant** and should not be read as
 divergence: EKF2 resets yaw in the first seconds — on `3949f175` it moves 41.60° to 16.66°
 between t = 2 s and t = 4 s, which is what `ekf2_att`'s `att_reset` column is for — and the
-residue after its reset was mostly a declination difference while this harness fixed −0.06 rad
-for every log. It now configures the one the log names (`declination=`), and the median heading
-difference to EKF2 on the five real logs with GNSS is 0.00–2.45°, where it was 4.39–13.34°.
+residue after its reset is mostly declination. The harness configures the one the log names
+(`declination=`), and on the five real logs with GNSS it was measured on, the median heading
+difference to EKF2 is 0.00–2.45° that way and 4.39–13.34° with one fixed −0.06 rad for every log.
 
 ### Per-log reports
 
@@ -644,7 +640,8 @@ figure they produce:
 - For GNSS the statistic tests the receiver's own `eph`/`epv`/`s_variance_m_s`, which the harness
   passes through unfloored where both production estimators bound theirs. Horizontal position
   reads 0.0184–0.2251 on the real logs whose position gate stays quiet and height 0.0865–0.9207,
-  so those figures are wider than their residuals earn; `a299e722`'s velocity reads 6.6705, a
+  so those figures are wider than their residuals earn; `a299e722`'s velocity reads 7.85–8.01 (its
+  manifest band), a
   receiver contradicting its own differenced positions.
 
 **Unfloored is the policy, and it is deliberate.** Both production estimators bound a receiver's
@@ -671,19 +668,19 @@ for three measured reasons:
   read 38, 0 and 0. `2b2ad123`'s show what that erases. Its receiver's position runs one or two
   epochs off its own velocity for seconds at a time, under its centimetre σ, in six episodes, and
   every one of the 118 is inside an episode or the 6 s after it: an offset fix, or the receiver's
-  return after the state followed one. The floors fuse all of them (#169; its manifest entry has
-  the figures, at the 6.1 Hz EKF2 fused and each fix dated by its epoch, #194). So raw `R` pays
+  return after the state followed one. The floors fuse all of them (its manifest entry has the
+  figures, at the 6.1 Hz EKF2 fused and each fix dated by its epoch). So raw `R` pays
   for a receiver whose σ does not cover its own epoch errors in rejections, where a floor hides the
   fault from the gate. (Of
   the four airframe logs, measured at `Recovery::OFF` with every fix fused as white, the floors
   correct one: `093e806a`'s 860 position rejections read 92 under them, where recovery alone read
   291, and 278 with (24′). They leave `4b473e91`'s
-  lockout, which recovery removes, and `7ce66f0d`'s divergence, which neither removes.) Replayed with the floors applied,
-  the 278 `a299e722` read before #137 read 0 under PX4's treatment — the 0.5 m/s floor *and* the separate `sq(1.5f)` vertical
+  lockout, which recovery removes, and `7ce66f0d`'s divergence, which neither removes.) On a build
+  where `a299e722` rejected 278 velocities, replayed with the floors applied they read 0 under PX4's treatment — the 0.5 m/s floor *and* the separate `sq(1.5f)` vertical
   widening — 2 under that floor alone, and 44 under ArduPilot's per-axis 0.3/0.5, which is the one
   policy that would leave the gate of (37)–(38) still exercised by real data. `transitions=` went
-  4 to 2 under all three in that measurement (#113), so this is not the only key a floor would move.
-  Re-measured with (24′) and each log's own parameters (`--r-policy px4`), the 266 read 37 at
+  4 to 2 under all three in that measurement, so this is not the only key a floor would move.
+  With (24′) and each log's own parameters (`--r-policy px4`), on a build rejecting 266, they read 37 at
   `a299e722`'s 0.25 m/s and 6 at 0.5, and `transitions=` still 4 to 2.
 - **It moves the accuracy gate.** `examples/simulate.rs` draws GNSS velocity noise at σ = 0.15 m/s
   and `data/bench.sh` scores every scenario through this same harness, so a floor would hand every
@@ -777,7 +774,7 @@ records what the first run said.
 
 ## UrbanNav
 
-The gate benchmark (#60): a car in Hong Kong's urban canyons, where receivers are wrong by
+The gate benchmark: a car in Hong Kong's urban canyons, where receivers are wrong by
 metres to hundreds of metres for tens of seconds while claiming a few, with SPAN-CPT truth to
 say so. It is the one source that can score a rejection as right or wrong, and it is a ground
 vehicle with no barometer and no magnetometer, so it scores GNSS position gating and nothing
@@ -813,7 +810,7 @@ policies, and the M8T under `--recovery off`, and says what the lines show. Only
 
 ## INSANE
 
-The accuracy benchmark for a real UAV (#9): a 3 kg quadcopter's own PX4 IMU, receiver,
+The accuracy benchmark for a real UAV: a 3 kg quadcopter's own PX4 IMU, receiver,
 barometer and magnetometer, with two RTK receivers on a 1.2 m baseline as the truth. It is the
 one source with a real barometer and magnetometer *and* truth, and it scores position, height
 and velocity, and whether the covariance covers them. It does not score attitude: its attitude

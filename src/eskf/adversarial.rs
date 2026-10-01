@@ -1,4 +1,4 @@
-//! Adversarial inputs at every public entry point (#44): hostile values, times and orderings,
+//! Adversarial inputs at every public entry point: hostile values, times and orderings,
 //! with the filter's invariants asserted after every call.
 //!
 //! A child of `eskf` rather than an integration test, so the invariants read the whole
@@ -767,7 +767,7 @@ fn apply(filter: &mut Eskf, op: &Op, project: bool) -> Result<(), TestCaseError>
                 AltitudeNoise::from_sigma(sigma),
             );
             if !fused(outcome) {
-                // A first altitude seeds the reference from the estimate (#127), which is
+                // A first altitude seeds the reference from the estimate, which is
                 // the one unfused outcome that moves the offset.
                 prop_assert_eq!(
                     (filter.state, *filter.covariance()),

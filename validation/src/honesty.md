@@ -4,7 +4,7 @@
 simulated scenario except `correlated`. On the baseline flight, the fraction of checks where the
 true value sat inside the filter's ±3σ band was {{score mission in3s}}, where 1 is every check.
 In `correlated` the filter claims more accuracy than it has, because sensor errors persist longer
-than it assumes. This page shows that, and a fault it used to fail on and no longer does.
+than it assumes. This page shows that, and a fault it absorbs: GNSS fixes that arrive late.
 
 {{stamp}}
 

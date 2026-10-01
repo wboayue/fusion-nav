@@ -28,7 +28,7 @@
 //! line repeats them. `--derive` is the mode that works those values out from a log; see
 //! `derive.rs`.
 //! It also writes `<out>.nees.csv`, `ε` per block per epoch, which `data/anees.sh` averages
-//! across seeds (#89), and `<out>.error.csv`, the truth error on navigation axes beside its σ,
+//! across seeds, and `<out>.error.csv`, the truth error on navigation axes beside its σ,
 //! which `tools/replay_report.py` draws.
 //!
 //! # Input
@@ -70,7 +70,7 @@
 //! source and so cannot tell two fusions apart or say what became of one:
 //!
 //! ```text
-//! # one row per verdict. gates gnss_pos=13.815511 gnss_hgt=10.827566 gnss_vel=16.266235 baro=10.827566 mag=10.827566
+//! # one row per verdict. gates gnss_pos=13.815511 gnss_hgt=10.827566 gnss_vel=16.266235 baro=10.827566 mag=10.827566 gnss_yaw=10.827566 course=10.827566
 //! # nu* and s* are the filter's published innovation and diag(S), empty where the gate ran no update: an adoption, a refusal, a call before initialization
 //! t_s,source,nu0,nu1,nu2,s0,s1,s2,ratio,outcome,truth
 //! 0.0000,baro,,,,,,,,not_initialized,
@@ -167,11 +167,11 @@
 //! outside the bar if either axis is. A low count means the filter kept margin; a high one
 //! is the evidence for widening either the bar or the report.
 //!
-//! # What the score measures today
+//! # What the score measures
 //!
-//! Every source the crate carries reaches the state: the two GNSS observations, the barometer
-//! and magnetic heading. Attitude is observed directly for the first time in `yaw` alone —
-//! (34)–(36) constrain the rotation about gravity and nothing else, so `tilt` is still
+//! Every source the crate carries reaches the state: GNSS position, height and velocity, the
+//! barometer, and the three heading sources. Attitude is observed directly in `yaw` alone:
+//! (34)–(36) constrain the rotation about gravity and nothing else, so `tilt` is
 //! corrected only through the correlations (20) builds, and a heading is priced for the tilt
 //! it was levelled by through (36′).
 //!
@@ -188,18 +188,17 @@
 //! Six of the scenarios are one-variable departures from `mission` on `mission`'s seed, so
 //! what attributes a fault is `score(departure) − score(mission)` rather than either alone.
 //! `gnss_outage`, `gnss_latency` and `correlated` separate through the GNSS they change,
-//! and `harsh_imu`
-//! through propagation — no longer on the position keys at all, which read `mission`'s figures
-//! now that two quantities are aided, but on `tilt` and on `ba`, the keys that read the IMU's
-//! own errors. `baro_drift` separates on height — `pos_v` 0.917 m against `mission`'s 0.170,
-//! and `nees_pos` 0.44 against 0.09, which is what a drifting reference costs once (30′)
-//! estimates it. `mag_disturbance` separates on `yaw` alone — 0.381 deg against `mission`'s
-//! 0.361 — which is what a 30 deg field error costs a filter that refuses all 200 samples of
+//! and `harsh_imu` through propagation: not on the position keys, which read `mission`'s
+//! figures while two quantities are aided, but on `tilt` and on `ba`, the keys that read the
+//! IMU's own errors. `baro_drift` separates on height — `pos_v` 1.122 m against `mission`'s 0.172,
+//! and `nees_pos` 0.50 against 0.083, which is what a drifting reference costs once (30′)
+//! estimates it. `mag_disturbance` separates on `yaw` alone — 0.307 deg against `mission`'s
+//! 0.286 — which is what a 30 deg field error costs a filter that refuses all 200 samples of
 //! it.
 //!
 //! A refused propagation step is still scored. The epoch row is written either way — the
 //! state is simply the one before it — and that stale state is what the filter published, so
-//! that is what it answers for. No scenario reaches it today; the corpus log `f16771dd` is
+//! that is what it answers for. No scenario reaches it; the corpus log `f16771dd` is
 //! the only thing that does, and it has no truth.
 
 use std::env;
@@ -246,7 +245,7 @@ const PATIENCE: f64 = 10.0;
 ///
 /// `Px4` applies EKF2's own rule through those same constructors, with the parameters the
 /// log's EKF2 flew, so a comparison
-/// against its solution (#8) has one `R` policy in it rather than two. A published figure is a
+/// against its solution has one `R` policy in it rather than two. A published figure is a
 /// claim about an `R` policy as much as about the filter, and nothing else on the `summary`
 /// line would distinguish a raw run from a floored one — `rejected=`, `transitions=` and
 /// every `nis_` would simply read differently, with no key saying why.
@@ -792,7 +791,7 @@ impl Series {
     }
 }
 
-/// The innovation-consistency statistics of #5, accumulated per source as the replay runs.
+/// The innovation-consistency statistics, accumulated per source as the replay runs.
 ///
 /// Every number here is built from what the filter published — `ν` and diag(`S`) on
 /// [`SourceHealth::innovation`], the test ratio beside them — and never from the measurement
@@ -955,7 +954,7 @@ fn measured(value: Option<f64>, places: usize) -> String {
 /// So each key carries an error of its own. A glitch the gate refuses still stretches
 /// `extent`, and the first fix is the origin whatever it was. `tilt_max` includes the
 /// filter's tilt error and the attitude initialization committed, which is how it found
-/// bias walks read as densities without conversion (#137); the manifest note has the
+/// bias walks read as densities without conversion; the manifest note has the
 /// figures.
 #[derive(Clone, Default)]
 struct Excursion {
@@ -1133,7 +1132,7 @@ struct Replay {
     /// Timestamp of the first IMU row, so the wait for stillness can be bounded.
     first_imu: Option<f64>,
     ratios: [Option<f32>; SOURCES.len()],
-    /// The innovation-consistency statistics of #5, fed from `observe`.
+    /// The innovation-consistency statistics, fed from `observe`.
     consistency: Consistency,
     initialized_at: Option<f64>,
     alignment: Option<Alignment>,
@@ -1166,17 +1165,16 @@ struct Replay {
     ///
     /// `aligned_at` cannot see it: `Status::Aligning` latches, deliberately
     /// (`Eskf::is_aligned`), so nothing else on this line moves when an unaided filter's
-    /// attitude stops being usable — and on a corpus with no truth, growth is the only thing
-    /// stage 4 of #31 produces that a replay can check at all. It reads a few seconds today
-    /// on every log, because the tilt prior is 0.02 rad against a 0.052 bar and nothing
-    /// shrinks a covariance; the update of (23)–(28) is what should push it to `never`.
+    /// attitude stops being usable, and on a corpus with no truth, covariance growth is
+    /// what a replay can check of propagation. A log whose fusion keeps attitude inside the
+    /// bar reads `never`; `data/manifest.txt` pins the rest.
     attitude_lost: Option<f64>,
     /// `Validity::heading` the moment initialization committed — the filter's own verdict
     /// on the window, which is not the same as `mag_at_init`: a coarse start carrying a
     /// magnetometer has observed nothing it could level a heading with.
     heading_at_init: bool,
     /// The attitude equations (5)–(7) committed, captured at that moment rather than read
-    /// off the filter at the end. Since (12)–(15) landed the two differ on any log whose
+    /// off the filter at the end. Under (12)–(15) the two differ on any log whose
     /// vehicle turns, and reading it off the end would silently report an end-of-log
     /// attitude instead — the trap `heading=` documents, which this capture is what avoids.
     attitude_at_init: Option<Attitude>,
@@ -1761,7 +1759,7 @@ impl Replay {
     /// The total alone averages two sources moving in opposite directions, which is the
     /// reading `ba=` and `bg=` were split to avoid: fusing velocity halved one bias and
     /// worsened the other, and one key would have reported a clean win. A gate makes the
-    /// same shape of claim — `a299e722` turns down 266 velocity solutions, and an altitude
+    /// same shape of claim — `a299e722` turns down 315 velocity solutions, and an altitude
     /// its barometer gate also turned down would arrive on that line as a larger number
     /// with nothing saying which source grew.
     ///
@@ -1802,7 +1800,7 @@ impl Replay {
         )
     }
 
-    /// The innovation-consistency keys of #5, as ` key=value` pairs.
+    /// The innovation-consistency keys, as ` key=value` pairs.
     ///
     /// Grouped by statistic rather than by source, so the manifest reads as four claims
     /// across the corpus rather than four unrelated numbers per sensor. Each family answers
@@ -1898,7 +1896,7 @@ impl Replay {
     /// The gate's verdict is [`Replay::rejections`]; this is everything that never reached
     /// it — a variance of zero or less, a NaN in the measurement, an altitude with no
     /// reference to be relative to. Each one is aiding that silently is not there, which
-    /// is what `alpha0=` was added to notice for one source and one variant.
+    /// is what `alpha0=` notices for one source and one variant.
     ///
     /// `Diagnostics` resets when a window commits, so on a log that initializes this
     /// counts only what happened afterwards: the measurements refused before then were
@@ -2215,9 +2213,9 @@ impl Replay {
     /// The `summary` line itself.
     ///
     /// Built rather than printed, so the tests below can assert on the keys the manifest
-    /// pins. Every number the corpus is guarded by passes through here, and until it
-    /// returned a value nothing could check one except by replaying a log and reading the
-    /// expectation it was supposed to be checking.
+    /// pins. Every number the corpus is guarded by passes through here, and a value
+    /// returned is what lets a fixture check one without replaying a log and reading back
+    /// the expectation it is supposed to be checking.
     fn summary(&self) -> String {
         let state = self.filter.state();
         let (roll0, pitch0, yaw0) = self.angles_at_init();
@@ -2241,7 +2239,7 @@ impl Replay {
             // `ā_n` of (5′): only a moving start reports one, and only when its window
             // carried two dated GNSS velocities. `none` therefore covers both "the start
             // was static" and "the window had no GNSS in it", which is why it is pinned
-            // rather than derived — on the one log that starts in motion, `cd7e0001`, it is the only
+            // rather than derived: on the logs that start in motion, `cd7e0001` and `7ce66f0d`, it is the only
             // key that would notice the velocity disappearing out of the window, and
             // in-motion levelling has nothing to correct with when it does.
             if self.inertial_accel().is_some() {
@@ -2259,11 +2257,11 @@ impl Replay {
                 (None, _) => "none",
             },
             // `Validity::heading` as initialization left it, not as the log ended.
-            // Nothing pins the rotation about gravity except a magnetometer, and the
+            // Nothing pins the rotation about gravity except a heading source, and the
             // covariance would report it good either way — `Initialization::sigma_yaw` is
             // 0.35 rad inside an `Accuracy::heading` of 0.52 — so what is worth pinning is
             // the verdict on the window. At the end of the log this says only that some
-            // magnetic heading was fused at some point, which `transitions` already
+            // heading was fused at some point, which `transitions` already
             // notices.
             if self.heading_at_init {
                 "valid"
@@ -2295,7 +2293,7 @@ impl Replay {
             // `Accuracy`'s attitude defaults off the corpus the way replay settled
             // `SourceHealth::timeout`: with the bars equal to the priors they were
             // compared against, every static log read 0.00 and lost the claim one step
-            // later, which is the reading that produced the numbers those defaults now
+            // later, which is the reading that produced the numbers those defaults
             // carry.
             self.aligned_after(),
             // What the covariance growth of (16)–(22) does on a log with no truth. Pinned
@@ -2350,14 +2348,14 @@ impl Replay {
             // moves neither `rejected=` nor `transitions=`.
             self.filter.diagnostics().floored,
             self.epochs,
-            // The four consistency families of #5. They read the rows the gate judged, which
+            // The four consistency families. They read the rows the gate judged, which
             // no count on this line describes: `rejected_` says how often the gate refused
             // and nothing about whether the `R` it was judging against is the size the
             // residuals say it is. See `consistency_keys`.
             self.consistency_keys(),
             self.noise_keys(),
             // How long the filter said so, beside how often: `transitions=` counts a flap
-            // and a minute alike, and #60 asks for the time a hostile receiver costs.
+            // and a minute alike, and a hostile receiver's cost is the time.
             self.seconds_in(Status::Degraded),
             self.seconds_in(Status::DeadReckoning),
             self.transitions.len(),
@@ -2963,10 +2961,10 @@ fn nees(error: &SVector<f32, STATES>, p: &CovarianceMatrix, first: ErrorState) -
 
 /// One of the six quantities [`Validity`] answers for.
 ///
-/// A table rather than parallel lists. The names, the flags and the bars were written out
-/// separately for `report_validity`, for the `false_valid` count and for the breakdown under
-/// it, with nothing but a doc comment holding the three orders together — reordering one
-/// silently relabelled the others.
+/// A table rather than parallel lists. Written out separately for `report_validity`, for the
+/// `false_valid` count and for the breakdown under it, the names, the flags and the bars have
+/// nothing but a doc comment holding the three orders together, and reordering one silently
+/// relabels the others.
 struct Quantity {
     name: &'static str,
     /// Which flag on [`Validity`] this is. Read off the filter rather than re-derived from
@@ -3339,7 +3337,7 @@ fn seconds_in(transitions: &[(f64, Status)], end: f64, status: Status) -> f64 {
 ///
 /// `bad` is the gate a perfect state would run: `ε = eᵀ R⁻¹ e` with `e` the fix less the true
 /// antenna position, per half the way the filter gates it, `Gate<2>` on the horizontal pair
-/// and `Gate<1>` on height (#118), at [`Percentile::P999`] and the row's own variance. Fixed
+/// and `Gate<1>` on height, at [`Percentile::P999`] and the row's own variance. Fixed
 /// there rather than at `Config::gates`, `--r-policy` or `--recovery`, so a sweep of any
 /// scores its rejections against one set of bad fixes. The antenna is the one the replay
 /// fuses at, so `--antenna zero` judges at the IMU as it fuses there. The truth's own σ is left out: SPAN-CPT reports
@@ -3363,7 +3361,7 @@ struct Judged {
 const BAD_HORIZONTAL: Gate<2> = Gate::<2>::at(Percentile::P999);
 const BAD_HEIGHT: Gate<1> = Gate::<1>::at(Percentile::P999);
 
-/// One half of every GNSS fix, scored against truth (#60): what the gate did with the fixes
+/// One half of every GNSS fix, scored against truth: what the gate did with the fixes
 /// that were bad and with those that were not.
 ///
 /// Counts of verdicts, like `rejected_`, and only of those the gate or an adoption decided:
@@ -3753,7 +3751,7 @@ fn write_fusion_header(out: &mut impl Write, gates: Gates) -> io::Result<()> {
     // The pairing is otherwise unguarded: swapping the two `Gate<3>` fields, or the two
     // `Gate<1>`s, compiles and passes every fixture, because one percentile gives equal
     // thresholds within a dimension. The fixture below varies one gate alone, which is what
-    // makes a mispaired list visible — and it now covers both readers at once.
+    // makes a mispaired list visible, for both readers at once.
     writeln!(
         out,
         "# one row per verdict. gates {}",
@@ -3992,7 +3990,7 @@ mod tests {
 
     /// One `key=value` pair off a `summary` line.
     ///
-    /// Per key rather than by comparing whole lines: #20 and #64 add keys next, and
+    /// Per key rather than by comparing whole lines: the line grows keys, and
     /// expectations are matched pair by pair as substrings anyway (`AGENTS.md`), so a
     /// whole-line assertion would pin something the manifest itself does not.
     fn key<'a>(summary: &'a str, name: &str) -> &'a str {
@@ -4824,8 +4822,8 @@ mod tests {
     // ---- the counters ----
 
     /// The three variants that reached no gate. Each is aiding that is silently not there:
-    /// `alpha0=` was added because 35575 barometer rows went from fused to `NoReference`
-    /// and nothing on this line noticed.
+    /// `alpha0=` exists because 35575 barometer rows went from fused to `NoReference`
+    /// with nothing else on this line noticing.
     #[test]
     fn everything_that_never_reached_the_gate_is_discarded() {
         let no_reference = coarse_start()
@@ -4892,7 +4890,7 @@ mod tests {
         // σ_v = 0.01 m/s the gate turns it down; at 0.5, the highest `EKF2_GPS_V_NOISE` the
         // corpus flies, the same innovation is accepted. So a floor reaching a `Raw` row
         // would flip the first assertion, which is the mutation this guards and the one
-        // `a299e722` runs 266 times.
+        // `a299e722` runs 315 times.
         let moving = |var: &str| {
             still_start().raw(&format!(
                 "2.000000,gnss_vel,1.0,0.0,0.0,,,,{var},{var},{var}"
@@ -5442,8 +5440,8 @@ mod tests {
     #[test]
     fn a_call_the_gate_did_not_judge_leaves_the_innovation_columns_empty() {
         // A refusal and an adoption both follow a gated fix, whose values must not be
-        // written again against a measurement they do not describe. No source is a stub
-        // any more, so those two are the whole of what reaches a fusion row without a
+        // written again against a measurement they do not describe. No source is a stub,
+        // so those two are the whole of what reaches a fusion row without a
         // verdict from the gate. The magnetometer is the adoption here: this window
         // carries none, so yaw is unestablished and the first field is taken rather than
         // tested. The verdicts are pinned because a barometer with no reference, refused

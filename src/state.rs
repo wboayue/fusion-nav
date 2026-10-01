@@ -427,7 +427,7 @@ mod tests {
         assert_eq!(variance.to_enu(), [2.0, 1.0, 3.0]);
     }
 
-    /// Found by the adversarial suite (#44): rounded, `R D Rᵀ` and `M P M` are not their own
+    /// Found by the adversarial suite: rounded, `R D Rᵀ` and `M P M` are not their own
     /// transposes, and both are committed with nothing after them to repair it. Several
     /// attitudes, because whether the last bit differs depends on the rotation.
     #[test]
