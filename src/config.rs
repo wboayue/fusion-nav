@@ -790,11 +790,10 @@ pub struct Config {
     /// with that off refuses the step and leaves the state where it was.
     ///
     /// Gaps come from logging dropouts, a scheduler overrun, or a sensor that genuinely
-    /// stopped, and the filter cannot tell which. The default passes normal operation on
-    /// every log in `data/manifest.txt` — IMU rates of 50 Hz to 250 Hz, whose longest
-    /// interval short of a dropout is 90.5 ms, twice in the 2 h log's 1.4 M samples —
-    /// while catching dropouts of 0.12 s and up (`2b2ad123`). The margin at that worst
-    /// case is 10 ms, so a slower log than any in the corpus would need this raised.
+    /// stopped, and the filter cannot tell which. The default passes the longest ordinary
+    /// interval on every corpus log, 90.5 ms, with 10 ms to spare
+    /// ([evidence](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#max_predict_dt));
+    /// the replay harness's `--derive` reads a log's own, and prints it where it exceeds this.
     ///
     /// The same bound holds a measurement timed after the state, which is carried forward to
     /// its time on the estimated velocity and the last sample's rate: the longest the filter
@@ -1062,7 +1061,7 @@ pub struct ConfigError {
     pub bound: ConfigBound,
 }
 
-/// The bound a [`Config`] value must meet. Both refuse NaN and ±∞.
+/// The bound a [`Config`] value must meet. Each refuses NaN and ±∞.
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConfigBound {
@@ -1072,8 +1071,8 @@ pub enum ConfigBound {
     /// Zero or more, where zero is a claim rather than a fault: a noise density (no noise of
     /// that kind), a window duration or stationarity tolerance, or a projection horizon.
     NonNegative,
-    /// Within Earth's normal gravity, 9.7 to 9.9 m s⁻²: the equator at 30 km to the poles at
-    /// sea level, with margin. Anything outside is a unit, not a site.
+    /// Within Earth's normal gravity, 9.7 to 9.9 m s⁻²: the equator at about 26 km to the poles
+    /// at sea level, with margin above. Anything outside is a unit, not a site.
     Gravity,
 }
 

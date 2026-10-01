@@ -2214,8 +2214,7 @@ impl Eskf {
             &self.state,
             self.covariance,
             self.config.accuracy.horizon,
-            &self.config.imu,
-            self.config.gravity,
+            &self.config,
         );
         let ahead = self.validity_of(&horizon);
 
@@ -3303,6 +3302,131 @@ mod tests {
             VelocityNoise::from_speed_accuracy(0.1)
         ));
         filter
+    }
+
+    /// `Config::gravity` is the `γ` every equation reads, and each test below fails if one of
+    /// them reads `GRAVITY` instead: 9.79 is a site's value the default is 0.017 m s⁻² off.
+    const SITE_GRAVITY: f32 = 9.79;
+
+    fn at_site() -> Config {
+        Config {
+            gravity: SITE_GRAVITY,
+            ..Config::default()
+        }
+    }
+
+    /// Level and still, seeded with a tilt the propagation can leak into velocity.
+    fn seeded_level(config: Config) -> Eskf {
+        let mut filter = Eskf::new(config).unwrap();
+        let mut sigmas = [0.5f32; STATES];
+        sigmas[ErrorState::AttitudeX.index()] = 0.05;
+        sigmas[ErrorState::AttitudeY.index()] = 0.05;
+        let _ = filter
+            .seed(State::default(), Covariance::from_sigmas(sigmas))
+            .expect("a sane seed");
+        filter
+    }
+
+    #[test]
+    fn a_vehicle_at_rest_under_its_own_gravity_does_not_fall() {
+        // (11): the specific force a still vehicle reads is the site's `γ`.
+        let reading = ImuSample::reading(
+            AngularRate::body(0.0, 0.0, 0.0),
+            Acceleration::body(0.0, 0.0, -SITE_GRAVITY),
+        );
+        let fallen = |config| {
+            let mut filter = seeded_level(config);
+            for _ in 0..100 {
+                assert!(
+                    filter
+                        .step(reading, Seconds::from_secs(0.01))
+                        .is_propagated()
+                );
+            }
+            filter.state().velocity.to_array()[2]
+        };
+        assert!(fallen(at_site()).abs() < 1e-5, "{}", fallen(at_site()));
+        let off = fallen(Config::default());
+        assert!((off - (GRAVITY - SITE_GRAVITY)).abs() < 1e-4, "{off}");
+    }
+
+    #[test]
+    fn a_window_is_still_against_the_gravity_it_is_configured_with() {
+        // Short of the default `γ` by just over `max_accel_deviation`, 1.961, and short of
+        // 9.79 by just under it: moving at the default, at rest at the site, and only a start
+        // at rest takes the window's barometric reference.
+        let force = GRAVITY - 1.966;
+        let window = window_at(100.0).map(|sample| StaticSample {
+            imu: sample.imu.with_accel(Acceleration::body(0.0, 0.0, -force)),
+            ..sample
+        });
+        let start = |config| {
+            let mut filter = Eskf::new(config).unwrap();
+            let alignment = filter
+                .initialize_over(&window, Seconds::from_secs(0.25))
+                .expect("a usable window");
+            (alignment, filter.baro_reference().is_some())
+        };
+        assert_eq!(start(at_site()), (Alignment::Static, true));
+        assert!(matches!(
+            start(Config::default()),
+            (Alignment::Coarse(Coarse::NotStationary { .. }), false)
+        ));
+    }
+
+    #[test]
+    fn the_tilt_a_biased_accelerometer_levels_in_is_the_bias_over_gravity() {
+        // (8): `P_θβa = −(σ_βa² / γ)[d̂]×`, so the correlation scales as 1/γ.
+        let cross = |config| {
+            let mut filter = Eskf::new(config).unwrap();
+            let _ = filter
+                .initialize_over(&[still(); 8], Seconds::from_secs(0.25))
+                .expect("a still window");
+            let m = *filter.covariance().as_matrix();
+            m.fixed_view::<3, 3>(
+                ErrorState::AttitudeX.index(),
+                ErrorState::AccelBiasX.index(),
+            )
+            .abs()
+            .max()
+        };
+        let ratio = cross(at_site()) / cross(Config::default());
+        assert!((ratio - GRAVITY / SITE_GRAVITY).abs() < 1e-5, "{ratio}");
+    }
+
+    #[test]
+    fn a_coast_leaks_tilt_into_velocity_through_the_gravity_configured() {
+        // (22′) with no noise of its own: the horizontal velocity variance a coast adds is the
+        // tilt's, through (17)'s `γ`, so it scales as `γ²`.
+        let quiet = |config: Config| Config {
+            imu: crate::config::ImuNoise {
+                gyro_white: 0.0,
+                accel_white: 0.0,
+                gyro_bias_walk: 0.0,
+                accel_bias_walk: 0.0,
+            },
+            coast: Some(Coast {
+                acceleration: 0.0,
+                rotation: 0.0,
+            }),
+            ..config
+        };
+        let grown = |config| {
+            let mut filter = seeded_level(quiet(config));
+            let before = filter.covariance().variance(ErrorState::VelocityNorth);
+            assert!(matches!(
+                filter.step(still().imu, Seconds::from_secs(1.2)),
+                Propagation::Coasted { .. }
+            ));
+            filter.covariance().variance(ErrorState::VelocityNorth) - before
+        };
+        let ratio = grown(at_site()) / grown(Config::default());
+        let expected = (SITE_GRAVITY / GRAVITY) * (SITE_GRAVITY / GRAVITY);
+        // 1.1e-4 off, the rest of `F` over the gap; read against one `γ`, the ratio would be 1.
+        assert!(
+            (ratio - expected).abs() < 3e-4,
+            "{ratio} against {expected}"
+        );
     }
 
     #[test]

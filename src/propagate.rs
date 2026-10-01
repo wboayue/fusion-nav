@@ -618,8 +618,7 @@ pub(crate) fn project(
     state: &State,
     covariance: Covariance,
     horizon: Seconds,
-    noise: &ImuNoise,
-    gravity: f32,
+    config: &Config,
 ) -> Covariance {
     // A horizon that is not a positive duration projects nothing rather than projecting
     // backwards. `Q` of (21) is linear in `dt`, so a negative one *subtracts* process noise
@@ -633,12 +632,12 @@ pub(crate) fn project(
 
     let steps = projection_steps(horizon);
     let dt = Seconds::from_secs(seconds / steps as f32);
-    let unaccelerated = unaccelerated_sample(state, dt, gravity);
+    let unaccelerated = unaccelerated_sample(state, dt, config.gravity);
     let transition = transition_matrix(state, unaccelerated);
     repeat_covariance(
         covariance,
         &transition,
-        process_noise(noise, unaccelerated),
+        process_noise(&config.imu, unaccelerated),
         steps,
     )
 }
@@ -1482,7 +1481,15 @@ mod projection_steps {
         let (state, from, noise) = start();
         for (seconds, floor) in [(1.0f32, 0.99f32), (2.0, 0.97), (5.0, 0.93)] {
             let truth = at_100_hz(&state, from, &noise, seconds);
-            let projected = project(&state, from, Seconds::from_secs(seconds), &noise, GRAVITY);
+            let projected = project(
+                &state,
+                from,
+                Seconds::from_secs(seconds),
+                &Config {
+                    imu: noise,
+                    ..Config::default()
+                },
+            );
             let ratio = projected.variance(ErrorState::PositionNorth)
                 / truth.variance(ErrorState::PositionNorth);
             assert!(
@@ -1500,7 +1507,15 @@ mod projection_steps {
     fn the_projection_understates_the_growth_rather_than_overstating_it() {
         let (state, from, noise) = start();
         let truth = at_100_hz(&state, from, &noise, 5.0);
-        let projected = project(&state, from, Seconds::from_secs(5.0), &noise, GRAVITY);
+        let projected = project(
+            &state,
+            from,
+            Seconds::from_secs(5.0),
+            &Config {
+                imu: noise,
+                ..Config::default()
+            },
+        );
         for s in [
             ErrorState::PositionNorth,
             ErrorState::VelocityNorth,
@@ -1523,7 +1538,15 @@ mod projection_steps {
     fn a_horizon_that_is_not_positive_leaves_the_covariance_where_it_was() {
         let (state, from, noise) = start();
         for seconds in [0.0f32, -1.0, f32::NAN] {
-            let projected = project(&state, from, Seconds::from_secs(seconds), &noise, GRAVITY);
+            let projected = project(
+                &state,
+                from,
+                Seconds::from_secs(seconds),
+                &Config {
+                    imu: noise,
+                    ..Config::default()
+                },
+            );
             for i in 0..STATES {
                 let (before, after) = (from.as_matrix()[(i, i)], projected.as_matrix()[(i, i)]);
                 assert!(
