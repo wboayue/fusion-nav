@@ -13,23 +13,12 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-# Set here rather than in `Cargo.toml`, where a workspace member's `[profile]` is ignored.
-# The link has to see the whole program at once: a panic left in `nalgebra` or `libm` is as
-# fatal as one left in `src/`, and only fat LTO puts it in the same module as the caller that
-# would have to prove it dead.
-export CARGO_PROFILE_RELEASE_LTO=fat
-export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1
-export CARGO_PROFILE_RELEASE_PANIC=abort
+# shellcheck source=panic-check/profile.sh
+. ./profile.sh
+link_profile
 
 TARGETS=("${@:-}")
-[[ -z "${TARGETS[0]}" ]] && TARGETS=(thumbv7em-none-eabihf thumbv6m-none-eabi)
-
-# Both release optimization levels a firmware build plausibly ships. `z` and `1` are
-# deliberately not gated: there LLVM stops proving that `nalgebra`'s statically sized
-# `Matrix3 * Vector3` is in bounds and leaves the check in as dead code, which is a
-# codegen artifact of the optimization level, not a path this crate can take. See
-# README.md, "The library cannot panic".
-LEVELS=(3 s)
+[[ -z "${TARGETS[0]}" ]] && TARGETS=("${THUMB_TARGETS[@]}")
 
 HOST=$(rustc -vV | sed -n 's/^host: //p')
 TOOLS="$(rustc --print sysroot)/lib/rustlib/$HOST/bin"

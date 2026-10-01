@@ -28,6 +28,8 @@ jobs:
       - run: cargo clippy --all-targets --no-deps --features defmt
       # Without the magnetic model, whose absence changes what `Eskf::place_origin` reads.
       - run: cargo clippy --all-targets --no-deps --no-default-features
+      # The benchmark member, which no root build selects.
+      - run: cargo clippy -p bench --all-targets --no-deps
       # `tools/check-anchors.sh` owns what this checks and why; its fixtures run first for
       # the reason `data/expect.sh --self-test` does below. The README's snippets are
       # checked by `cargo test --doc`, through the `include_str!` in `src/lib.rs`.
@@ -53,6 +55,9 @@ jobs:
       # answers with its own tests.
       - run: data/expect.sh --self-test
       - run: data/bench.sh
+      # The host benchmarks, each run once: they keep building, and each asserts the call it
+      # times is fused rather than refused. Timings are not gated on a shared runner (#42).
+      - run: cargo test -p bench --benches
 
   anees:
     name: anees
@@ -87,6 +92,25 @@ jobs:
       - run: cargo build --lib --features defmt --target ${{ matrix.target }}
       - run: cargo build --example embedded --features defmt --target ${{ matrix.target }}
       - run: cargo build --lib --no-default-features --target ${{ matrix.target }}
+
+  # What the filter costs a bare-metal target: type sizes, stack frames and flash, pinned
+  # exactly in `data/footprint.txt` (#42). The nightly is the script's, so CI and a laptop
+  # measure with one compiler; `tools/footprint.sh` owns why, and how each figure is taken.
+  footprint:
+    name: footprint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: tools/footprint.sh --install
+      # Keyed on the script, which pins the nightly: a new nightly's build shares nothing with
+      # the old one's.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ hashFiles('tools/footprint.sh') }}
+      # The comparator and the parser fail as themselves before either reads a measurement.
+      - run: data/expect.sh --self-test
+      - run: python3 tools/footprint.py --self-test
+      - run: tools/footprint.sh
 
   msrv:
     name: msrv (1.89)

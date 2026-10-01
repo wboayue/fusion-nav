@@ -22,8 +22,11 @@ exclude = ["AGENTS.md", "VALIDATION.md", "data/flight.truth.csv", "validation/"]
 # `Cargo.lock` would let the gate run against a different `nalgebra` than the library ships.
 # It is not a default member, so `cargo test`, `cargo clippy` and `cargo package` at the root
 # never try to build a `no_std` binary for the host. See `panic-check/run.sh`.
+#
+# `bench` holds the host benchmarks, a member rather than a dev-dependency here because
+# criterion's features would reach every test and example build (see `bench/Cargo.toml`).
 [workspace]
-members = [".", "panic-check"]
+members = [".", "bench", "panic-check"]
 default-members = ["."]
 
 [dependencies]

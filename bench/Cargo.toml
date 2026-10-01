@@ -1,0 +1,21 @@
+[package]
+name = "bench"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Host benchmarks of the hot path (#42). A workspace member rather than `benches/` at the root,
+# because a dev-dependency's features reach every test and example build: criterion's graph
+# turns on `num-traits/std`, which would move the root's `nalgebra` off `libm` and every
+# replay output with it (AGENTS.md, "A dev-dependency's features reach every test and example
+# build"). Here they reach only this crate, so its figures are on the host's transcendentals,
+# which a timing does not mind. Not a default member, so nothing at the root builds it.
+[dependencies]
+fusion-nav = { path = ".." }
+
+[dev-dependencies]
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "filter"
+harness = false
