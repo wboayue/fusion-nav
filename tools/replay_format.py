@@ -15,24 +15,25 @@ TRUTH_COLUMNS = ("t_s,pos_n,pos_e,pos_d,vel_n,vel_e,vel_d,roll,pitch,yaw,"
 
 
 def write_replay(out, header, rows, t0, unit, delays=None):
-    """Write `rows` in the order given, each `(timestamp, source, values, variances)`.
+    """Write `rows` in the order given, each `(timestamp, source, values, variances[, late])`.
 
     Timestamps are integers in ticks of `unit` seconds, rebased to `t0`, so a time is
     differenced before it is scaled and a long log keeps its microseconds. `t_meas_s` is a
     row's time less its source's delay in `delays`, ticks by source name, and blank where
-    there is none: when the measurement was taken, where `t_s` is when it was logged.
+    there is none: when the measurement was taken, where `t_s` is when it was logged. `late`,
+    ticks, is how much later than its source's usual delay this row arrived, and comes off too.
     """
     delays = delays or {}
     with open(out, "w", newline="") as handle:
         for line in header:
             handle.write(f"# {line}\n")
         handle.write(REPLAY_COLUMNS + "\n")
-        for timestamp, source, values, variances in rows:
+        for timestamp, source, values, variances, *late in rows:
             values = list(values) + [None] * (6 - len(values))
             variances = list(variances) + [None] * (3 - len(variances))
             cells = [f"{(timestamp - t0) * unit:.6f}", source]
             cells += ["" if v is None else f"{v:.6g}" for v in values + variances]
-            delay = delays.get(source, 0)
+            delay = delays.get(source, 0) + (late[0] if late else 0)
             cells.append(f"{(timestamp - delay - t0) * unit:.6f}" if delay else "")
             handle.write(",".join(cells) + "\n")
 

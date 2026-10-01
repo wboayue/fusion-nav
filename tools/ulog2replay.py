@@ -365,6 +365,41 @@ def gnss_stream(ulog):
     return fused, f"{named(fused)} ({described(fused, receivers)}; the topic EKF2 fused)"
 
 
+# Messages either side of a fix whose arrival-less-UTC median is its baseline: 51 is 5 to 10 s at
+# the corpus's receivers, over which the log clock drifts from UTC by under a millisecond
+# (25 ppm on `89a498ce`), and long enough that `093e806a`'s 7 % of republished fixes cannot move
+# the median.
+LATENESS_WINDOW = 51
+
+
+def lateness(t, utc):
+    """How much later than usual each message arrived after the epoch it describes, ticks.
+
+    A receiver's `time_utc_usec` is when the fix was valid; the message's `timestamp` is when
+    the log saw it, which jitters by tens of milliseconds behind it (`89a498ce` -17 to +30 ms,
+    p5 to p95) and, for a fix republished unchanged, by a whole epoch. A 1 Hz filter predicts
+    across that; at 5 to 10 Hz a centimetre receiver is rejected for it, 0.27 m along track at
+    10 m/s and 3 mm across. Each message's `timestamp - utc` less its running median over
+    `LATENESS_WINDOW` messages is that jitter, the median being the usual latency the log's
+    `EKF2_GPS_DELAY` already stands for, so the delay keeps its meaning and only the spread
+    about it is removed. Zero for a message with no UTC (`3949f175`, a simulation), and for
+    every message of a receiver logging none.
+    """
+    late = [0] * len(t)
+    if utc is None:
+        return late
+    valid = [k for k in range(len(t)) if int(utc[k]) > 0]
+    if len(valid) < LATENESS_WINDOW:
+        return late
+    lag = [int(t[k]) - int(utc[k]) for k in valid]
+    half = LATENESS_WINDOW // 2
+    for i, k in enumerate(valid):
+        centre = min(max(i, half), len(valid) - 1 - half)
+        window = sorted(lag[centre - half:centre + half + 1])
+        late[k] = lag[i] - window[half]
+    return late
+
+
 def convert_gnss(ulog, rows, used, heading_variance=DEFAULT_GNSS_HEADING_VARIANCE):
     dataset, label = gnss_stream(ulog)
     if dataset is None:
@@ -408,11 +443,21 @@ def convert_gnss(ulog, rows, used, heading_variance=DEFAULT_GNSS_HEADING_VARIANC
     if heading is not None and not gnss_yaw_enabled(ulog.initial_parameters):
         heading = None
     heading_accuracy = dataset.data.get("heading_accuracy")
+    utc = dataset.data.get("time_utc_usec")
+    late = lateness(t, utc)
 
     origin = None
+    previous, republished = None, 0
     for k in range(len(t)):
         if not is_3d_fix(fix, k):
             continue
+        # A fix the sensors module publishes again unchanged, same epoch and same position, is
+        # one measurement; fused twice it counts double (`093e806a`, 532 of 7153).
+        epoch = (int(utc[k]), float(lat[k]), float(lon[k])) if utc is not None and utc[k] else None
+        if epoch is not None and epoch == previous:
+            republished += 1
+            continue
+        previous = epoch
         phi = float(lat[k]) * angle_scale
         lam = float(lon[k]) * angle_scale
         height = float(alt[k]) * alt_scale
@@ -432,22 +477,25 @@ def convert_gnss(ulog, rows, used, heading_variance=DEFAULT_GNSS_HEADING_VARIANC
         # makes. See Eskf::fuse_gnss_position.
         horizontal = float(eph[k]) ** 2
         vertical = float(epv[k]) ** 2
-        rows.append((t[k], "gnss_pos", [north, east, down], [horizontal, horizontal, vertical]))
+        rows.append((t[k], "gnss_pos", [north, east, down], [horizontal, horizontal, vertical],
+                     late[k]))
 
         if has_velocity and (valid is None or valid[k]):
             variance = float(speed_sigma[k]) ** 2
             rows.append(
-                (t[k], "gnss_vel", [vn[k], ve[k], vd[k]], [variance, variance, variance])
+                (t[k], "gnss_vel", [vn[k], ve[k], vd[k]], [variance, variance, variance], late[k])
             )
 
         if heading is not None and math.isfinite(heading[k]):
             sigma = float(heading_accuracy[k]) if heading_accuracy is not None else 0.0
             variance = sigma**2 if math.isfinite(sigma) and sigma > 0 else heading_variance
-            rows.append((t[k], "gnss_yaw", [float(heading[k])], [variance]))
+            rows.append((t[k], "gnss_yaw", [float(heading[k])], [variance], late[k]))
 
     if origin is None:
         print("warning: no 3D GNSS fix in the log", file=sys.stderr)
-    tally(rows, before, used, "gnss", f"{label}, fields {lat_f}")
+    dated = "receiver UTC" if any(late) else "arrival"
+    tally(rows, before, used, "gnss",
+          f"{label}, fields {lat_f}, dated by {dated}, {republished} republished fixes dropped")
     return origin
 
 
@@ -1728,6 +1776,48 @@ def self_test():
            fast_receiver)
     expect("only a receiver topic", gnss_stream(FixtureLog(slow))[0], slow)
     expect("no receiver topic", gnss_stream(FixtureLog()), (None, None))
+
+    import numpy
+    # Lateness: a steady 50 ms behind UTC but for one message 30 ms later still, and one with
+    # no UTC. The odd one stands out of the median wherever it sits, including in the first
+    # window, which the edge borrows.
+    epochs = [k * 100_000 for k in range(60)]
+    arrived = [u + 50_000 for u in epochs]
+    arrived[3] += 30_000
+    arrived[40] += 30_000
+    utc = list(epochs)
+    utc[41] = 0
+    late = lateness(arrived, utc)
+    expect("one late message, at the edge and inside", (late[3], late[40]), (30_000, 30_000))
+    expect("the rest on time", sum(abs(x) for k, x in enumerate(late) if k not in (3, 40)), 0)
+    expect("no UTC, no lateness", lateness(arrived, None), [0] * 60)
+    # The log clock drifting from UTC, 1 ms a message, is not lateness: a median over the whole
+    # log reads the middle of the drift as on time and every other message as late.
+    drifting = [k * 100_000 + 50_000 + 1_000 * k for k in range(120)]
+    expect("drift is not lateness", lateness(drifting, [k * 100_000 for k in range(120)])[30:90],
+           [0] * 60)
+    expect("too few to take a median", lateness(arrived[:10], utc[:10]), [0] * 10)
+    # A fix published twice unchanged is one fix; the same epoch at a new position is not.
+    gps = Fixture("vehicle_gps_position", timestamp=numpy.array([0, 200_000, 400_000, 600_000]),
+                  fix_type=[3] * 4, time_utc_usec=numpy.array([10, 20, 20, 30]),
+                  latitude_deg=numpy.array([56.41, 56.42, 56.42, 56.43]),
+                  longitude_deg=numpy.array([43.76] * 4),
+                  altitude_ellipsoid_m=numpy.array([70.0] * 4), eph=[1.0] * 4, epv=[1.0] * 4)
+    written = []
+    convert_gnss(FixtureLog(gps), written, {})
+    expect("a republished fix dropped", [r[0] for r in written], [0, 200_000, 600_000])
+    gps.data["latitude_deg"] = numpy.array([56.41, 56.42, 56.425, 56.43])
+    written = []
+    convert_gnss(FixtureLog(gps), written, {})
+    expect("an epoch at a new position kept", len(written), 4)
+    # The writer takes a row's lateness off with its delay, and writes it without one.
+    import tempfile
+    with tempfile.TemporaryDirectory() as scratch:
+        out = Path(scratch) / "late.csv"
+        write_replay(out, [], [(0, "imu", [0.0] * 6, []), (500, "gnss_pos", [0.0] * 3, [1.0] * 3, 30),
+                               (900, "baro", [0.0], [1.0], 40)], 0, 1e-6, {"gnss_pos": 100})
+        cells = [line.split(",")[-1] for line in out.read_text().splitlines()[1:]]
+        expect("delay and lateness both off", cells, ["", "0.000370", "0.000860"])
 
     # A row averaged over 2.5 ms that stands for 20 ms, and a seconds-valued field.
     import numpy
