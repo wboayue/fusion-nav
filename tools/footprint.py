@@ -209,16 +209,16 @@ def self_test():
         "print-type-size type: `{closure@src/eskf.rs:1:1: 1:2}`: 4 bytes, alignment: 4 bytes",
     ])
     # A comma inside a generic list is not a fold: split there, `fusion_nav::frames::Ned` would
-    # come out as a function. The two `observe::<1, ...>` instances differ; the key holds the
-    # larger whichever comes first.
+    # come out as a function. The two `observe::<1, ...>` instances differ, the larger first, so
+    # a key that kept the last instance would read the smaller.
     frames = "\n".join([
-        "  Entry {",
-        "    Functions: [<fusion_nav::eskf::Eskf>::observe::<1, fusion_nav::frames::Ned>]",
-        "    Size: 0x4F8",
-        "  }",
         "  Entry {",
         "    Functions: [<fusion_nav::eskf::Eskf>::observe::<1, fusion_nav::frames::Enu>]",
         "    Size: 0x500",
+        "  }",
+        "  Entry {",
+        "    Functions: [<fusion_nav::eskf::Eskf>::observe::<1, fusion_nav::frames::Ned>]",
+        "    Size: 0x4F8",
         "  }",
         "  Entry {",
         "    Functions: [fusion_nav::math::skew, fusion_nav::math::wrap_pi]",
