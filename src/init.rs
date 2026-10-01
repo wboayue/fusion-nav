@@ -2177,6 +2177,25 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_sample_short_of_gravity_moves_the_window_as_one_over_it_does() {
+        // 3 m/s² light on one sample and 1 m/s² heavy on another: the light one is the peak,
+        // and against a different `γ` the same window departs by a different amount.
+        let mut window = [still(); 8];
+        window[2].imu = window[2]
+            .imu
+            .with_accel(Acceleration::body(0.0, 0.0, -GRAVITY + 3.0));
+        window[5].imu = window[5]
+            .imu
+            .with_accel(Acceleration::body(0.0, 0.0, -GRAVITY - 1.0));
+        let measured = measure(&spaced(&window, DT)).expect("a usable window");
+        let deviation = measured.peaks.deviation(GRAVITY).as_m_per_s2();
+        assert!((deviation - 3.0).abs() < 1e-5, "{deviation}");
+        let lighter = measured.peaks.deviation(GRAVITY - 0.5).as_m_per_s2();
+        assert!((lighter - 2.5).abs() < 1e-5, "{lighter}");
+        assert_eq!(Peaks::NONE.deviation(GRAVITY).as_m_per_s2(), 0.0);
+    }
+
+    #[test]
     fn a_coarse_start_widens_tilt_in_proportion_to_the_motion_it_saw() {
         let mut window = [still(); 8];
         // 2.94 m/s^2 of unexplained specific force on one sample of eight: over the

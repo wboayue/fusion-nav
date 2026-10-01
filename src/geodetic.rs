@@ -346,6 +346,10 @@ mod tests {
         // The free-air gradient, 3.086 mGal m⁻¹, over the first kilometre.
         let lapse = at(45.0, 0.0) - at(45.0, 1000.0);
         assert!((lapse - 3.086e-3).abs() < 1e-5, "{lapse}");
+        // (4-3)'s second-order term, `3h²/a²`, bends the lapse: over 20 km the fall is short of
+        // twenty times the first kilometre's by γ · 3 (h₂₀² − 20 h₁²)/a², 2.75e-4 m s⁻².
+        let bend = 20.0 * lapse - (at(45.0, 0.0) - at(45.0, 20_000.0));
+        assert!((bend - 2.75e-4).abs() < 0.3e-4, "{bend}");
         assert!(at(f64::NAN, 0.0).is_nan());
     }
 
