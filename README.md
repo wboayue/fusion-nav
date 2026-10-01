@@ -735,7 +735,9 @@ Known, and stated here rather than discovered in flight. Some are deliberate; th
   the filter assumes the vehicle neither accelerated nor turned, and prices what it may have done
   with `Config::coast`'s two densities, set from one VTOL log's gaps at 30 m/s. A vehicle that
   manoeuvres harder than that inside a gap can still be turned down by the gate afterwards,
-  until `Config::recovery` adopts a fix.
+  until `Config::recovery` adopts a fix. `cargo run --example replay -- --derive <log>` prints
+  the densities a vehicle's own logged gaps need, among the rest of a `Config` derived from the
+  log ([deriving a `Config`](https://github.com/wboayue/fusion-nav/blob/main/data/README.md#deriving-a-config)).
 * **Local tangent plane.** Position is Cartesian NED about a fixed origin. The geodetic
   conversion is exact at any range ([equation (43)](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#geodetic-origin)), but a plane
   leaves a curved Earth: `d` from the origin it sits `d²/2R` above the surface, 8 cm at 1 km and

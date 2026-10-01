@@ -126,7 +126,7 @@ changing errors by treating each measurement as noisier than reported, by an amo
 assumed correlation time (`Config::correlation`, equation (24′)). Here the errors last longer
 than assumed, so the compensation is too small. Position ANEES is
 1.4498, over the strict bound at 5197 moments.
-Measuring each sensor's correlation time, instead of assuming a typical one, is #51.
+Measuring each sensor's correlation time from a log, without the filter's own bias, is #195.
 
 ![anees for correlated](figures/correlated/anees.png)
 

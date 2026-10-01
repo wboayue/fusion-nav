@@ -196,6 +196,45 @@ that sidesteps it, which is why the determinism job compares that and not a gene
 A given seed always gives byte-identical files on one machine, and each sensor draws from its own
 stream, so changing one sensor's rate or model does not shift another's noise.
 
+## Deriving a `Config`
+
+```bash
+cargo run --release --example replay -- --derive <log.csv> > config.rs
+cargo run --release --example replay -- --set correlation.gnss_height=29 <log.csv> out.csv
+```
+
+`--derive` is the offline channel of `GOALS.md` differentiator 7: it replays one log in-process
+under the default, every source fused white, recovery off, a sweep of `baro_offset_walk` and, where
+the log has gaps, a sweep of `Coast`, and prints a `Config` literal with every value commented
+with where it came from, plus the `--set` line that reproduces it. Stdout is the literal alone, so
+`> config.rs` is Rust; stderr is the log replayed under the derived `Config` beside the default,
+and the run fails if it coasts a step its `max_predict_dt` did not predict. It starts from
+`Config::default()`, so it takes no `--set` or `--recovery`; it does take `--r-policy`,
+`--declination`, `--antenna`, `--course` and `--without`, which describe the log.
+
+What each value is read from, and why, is `DESIGN.md`, "Defaults and their evidence", under the
+default's heading. In short: the IMU white noise stays the default unless the window's floor
+(`noise_gyro=`, `noise_accel=`) sits above it; the bias walks stay the default, because an Allan
+variance needs a soak of hours; `correlation` is a lower bound and only ever raises a source's
+`τ` (#195 is the estimator that would do better); `gravity` is `Geodetic::normal_gravity` at the
+`# Navigation origin`; `max_predict_dt`, `coast` and `baro_offset_walk` are read off the IMU
+intervals, the coasted gaps and the barometer against GNSS height. The gates, the recovery
+timeouts, `timeouts`, `accuracy` and `init` print at their defaults, the first two with what the
+log says about them (the share of `ε` over each percentile's bound, the longest rejection run
+that ended in an acceptance).
+
+In Rust rather than in `tools/` beside the other offline tools, because it builds the `Config` it
+prints: it replays the log under that `Config` before printing it, its printer destructures
+`Config` without `..` so a new field fails to compile until it is printed, and every figure is
+read off the statistics the `summary` line is built from in the same process.
+`data/flight.config.rs` is its output on `data/flight.csv`, and a test in
+`examples/replay/derive.rs` both compiles it and checks the printer still prints it; regenerate
+with `cargo run --example replay -- --derive data/flight.csv > data/flight.config.rs`.
+
+`--set <field>=<value>` writes one `Config` field by its path, for replaying a derived `Config`
+from outside the process; `examples/replay/settings.rs` lists the names, and `set=` on the
+`summary` line repeats them. `data/anees.sh` passes `REPLAY_ARGS` to every seed it replays.
+
 ## Determinism
 
 Replay output is bit-reproducible across architectures: the same input and the same toolchain give a

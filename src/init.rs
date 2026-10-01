@@ -378,7 +378,7 @@ impl TryFrom<&[StaticSample]> for StaticWindow {
 /// [`worst_gyro_white`](Self::worst_gyro_white) and
 /// [`worst_accel_white`](Self::worst_accel_white) give. The bias random walks and each source's
 /// correlation time are not here: both need hours of data rather than seconds, an Allan
-/// variance and a replay log's autocorrelation, and belong to the offline tool (#51). How well
+/// variance and a replay log's autocorrelation, and belong to the replay harness's `--derive`. How well
 /// a figure is known is [`MIN_READINGS`](Self::MIN_READINGS)'s and [`BLOCK`](Self::BLOCK)'s to
 /// say, and the block length is the larger share.
 ///

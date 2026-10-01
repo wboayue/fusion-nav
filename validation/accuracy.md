@@ -72,7 +72,7 @@ for. Against `mission`:
   and the filter is honest about it ([honesty](honesty.md#fixes-that-arrive-late)).
 - `correlated` makes every sensor's errors change more slowly than the filter assumes. Heading
   suffers most, 2.306° against 0.289°, and the filter is
-  overconfident about position (#51).
+  overconfident about position (#195).
 - `mag_disturbance` gives the magnetometer a 30° error for 10 s. The filter refuses those
   readings, so heading barely suffers: 0.309° against
   0.289°.

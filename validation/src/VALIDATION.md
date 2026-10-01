@@ -41,7 +41,7 @@ error, and the reported uncertainty covers it.
 ## [Honesty](validation/honesty.md): when it says "within a metre", is it?
 
 Tested over {{anees mission runs}} flights of each simulated scenario. The filter is pessimistic
-everywhere except where sensor errors persist longer than it assumes (#51).
+everywhere except where sensor errors persist longer than it assumes (#195).
 
 {{figure correlated anees}}
 

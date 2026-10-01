@@ -355,9 +355,13 @@ impl Default for Timeouts {
 /// Per source, like [`Recovery`] and [`Gates`], because a source is what the gate judges and
 /// what (24′) times. Configured rather than derived, as [`ImuNoise`] is: it is a property of
 /// the sensor, and the filter cannot measure it in flight without retuning itself. The replay
-/// harness measures it offline, `τ = −T / ln ρ` at a log's sample interval `T` and its `acf1_`
-/// value `ρ`. That reading is a lower bound: an innovation is whiter than the error behind it,
-/// because the filter follows part of that error.
+/// harness's `--derive` reads it offline, `τ = −T / ln ρ` at a log's sample interval `T` and its
+/// lag-one innovation autocorrelation `ρ`, and that reading is a lower bound: an innovation is
+/// whiter than the error behind it, because the filter follows part of that error. It falls 1.7
+/// to 6 times short of a simulated sensor's own `τ`, so `--derive` prints it only above the
+/// default ([measured]); an estimator the filter does not bias is #195.
+///
+/// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#correlation
 ///
 /// [decision]: https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#correlated-measurement-error-as-equivalent-white-noise
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -819,7 +823,9 @@ pub struct Config {
     /// does, and there `mission` scores 0.170 m of vertical RMSE here against 0.085 at zero:
     /// the offset walks away from what the barometer knew, and GNSS height takes over the low
     /// frequencies. A barometer characterized on the bench as more stable than this is the
-    /// reason to lower it.
+    /// reason to lower it. The replay harness's `--derive` reads it off a log of half an hour or
+    /// more, as an upper bound: `2c42096b` reads 0.15
+    /// ([measured](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#baro_offset_walk)).
     pub baro_offset_walk: f32,
     /// Whether a filter holding no barometric reference takes one from the estimate, at the
     /// first altitude once position is established. Equations (30) and (30′).

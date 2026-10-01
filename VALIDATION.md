@@ -44,7 +44,7 @@ Position error, truth minus estimate, on navigation axes, inside the filter's ow
 ## [Honesty](validation/honesty.md): when it says "within a metre", is it?
 
 Tested over 50 flights of each simulated scenario. The filter is pessimistic
-everywhere except where sensor errors persist longer than it assumes (#51).
+everywhere except where sensor errors persist longer than it assumes (#195).
 
 ![anees for correlated](validation/figures/correlated/anees.png)
 
