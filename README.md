@@ -81,7 +81,7 @@ let antenna = Position::body(0.05, 0.0, -0.12);
 // rather than buffered. A short or moving window still starts the filter, as
 // `Alignment::Coarse`.
 let mut window = StaticWindow::new();
-while !window.is_long_enough(&filter.config().init) {
+while !window.is_long_enough(filter.config()) {
     // A refused sample (not a number, a clock that did not advance) leaves the window as
     // it was, so it is dropped and the window goes on without it.
     if let Err(_refusal) = window.push(next_still_sample()) { /* log it */ }
@@ -238,9 +238,9 @@ The window is a `StaticWindow`, which keeps what the samples reduce to rather th
 so it costs under a kilobyte at any IMU rate; a slice of buffered samples converts with
 `StaticWindow::try_from`. `alignment_of(window)` reports what `initialize` would make of a window
 without touching the filter, for an application that would rather wait for stillness than start
-coarsely. A window only grows, so one that moved is started over, and `window.is_at_rest(&init)`
+coarsely. A window only grows, so one that moved is started over, and `window.is_at_rest(&config)`
 says after every sample whether it has; `try_extend` folds in any iterator of samples.
-`window.noise(&init)` reports the white noise a still window measured on each sensor, a floor
+`window.noise(&config)` reports the white noise a still window measured on each sensor, a floor
 under what `Config::imu` and a barometer's `R` should be, never a replacement for them; it asks
 for no filter and changes nothing unless the application writes it into a `Config`.
 
@@ -735,7 +735,9 @@ Known, and stated here rather than discovered in flight. Some are deliberate; th
   the filter assumes the vehicle neither accelerated nor turned, and prices what it may have done
   with `Config::coast`'s two densities, set from one VTOL log's gaps at 30 m/s. A vehicle that
   manoeuvres harder than that inside a gap can still be turned down by the gate afterwards,
-  until `Config::recovery` adopts a fix.
+  until `Config::recovery` adopts a fix. `cargo run --example replay -- --derive <log>` prints
+  the densities a vehicle's own logged gaps need, among the rest of a `Config` derived from the
+  log ([deriving a `Config`](https://github.com/wboayue/fusion-nav/blob/main/data/README.md#deriving-a-config)).
 * **Local tangent plane.** Position is Cartesian NED about a fixed origin. The geodetic
   conversion is exact at any range ([equation (43)](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#geodetic-origin)), but a plane
   leaves a curved Earth: `d` from the origin it sits `d²/2R` above the surface, 8 cm at 1 km and

@@ -18,7 +18,7 @@
 # (rms_gnss_hgt; on average 8.0 m high, 1.9 m low and 5.3 m high) against pos_v 1.88, 0.39
 # and 2.04, and `--without baro` outdoor_1 and mars_19 read pos_v 9.35 and 5.72, the fixes'
 # own. The unjudged fixes fall outside the truth's time range (mars_19's truth covers 280 s of
-# 371), all but 10 and 13, in truth gaps wider than `TRUTH_SPAN` (examples/replay.rs).
+# 371), all but 10 and 13, in truth gaps wider than `TRUTH_SPAN` (examples/replay/main.rs).
 # Velocity is more conservative still (nees_vel 0.03 to 0.07): no GNSS velocity is fused,
 # since the dataset's is horizontal with no accuracy, so velocity is observed only through
 # fixes claiming a median 0.8 to 3.9 m of horizontal sigma.

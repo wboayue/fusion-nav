@@ -38,8 +38,10 @@
 #                    `Config::correlation`'s defaults, which are the corpus's medians and
 #                    understate it (`examples/simulate.rs`). (24') fuses it at too small a
 #                    variance: anees_pos=1.45, over_pos=0.95, any_pos=5197. Fused as white it read
-#                    anees_pos=29.16 and anees_att=3.48, over on every epoch of both. A sensor's
-#                    `tau` measured offline (#51) is what removes it. #117.
+#                    anees_pos=29.16 and anees_att=3.48, over on every epoch of both. The
+#                    `tau` replay --derive prints for one seed (#51) does not remove it
+#                    (DESIGN.md, `Correlation`); an estimator the filter does not bias is
+#                    #195. #117.
 #
 # Three lines (24') rewrote from failing to passing, each on attitude, and only one of them for
 # its cause. `moving_start` (#150) was four magnetometer headings sharing one levelling tilt error

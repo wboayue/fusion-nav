@@ -56,7 +56,7 @@ for. Against `mission`:
   and the filter is honest about it ([honesty](honesty.md#fixes-that-arrive-late)).
 - `correlated` makes every sensor's errors change more slowly than the filter assumes. Heading
   suffers most, {{score correlated yaw}}° against {{score mission yaw}}°, and the filter is
-  overconfident about position (#51).
+  overconfident about position (#195).
 - `mag_disturbance` gives the magnetometer a 30° error for 10 s. The filter refuses those
   readings, so heading barely suffers: {{score mag_disturbance yaw}}° against
   {{score mission yaw}}°.
@@ -140,7 +140,7 @@ better than this filter's own estimate.
 
 Every run on this page is the one CI checks (`data/bench.sh`), at the seed pinned in
 `data/scenarios.txt`. Every number is copied from the `score` line that
-`examples/replay.rs` printed for it. The error is `truth ⊖ estimate` in the error state of
+`examples/replay/main.rs` printed for it. The error is `truth ⊖ estimate` in the error state of
 `EQUATIONS.md` (2), computed in one place (`error_state`). Attitude is split into tilt, about the
 two horizontal axes, and heading, about down, the same way the filter's `Validity` reports it.
 The figures are drawn by `tools/replay_report.py` from the run's `<out>.error.csv`, which holds

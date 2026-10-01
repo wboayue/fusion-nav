@@ -85,12 +85,14 @@ subscript.
 ### Gravity
 
 $`g = [0, 0, \gamma]^\mathsf{T}`$ with $`\gamma`$ the local gravity magnitude, entering the
-propagation of (11). `config::GRAVITY` is the WGS-84 standard value 9.80665 m s⁻² and stays a
-constant: $`\gamma`$ varies by roughly 0.5 % between the equator and the poles and the filter
-holds a geodetic origin, but that origin is placed by the first fix, which can arrive after
-propagation has begun. Deriving it there would change a propagation constant mid-flight. It is
-derived offline instead, by the tool that prints a `Config` from a log (#51); see
-[GOALS.md](GOALS.md#local-gravity-as-a-constant-derived-offline) for the decision.
+propagation of (11) and the levelling of (5)–(8). It is `Config::gravity`, the WGS-84 standard value
+9.80665 m s⁻² unless configured, and constant for a filter's life: $`\gamma`$ varies by roughly
+0.5 % between the equator and the poles and the filter holds a geodetic origin, but that origin is
+placed by the first fix, which can arrive after propagation has begun. Deriving it there would
+change a propagation constant mid-flight. It is derived offline instead, from the site, by
+`Geodetic::normal_gravity` (NGA.STND.0036 (4-1) and (4-3)), which the replay harness's `--derive`
+prints from a log; see [GOALS.md](GOALS.md#local-gravity-configured-derived-offline) for the
+decision.
 
 ## State definitions
 

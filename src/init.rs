@@ -7,7 +7,7 @@
 
 use nalgebra::{ComplexField, Matrix3, RealField, Rotation3, UnitQuaternion, Vector3};
 
-use crate::config::{GRAVITY, Initialization};
+use crate::config::{Config, Initialization};
 use crate::display::{Decimals, Fixed};
 use crate::frames::{Body, Ned};
 use crate::math::{skew, wrap_pi};
@@ -104,17 +104,17 @@ impl StaticSample {
 /// #     ..StaticSample::default()
 /// # };
 /// let mut filter = Eskf::default();
-/// let init = filter.config().init;
+/// let config = *filter.config();
 /// let mut window = StaticWindow::new();
 /// let mut i = 0;
-/// while !window.is_long_enough(&init) {
+/// while !window.is_long_enough(&config) {
 ///     i += 1;
 ///     // A refused sample leaves the window as it was: drop it and go on.
 ///     if window.push(sample(i)).is_err() {
 ///         continue;
 ///     }
 ///     // Waiting for stillness: a vehicle that moved starts the wait over.
-///     if !window.is_at_rest(&init) {
+///     if !window.is_at_rest(&config) {
 ///         window = StaticWindow::new();
 ///     }
 /// }
@@ -129,7 +129,7 @@ impl StaticSample {
 /// Each [`push`](Self::push) costs a few dozen floating-point operations, some in `f64`
 /// ([counted]). On a core with no floating-point unit every one is a library call, inside the loop
 /// that is already reading the IMU: the price of not buffering, paid only until the window commits.
-/// `level_variance` and `BaroReadings` say why their sums need `f64`. For the averages it is
+/// `level_scatter` and `BaroReadings` say why their sums need `f64`. For the averages it is
 /// precaution: summing a few thousand readings near `γ` in `f32` costs on the order of 10⁻⁵ rad of
 /// tilt, against a 0.02 rad prior.
 ///
@@ -137,7 +137,7 @@ impl StaticSample {
 /// [counted]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#arithmetic
 #[derive(Clone, Debug)]
 pub struct StaticWindow {
-    /// `Σ f fᵀ`, for the window's scatter about `f̄`; see [`level_variance`].
+    /// `Σ f fᵀ`, for the window's scatter about `f̄`; see [`level_scatter`].
     outer: Matrix3<f64>,
     /// `Σ ω`, the angular rate (7) takes as the gyroscope bias.
     rate: Vector3<f64>,
@@ -260,8 +260,8 @@ impl StaticWindow {
     /// A window only grows, and peaks do not fall, so once this is false it stays false: an
     /// application waiting for stillness starts a new window rather than sliding this one.
     #[must_use]
-    pub fn is_at_rest(&self, init: &Initialization) -> bool {
-        at_rest(self.peaks, init)
+    pub fn is_at_rest(&self, config: &Config) -> bool {
+        at_rest(self.peaks, &config.init, config.gravity)
     }
 
     /// Whether the window holds a sample and spans [`Initialization::min_duration`]: the
@@ -271,8 +271,8 @@ impl StaticWindow {
     /// ends the loop on a window [`Eskf::initialize`](crate::Eskf::initialize) accepts rather
     /// than on an empty one it refuses.
     #[must_use]
-    pub fn is_long_enough(&self, init: &Initialization) -> bool {
-        self.end.is_some() && long_enough(self.span(), init)
+    pub fn is_long_enough(&self, config: &Config) -> bool {
+        self.end.is_some() && long_enough(self.span(), &config.init)
     }
 
     /// The time the window's samples integrated: the sum of their angle intervals, and what
@@ -307,7 +307,7 @@ impl StaticWindow {
             span: self.span(),
             end,
             halves: Halves::of(first, second),
-            level_variance: level_variance(self.outer, whole.force, whole.samples),
+            level_scatter: level_scatter(self.outer, whole.force, whole.samples),
         })
     }
 
@@ -321,8 +321,8 @@ impl StaticWindow {
     /// filter should be told; [`WindowNoise`] says why a floor. Equation (8″).
     ///
     /// On the window rather than the filter, because the figure is for building a
-    /// [`Config`](crate::Config) and so comes before any filter exists; it reads the same
-    /// [`Initialization`] tolerances [`is_at_rest`](Self::is_at_rest) does. Measured and
+    /// [`Config`] and so comes before any filter exists; it reads the same tolerances
+    /// [`is_at_rest`](Self::is_at_rest) does. Measured and
     /// reported, never applied: a figure changes the filter only if the caller writes it into
     /// the `Config` (`GOALS.md` differentiator 7, where derived is not adaptive).
     ///
@@ -331,8 +331,8 @@ impl StaticWindow {
     /// are read over: a moving window's scatter is its motion. The barometer's figure takes
     /// the same count of its own readings.
     #[must_use]
-    pub fn noise(&self, init: &Initialization) -> Option<WindowNoise> {
-        if !self.is_at_rest(init) {
+    pub fn noise(&self, config: &Config) -> Option<WindowNoise> {
+        if !self.is_at_rest(config) {
             return None;
         }
         Some(WindowNoise {
@@ -378,7 +378,7 @@ impl TryFrom<&[StaticSample]> for StaticWindow {
 /// [`worst_gyro_white`](Self::worst_gyro_white) and
 /// [`worst_accel_white`](Self::worst_accel_white) give. The bias random walks and each source's
 /// correlation time are not here: both need hours of data rather than seconds, an Allan
-/// variance and a replay log's autocorrelation, and belong to the offline tool (#51). How well
+/// variance and a replay log's autocorrelation, and belong to the replay harness's `--derive`. How well
 /// a figure is known is [`MIN_READINGS`](Self::MIN_READINGS)'s and [`BLOCK`](Self::BLOCK)'s to
 /// say, and the block length is the larger share.
 ///
@@ -508,12 +508,13 @@ pub(crate) struct Measured {
     /// The same averages over each half of the window, for [`window_drift`]. `None` for
     /// a window of one, which has no halves to disagree.
     pub halves: Option<Halves>,
-    /// How well `f̄` itself is known across gravity, as tilt: the variance, rad² per
-    /// horizontal axis, of the mean of the samples' specific force, over `γ²`. The part
-    /// of (5)'s level error that is not the accelerometer bias, measured by the window's
-    /// own scatter; see [`initial_covariance`]. `None` for a window of one, or one whose
-    /// average is zero, which measure no scatter.
-    pub level_variance: Option<f32>,
+    /// How well `f̄` itself is known across gravity: the variance, m² s⁻⁴ per horizontal
+    /// axis, of the mean of the samples' specific force. Over `γ²` it is the part of (5)'s
+    /// level error that is not the accelerometer bias, measured by the window's own scatter;
+    /// see [`initial_covariance`]. `None` for a window of one, or one whose average is zero,
+    /// which measure no scatter. `f64`, because the division by `γ²` waits for the `γ` the
+    /// filter is configured with.
+    pub level_scatter: Option<f64>,
 }
 
 /// The averages of equations (5)–(6) taken over each half of the window separately, so
@@ -548,26 +549,40 @@ impl Halves {
 
 /// The window's largest motion: what [`at_rest`] judges and
 /// [`Coarse::NotStationary`] reports.
+///
+/// The specific force is kept as its smallest and largest magnitude rather than as a
+/// departure from gravity, because the window is folded before it meets the `γ` a
+/// [`Config`] names; [`Peaks::deviation`] takes the departure then, and the largest
+/// `|‖f‖ − γ|` over the samples is exactly the larger of the two ends' departures.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Peaks {
     /// Largest angular rate magnitude.
     pub gyro: RadiansPerSecond,
-    /// Largest departure of the specific-force magnitude from gravity.
-    pub deviation: MetersPerSecond2,
+    /// Smallest and largest specific-force magnitude, m s⁻².
+    least: f32,
+    most: f32,
 }
 
 impl Peaks {
     /// No motion at all: what an empty window has seen.
     const NONE: Self = Self {
         gyro: RadiansPerSecond::from_rad_per_s(0.0),
-        deviation: MetersPerSecond2::from_m_per_s2(0.0),
+        least: f32::INFINITY,
+        most: f32::NEG_INFINITY,
     };
 
     fn push(&mut self, accel: Vector3<f32>, gyro: Vector3<f32>) {
-        let deviation = (accel.norm() - GRAVITY).abs();
+        let norm = accel.norm();
         self.gyro = RadiansPerSecond::from_rad_per_s(self.gyro.as_rad_per_s().max(gyro.norm()));
-        self.deviation =
-            MetersPerSecond2::from_m_per_s2(self.deviation.as_m_per_s2().max(deviation));
+        self.least = self.least.min(norm);
+        self.most = self.most.max(norm);
+    }
+
+    /// Largest departure of the specific-force magnitude from `gravity`; zero for an empty
+    /// window.
+    pub(crate) fn deviation(&self, gravity: f32) -> MetersPerSecond2 {
+        let deviation = (self.most - gravity).max(gravity - self.least).max(0.0);
+        MetersPerSecond2::from_m_per_s2(deviation)
     }
 }
 
@@ -938,14 +953,14 @@ fn scatter(squares: f64, sum: f64, weight: f64) -> f64 {
     squares - sum * sum / weight
 }
 
-/// [`Measured::level_variance`], from the window's `Σ f` and `Σ f fᵀ`.
+/// [`Measured::level_scatter`], from the window's `Σ f` and `Σ f fᵀ`.
 ///
 /// The scatter across `f̄` over the sample count is how far the average could sit from the
 /// window's true mean force: vibration, a vehicle rocking on its gear, sensor noise. Divided
 /// by `γ²` it is a tilt, and it is what `P₀` keeps independent of the bias. It assumes the
 /// samples independent, so vibration slower than the sample rate is undercounted, and it is
 /// a floor rather than the whole independent share for that reason.
-fn level_variance(outer: Matrix3<f64>, sum: Vector3<f64>, count: u64) -> Option<f32> {
+fn level_scatter(outer: Matrix3<f64>, sum: Vector3<f64>, count: u64) -> Option<f64> {
     if count < 2 {
         return None;
     }
@@ -956,8 +971,7 @@ fn level_variance(outer: Matrix3<f64>, sum: Vector3<f64>, count: u64) -> Option<
     // subtraction that needs f64.
     let scatter = (outer - mean * mean.transpose() * n) / (n - 1.0);
     let across = scatter.trace() - down.dot(&(scatter * down));
-    let gravity = f64::from(GRAVITY);
-    Some(((across / 2.0).max(0.0) / n / (gravity * gravity)) as f32)
+    Some((across / 2.0).max(0.0) / n)
 }
 
 /// Widen a measurement for accumulation; see [`StaticWindow`].
@@ -1073,10 +1087,10 @@ pub enum Coarse {
 /// `inertial_accel` is left out while (5′) only reports it.
 impl Coarse {
     /// The coarse start a window that moved gives, reporting what it measured.
-    pub(crate) fn not_stationary(measured: &Measured) -> Self {
+    pub(crate) fn not_stationary(measured: &Measured, gravity: f32) -> Self {
         Self::NotStationary {
             peak_gyro: measured.peaks.gyro,
-            peak_accel_deviation: measured.peaks.deviation,
+            peak_accel_deviation: measured.peaks.deviation(gravity),
             span: measured.span,
             inertial_accel: measured.inertial_accel,
         }
@@ -1236,9 +1250,9 @@ impl core::error::Error for SampleRefusal {}
 /// way round, a short window said nothing about motion, and a caller holding a still
 /// window that had not yet reached `min_duration` could not tell from the outcome that it
 /// was still — which is what deciding to initialize at the onset of motion asks.
-pub(crate) fn classify(measured: &Measured, init: &Initialization) -> Alignment {
-    if !at_rest(measured.peaks, init) {
-        return Alignment::Coarse(Coarse::not_stationary(measured));
+pub(crate) fn classify(measured: &Measured, init: &Initialization, gravity: f32) -> Alignment {
+    if !at_rest(measured.peaks, init, gravity) {
+        return Alignment::Coarse(Coarse::not_stationary(measured, gravity));
     }
     if !long_enough(measured.span, init) {
         return Alignment::Coarse(Coarse::WindowTooShort {
@@ -1457,10 +1471,11 @@ pub(crate) fn attitude_sigmas(
     alignment: Alignment,
     measured: &Measured,
     gyro_bias: AngularRate<Body>,
+    gravity: f32,
 ) -> (Radians, Radians) {
     match alignment {
         Alignment::Static | Alignment::Seeded => (init.sigma_tilt, init.sigma_yaw),
-        Alignment::Coarse(_) => coarse_sigmas(init, measured, gyro_bias),
+        Alignment::Coarse(_) => coarse_sigmas(init, measured, gyro_bias, gravity),
     }
 }
 
@@ -1513,10 +1528,11 @@ fn coarse_sigmas(
     init: &Initialization,
     measured: &Measured,
     gyro_bias: AngularRate<Body>,
+    gravity: f32,
 ) -> (Radians, Radians) {
     // Small-angle, as (5) reads it: an average that is not gravity leans the levelled
     // vertical by the fraction of `γ` it is out by.
-    let from_force = (measured.force.vector().norm() - GRAVITY).abs() / GRAVITY;
+    let from_force = (measured.force.vector().norm() - gravity).abs() / gravity;
 
     // What the gyroscope says the vehicle did, split about the vertical (5) levelled to:
     // rotation across gravity moves that vector and spoils the tilt, rotation about it
@@ -1586,7 +1602,7 @@ fn coarse_sigmas(
 /// costs: `f16771dd` lost its unaided tilt at 3.41 s against 3.84, and `tilt` rose on ten of
 /// the eleven scenarios (`harsh_imu` 1.022° against 0.828).
 ///
-/// `level` is the window's own [`Measured::level_variance`], and it is what keeps the
+/// `level` is the window's own [`Measured::level_scatter`] over `γ²`, and it is what keeps the
 /// independent share from reaching zero. At the defaults the bias's share, 0.0204 rad, is
 /// over `sigma_tilt`'s 0.02, so without it `P₀` would claim every tilt error is the bias and
 /// be singular across the two tilt directions: once velocity fusion knew the bias, nothing
@@ -1602,7 +1618,8 @@ pub(crate) fn initial_covariance(
     attitude: &Attitude,
     sigma_tilt: Radians,
     sigma_yaw: Radians,
-    level_variance: Option<f32>,
+    level_scatter: Option<f64>,
+    gravity: f32,
 ) -> Covariance {
     let position = init.sigma_position.as_meters();
     let velocity = init.sigma_velocity.as_m_per_s();
@@ -1618,7 +1635,9 @@ pub(crate) fn initial_covariance(
         accel_bias, accel_bias, accel_bias,
         gyro_bias,  gyro_bias,  gyro_bias,
     ];
-    let explained = accel_bias / GRAVITY;
+    let explained = accel_bias / gravity;
+    let gamma = f64::from(gravity);
+    let level_variance = level_scatter.map(|scatter| (scatter / (gamma * gamma)) as f32);
     let independent = level_variance.map_or(tilt * tilt, |level| {
         (tilt * tilt - explained * explained).max(level)
     });
@@ -1668,8 +1687,8 @@ const UNKNOWN_HEADING_SIGMA: Radians = Radians::from_radians(1.813_799_4);
 ///
 /// It takes the peaks rather than a [`Measured`] so that [`StaticWindow::is_at_rest`] can ask
 /// it after every sample without measuring the window.
-pub(crate) fn at_rest(peaks: Peaks, init: &Initialization) -> bool {
-    peaks.gyro <= init.max_gyro_rate && peaks.deviation <= init.max_accel_deviation
+pub(crate) fn at_rest(peaks: Peaks, init: &Initialization, gravity: f32) -> bool {
+    peaks.gyro <= init.max_gyro_rate && peaks.deviation(gravity) <= init.max_accel_deviation
 }
 
 #[cfg(test)]
@@ -1677,6 +1696,7 @@ pub(crate) mod tests {
     use std::format;
 
     use super::*;
+    use crate::config::GRAVITY;
     use crate::state::ErrorState;
 
     /// What a buffered window measures: every sample pushed in order, as
@@ -1756,6 +1776,7 @@ pub(crate) mod tests {
         Ok(classify(
             &measure(&spaced(window, dt))?,
             &Initialization::default(),
+            GRAVITY,
         ))
     }
 
@@ -1775,12 +1796,17 @@ pub(crate) mod tests {
     fn sigmas(window: &[StaticSample], dt: Seconds) -> (f32, f32) {
         let init = Initialization::default();
         let measured = measure(&spaced(window, dt)).expect("a usable window");
-        let state = nominal_state(&measured, Radians::ZERO, at_rest(measured.peaks, &init));
+        let state = nominal_state(
+            &measured,
+            Radians::ZERO,
+            at_rest(measured.peaks, &init, GRAVITY),
+        );
         let (tilt, yaw) = attitude_sigmas(
             &init,
-            classify(&measured, &init),
+            classify(&measured, &init, GRAVITY),
             &measured,
             state.gyro_bias,
+            GRAVITY,
         );
         (tilt.as_radians(), yaw.as_radians())
     }
@@ -1895,7 +1921,8 @@ pub(crate) mod tests {
                 &state.attitude,
                 init.sigma_tilt,
                 init.sigma_yaw,
-                measured.level_variance,
+                measured.level_scatter,
+                GRAVITY,
             );
             let theta = ErrorState::AttitudeX.index();
             let beta = ErrorState::AccelBiasX.index();
@@ -1927,9 +1954,9 @@ pub(crate) mod tests {
         }
         let level = measure(&spaced(&window, DT))
             .expect("a usable window")
-            .level_variance
+            .level_scatter
             .expect("eight samples scatter");
-        let expected = 0.25 * 8.0 / 7.0 / 2.0 / 8.0 / (GRAVITY * GRAVITY);
+        let expected = 0.25 * 8.0 / 7.0 / 2.0 / 8.0;
         assert!(
             (level - expected).abs() < 1e-3 * expected,
             "expected {expected}, got {level}"
@@ -1937,7 +1964,7 @@ pub(crate) mod tests {
         assert_eq!(
             measure(&spaced(&[still()], DT))
                 .expect("one sample")
-                .level_variance,
+                .level_scatter,
             None
         );
     }
@@ -1954,7 +1981,9 @@ pub(crate) mod tests {
             &Attitude::default(),
             init.sigma_tilt,
             init.sigma_yaw,
-            Some(level),
+            // The scatter whose tilt is `level`.
+            Some(f64::from(level) * f64::from(GRAVITY) * f64::from(GRAVITY)),
+            GRAVITY,
         );
         let m = p.as_matrix();
         let (theta, beta) = (
@@ -2148,6 +2177,25 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_sample_short_of_gravity_moves_the_window_as_one_over_it_does() {
+        // 3 m/s² light on one sample and 1 m/s² heavy on another: the light one is the peak,
+        // and against a different `γ` the same window departs by a different amount.
+        let mut window = [still(); 8];
+        window[2].imu = window[2]
+            .imu
+            .with_accel(Acceleration::body(0.0, 0.0, -GRAVITY + 3.0));
+        window[5].imu = window[5]
+            .imu
+            .with_accel(Acceleration::body(0.0, 0.0, -GRAVITY - 1.0));
+        let measured = measure(&spaced(&window, DT)).expect("a usable window");
+        let deviation = measured.peaks.deviation(GRAVITY).as_m_per_s2();
+        assert!((deviation - 3.0).abs() < 1e-5, "{deviation}");
+        let lighter = measured.peaks.deviation(GRAVITY - 0.5).as_m_per_s2();
+        assert!((lighter - 2.5).abs() < 1e-5, "{lighter}");
+        assert_eq!(Peaks::NONE.deviation(GRAVITY).as_m_per_s2(), 0.0);
+    }
+
+    #[test]
     fn a_coarse_start_widens_tilt_in_proportion_to_the_motion_it_saw() {
         let mut window = [still(); 8];
         // 2.94 m/s^2 of unexplained specific force on one sample of eight: over the
@@ -2271,7 +2319,10 @@ pub(crate) mod tests {
         let dt = Seconds::from_secs(0.2);
         let init = Initialization::default();
         let measured = measure(&spaced(&window, dt)).expect("a usable window");
-        assert!(at_rest(measured.peaks, &init), "0.05 rad/s is inside 0.262");
+        assert!(
+            at_rest(measured.peaks, &init, GRAVITY),
+            "0.05 rad/s is inside 0.262"
+        );
         let bias = nominal_state(&measured, Radians::ZERO, true)
             .gyro_bias
             .vector();
@@ -2559,7 +2610,7 @@ pub(crate) mod tests {
     fn noise(window: &[StaticSample]) -> Option<WindowNoise> {
         StaticWindow::try_from(window)
             .expect("a usable window")
-            .noise(&Initialization::default())
+            .noise(&Config::default())
     }
 
     /// `n` samples of a still vehicle, the `i`th integrating `gyro(i)` over `angle` and
@@ -2842,21 +2893,29 @@ pub(crate) mod tests {
 
     #[test]
     fn a_window_is_at_rest_until_it_moves_and_never_again_after() {
-        let init = Initialization::default();
+        let config = Config::default();
         let mut samples = spaced(&[still(); 6], DT);
         // Over the 0.262 rad/s default.
         samples[2].imu = samples[2].imu.with_gyro(AngularRate::body(0.0, 0.4, 0.0));
         let mut window = StaticWindow::new();
-        assert!(window.is_at_rest(&init), "an empty window has not moved");
+        assert!(window.is_at_rest(&config), "an empty window has not moved");
         for (index, sample) in samples.into_iter().enumerate() {
             assert_eq!(window.push(sample), Ok(()));
-            assert_eq!(window.is_at_rest(&init), index < 2, "after sample {index}");
+            assert_eq!(
+                window.is_at_rest(&config),
+                index < 2,
+                "after sample {index}"
+            );
             // The same verdict `alignment_of` reaches by measuring the whole window.
             let moved = matches!(
-                classify(&window.measured().expect("a sample"), &init),
+                classify(
+                    &window.measured().expect("a sample"),
+                    &config.init,
+                    config.gravity
+                ),
                 Alignment::Coarse(Coarse::NotStationary { .. })
             );
-            assert_eq!(moved, !window.is_at_rest(&init), "after sample {index}");
+            assert_eq!(moved, !window.is_at_rest(&config), "after sample {index}");
         }
     }
 
@@ -2865,7 +2924,7 @@ pub(crate) mod tests {
     /// runs, so the host's `size_of` pins the same figure.
     #[test]
     fn the_window_is_the_size_its_documentation_quotes() {
-        assert_eq!(core::mem::size_of::<StaticWindow>(), 936);
+        assert_eq!(core::mem::size_of::<StaticWindow>(), 944);
         assert_eq!(core::mem::size_of::<StaticSample>(), 80);
     }
 
@@ -2873,16 +2932,14 @@ pub(crate) mod tests {
     fn a_window_is_long_enough_only_once_it_holds_a_sample() {
         // A `min_duration` of zero is met by any span, the empty window's included, and an
         // empty window is the one `initialize` refuses.
-        let init = Initialization {
-            min_duration: Seconds::from_secs(0.0),
-            ..Initialization::default()
-        };
+        let mut config = Config::default();
+        config.init.min_duration = Seconds::from_secs(0.0);
         let mut window = StaticWindow::new();
-        assert!(!window.is_long_enough(&init));
+        assert!(!window.is_long_enough(&config));
         assert_eq!(window.push(spaced(&[still()], DT)[0]), Ok(()));
-        assert!(window.is_long_enough(&init));
+        assert!(window.is_long_enough(&config));
 
-        let two_seconds = Initialization::default();
+        let two_seconds = Config::default();
         let mut window = StaticWindow::new();
         let samples = spaced(&[still(); 8], Seconds::from_secs(0.25));
         for (index, sample) in samples.into_iter().enumerate() {

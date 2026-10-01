@@ -65,6 +65,7 @@ name = "fusion-nav"
 version = "0.0.0"
 dependencies = [
  "defmt",
+ "libm",
  "nalgebra",
  "proptest",
 ]

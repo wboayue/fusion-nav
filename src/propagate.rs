@@ -8,7 +8,7 @@
 
 use nalgebra::{Matrix3, SMatrix, Vector3};
 
-use crate::config::{Coast, GRAVITY, ImuNoise};
+use crate::config::{Coast, Config, ImuNoise};
 use crate::frames::Body;
 use crate::math::{enforce_symmetry, exp_quat, skew};
 use crate::state::{Covariance, ErrorState, Offset, STATES, State};
@@ -269,14 +269,14 @@ pub(crate) fn corrected_imu(imu: ImuSample, state: &State) -> Corrected {
 /// reaches the quaternion and never leaves. There is no channel to refuse through from
 /// here, so [`Eskf::predict`](crate::Eskf::predict) is what declines to commit it, as
 /// [`Propagation::StateNotFinite`](crate::Propagation::StateNotFinite).
-pub(crate) fn propagate_nominal(state: State, imu: Corrected) -> State {
+pub(crate) fn propagate_nominal(state: State, imu: Corrected, gravity: f32) -> State {
     let dt = imu.velocity_interval.as_secs();
     let rotation = state.attitude.quaternion();
 
     // (11), times `Δt`: the velocity increment into the navigation frame, gravity's added.
     // A level vehicle at rest gains (0, 0, -γ Δt) and this is zero, which is the sign
     // convention's own test — down-positive gravity against a down-negative specific force.
-    let delta_v = rotation * imu.delta_velocity.vector() + gravity() * dt;
+    let delta_v = rotation * imu.delta_velocity.vector() + gravity_vector(gravity) * dt;
 
     let velocity = state.velocity.vector();
     let position = state.position.vector() + velocity * dt + 0.5 * delta_v * dt; // (13)
@@ -343,19 +343,19 @@ pub(crate) fn propagate(
     covariance: Covariance,
     offset: Offset,
     imu: ImuSample,
-    noise: &ImuNoise,
-    offset_walk: f32,
+    config: &Config,
 ) -> Propagated {
     let corrected = corrected_imu(imu, &state);
     let transition = transition_matrix(&state, corrected);
+    let q = process_noise(&config.imu, corrected);
 
     Propagated {
-        state: propagate_nominal(state, corrected),
-        covariance: propagate_covariance(covariance, &transition, process_noise(noise, corrected)),
+        state: propagate_nominal(state, corrected, config.gravity),
+        covariance: propagate_covariance(covariance, &transition, q),
         offset: propagate_offset(
             offset,
             &transition,
-            offset_walk,
+            config.baro_offset_walk,
             corrected.velocity_interval,
         ),
         omega: Some(corrected.omega()),
@@ -618,7 +618,7 @@ pub(crate) fn project(
     state: &State,
     covariance: Covariance,
     horizon: Seconds,
-    noise: &ImuNoise,
+    config: &Config,
 ) -> Covariance {
     // A horizon that is not a positive duration projects nothing rather than projecting
     // backwards. `Q` of (21) is linear in `dt`, so a negative one *subtracts* process noise
@@ -632,12 +632,12 @@ pub(crate) fn project(
 
     let steps = projection_steps(horizon);
     let dt = Seconds::from_secs(seconds / steps as f32);
-    let unaccelerated = unaccelerated_sample(state, dt);
+    let unaccelerated = unaccelerated_sample(state, dt, config.gravity);
     let transition = transition_matrix(state, unaccelerated);
     repeat_covariance(
         covariance,
         &transition,
-        process_noise(noise, unaccelerated),
+        process_noise(&config.imu, unaccelerated),
         steps,
     )
 }
@@ -688,8 +688,7 @@ pub(crate) fn coast(
     covariance: Covariance,
     offset: Offset,
     gap: Seconds,
-    noise: &ImuNoise,
-    offset_walk: f32,
+    config: &Config,
     unmeasured: &Coast,
 ) -> Propagated {
     let seconds = gap.as_secs();
@@ -704,11 +703,11 @@ pub(crate) fn coast(
 
     let steps = projection_steps(gap);
     let dt = Seconds::from_secs(seconds / steps as f32);
-    let unaccelerated = unaccelerated_sample(&state, dt);
+    let unaccelerated = unaccelerated_sample(&state, dt, config.gravity);
     let transition = transition_matrix(&state, unaccelerated);
     // The unmeasured rotation goes through (22) with the rest of `Q`: it reaches velocity
     // through (17)'s gravity leak, a coupling the steps integrate and no closed form here does.
-    let mut q = process_noise(noise, unaccelerated);
+    let mut q = process_noise(&config.imu, unaccelerated);
     let turned = unmeasured.rotation * unmeasured.rotation * dt.as_secs();
     for axis in [
         ErrorState::AttitudeX,
@@ -725,7 +724,7 @@ pub(crate) fn coast(
     let covariance = repeat_covariance(covariance, &transition, q, steps);
     let mut offset = offset;
     for _ in 0..steps {
-        offset = propagate_offset(offset, &transition, offset_walk, dt);
+        offset = propagate_offset(offset, &transition, config.baro_offset_walk, dt);
     }
 
     // The unmeasured acceleration, added whole rather than per step. It reaches nothing but
@@ -750,7 +749,11 @@ pub(crate) fn coast(
     velocity += identity * (density * seconds);
 
     Propagated {
-        state: propagate_nominal(state, unaccelerated_sample(&state, gap)),
+        state: propagate_nominal(
+            state,
+            unaccelerated_sample(&state, gap, config.gravity),
+            config.gravity,
+        ),
         covariance: Covariance::from_matrix(matrix),
         offset,
         omega: None,
@@ -797,26 +800,22 @@ fn projection_steps(horizon: Seconds) -> usize {
 /// `(0, 0, −γ)` — evaluated at an attitude that need not be level. Named because [`coast`],
 /// [`project`] and the measurement behind [`PROJECTION_STEP`] have to use the same one for the
 /// comparison between them to mean anything.
-fn unaccelerated_sample(state: &State, dt: Seconds) -> Corrected {
+fn unaccelerated_sample(state: &State, dt: Seconds, gravity: f32) -> Corrected {
     let rotation = state.attitude.quaternion().to_rotation_matrix();
     Corrected {
         delta_angle: DeltaAngle::from_vector(Vector3::zeros()),
         angle_interval: dt,
-        delta_velocity: DeltaVelocity::from_vector(rotation.inverse() * -gravity() * dt.as_secs()),
+        delta_velocity: DeltaVelocity::from_vector(
+            rotation.inverse() * -gravity_vector(gravity) * dt.as_secs(),
+        ),
         velocity_interval: dt,
     }
 }
 
-/// `g = [0, 0, γ]ᵀ`, the navigation-frame gravity vector of (11).
-///
-/// γ is [`GRAVITY`], the WGS-84 standard value, and stays a constant. It varies by about
-/// 0.5 % between the equator and the poles, but the origin that would derive it is placed
-/// by the first GNSS fix, which can arrive after propagation has begun — deriving it there
-/// would change a propagation constant mid-flight, which is the self-retuning
-/// differentiator 7's boundary forbids. `GOALS.md` records the decision (#66); the
-/// derivation belongs to the offline tool that prints a `Config` (#51).
-pub(crate) fn gravity() -> Vector3<f32> {
-    Vector3::new(0.0, 0.0, GRAVITY)
+/// `g = [0, 0, γ]ᵀ`, the navigation-frame gravity vector of (11), for `γ` as
+/// [`Config::gravity`] holds it.
+pub(crate) fn gravity_vector(gravity: f32) -> Vector3<f32> {
+    Vector3::new(0.0, 0.0, gravity)
 }
 
 #[cfg(test)]
@@ -824,12 +823,23 @@ mod tests {
     use super::*;
     use nalgebra::UnitQuaternion;
 
+    use crate::config::GRAVITY;
+
     use crate::config::Initialization;
     use crate::init;
     use crate::state::{CovarianceMatrix, ErrorState};
     use crate::units::Radians;
 
     const DT: Seconds = Seconds::from_secs(0.005);
+
+    /// The defaults, with `noise` and the barometric offset's `walk` as a test sets them.
+    fn under(noise: ImuNoise, walk: f32) -> Config {
+        Config {
+            imu: noise,
+            baro_offset_walk: walk,
+            ..Config::default()
+        }
+    }
 
     /// At the origin, level, at rest, unbiased.
     fn at_rest() -> State {
@@ -848,7 +858,11 @@ mod tests {
     }
 
     fn step(state: State, imu: ImuSample, dt: Seconds) -> State {
-        propagate_nominal(state, corrected_imu(imu.timed(Timestamp::ZERO, dt), &state))
+        propagate_nominal(
+            state,
+            corrected_imu(imu.timed(Timestamp::ZERO, dt), &state),
+            GRAVITY,
+        )
     }
 
     fn run(mut state: State, imu: ImuSample, steps: u32) -> State {
@@ -1109,8 +1123,11 @@ mod tests {
             &state,
             corrected_imu(imu.timed(Timestamp::ZERO, dt), &state),
         );
-        let reference =
-            propagate_nominal(state, corrected_imu(imu.timed(Timestamp::ZERO, dt), &state));
+        let reference = propagate_nominal(
+            state,
+            corrected_imu(imu.timed(Timestamp::ZERO, dt), &state),
+            GRAVITY,
+        );
 
         for column in 0..STATES {
             let mut dx = [0.0; STATES];
@@ -1122,6 +1139,7 @@ mod tests {
             let propagated = propagate_nominal(
                 perturbed,
                 corrected_imu(imu.timed(Timestamp::ZERO, dt), &perturbed),
+                GRAVITY,
             );
             let numerical = error_between(&reference, &propagated);
 
@@ -1169,8 +1187,7 @@ mod tests {
                     covariance,
                     Offset::default(),
                     holding_still().timed(Timestamp::ZERO, dt),
-                    &noise,
-                    0.0,
+                    &under(noise, 0.0),
                 );
                 (state, covariance) = (step.state, step.covariance);
             }
@@ -1213,6 +1230,7 @@ mod tests {
             Radians::from_radians(0.02),
             Radians::from_radians(0.35),
             Some(0.0),
+            GRAVITY,
         );
 
         for _ in 0..12_000 {
@@ -1222,8 +1240,7 @@ mod tests {
                 covariance,
                 Offset::default(),
                 manoeuvring().timed(Timestamp::ZERO, dt),
-                &noise,
-                0.0,
+                &under(noise, 0.0),
             );
             (state, covariance) = (step.state, step.covariance);
 
@@ -1282,8 +1299,7 @@ mod tests {
             Covariance::from_sigmas(sigmas),
             Offset::default(),
             imu.timed(Timestamp::ZERO, dt),
-            &quiet,
-            0.0,
+            &under(quiet, 0.0),
         );
         let after = step.covariance;
 
@@ -1333,7 +1349,7 @@ mod tests {
         let before = propagate_covariance(prior, &transition_matrix(&state, corrected), q);
         let after = propagate_covariance(
             prior,
-            &transition_matrix(&propagate_nominal(state, corrected), corrected),
+            &transition_matrix(&propagate_nominal(state, corrected, GRAVITY), corrected),
             q,
         );
 
@@ -1342,8 +1358,7 @@ mod tests {
             prior,
             Offset::default(),
             imu.timed(Timestamp::ZERO, dt),
-            &quiet,
-            0.0,
+            &under(quiet, 0.0),
         );
         assert_eq!(step.covariance, before);
 
@@ -1373,8 +1388,7 @@ mod tests {
             enormous,
             Offset::default(),
             manoeuvring().timed(Timestamp::ZERO, Seconds::from_secs(0.005)),
-            &ImuNoise::default(),
-            0.0,
+            &under(ImuNoise::default(), 0.0),
         );
 
         assert!(step.state.is_finite(), "the state itself is fine");
@@ -1413,8 +1427,7 @@ mod tests {
             Covariance::from_sigmas([0.1; STATES]),
             offset,
             holding_still().timed(Timestamp::ZERO, dt),
-            &ImuNoise::default(),
-            2.0,
+            &under(ImuNoise::default(), 2.0),
         );
         assert!((step.offset.variance - (0.25 + 4.0 * 0.01)).abs() < 1e-6);
         assert!((step.offset.cross[ErrorState::PositionDown.index()] - 0.01).abs() < 1e-6);
@@ -1425,7 +1438,7 @@ mod tests {
 #[cfg(test)]
 mod projection_steps {
     use super::*;
-    use crate::config::Initialization;
+    use crate::config::{GRAVITY, Initialization};
     use crate::init;
     use crate::units::Radians;
 
@@ -1438,6 +1451,7 @@ mod projection_steps {
                 Radians::from_radians(0.02),
                 Radians::from_radians(0.35),
                 Some(0.0),
+                GRAVITY,
             ),
             ImuNoise::default(),
         )
@@ -1447,7 +1461,7 @@ mod projection_steps {
     /// over it and what [`PROJECTION_STEP`] is chosen against.
     fn at_100_hz(state: &State, from: Covariance, noise: &ImuNoise, seconds: f32) -> Covariance {
         let dt = Seconds::from_secs(0.01);
-        let unaccelerated = unaccelerated_sample(state, dt);
+        let unaccelerated = unaccelerated_sample(state, dt, GRAVITY);
         let f = transition_matrix(state, unaccelerated);
         let q = process_noise(noise, unaccelerated);
         let mut p = from;
@@ -1467,7 +1481,15 @@ mod projection_steps {
         let (state, from, noise) = start();
         for (seconds, floor) in [(1.0f32, 0.99f32), (2.0, 0.97), (5.0, 0.93)] {
             let truth = at_100_hz(&state, from, &noise, seconds);
-            let projected = project(&state, from, Seconds::from_secs(seconds), &noise);
+            let projected = project(
+                &state,
+                from,
+                Seconds::from_secs(seconds),
+                &Config {
+                    imu: noise,
+                    ..Config::default()
+                },
+            );
             let ratio = projected.variance(ErrorState::PositionNorth)
                 / truth.variance(ErrorState::PositionNorth);
             assert!(
@@ -1485,7 +1507,15 @@ mod projection_steps {
     fn the_projection_understates_the_growth_rather_than_overstating_it() {
         let (state, from, noise) = start();
         let truth = at_100_hz(&state, from, &noise, 5.0);
-        let projected = project(&state, from, Seconds::from_secs(5.0), &noise);
+        let projected = project(
+            &state,
+            from,
+            Seconds::from_secs(5.0),
+            &Config {
+                imu: noise,
+                ..Config::default()
+            },
+        );
         for s in [
             ErrorState::PositionNorth,
             ErrorState::VelocityNorth,
@@ -1508,7 +1538,15 @@ mod projection_steps {
     fn a_horizon_that_is_not_positive_leaves_the_covariance_where_it_was() {
         let (state, from, noise) = start();
         for seconds in [0.0f32, -1.0, f32::NAN] {
-            let projected = project(&state, from, Seconds::from_secs(seconds), &noise);
+            let projected = project(
+                &state,
+                from,
+                Seconds::from_secs(seconds),
+                &Config {
+                    imu: noise,
+                    ..Config::default()
+                },
+            );
             for i in 0..STATES {
                 let (before, after) = (from.as_matrix()[(i, i)], projected.as_matrix()[(i, i)]);
                 assert!(

@@ -510,7 +510,7 @@ def converted_from(notes):
 def scenario_of(notes):
     """The backticked scenario name and seed a simulated file's header carries.
 
-    The same two fields `scenario_of` in examples/replay.rs reads, and for the
+    The same two fields `scenario_of` in examples/replay/main.rs reads, and for the
     same reason: a truth file from the wrong scenario has timestamps that line
     up often enough that nothing else notices.
     """
@@ -1069,7 +1069,7 @@ PAGE = """<!doctype html>
 
 # Truth error figures, as (slug, title, unit, scale, components). The components
 # are `<out>.error.csv`'s, each written beside its own sigma on the same axis, so
-# the band is never joined from another file (examples/replay.rs, `ERRORS`).
+# the band is never joined from another file (examples/replay/main.rs, `ERRORS`).
 ERROR_GROUPS = [
     ("error_position", "Position", "m", 1.0, ["pos_n", "pos_e", "pos_d"]),
     ("error_velocity", "Velocity", "m/s", 1.0, ["vel_n", "vel_e", "vel_d"]),

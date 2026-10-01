@@ -118,7 +118,7 @@
 # entry has the measurement. On the multirotors it is the only such log; the
 # fast vehicles below reach every gate, for the three causes their entries
 # name. It is the receiver
-# rather than the gate, and the corpus sees it because examples/replay.rs
+# rather than the gate, and the corpus sees it because examples/replay/main.rs
 # passes each row's own variance straight through, which trusts a receiver
 # further than either production estimator does. Both floor it, at the
 # parameters and lines VelocityNoise::clamped cites. Replayed with those

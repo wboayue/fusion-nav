@@ -32,7 +32,7 @@ fn main() -> Result<(), InitError> {
 
     let mut window = StaticWindow::new();
     let mut samples = 0;
-    while !window.is_long_enough(&filter.config().init) {
+    while !window.is_long_enough(filter.config()) {
         // A refused sample leaves the window as it was: drop it and go on.
         if let Err(refusal) = window.push(stationary_sample(samples)) {
             println!("window sample refused: {refusal}");

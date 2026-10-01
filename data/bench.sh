@@ -36,7 +36,7 @@ die() { echo "bench: $*" >&2; exit 1; }
 # The seed is in examples/simulate.rs; the column in data/scenarios.txt is a pin on the one
 # that produced these numbers, checked here against the header the generator writes. Without
 # it a seed could be changed in the table and the ceilings would quietly become a claim about
-# a flight nobody flew -- the same reason examples/replay.rs refuses a truth file whose header
+# a flight nobody flew -- the same reason examples/replay/main.rs refuses a truth file whose header
 # names another scenario.
 check_seed() {
     local name=$1 want=$2 got

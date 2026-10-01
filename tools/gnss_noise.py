@@ -1,4 +1,4 @@
-"""The `# GNSS noise parameters` header line `examples/replay.rs --r-policy px4` reads.
+"""The `# GNSS noise parameters` header line `examples/replay/main.rs --r-policy px4` reads.
 
 Beside the converters rather than in one, since every converter writes it: the PX4 corpus
 with the values its log's EKF2 flew, UrbanNav with PX4's defaults. Standard library only.
@@ -15,7 +15,7 @@ GNSS_NOISE_PARAMETERS = [
 
 
 def gnss_noise_note(params):
-    """The header line `examples/replay.rs --r-policy px4` reads its floors from.
+    """The header line `examples/replay/main.rs --r-policy px4` reads its floors from.
 
     The values this log's EKF2 bounded its receiver with, so a floored replay is
     compared against the `R` EKF2 actually fused rather than a default it may not

@@ -195,13 +195,14 @@ reads and commits.
 | `α₀`, barometric reference | mean of the window's barometer samples or, for a start that leaves none, the first altitude read against the estimate; then estimated as the offset of (30′) | `initialize` or the first `fuse_baro_altitude` seeds it and the filter refines it |
 | accelerometer and gyroscope white noise, as a floor | the scatter of the increments over 50 ms blocks of a still window; a still airframe's samples are not white, so one sample's scatter misreads the density, 6× high to 3× low on the corpus | `StaticWindow::noise`, reported and never applied |
 | barometer measurement noise, as a floor | the variance of a still window's distinct readings; fused as `R` it pushes `nis_baro` past 1 on five of six real logs | `StaticWindow::noise`, reported and never applied |
-| `max_predict_dt` | observed IMU interval | offline |
+| `max_predict_dt` | the IMU intervals up to the first fivefold step in their sorted tail, with 10 % margin, never below the default | offline, `--derive`; the default covers every corpus log |
+| `coast`, what a gap may hide | per field, twice the largest multiple of the default after which GNSS settles past each of a log's gaps | offline, `--derive`; one VTOL log's figure until then |
 | gate thresholds | chi-square quantile for a chosen percentile and dimension | a constructor, not a number |
 | a source's timeout | its mean interval between measurements, published as `SourceHealth::period`; it tunes no noise, reaches the estimate only through the recovery guards that ask whether a source is arriving and through the course, which is refused along a velocity no fresh GNSS velocity holds, and is a function of the measurement times alone, so a replay reproduces it | the filter, per arrival |
 | GNSS `R` | the receiver; bounding it is the caller's (`PositionNoise::clamped`), and the replay harness fuses it raw (`r_policy=`), or at the log's own EKF2 floors to compare with EKF2 (`--r-policy px4`) | per measurement |
-| `correlation`, how long each source's error persists | `τ = −T / ln ρ` from a replay log's `acf1_` per source, read with every measurement fused as white | offline (#51); the corpus's medians until then |
-| `baro_offset_walk`, the barometric offset's drift | a barometer's drift against GNSS height over a replay log | offline (#51); PX4's 0.13 until then |
-| local gravity `γ` | the origin's latitude, by the WGS-84 gravity formula | the offline tool (#51); a constant in the filter, see the decision below |
+| `correlation`, how long each source's error persists | `τ = −T / ln ρ` from a replay log's innovation autocorrelation per source, read with every measurement fused as white: a lower bound, so it raises a source's `τ` above the corpus median and never lowers it | offline, `--derive`; an estimator the filter does not bias is #195 |
+| `baro_offset_walk`, the barometric offset's drift | the structure function of barometer against GNSS height over at least half an hour, at lags from ten of GNSS height's `τ`: an upper bound | offline, `--derive`; PX4's 0.13 below 30 min |
+| local gravity `γ` | the site's latitude and height, by the WGS-84 normal gravity formula (`Geodetic::normal_gravity`) | offline, `--derive`; `Config::gravity`, see the decision below |
 | magnetic declination | PX4's WMM table at the GNSS origin, at the table's fixed epoch | the filter, where it places its origin; the `magnetic-model` feature, on by default, for its 2.5 KB of flash |
 
 And what stays with the user, because no amount of data yields it:
@@ -214,9 +215,12 @@ And what stays with the user, because no amount of data yields it:
 * **Policy**: what a `DeadReckoning` status should do to the vehicle.
 * **The static window itself.** The filter can validate stillness; it cannot arrange it.
 
-The window's noise estimates and everything the offline tool (#51) would print are commitments
-rather than present facts; [README.md](README.md) says what is built. This is the differentiator
-most likely to be judged on whether that tool gets written.
+Both channels exist. The offline one is `cargo run --example replay -- --derive <log>`, which
+replays the log under the default, reads each derivable value off the run or the rows, prints a
+commented `Config` and the `--set` line that reproduces it, and replays the log under it before
+printing ([data/README.md](data/README.md#deriving-a-config)). What a single log cannot settle it
+prints at the default with the reason: the bias walks need an Allan soak, and a correlation time
+read through the filter is a lower bound (#195).
 
 ### Per-quantity validity, not one ladder
 
@@ -549,8 +553,9 @@ the median of the corpus's upper half rather than the default, because the corpu
 and a scenario drawn at the filter's own value can only agree with it. Fused as white it reads
 50-seed `anees_pos` 29.16 and `anees_att` 3.48, overconfident on every epoch; under (24′), 1.45
 and 0.23, with `pos_v` 2.350 m to 1.142, yaw 3.57° to 2.36° and 320 falsely valid epochs to none.
-The position residual is the slower sources, which a sensor's own `τ` measured offline (#51)
-would remove. `moving_start`'s four headings sharing one levelling error (#150), a failure
+The position residual is the slower sources. A sensor's own `τ` read offline does not remove
+it, because read through the filter's innovations it falls short of the sensor's
+([DESIGN.md](DESIGN.md#correlation)); an estimator the filter does not bias is #195. `moving_start`'s four headings sharing one levelling error (#150), a failure
 `data/anees.txt` asserted, is this issue in miniature and went with it. On `2c42096b`, σ_pos_n is
 under `eph` at 1788 fixes of 4614, median ratio 1.039 against 0.726. On `7ce66f0d`, the
 magnetometer that kept pushing a wrongly levelled heading stops outvoting GNSS: `recovered=` 294
@@ -607,8 +612,11 @@ GNSS, an RTK receiver whose innovations alternate), on the twelve logs before `2
 Three receivers' velocity innovations and one magnetometer's alternate in sign, which no `τ`
 describes, and are left out rather than read as white. `2b2ad123`, the second RTK log, reads a
 GNSS-position `τ` of 0.51 s, under the range above, and alternates on height and velocity. Taken
-into the medians it would move GNSS position's from 4.2 s toward 3 s; whether the defaults follow
-the corpus as it grows, or become per-sensor, is #51's.
+into the medians it would move GNSS position's from 4.2 s toward 3 s. The defaults stay the
+twelve logs' medians, and a vehicle's own goes through `--derive` (#51), which can only raise a
+source's `τ`: a reading under the default proves nothing about a lower bound, and taken as the
+value it made `correlated` more overconfident than the defaults
+([DESIGN.md](DESIGN.md#correlation)).
 
 GNSS heading rests on one log, `a299e722`, the only one whose EKF2 fused a dual-antenna yaw:
 `acf1_gnss_yaw` 0.6696 at 10 Hz. The course constraint rests on one too, `093e806a`, the
@@ -667,7 +675,7 @@ measurement's time against a history keeps the verdict synchronous and the publi
 one `P` describes, for 1.5 KB of history on `Eskf` and, per aged measurement, one `A` and two
 products of `H` with it. The stack high-water mark is still `update::<3>`.
 
-### Local gravity as a constant, derived offline
+### Local gravity configured, derived offline
 
 γ varies by about 0.5 % between the equator and the poles and falls roughly 3 µm s⁻² per metre of
 altitude. At the equator the WGS-84 standard 9.80665 overstates it by about 0.03 m s⁻², which
@@ -681,16 +689,20 @@ boundary: *derived at a defined moment, reported, never silently retuned*. The o
 the first GNSS fix, which can arrive after propagation has begun, so deriving γ there would change
 a propagation constant mid-flight.
 
-**Decided:** `config::GRAVITY` stays the WGS-84 constant, and γ is derived where there is a defined
-moment for it: the offline tool that prints a `Config` from a log (#51), reading the log's own
-origin. The alternative considered and rejected was deriving it at origin placement only when the
-origin precedes the first `predict`: defensible, but two code paths and two possible values of a
-constant, for 0.03 m s⁻² at the extreme. A `Config` field was rejected outright as the thing
-differentiator 7 exists to prevent.
+**Decided (#51):** γ is `Config::gravity`, defaulting to the WGS-84 standard value, and it is
+derived where there is a defined moment for it: before the filter exists, from the site.
+`Geodetic::normal_gravity` is the WGS-84 normal gravity formula, and the replay harness's
+`--derive` prints it from a log's origin. A field is what lets the derivation reach the filter; a
+comment beside a constant would be a derivation nothing reads. It is the shape `correlation` and
+`baro_offset_walk` already have, a value with a working default that the offline tool fills, so it
+demands nothing; a field was first rejected as the demand differentiator 7 exists to prevent,
+which holds only for a field nothing derives. The alternative
+considered and rejected is deriving it at origin placement when the origin precedes the first
+`predict`: two code paths and two possible values of a constant, for 0.03 m s⁻² at the extreme.
 
-The cost is that a vehicle flying far from 45° latitude carries a small constant gravity error
-until someone runs the offline tool, and that the error shows up in the accelerometer bias estimate
-rather than anywhere labelled gravity.
+The cost is that a vehicle flying far from 45° latitude whose integrator never derives a `Config`
+carries that small error, and that it shows up in the accelerometer bias estimate rather than
+anywhere labelled gravity.
 
 ### Magnetic declination from a table, read where the origin is placed
 
@@ -701,7 +713,7 @@ should find it itself, and the origin is where it learns the site.
 
 **Decided:** the filter reads PX4's WMM table (`src/magnetic.rs`) wherever it places its origin,
 unless the caller has set a declination, which then holds for good. This is the rule local gravity
-above turned down, a constant changed where the origin arrives, and the two differ in size and in
+above turned down, a value changed where the origin arrives, and the two differ in size and in
 what the change touches. Gravity's error is 0.03 m s⁻² at the extreme, and deriving it mid-flight
 would change a propagation constant. Declination's is ten degrees, and it changes only what a
 magnetic heading means, so a heading the magnetometer alone referred to north is turned with it

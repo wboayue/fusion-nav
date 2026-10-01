@@ -5,7 +5,7 @@
     tools/anees.py --series out.csv run1.nees.csv ... also write eps_bar_k / 3 per epoch
     tools/anees.py --self-test                         run the fixtures
 
-The input is `examples/replay.rs`'s `<out>.nees.csv`: `eps = dx' P^-1 dx` per 3-state block,
+The input is `examples/replay/main.rs`'s `<out>.nees.csv`: `eps = dx' P^-1 dx` per 3-state block,
 one row per epoch, one file per seed of one scenario. The harness computes `eps`; this only
 averages it (AGENTS.md, "one statistic, one implementation").
 

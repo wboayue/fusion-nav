@@ -4,7 +4,7 @@
 //! generator and no truth, the PX4 corpus has no truth, and `--reference` gives EKF2's own
 //! position and velocity rather than the vehicle's. This writes both halves of a benchmark: a log
 //! the replay harness reads, and the trajectory it was generated from, so equations (9)–(42) can
-//! be scored against truth as they land (GOALS.md differentiator 6). Scoring is `examples/replay.rs`
+//! be scored against truth as they land (GOALS.md differentiator 6). Scoring is `examples/replay/main.rs`
 //! given a truth file as its third argument; this only produces the data.
 //!
 //! # Truth is analytic, not integrated
@@ -34,7 +34,7 @@
 //!
 //! Two files per scenario:
 //!
-//! - `<scenario>.csv` — the replay format `examples/replay.rs` documents, one row per
+//! - `<scenario>.csv` — the replay format `examples/replay/main.rs` documents, one row per
 //!   measurement, sorted by time. Positions are NED metres, so the log needs no origin and agrees
 //!   with truth by construction.
 //! - `<scenario>.truth.csv` — `t_s,pos_n,pos_e,pos_d,vel_n,vel_e,vel_d,roll,pitch,yaw,`
@@ -66,7 +66,7 @@
 //!
 //! `logging_dropout` is the one scenario with a step longer than `Config::max_predict_dt`: it
 //! writes no row of any kind for 1.2 s, as a logger that lost its buffer does, and the filter
-//! coasts across it (equation (22′)). Its truth file keeps every epoch, and `examples/replay.rs`
+//! coasts across it (equation (22′)). Its truth file keeps every epoch, and `examples/replay/main.rs`
 //! scores the epochs it has, the first after the gap included — the coasted state is what the
 //! filter published.
 
@@ -77,11 +77,22 @@ use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-/// Standard gravity, m s⁻², down-positive in NED.
+/// Gravity at [`SITE`], m s⁻², down-positive in NED: WGS-84 normal gravity, Somigliana's
+/// formula carried to the height, NGA.STND.0036 v1.0.0 (4-1) and (4-3) with Table 3.1 and 3.6's
+/// constants.
 ///
-/// The same value `fusion_nav::GRAVITY` carries. A defined physical constant is not part of the
-/// model under test, so agreeing on it is not an inverse crime; agreeing on a rotation would be.
-const GRAVITY: f64 = 9.806_65;
+/// Written out here rather than taken from `fusion_nav::Geodetic::normal_gravity`, as nothing
+/// else is taken. A filter configured with the standard 9.80665 flies this site 5.5 mm s⁻²
+/// wrong, which is the error `Config::gravity` and `replay --derive` exist to remove, and a
+/// simulator that agreed with whichever value the filter held could not show it.
+fn gravity() -> f64 {
+    let (a, f, e2) = (6_378_137.0, 1.0 / 298.257_223_563, 6.694_379_990_141e-3);
+    let (gamma_e, k, m) = (9.780_325_335_9, 1.931_852_652_458e-3, 3.449_786_506_841e-3);
+    let sin2 = SITE[0].to_radians().sin().powi(2);
+    let h = SITE[2];
+    let surface = gamma_e * (1.0 + k * sin2) / (1.0 - e2 * sin2).sqrt();
+    surface * (1.0 - 2.0 / a * (1.0 + f + m - 2.0 * f * sin2) * h + 3.0 / (a * a) * h * h)
+}
 
 /// Where every scenario flies, latitude and longitude in degrees and ellipsoidal height in
 /// metres: east of Champaign, Illinois, chosen as the point where WMM2025 at 2026.0 gives the
@@ -91,7 +102,7 @@ const GRAVITY: f64 = 9.806_65;
 /// heading enters by (36′) through the field's direction in the body.
 ///
 /// Positions are NED about it, so nothing else reads it. It is written as the log's
-/// `# Navigation origin` line, which is what lets `examples/replay.rs --declination model` look
+/// `# Navigation origin` line, which is what lets `examples/replay/main.rs --declination model` look
 /// the crate's magnetic model up at the site.
 const SITE: [f64; 3] = [40.1164, -88.3697, 200.0];
 
@@ -99,7 +110,7 @@ const SITE: [f64; 3] = [40.1164, -88.3697, 200.0];
 /// with `pygeomag` 1.1.0 rather than the crate's table, so a replay under
 /// `--declination model` scores the table's own error instead of agreeing with itself.
 ///
-/// Also written into the log's header, which is where `examples/replay.rs` reads the
+/// Also written into the log's header, which is where `examples/replay/main.rs` reads the
 /// declination it configures the filter with by default, so a heading fused from these logs
 /// is true heading whatever the constant says.
 const DECLINATION: f64 = -0.06;
@@ -406,7 +417,7 @@ fn resolve_in_body(c: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
 /// convention `Eskf::initialize` expects.
 fn specific_force(truth: &Truth) -> [f64; 3] {
     let a = truth.acceleration;
-    resolve_in_body(body_to_nav(truth.euler), [a[0], a[1], a[2] - GRAVITY])
+    resolve_in_body(body_to_nav(truth.euler), [a[0], a[1], a[2] - gravity()])
 }
 
 /// What the gyroscope reads: Euler rates mapped onto body axes for the ZYX sequence.
@@ -1691,7 +1702,7 @@ impl Report {
             self.opening_gyro = self.opening_gyro.max(norm(reading.gyro));
             self.opening_deviation = self
                 .opening_deviation
-                .max((norm(reading.accel) - GRAVITY).abs());
+                .max((norm(reading.accel) - gravity()).abs());
         }
     }
 

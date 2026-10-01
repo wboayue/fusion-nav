@@ -1,7 +1,7 @@
 """The replay and truth CSVs every converter writes.
 
 One writer, so the PX4 corpus, UrbanNav and INSANE cannot drift apart in a format
-`examples/replay.rs` reads with one parser: the column list, the number formats and the
+`examples/replay/main.rs` reads with one parser: the column list, the number formats and the
 `t_meas_s` rule live here and nowhere else. Standard library only.
 """
 
@@ -9,7 +9,7 @@ import hashlib
 
 REPLAY_COLUMNS = "t_s,source,v0,v1,v2,v3,v4,v5,var0,var1,var2,t_meas_s"
 
-# `TRUTH_COLUMNS` in examples/replay.rs, which refuses a truth file whose header differs.
+# `TRUTH_COLUMNS` in examples/replay/main.rs, which refuses a truth file whose header differs.
 TRUTH_COLUMNS = ("t_s,pos_n,pos_e,pos_d,vel_n,vel_e,vel_d,roll,pitch,yaw,"
                  "ba_x,ba_y,ba_z,bg_x,bg_y,bg_z")
 
@@ -42,7 +42,7 @@ def write_truth(out, header, rows):
 
     Radians, metres, seconds on the replay's own clock. The bias columns are left blank:
     a real vehicle's reference knows its trajectory and no bias of the IMU being scored,
-    and `examples/replay.rs` then reports `none` rather than scoring against a zero.
+    and `examples/replay/main.rs` then reports `none` rather than scoring against a zero.
     """
     with open(out, "w", newline="") as handle:
         for line in header:
@@ -58,7 +58,7 @@ def write_truth(out, header, rows):
 def source_tag(paths):
     """The first 12 hex digits of a sha256 over the inputs' own: the pairing check's tag.
 
-    Written into both files' `# fusion-nav` line, which `examples/replay.rs` compares, so a
+    Written into both files' `# fusion-nav` line, which `examples/replay/main.rs` compares, so a
     truth file converted from other inputs is refused rather than scored.
     """
     digest = hashlib.sha256()

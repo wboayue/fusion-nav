@@ -2,7 +2,7 @@
 
 `cargo run --example replay` reads a recorded flight from CSV and writes the estimate back out as
 CSV — the normalized log format the [validation harness](../GOALS.md#harness-constraint) is built
-on. The format itself is documented in `examples/replay.rs`.
+on. The format itself is documented in `examples/replay/main.rs`.
 
 It writes two files. `<out>.csv` is one row per IMU epoch: the state, the covariance diagonal as
 standard deviations, and the last test ratio per source. `<out>.fusion.csv` is one row per
@@ -79,7 +79,7 @@ because a 2° tilt error leaks gravity into the horizontal channel and integrate
 move again when a stage of #31 lands.
 
 What each key means, and what it can and cannot say on these scenarios, is in the module docs of
-`examples/replay.rs`, which owns the definitions. Two things about *using* it belong here:
+`examples/replay/main.rs`, which owns the definitions. Two things about *using* it belong here:
 
 - **No truth file, no `score` line** — not a line of zeros. Every log in the PX4 corpus below has
   no truth, and `pos_h=0.000` on one of them would claim a perfect filter where the honest answer
@@ -195,6 +195,46 @@ that sidesteps it, which is why the determinism job compares that and not a gene
 
 A given seed always gives byte-identical files on one machine, and each sensor draws from its own
 stream, so changing one sensor's rate or model does not shift another's noise.
+
+## Deriving a `Config`
+
+```bash
+cargo run --release --example replay -- --derive <log.csv> > config.rs
+cargo run --release --example replay -- --set correlation.gnss_height=29 <log.csv> out.csv
+```
+
+`--derive` is the offline channel of `GOALS.md` differentiator 7: it replays one log in-process
+under the default, every source fused white, recovery off, a sweep of `baro_offset_walk` and, where
+the log has gaps, a sweep of `Coast`, and prints a `Config` literal with every value commented
+with where it came from, plus the `--set` line that reproduces it. Stdout is the literal alone, so
+`> config.rs` is Rust; stderr is the log replayed under the derived `Config` beside the default,
+and the run fails if it coasts a step its `max_predict_dt` did not predict. It starts from
+`Config::default()`, so it takes no `--set` or `--recovery`; it does take `--r-policy`,
+`--declination`, `--antenna`, `--course` and `--without`, which describe the log.
+
+What each value is read from, and why, is `DESIGN.md`, "Defaults and their evidence", under the
+default's heading. In short: the IMU white noise stays the default unless the window's floor
+(`noise_gyro=`, `noise_accel=`) sits above it; the bias walks stay the default, because an Allan
+variance needs a soak of hours; `correlation` is a lower bound and only ever raises a source's
+`τ` (#195 is the estimator that would do better); `gravity` is `Geodetic::normal_gravity` at the
+`# Navigation origin`; `max_predict_dt` is read off the IMU intervals and never printed below
+the default, `coast` a field at a time off the GNSS verdicts after each coasted gap, and
+`baro_offset_walk` off the barometer against GNSS height, as an upper bound. The gates, the recovery
+timeouts, `timeouts`, `accuracy` and `init` print at their defaults, the first two with what the
+log says about them (the share of `ε` over each percentile's bound, the longest rejection run
+that ended in an acceptance).
+
+In Rust rather than in `tools/` beside the other offline tools, because it builds the `Config` it
+prints: it replays the log under that `Config` before printing it, its printer destructures
+`Config` without `..` so a new field fails to compile until it is printed, and every figure is
+read off the statistics the `summary` line is built from in the same process.
+`data/flight.config.rs` is its output on `data/flight.csv`, and a test in
+`examples/replay/derive.rs` both compiles it and checks the printer still prints it; regenerate
+with `cargo run --example replay -- --derive data/flight.csv > data/flight.config.rs`.
+
+`--set <field>=<value>` writes one `Config` field by its path, for replaying a derived `Config`
+from outside the process; `examples/replay/settings.rs` lists the names, and `set=` on the
+`summary` line repeats them. `data/anees.sh` passes `REPLAY_ARGS` to every seed it replays.
 
 ## Determinism
 
@@ -744,7 +784,7 @@ and the rest are unscored, and it knows no bias, so `ba=` and `bg=` read `none`.
 carry a `fusion-nav` marker naming the segment and a digest of the three inputs, which the
 harness checks as it checks a scenario's seed.
 
-What a fix's `bad` verdict means is `Judged`'s doc comment in `examples/replay.rs`: the gate a
+What a fix's `bad` verdict means is `Judged`'s doc comment in `examples/replay/main.rs`: the gate a
 perfect state would run, at P999 on the fix's own variance, fixed whatever `Config::gates` or
 `--r-policy` the replay used. `data/urbannav-pins.txt` pins what each receiver did under both
 policies, and the M8T under `--recovery off`, and says what the lines show. Only these scalars are published
@@ -778,7 +818,7 @@ velocity from the RTK baseline's midpoint so the truth's tilt error stays out of
 
 The truth is written at RTK2's epochs, about 7 Hz, and knows no bias. The fixes land between
 them, so the harness judges each on the two rows either side interpolated, within
-`TRUTH_SPAN` (`examples/replay.rs`), and `rms_gnss_pos`/`rms_gnss_hgt` are the fixes' own error. Both files carry a
+`TRUTH_SPAN` (`examples/replay/main.rs`), and `rms_gnss_pos`/`rms_gnss_hgt` are the fixes' own error. Both files carry a
 `fusion-nav` marker naming the sequence and a digest of its archive and the calibrations. The
 replay runs under `--declination model`, since the dataset's own declination has the wrong sign
 at Klagenfurt, and under raw `R` only: every fix claims more than PX4's floors, so `px4`

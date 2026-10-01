@@ -23,6 +23,10 @@
 //! `--antenna zero` fuses every GNSS row as the IMU's rather than at the header's antenna.
 //! `--recovery off` replays with `Recovery::OFF`, the filter that only reports, which is how a
 //! lockout recovery ends is priced (`recovery=` on the `summary` line says which ran).
+//! `--set <field>=<value>`, repeatable, sets one `Config` field by its path, `--set
+//! correlation.gnss_position=2.5`; `settings.rs` lists the names, and `set=` on the `summary`
+//! line repeats them. `--derive` is the mode that works those values out from a log; see
+//! `derive.rs`.
 //! It also writes `<out>.nees.csv`, `ε` per block per epoch, which `data/anees.sh` averages
 //! across seeds (#89), and `<out>.error.csv`, the truth error on navigation axes beside its σ,
 //! which `tools/replay_report.py` draws.
@@ -206,6 +210,9 @@ use std::path::{Path, PathBuf};
 
 use fusion_nav::STATES;
 use fusion_nav::prelude::*;
+
+mod derive;
+mod settings;
 use nalgebra::{Quaternion, SMatrix, SVector, UnitQuaternion, Vector3};
 
 /// Capacity of the initialization window, in samples.
@@ -478,11 +485,8 @@ fn main() {
 
 fn run() -> Result<(), Box<dyn Error>> {
     let mut policy = None;
-    let mut course = None;
-    let mut without = None;
-    let mut model_declination = false;
-    let mut antenna_from_header = true;
-    let mut recovery = true;
+    let mut options = Options::default();
+    let mut derive = false;
     let mut positional = Vec::new();
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -493,25 +497,31 @@ fn run() -> Result<(), Box<dyn Error>> {
                 .next()
                 .and_then(|value| value.parse().ok())
                 .ok_or("--course wants a sideslip sigma in degrees")?;
-            course = Some(Radians::from_degrees(degrees));
+            options.course = Some(Radians::from_degrees(degrees));
         } else if arg == "--declination" {
-            model_declination = match args.next().as_deref() {
+            options.model_declination = match args.next().as_deref() {
                 Some("header") => false,
                 Some("model") => true,
                 _ => return Err("--declination wants `header` or `model`".into()),
             };
         } else if arg == "--antenna" {
-            antenna_from_header = match args.next().as_deref() {
+            options.antenna_from_header = match args.next().as_deref() {
                 Some("header") => true,
                 Some("zero") => false,
                 _ => return Err("--antenna wants `header` or `zero`".into()),
             };
         } else if arg == "--recovery" {
-            recovery = match args.next().as_deref() {
+            options.recovery = match args.next().as_deref() {
                 Some("on") => true,
                 Some("off") => false,
                 _ => return Err("--recovery wants `on` or `off`".into()),
             };
+        } else if arg == "--set" {
+            let pair = args.next().ok_or("--set wants <field>=<value>")?;
+            let (name, value) = pair
+                .split_once('=')
+                .ok_or_else(|| format!("--set `{pair}`: want <field>=<value>"))?;
+            options.sets.push((name.to_string(), value.to_string()));
         } else if arg == "--without" {
             let name = args.next().ok_or("--without wants an input source name")?;
             if !DROPPABLE.contains(&name.as_str()) {
@@ -519,22 +529,18 @@ fn run() -> Result<(), Box<dyn Error>> {
                     format!("--without `{name}`: want one of {}", DROPPABLE.join(", ")).into(),
                 );
             }
-            without = Some(name);
+            options.without = Some(name);
+        } else if arg == "--derive" {
+            derive = true;
         } else {
             positional.push(arg);
         }
     }
     let mut args = positional.into_iter();
     let input = args.next().map_or_else(default_input, PathBuf::from);
-    let output = args.next().map_or_else(default_output, PathBuf::from);
-    let truth = args.next();
 
     let text = fs::read_to_string(&input).map_err(|e| format!("{}: {e}", input.display()))?;
-    let mut config = Config::default();
-    if !recovery {
-        config.recovery = Recovery::OFF;
-    }
-    let policy = match policy.as_deref() {
+    options.policy = match policy.as_deref() {
         None | Some("raw") => RPolicy::Raw,
         Some("px4") => RPolicy::Px4(gnss_noise_of(&text).ok_or(
             "--r-policy px4 needs a `# GNSS noise parameters` header line; \
@@ -542,6 +548,29 @@ fn run() -> Result<(), Box<dyn Error>> {
         )?),
         Some(other) => return Err(format!("--r-policy `{other}`: want `raw` or `px4`").into()),
     };
+    if derive {
+        // Stdout is the `Config` alone, so `> file` captures Rust; the evidence is stderr's.
+        if args.next().is_some() || !options.sets.is_empty() || !options.recovery {
+            return Err(
+                "--derive takes one input and starts from Config::default(): \
+                        no output, truth, --set or --recovery"
+                    .into(),
+            );
+        }
+        let derived = derive::derive(&input, &text, &options)?;
+        eprint!("{}", derived.report());
+        print!("{}", derived.render());
+        if !derived.holds() {
+            return Err(
+                "the derived Config coasted steps its max_predict_dt did not predict".into(),
+            );
+        }
+        return Ok(());
+    }
+    let output = args.next().map_or_else(default_output, PathBuf::from);
+    let truth = args.next();
+
+    let config = options.config()?;
     // Optional, and absent on every corpus log: no truth file, no `score` line. Opened with
     // the log in hand, so a truth file belonging to another scenario is refused here rather
     // than scored against this one.
@@ -557,51 +586,16 @@ fn run() -> Result<(), Box<dyn Error>> {
     write_header(&mut epoch_out)?;
     write_fusion_header(&mut fusion_out, config.gates)?;
 
-    let mut replay = Replay::new(config, policy, scoring)?;
-    replay.course = course.or_else(|| sideslip_of(&text));
-    if replay
-        .course
-        .is_some_and(|sideslip| !(sideslip.as_radians() > 0.0 && sideslip.as_radians().is_finite()))
-    {
-        return Err("the course sideslip is not a positive number".into());
-    }
-    replay.without = without;
-    replay.site = origin_of(&text);
-    if antenna_from_header {
-        replay.antenna = antenna_of(&text).unwrap_or_default();
-        if !replay.antenna.to_array().iter().all(|v| v.is_finite()) {
-            return Err("the `# GNSS antenna` header is not a finite offset".into());
-        }
-    }
-    if model_declination {
-        // The header's declination is not read. The site is handed over as the origin before
-        // initializing, which is where the filter reads its own magnetic model, so the window
-        // levels at the model's value. A static start then clears the origin, and positions
-        // stay the file's NED about it; nothing else moves.
-        let site = replay
-            .site
-            .ok_or("--declination model needs a `# Navigation origin` header line")?;
-        if !replay.filter.set_origin(site) {
-            return Err("the `# Navigation origin` header is not a usable origin".into());
-        }
-    } else if !replay
-        .filter
-        .set_magnetic_declination(declination_of(&text))
-    {
-        return Err("the `# Magnetic declination` header is not a finite number".into());
-    }
-    {
-        let mut out = Sinks {
+    let mut replay = prepare(&text, config, &options, scoring)?;
+    drive(
+        &mut replay,
+        &text,
+        &input,
+        &mut Sinks {
             epochs: &mut epoch_out,
             fusions: &mut fusion_out,
-        };
-        for (n, line) in text.lines().enumerate() {
-            replay
-                .row(line, &mut out)
-                .map_err(|e| format!("{}:{}: {e}", input.display(), n + 1))?;
-        }
-        replay.finish(&mut out)?;
-    }
+        },
+    )?;
     epoch_out.flush()?;
     fusion_out.flush()?;
     if let Some(scoring) = &replay.scoring {
@@ -614,6 +608,106 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
 
     replay.report(&input, &output, &fusions);
+    Ok(())
+}
+
+/// What the command line chose about a replay besides its files: everything [`prepare`] reads,
+/// so `--derive` runs a log the way the command line would.
+#[derive(Clone)]
+struct Options {
+    policy: RPolicy,
+    course: Option<Radians>,
+    without: Option<String>,
+    model_declination: bool,
+    antenna_from_header: bool,
+    recovery: bool,
+    sets: Vec<(String, String)>,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            policy: RPolicy::Raw,
+            course: None,
+            without: None,
+            model_declination: false,
+            antenna_from_header: true,
+            recovery: true,
+            sets: Vec::new(),
+        }
+    }
+}
+
+impl Options {
+    /// `Config::default()`, with `--recovery off` and then each `--set` applied.
+    fn config(&self) -> Result<Config, String> {
+        let mut config = Config::default();
+        if !self.recovery {
+            config.recovery = Recovery::OFF;
+        }
+        // After `--recovery off`, so a source's own timeout can be put back on top of it.
+        for (name, value) in &self.sets {
+            settings::set(&mut config, name, value)?;
+        }
+        Ok(config)
+    }
+}
+
+/// A replay of `text` under `config`, set up from the log's header and `options` and ready for
+/// its first row.
+fn prepare(
+    text: &str,
+    config: Config,
+    options: &Options,
+    scoring: Option<Scoring>,
+) -> Result<Replay, Box<dyn Error>> {
+    let mut replay = Replay::new(config, options.policy, scoring)?;
+    replay.course = options.course.or_else(|| sideslip_of(text));
+    if replay
+        .course
+        .is_some_and(|sideslip| !(sideslip.as_radians() > 0.0 && sideslip.as_radians().is_finite()))
+    {
+        return Err("the course sideslip is not a positive number".into());
+    }
+    replay.without = options.without.clone();
+    replay.sets = options.sets.clone();
+    replay.site = origin_of(text);
+    if options.antenna_from_header {
+        replay.antenna = antenna_of(text).unwrap_or_default();
+        if !replay.antenna.to_array().iter().all(|v| v.is_finite()) {
+            return Err("the `# GNSS antenna` header is not a finite offset".into());
+        }
+    }
+    if options.model_declination {
+        // The header's declination is not read. The site is handed over as the origin before
+        // initializing, which is where the filter reads its own magnetic model, so the window
+        // levels at the model's value. A static start then clears the origin, and positions
+        // stay the file's NED about it; nothing else moves.
+        let site = replay
+            .site
+            .ok_or("--declination model needs a `# Navigation origin` header line")?;
+        if !replay.filter.set_origin(site) {
+            return Err("the `# Navigation origin` header is not a usable origin".into());
+        }
+    } else if !replay.filter.set_magnetic_declination(declination_of(text)) {
+        return Err("the `# Magnetic declination` header is not a finite number".into());
+    }
+    Ok(replay)
+}
+
+/// Every row of `text` through `replay`, and what a pending start was holding at the end.
+fn drive(
+    replay: &mut Replay,
+    text: &str,
+    input: &Path,
+    out: &mut Sinks,
+) -> Result<(), Box<dyn Error>> {
+    for (n, line) in text.lines().enumerate() {
+        replay
+            .row(line, out)
+            .map_err(|e| format!("{}:{}: {e}", input.display(), n + 1))?;
+    }
+    replay.finish(out)?;
     Ok(())
 }
 
@@ -711,12 +805,20 @@ struct Consistency {
     /// `Σε` and the dimension the filter reported, per source.
     epsilon: [f64; SOURCES.len()],
     dimension: [usize; SOURCES.len()],
-    /// Rows whose `ε` exceeded the 95 % chi-square quantile at that source's dimension.
-    over95: [u32; SOURCES.len()],
-    /// `γ` as configured, and the 95 % bound, both from [`thresholds`].
+    /// Rows whose `ε` exceeded the 95, 99 and 99.9 % chi-square quantiles at that source's
+    /// dimension, in [`PERCENTILES`] order.
+    over: [[u32; 3]; SOURCES.len()],
+    /// `γ` as configured, and the three bounds, all from [`thresholds`].
     gamma: [f32; SOURCES.len()],
-    bound95: [f32; SOURCES.len()],
+    bounds: [[f32; SOURCES.len()]; 3],
+    /// When each source's rows were recorded, so that its lag-one autocorrelation can be read
+    /// as a time constant at the interval it was taken over.
+    times: [Vec<f64>; SOURCES.len()],
 }
+
+/// The percentiles [`Consistency`] counts exceedances at: the one `nis_over95_` reports, and the
+/// two above it that `--derive` sets a gate's choice against.
+const PERCENTILES: [Percentile; 3] = [Percentile::P95, Percentile::P99, Percentile::P999];
 
 impl Consistency {
     fn new(gates: Gates) -> Self {
@@ -724,9 +826,10 @@ impl Consistency {
             axes: Default::default(),
             epsilon: [0.0; SOURCES.len()],
             dimension: [0; SOURCES.len()],
-            over95: [0; SOURCES.len()],
+            over: [[0; 3]; SOURCES.len()],
             gamma: thresholds(gates),
-            bound95: thresholds(Gates::at(Percentile::P95)),
+            bounds: PERCENTILES.map(|percentile| thresholds(Gates::at(percentile))),
+            times: Default::default(),
         }
     }
 
@@ -738,13 +841,16 @@ impl Consistency {
     /// that a rejected fix leaves the state where an accepted one would not, so every later
     /// `ε` on that source is conditioned on the refusal — a NIS mean over a gated source
     /// describes the filter that ran, not the one that would have run.
-    fn record(&mut self, source: usize, ratio: f32, innovation: &Innovation) {
+    fn record(&mut self, t: f64, source: usize, ratio: f32, innovation: &Innovation) {
         let epsilon = ratio * self.gamma[source];
         self.epsilon[source] += f64::from(epsilon);
         self.dimension[source] = innovation.values().len();
-        if epsilon > self.bound95[source] {
-            self.over95[source] += 1;
+        for (count, bounds) in self.over[source].iter_mut().zip(&self.bounds) {
+            if epsilon > bounds[source] {
+                *count += 1;
+            }
         }
+        self.times[source].push(t);
         for (axis, (&nu, &variance)) in innovation
             .values()
             .iter()
@@ -776,7 +882,27 @@ impl Consistency {
     /// near 1 built from a body of tiny residuals and a handful of large ones describes no
     /// distribution at all, and it is the tail that the gate's own percentile rests on.
     fn over95_fraction(&self, source: usize) -> Option<f64> {
-        (self.rows(source) > 0).then(|| f64::from(self.over95[source]) / self.rows(source) as f64)
+        self.over_fraction(source, 0)
+    }
+
+    /// The fraction of measurements whose `ε` sat above the bound at `PERCENTILES[which]`.
+    fn over_fraction(&self, source: usize, which: usize) -> Option<f64> {
+        (self.rows(source) > 0)
+            .then(|| f64::from(self.over[source][which]) / self.rows(source) as f64)
+    }
+
+    /// The median interval between this source's recorded rows, seconds: the lag `acf1_` is
+    /// taken at. The median rather than the mean, because a source that bursts or drops out
+    /// stretches a mean past every interval it actually has: `2c42096b`'s GNSS height reads a
+    /// 1.545 s mean at a 1 s rate. `None` below two rows.
+    fn interval(&self, source: usize) -> Option<f64> {
+        let times = &self.times[source];
+        let mut steps: Vec<f64> = times.windows(2).map(|pair| pair[1] - pair[0]).collect();
+        if steps.is_empty() {
+            return None;
+        }
+        steps.sort_by(f64::total_cmp);
+        Some(steps[steps.len() / 2])
     }
 
     /// Lag-1 autocorrelation for a source, averaged over its axes.
@@ -924,6 +1050,14 @@ struct Fallback {
     fusions: Vec<u8>,
 }
 
+/// One row of the fusion file, kept in memory: when, which source, what became of it.
+#[derive(Clone, Copy, Debug)]
+struct Verdict {
+    t: f64,
+    source: usize,
+    outcome: Fusion,
+}
+
 /// Everything the loop carries between rows.
 #[derive(Clone)]
 struct Replay {
@@ -966,6 +1100,11 @@ struct Replay {
     /// An input source whose rows are skipped, `--without mag`: a vehicle without that sensor,
     /// replayed from a log that has one.
     without: Option<String>,
+    /// The `--set` pairs the `Config` was built with, as given, for `set=`.
+    sets: Vec<(String, String)>,
+    /// Every verdict in log order, kept only where `--derive` asks for it: what the fusion
+    /// file writes as text, for a reader in the same process.
+    trail: Option<Vec<Verdict>>,
     /// The geodetic point the file's positions are relative to, from its `# Navigation
     /// origin` line; see `origin_of`.
     site: Option<Geodetic>,
@@ -1066,6 +1205,8 @@ impl Replay {
             last_mag: None,
             course: None,
             without: None,
+            sets: Vec::new(),
+            trail: None,
             site: None,
             antenna: Position::zero(),
             last_baro: None,
@@ -1351,7 +1492,7 @@ impl Replay {
         self.window_samples = range.len();
         let window = self.window(range.clone(), dt)?;
         let alignment = self.filter.initialize(&window)?;
-        self.noise = window.noise(&self.filter.config().init);
+        self.noise = window.noise(self.filter.config());
         self.alignment = Some(alignment);
         self.initialized_at = Some(t);
         // The filter's own rule: one magnetometer sample anywhere in the window observes
@@ -1537,6 +1678,9 @@ impl Replay {
     ) -> io::Result<()> {
         self.ratios[source] = outcome.test_ratio();
         self.fusions += 1;
+        if let Some(trail) = &mut self.trail {
+            trail.push(Verdict { t, source, outcome });
+        }
         // `ν` and the diagonal of `S` as the filter published them, and only for a call the
         // gate judged: a refusal or an adoption leaves the last update's values in place,
         // which would be written against a measurement they do not describe. Never computed
@@ -1554,7 +1698,7 @@ impl Replay {
         // fixing it, and the reason to choose it anyway is that `ε` is defined on the
         // innovation and the ratio is a proxy for having one.
         if let (Some(ratio), Some(innovation)) = (outcome.test_ratio(), innovation.as_ref()) {
-            self.consistency.record(source, ratio, innovation);
+            self.consistency.record(t, source, ratio, innovation);
         }
         writeln!(
             out.fusions,
@@ -2063,7 +2207,7 @@ impl Replay {
         format!(
             "summary rate={:.0} window={} {} align={} an={} alpha0={} heading={} \
              roll0={roll0:.2} pitch0={pitch0:.2} yaw0={yaw0:.2} declination={:.2} declination_model={} antenna={} resets={} \
-             recovered={} aligned_at={} attitude_lost={} r_policy={} recovery={} course={} without={} rejected={}{} discarded={} coasted={} refused={} \
+             recovered={} aligned_at={} attitude_lost={} r_policy={} recovery={} course={} without={} set={} rejected={}{} discarded={} coasted={} refused={} \
              invalid={} floored={} epochs={}{} {} \
              degraded_s={:.2} dead_reckoning_s={:.2} transitions={} status={:?}",
             self.interval.map_or(0.0, |interval| 1.0 / interval),
@@ -2155,6 +2299,17 @@ impl Replay {
                 |s| format!("{:.1}", s.as_radians().to_degrees())
             ),
             self.without.as_deref().unwrap_or("none"),
+            // A config other than the default names itself, so a figure taken under `--set`
+            // cannot pass for the default's.
+            if self.sets.is_empty() {
+                "none".to_string()
+            } else {
+                self.sets
+                    .iter()
+                    .map(|(name, value)| format!("{name}:{value}"))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            },
             // The gate's verdict, which no other key on this line reports: `refused=` and
             // `invalid=` are propagation steps, not measurements, so a change that started
             // turning down every fix in the corpus would pass `--check` unmoved without
@@ -4207,6 +4362,39 @@ mod tests {
         assert!(kept.filter.diagnostics().mag_heading.has_been_used());
         assert!(!dropped.filter.diagnostics().mag_heading.has_been_used());
         assert_eq!(key(&dropped.summary(), "without"), "mag");
+    }
+
+    #[test]
+    fn a_source_interval_is_the_median_not_stretched_by_a_gap() {
+        // 1 s apart with one 7 s dropout: the mean reads 2.2 s, the source's rate is 1 s.
+        let mut consistency = Consistency::new(Gates::default());
+        consistency.times[GNSS_HGT] = vec![0.0, 1.0, 2.0, 3.0, 10.0, 11.0];
+        assert_eq!(consistency.interval(GNSS_HGT), Some(1.0));
+        assert_eq!(consistency.interval(GNSS_POS), None, "no rows");
+    }
+
+    #[test]
+    fn a_replay_under_set_names_what_it_set() {
+        let log = still_start().mag(2.0);
+        assert_eq!(key(&replay(&log).summary(), "set"), "none");
+        let options = Options {
+            sets: vec![("gravity".into(), "9.79".into())],
+            ..Options::default()
+        };
+        let mut set = prepare(&log.0, options.config().expect("a field"), &options, None)
+            .expect("a usable header");
+        super::drive(
+            &mut set,
+            &log.0,
+            Path::new("fixture"),
+            &mut Sinks {
+                epochs: &mut io::sink(),
+                fusions: &mut io::sink(),
+            },
+        )
+        .expect("fixture replays");
+        assert_eq!(set.filter.config().gravity, 9.79);
+        assert_eq!(key(&set.summary(), "set"), "gravity:9.79");
     }
 
     #[test]
