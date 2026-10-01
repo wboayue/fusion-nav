@@ -259,9 +259,12 @@ loop costs nothing. Timing detail lives in `diagnostics()`, which is not on the 
 Every figure a doc comment would otherwise carry about stack, flash or arithmetic lives here, keyed
 by the function it measures; the comment keeps the one sentence saying why its form was chosen.
 These are host-side measurements: #41 measures stack high-water and execution time on hardware,
-and its figures land in this section. Every size, frame and flash figure below a table row or a
-paragraph names is pinned exactly in `data/footprint.txt`, which `tools/footprint.sh` measures in
-CI on a pinned nightly, so a figure here that moves fails a build rather than going stale.
+and its figures land in this section. The current sizes, frames and flash below (the tables'
+measured columns, and the figures the prose gives for present code) are pinned exactly in
+`data/footprint.txt`, which `tools/footprint.sh` measures in CI on a pinned nightly, so one that
+moves fails a build rather than going stale. Sums of them are not pinned, and the "against the
+rejected form" column and the costs of forms not taken are measurements of builds that no longer
+exist: what decided the form, not what the code costs now.
 
 #### Stack frames
 
@@ -277,7 +280,7 @@ chosen the *difference* against the rejected one is the figure that carries the 
 | `reparameterize` (in `update`) | | | the full `G P Gᵀ` cost 864 more of `update`'s frame |
 | `fuse_gnss_velocity` → `update::<3>` | 9504 | | the crate's high-water mark; `fuse_gnss_velocity` is 1416 with `apply_or_recover` out of line, 2384 inlined |
 | `Eskf::observe::<3>` | 1464 | | `Observation::delayed` 752 and `error_dynamics` 400 beneath it; inlined into `fuse_gnss_velocity` it put the high-water mark at 10800 |
-| `Eskf::fuse_heading` | 1232 over `update::<1>` | 1240 | with `fuse_course`'s 256 above it, 7856 at the peak, against 7624 when `fuse_mag_heading` did the work in its own 1240-byte frame |
+| `Eskf::fuse_heading` | 1232 over `update::<1>` | 1240 | its largest instance, the magnetometer's; the course's is 1224, read by hand and not pinned, so with `fuse_course`'s 256 above it 7848 at the peak, against 7624 when `fuse_mag_heading` did the work in its own 1240-byte frame |
 | `Eskf::adopt_position`, `adopt_velocity` | | | inlined, +976 on `fuse_gnss_position` and +952 on `fuse_gnss_velocity`; out of line they follow `update` rather than stacking on it |
 | `propagate_covariance` | 2832 | 2760 | the largest frame propagation reaches; with `predict` (2176, 2160) and `propagate` (1088, 1096) above it the chain is 6096 (6016). With one caller it inlined and the same three temporaries sat in `predict` |
 | `project` | 1952 | 1936 | with `predicted_validity`'s 1856 above and `propagate_covariance` below, 6640; through `coast` the arming query's chain measured 9 KB, over `update::<3>` |
@@ -288,7 +291,8 @@ chosen the *difference* against the rejected one is the figure that carries the 
 | `History::clear` | | | rebuilding the ring put a 1552-byte temporary in `Eskf::apply_alignment` |
 | `StaticWindow::halve` | | | a copy of the blocks is 512 bytes |
 
-Every initialization frame stays under the 9504 of `fuse_gnss_velocity` into `update::<3>`, and so
+A frame of a generic function is its largest instance (`tools/footprint.py`), so a chain summed
+from them is a bound on the deepest path rather than a path. Every initialization frame stays under the 9504 of `fuse_gnss_velocity` into `update::<3>`, and so
 do the arming query and a coast, so no path but an update moves the crate's peak. That peak is
 comfortable on the STM32H7 class above and nearly all the RAM of an 8 KB Cortex-M0 part. The
 block-wise forms that would cut it (of (22), where (20)'s identity and zero blocks make most of
@@ -319,12 +323,13 @@ application reaching every entry point links:
 | `.rodata` | 4383 | 4455 | 4527 | 4599 |
 
 `compiler_builtins` is software floating point on `thumbv6m`; on `thumbv7em` it is the `f64`
-arithmetic a single-precision FPU lacks, beside `memcpy`, 64-bit division and `fmodf` on both. What `nalgebra` costs is mostly not in its row: its generics
-are inlined into the filter's functions under LTO and counted there.
+arithmetic a single-precision FPU lacks, beside `memcpy`, 64-bit division and `fmodf` on both.
+What `nalgebra` costs is mostly not in its row: its generics are inlined into the filter's
+functions under LTO and counted there.
 
 A measurement dimension is what costs flash, not a source: the barometer brought `update::<1>` into
 existence for 4.1 %, and the magnetic heading of (34)–(36), sharing it, added 1204 bytes, 2.4 %.
-The `magnetic-model` table is 1408 bytes of `.rodata` and its lookup 1096 of `.text` (1520 on
+Measured by hand when it landed (#170), and not pinned: the `magnetic-model` table is 1408 bytes of `.rodata` and its lookup 1096 of `.text` (1520 on
 `thumbv7em`), about 2.5 KB, at `opt-level = "s"`; the same lookup in `f64` linked 4496 bytes of
 `.text` in software doubles.
 
@@ -332,9 +337,11 @@ The `magnetic-model` table is 1408 bytes of `.rodata` and its lookup 1096 of `.t
 
 `cargo bench -p bench` times `predict`, every `fuse_*` and a start on an aided filter, each call
 asserted fused before it is timed. Nothing gates on these: their use is a before-and-after on one
-machine. On an Apple M3 Max at the commit that added them, `predict` is 0.72 µs, a GNSS position
-2.0 µs (2.3 µs as latitude and longitude), a GNSS velocity 1.2 µs, each one-dimensional update
-0.96 to 1.0 µs, `StaticWindow::push` 35 ns and `initialize` 0.36 µs.
+machine. Each timed measurement arrives a period after its source's last: at the same instant,
+(24′) prices it at its ceiling and the update carries nothing, which the benchmarks refuse. On an
+Apple M3 Max at the commit that added them, `predict` is 0.71 µs, a GNSS position 2.0 µs (2.2 µs as
+latitude and longitude), a GNSS velocity 1.2 µs, each one-dimensional update 0.99 to 1.04 µs,
+`StaticWindow::push` 34 ns and `initialize` 0.37 µs.
 
 #### Arithmetic
 

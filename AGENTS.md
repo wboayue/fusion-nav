@@ -538,12 +538,13 @@ cargo +1.89 build --lib           # MSRV
 tools/footprint.sh                # type sizes, stack frames, flash on both thumb targets vs data/footprint.txt; CI
 tools/footprint.sh --pin          # the file's keys at their measured values: re-pin by copying
 tools/footprint.sh --all          # every key measured, to choose what to pin
-# It installs nothing: `rustup toolchain install "$(tools/footprint.sh --toolchain)" --profile
-# minimal -c llvm-tools -t thumbv6m-none-eabi,thumbv7em-none-eabihf` once. When a frame grows,
-# bisect it: strip one candidate per build and re-measure. #122's +4168 bytes on `update::<3>`
+tools/footprint.sh --install      # once: its pinned nightly, llvm-tools and both thumb targets
+python3 tools/footprint.py --self-test   # the parser's fixtures
+# When a frame grows, bisect it: strip one candidate per build and re-measure. #122's +4168 bytes on `update::<3>`
 # was not only the 16 x 16 it looked like -- returning `(Covariance, Offset)` as a tuple through
 # `reset` cost a 900-byte copy of P on its own.
 cargo bench -p bench              # host timings of predict, every fuse_* and a start; never gated
+cargo test -p bench --benches     # each benchmark once, in debug, as CI runs them
 
 cargo run --example basic         # minimal integration loop
 cargo run --example degradation   # timeouts, status transitions, application-driven recovery
@@ -1133,12 +1134,13 @@ the declination table, and CI builds and tests without it too.
   API, plus `run.sh`, which links it and reads the panic paths back out of the ELF. A workspace
   member so that one `Cargo.lock` covers both, but not a *default* member, so `cargo test`,
   `cargo clippy` and `cargo package` at the root never try to build a `no_std` binary for the
-  host. Its build knobs live in `run.sh`, not in its `Cargo.toml`, where a member's `[profile]`
-  would be ignored. The only way in is `panic-check/run.sh`.
-- `bench/` — a third, unpublished member: criterion benchmarks of the hot path on the host. A
-  member rather than a root dev-dependency because criterion turns on `num-traits/std`, which
-  at the root would move every replay output (the dev-dependency rule under Replay corpus). Not a default
-  member; `cargo bench -p bench` is the way in, and CI runs it with `-- --test`.
+  host. Its build knobs live in `profile.sh`, not in its `Cargo.toml`, where a member's
+  `[profile]` would be ignored; `run.sh` and `tools/footprint.sh` both source it, and are the
+  only ways in.
+- `bench/`: a third unpublished member, criterion benchmarks of the hot path on the host. A
+  member rather than a root dev-dependency because criterion turns on `num-traits/std`, which at
+  the root would move every replay output (the dev-dependency rule under Replay corpus). Not a
+  default member; `cargo bench -p bench` times it, and CI runs `cargo test -p bench --benches`.
 
 ### Invariants worth knowing before editing
 
