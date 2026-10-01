@@ -1111,9 +1111,10 @@ mod tests {
             at(1.0, BARO, rejected),
             at(2.0, BARO, rejected),
             at(4.5, BARO, accepted),
+            // An adoption ends a run without resolving it: kept open, this one would read 5.0.
             at(5.0, BARO, rejected),
             at(5.5, BARO, Fusion::Reset),
-            at(6.0, BARO, accepted),
+            at(10.0, BARO, accepted),
             at(7.0, GNSS_POS, rejected),
         ];
         let runs = honest_runs(&trail);
@@ -1144,6 +1145,33 @@ mod tests {
             include_str!("../../data/flight.config.rs"),
             "regenerate: cargo run --example replay -- --derive data/flight.csv > data/flight.config.rs"
         );
+    }
+
+    #[test]
+    fn gnss_settles_only_when_nothing_in_the_window_was_turned_down() {
+        let accepted = Fusion::Accepted { test_ratio: 0.1 };
+        let rejected = Fusion::Rejected { test_ratio: 2.0 };
+        let at = |t, source, outcome| Verdict { t, source, outcome };
+        let trail = [
+            at(1.0, GNSS_POS, accepted),
+            at(2.0, crate::GNSS_VEL, rejected),
+            at(3.0, BARO, rejected),
+            at(12.0, GNSS_POS, accepted),
+        ];
+        // A velocity rejected inside the window unsettles it; a barometer does not.
+        assert_eq!(settled(&trail, 0.0, 10.0), Some(false));
+        assert_eq!(settled(&trail, 2.5, 13.0), Some(true));
+        // After the window's end, and with no position inside it, it says nothing.
+        assert_eq!(settled(&trail, 4.0, 11.0), None);
+        // A refusal is not a verdict on the coast.
+        let refused = [at(
+            1.0,
+            GNSS_POS,
+            Fusion::OutOfHorizon {
+                age: Seconds::from_secs(0.4),
+            },
+        )];
+        assert_eq!(settled(&refused, 0.0, 10.0), None);
     }
 
     #[test]
