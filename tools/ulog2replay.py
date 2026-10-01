@@ -262,23 +262,17 @@ def convert_imu(ulog, rows, used):
 
 
 def averaging_note(dataset):
-    """The header line saying how long each IMU row's rates were averaged over, against the
-    interval the row stands for, or None for a build that logs neither interval.
+    """The header line saying how long each IMU row's rates were averaged over, or None for a
+    build that logs neither interval.
 
     `sensor_combined` publishes each rate as a mean over `gyro_integral_dt` and
-    `accelerometer_integral_dt`, which equal the timestamp step only where the logger kept
-    every message: `a299e722` averages 2.5 ms per 20 ms row, so a still window's scatter
-    reads its noise density sqrt(8) high. `examples/replay/main.rs` scales the window's
-    densities by the square root of each ratio under one (`averaging_of` says why not above
-    it, `f16771dd`'s accelerometer at 4.9 ms per 4.0 ms row); propagation keeps the row as the
-    step's rate. Medians over the log, microseconds; a float field is seconds (`7592c9b2`).
+    `accelerometer_integral_dt`, which equal the row's step only where the logger kept every
+    message. `averaging_of` in `examples/replay/main.rs` reads the line against the step it
+    builds the window on, and says what it corrects and the corpus figures. Medians over the
+    log, microseconds; a float field is seconds (`7592c9b2`).
     """
     fields = ("gyro_integral_dt", "accelerometer_integral_dt")
     if not all(f in dataset.data for f in fields):
-        return None
-    t = stamps(dataset)
-    step = median([b - a for a, b in zip(t, t[1:]) if b > a])
-    if step is None:
         return None
 
     def micros(name):
@@ -287,9 +281,8 @@ def averaging_note(dataset):
         return median([float(v) * scale for v in values])
 
     gyro, accel = micros(fields[0]), micros(fields[1])
-    return (f"IMU averaging interval gyro {gyro:.0f} accel {accel:.0f} step {step:.0f} us "
-            "(sensor_combined's median gyro_integral_dt and accelerometer_integral_dt, and "
-            "its median timestamp step)")
+    return (f"IMU averaging interval gyro {gyro:.0f} accel {accel:.0f} us "
+            "(sensor_combined's median gyro_integral_dt and accelerometer_integral_dt)")
 
 
 def is_3d_fix(fix, k):
@@ -427,8 +420,32 @@ def lateness(t, utc):
     return late
 
 
-def convert_gnss(ulog, rows, used, heading_variance=DEFAULT_GNSS_HEADING_VARIANCE, stream=None):
-    dataset, label = stream or gnss_stream(ulog)
+def fix_timing(t, utc, lat, lon, fix):
+    """When each message's fix was taken, and which messages repeat a fix already offered.
+
+    Returns `(late, repeated, dated)`: each message's `lateness` (zeros where UTC cannot date
+    it), whether a 3D fix repeats the previous 3D fix's epoch and position, and whether the
+    fixes are dated by their receiver's clock. A fix the sensors module publishes again
+    unchanged is one measurement, and fused twice it counts double (`093e806a`, 532 of 7153).
+    Repeats are judged only where `utc_dates` trusts the clock: a held UTC repeats while the
+    vehicle moves on.
+    """
+    late = lateness(t, utc)
+    trusted = utc_dates(t, utc)
+    repeated = [False] * len(t)
+    previous = None
+    for k in range(len(t)):
+        if not is_3d_fix(fix, k):
+            continue
+        epoch = (int(utc[k]), float(lat[k]), float(lon[k])) if trusted and utc[k] else None
+        repeated[k] = epoch is not None and epoch == previous
+        previous = epoch
+    return late or [0] * len(t), repeated, late is not None
+
+
+def convert_gnss(ulog, stream, rows, used, heading_variance=DEFAULT_GNSS_HEADING_VARIANCE):
+    """Write `stream`'s fixes, `gnss_stream`'s `(dataset, label)`, as replay rows."""
+    dataset, label = stream
     if dataset is None:
         print("warning: no GNSS topic; position and velocity aiding omitted", file=sys.stderr)
         return None
@@ -470,22 +487,12 @@ def convert_gnss(ulog, rows, used, heading_variance=DEFAULT_GNSS_HEADING_VARIANC
     if heading is not None and not gnss_yaw_enabled(ulog.initial_parameters):
         heading = None
     heading_accuracy = dataset.data.get("heading_accuracy")
-    utc = dataset.data.get("time_utc_usec")
-    dated = utc_dates(t, utc)
-    late = lateness(t, utc) or [0] * len(t)
+    late, repeated, dated = fix_timing(t, dataset.data.get("time_utc_usec"), lat, lon, fix)
 
     origin = None
-    previous, republished = None, 0
     for k in range(len(t)):
-        if not is_3d_fix(fix, k):
+        if not is_3d_fix(fix, k) or repeated[k]:
             continue
-        # A fix the sensors module publishes again unchanged, same epoch and same position, is
-        # one measurement; fused twice it counts double (`093e806a`, 532 of 7153).
-        epoch = (int(utc[k]), float(lat[k]), float(lon[k])) if dated and utc[k] else None
-        if epoch is not None and epoch == previous:
-            republished += 1
-            continue
-        previous = epoch
         phi = float(lat[k]) * angle_scale
         lam = float(lon[k]) * angle_scale
         height = float(alt[k]) * alt_scale
@@ -522,8 +529,8 @@ def convert_gnss(ulog, rows, used, heading_variance=DEFAULT_GNSS_HEADING_VARIANC
     if origin is None:
         print("warning: no 3D GNSS fix in the log", file=sys.stderr)
     tally(rows, before, used, "gnss",
-          f"{label}, fields {lat_f}, dated by {'receiver UTC' if any(late) else 'arrival'}, "
-          f"{republished} republished fixes dropped")
+          f"{label}, fields {lat_f}, dated by {'receiver UTC' if dated else 'arrival'}, "
+          f"{sum(repeated)} republished fixes dropped")
     return origin
 
 
@@ -672,7 +679,7 @@ def convert(path, baro_variance, mag_variance, heading_variance=DEFAULT_GNSS_HEA
     note = dropouts(ulog)
     sensor_combined = convert_imu(ulog, rows, used)
     stream = gnss_stream(ulog)
-    origin = convert_gnss(ulog, rows, used, heading_variance, stream)
+    origin = convert_gnss(ulog, stream, rows, used, heading_variance)
     convert_baro(ulog, rows, used, baro_variance, sensor_combined)
     convert_mag(ulog, rows, used, mag_variance, sensor_combined)
     # The IMU sample interval, for --reference's bias scaling only. Taken here
@@ -1847,17 +1854,17 @@ def self_test():
                   longitude_deg=numpy.array([43.76] * 4),
                   altitude_ellipsoid_m=numpy.array([70.0] * 4), eph=[1.0] * 4, epv=[1.0] * 4)
     written = []
-    convert_gnss(FixtureLog(gps), written, {})
+    convert_gnss(FixtureLog(gps), gnss_stream(FixtureLog(gps)), written, {})
     expect("a republished fix dropped", [r[0] for r in written], [0, 200_000, 600_000])
     gps.data["latitude_deg"] = numpy.array([56.41, 56.42, 56.425, 56.43])
     written = []
-    convert_gnss(FixtureLog(gps), written, {})
+    convert_gnss(FixtureLog(gps), gnss_stream(FixtureLog(gps)), written, {})
     expect("an epoch at a new position kept", len(written), 4)
     # A vehicle standing still repeats its position at every new epoch, and each is a fix.
     gps.data["latitude_deg"] = numpy.array([56.41] * 4)
     gps.data["time_utc_usec"] = numpy.array([10, 20, 30, 40])
     written = []
-    convert_gnss(FixtureLog(gps), written, {})
+    convert_gnss(FixtureLog(gps), gnss_stream(FixtureLog(gps)), written, {})
     expect("a vehicle standing still kept", len(written), 4)
     # A UTC held across epochs at 5 Hz says nothing about which fix is a repeat.
     gps.data["timestamp"] = numpy.array([0, 200_000, 400_000, 600_000, 800_000, 1_000_000])
@@ -1866,7 +1873,7 @@ def self_test():
         gps.data[name] = numpy.array([gps.data[name][0]] * 6)
     gps.data["fix_type"] = [3] * 6
     written = []
-    convert_gnss(FixtureLog(gps), written, {})
+    convert_gnss(FixtureLog(gps), gnss_stream(FixtureLog(gps)), written, {})
     expect("a held UTC drops nothing", len(written), 6)
     # The writer takes a row's lateness off with its delay, and writes it without one.
     import tempfile
@@ -1876,6 +1883,16 @@ def self_test():
                                (900, "baro", [0.0], [1.0], 40)], 0, 1e-6, {"gnss_pos": 100})
         cells = [line.split(",")[-1] for line in out.read_text().splitlines()[1:]]
         expect("delay and lateness both off", cells, ["", "0.000370", "0.000860"])
+        # A row more prompt than its source's delay assumes is taken as current, never later.
+        write_replay(out, [], [(500, "gnss_pos", [0.0] * 3, [1.0] * 3, -200)], 0, 1e-6,
+                     {"gnss_pos": 100})
+        expect("never dated after it was logged", out.read_text().splitlines()[1].split(",")[-1],
+               "0.000500")
+        try:
+            write_replay(out, [], [(0, "gnss_pos", [0.0] * 3, [1.0] * 3, 0, 0)], 0, 1e-6)
+            expect("a row of six refused", "written", "refused")
+        except ValueError:
+            pass
 
     # A row averaged over 2.5 ms that stands for 20 ms, and a seconds-valued field.
     import numpy
@@ -1883,7 +1900,7 @@ def self_test():
                        gyro_integral_dt=numpy.array([2_500] * 4, dtype=numpy.uint32),
                        accelerometer_integral_dt=numpy.array([2_490] * 4, dtype=numpy.uint32))
     expect("averaging interval", averaging_note(combined).split(" us")[0],
-           "IMU averaging interval gyro 2500 accel 2490 step 20000")
+           "IMU averaging interval gyro 2500 accel 2490")
     combined.data["gyro_integral_dt"] = numpy.array([0.004] * 4, dtype=numpy.float32)
     expect("seconds read as seconds", averaging_note(combined).split(" accel")[0],
            "IMU averaging interval gyro 4000")
@@ -1951,9 +1968,9 @@ def self_test():
                   longitude_deg=numpy.array([10.0, 43.76, 43.8]),
                   altitude_ellipsoid_m=numpy.array([0.0, 70.0, 71.0]),
                   eph=[1.0] * 3, epv=[1.0] * 3)
-    expect("origin at the first 3D fix", convert_gnss(FixtureLog(gps), [], {})[:2], (56.41, 43.76))
+    expect("origin at the first 3D fix", convert_gnss(FixtureLog(gps), gnss_stream(FixtureLog(gps)), [], {})[:2], (56.41, 43.76))
     gps.data["altitude_msl_m"] = numpy.array([0.0, 52.0, 53.0])
-    expect("the first fix's MSL height beside it", convert_gnss(FixtureLog(gps), [], {})[2:],
+    expect("the first fix's MSL height beside it", convert_gnss(FixtureLog(gps), gnss_stream(FixtureLog(gps)), [], {})[2:],
            (70.0, 52.0))
     geo = {"EKF2_DECL_TYPE": 3, "EKF2_MAG_DECL": 0.0}
     expect("bit 0 and a fix: the table", declination_note(geo, (56.41, 43.76)).split(" (")[0],

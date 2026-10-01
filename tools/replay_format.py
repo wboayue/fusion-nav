@@ -21,20 +21,25 @@ def write_replay(out, header, rows, t0, unit, delays=None):
     differenced before it is scaled and a long log keeps its microseconds. `t_meas_s` is a
     row's time less its source's delay in `delays`, ticks by source name, and blank where
     there is none: when the measurement was taken, where `t_s` is when it was logged. `late`,
-    ticks, is how much later than its source's usual delay this row arrived, and comes off too.
+    ticks, is how much later than its source's usual delay this row arrived, and comes off too,
+    though never so far that a row reads as taken after it was logged.
     """
     delays = delays or {}
     with open(out, "w", newline="") as handle:
         for line in header:
             handle.write(f"# {line}\n")
         handle.write(REPLAY_COLUMNS + "\n")
-        for timestamp, source, values, variances, *late in rows:
+        for row in rows:
+            if len(row) not in (4, 5):
+                raise ValueError(f"a replay row has 4 or 5 elements, not {len(row)}: {row!r}")
+            timestamp, source, values, variances = row[:4]
+            late = row[4] if len(row) == 5 else 0
             values = list(values) + [None] * (6 - len(values))
             variances = list(variances) + [None] * (3 - len(variances))
             cells = [f"{(timestamp - t0) * unit:.6f}", source]
             cells += ["" if v is None else f"{v:.6g}" for v in values + variances]
-            delay = delays.get(source, 0) + (late[0] if late else 0)
-            cells.append(f"{(timestamp - delay - t0) * unit:.6f}" if delay else "")
+            delay = delays.get(source, 0) + late
+            cells.append(f"{(timestamp - max(delay, 0) - t0) * unit:.6f}" if delay else "")
             handle.write(",".join(cells) + "\n")
 
 
