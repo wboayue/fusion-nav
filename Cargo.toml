@@ -42,6 +42,10 @@ defmt = ["dep:defmt"]
 magnetic-model = []
 
 [dev-dependencies]
+# `replay --derive` reads a time constant off a logarithm, and the `Config` it prints is pinned
+# by a test (`data/flight.config.rs`), so the logarithm is `libm`'s, the same on every host,
+# as the filter's transcendentals are. Already in the graph under nalgebra's `libm` feature.
+libm = "0.2.16"
 
 # The adversarial suite (`src/eskf/adversarial.rs`, #44): generated hostile inputs, shrunk to
 # the shortest failing sequence. Test-only, so the `no_std` build and its one dependency are
