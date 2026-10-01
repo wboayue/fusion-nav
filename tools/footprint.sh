@@ -75,7 +75,7 @@ export RUSTFLAGS=
 
 # measure <target>: print one line of `key=value` pairs.
 measure() {
-    local target=$1 lib types frames flash
+    local target=$1 lib out="$CARGO_TARGET_DIR/$target"
     # Called in a command substitution, where bash clears `-e`; a failed build stops here.
     set -e
 
@@ -83,16 +83,17 @@ measure() {
     # builds them and print no layouts of their own. Cleaned first: a crate cargo considers
     # fresh is not compiled, and prints nothing to read.
     cargo "+$TOOLCHAIN" clean --quiet --release --target "$target" -p fusion-nav
-    types=$(cargo "+$TOOLCHAIN" rustc --quiet --lib --release --target "$target" \
-        -- -Zprint-type-sizes -Zemit-stack-sizes)
+    mkdir -p "$out"
+    cargo "+$TOOLCHAIN" rustc --quiet --lib --release --target "$target" \
+        -- -Zprint-type-sizes -Zemit-stack-sizes >"$out/types.txt"
     lib="$CARGO_TARGET_DIR/$target/release/libfusion_nav.rlib"
     [ -f "$lib" ] || die "cargo built no rlib at $lib"
     # Exits 1 on the rlib's metadata members, which carry no code, after printing the rest.
-    frames=$("$tools/llvm-readobj" --stack-sizes --demangle "$lib" 2>/dev/null || true)
+    "$tools/llvm-readobj" --stack-sizes --demangle "$lib" >"$out/frames.txt" 2>/dev/null || true
 
     # The ELF under `panic-check`'s profile, in a subshell so its fat LTO never reaches the
     # library build above: an LTO rlib holds bitcode, and bitcode has no stack sizes.
-    flash=$(
+    (
         # shellcheck source=panic-check/profile.sh
         . "$root/panic-check/profile.sh"
         elf="$CARGO_TARGET_DIR/$target/release/panic-check"
@@ -106,10 +107,14 @@ measure() {
             "$tools/llvm-size" -A "$elf"
             "$tools/llvm-nm" --demangle --print-size --size-sort "$elf"
         done
-    ) || exit 1
+    ) >"$out/flash.txt" || exit 1
 
-    TYPES=$types FRAMES=$frames FLASH=$flash python3 - <<'PY'
-import os, re
+    # Through files rather than the environment: the symbol table alone is past the 128 KB
+    # Linux allows one environment string.
+    python3 - "$out/types.txt" "$out/frames.txt" "$out/flash.txt" <<'PY'
+import re, sys
+
+types, frames, flash = (open(name).read() for name in sys.argv[1:])
 
 pairs = {}
 
@@ -154,13 +159,13 @@ def path(name):
         return None
     return name.replace("::", ".")
 
-for line in os.environ["TYPES"].splitlines():
+for line in types.splitlines():
     m = re.match(r"print-type-size type: `([A-Za-z0-9_:]+)`: (\d+) bytes", line)
     if m:
         put("size." + m.group(1).replace("::", "."), int(m.group(2)))
 
 name = None
-for line in os.environ["FRAMES"].splitlines():
+for line in frames.splitlines():
     m = re.search(r"Functions: \[(.*)\]", line)
     if m:
         # A folded entry names every function sharing the code; each has the frame.
@@ -184,7 +189,7 @@ def crate(symbol):
 
 level = None
 seen = set()
-for line in os.environ["FLASH"].splitlines():
+for line in flash.splitlines():
     if line.startswith("level "):
         level = line.split()[1]
         seen = set()
