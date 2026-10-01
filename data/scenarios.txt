@@ -165,25 +165,25 @@
 # removes exactly that error and nothing else was changed to make it: `pos_v` 3.07 to 0.819,
 # `pos_h` 9.14 to 3.03, `yaw` 12.96 deg to 7.59. A heading the window observed, stage 8's, is
 # the other half -- this one corrects the consequence and leaves the 0.6 rad in place.
-static           1  pos_h<=0.522 pos_v<=0.350 vel<=0.142 pos_h_max<=0.932  tilt<=0.530 yaw<=0.639 ba<=0.07615 bg<=0.000898 in3s>=0.9900 nees_pos<=0.3324   nees_vel<=0.1083 nees_att<=0.0380 false_valid<=0   false_valid_att<=0   scored>=11600  recovered=0 noise_gyro=0.000208..0.000338 noise_accel=0.001600..0.002600 noise_baro=0.2800..0.4400
-mission          2  pos_h<=0.295 pos_v<=0.173 vel<=0.140 pos_h_max<=0.775  tilt<=0.334 yaw<=0.292 ba<=0.03584 bg<=0.000339 in3s>=0.9900 nees_pos<=0.0905   nees_vel<=0.1054 nees_att<=0.0166 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0 noise_gyro=0.000208..0.000338 noise_accel=0.001600..0.002600 noise_baro=0.2800..0.4400
-harsh_imu        2  pos_h<=0.296 pos_v<=0.171 vel<=0.145 pos_h_max<=0.782  tilt<=0.837 yaw<=0.812 ba<=0.10916 bg<=0.002133 in3s>=0.9900 nees_pos<=0.0911   nees_vel<=0.1118 nees_att<=0.1056 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0 noise_gyro=0.002080..0.003380 noise_accel=0.016000..0.026000 noise_baro=0.2800..0.4400
-gnss_outage      2  pos_h<=1.651 pos_v<=0.099 vel<=0.213 pos_h_max<=11.074 tilt<=0.342 yaw<=0.329 ba<=0.03606 bg<=0.000341 in3s>=0.9900 nees_pos<=0.2101   nees_vel<=0.0960 nees_att<=0.0167 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
-moving_start     4  pos_h<=0.363 pos_v<=0.613 vel<=0.147 pos_h_max<=0.702  tilt<=1.571 yaw<=1.473 ba<=0.04096 bg<=0.002023 in3s>=0.9900 nees_pos<=0.1555   nees_vel<=0.1086 nees_att<=0.0338 false_valid<=0   false_valid_att<=0   scored>=15999  recovered=0 noise_gyro=none noise_accel=none noise_baro=none
-baro_drift       2  pos_h<=0.295 pos_v<=0.928 vel<=0.141 pos_h_max<=0.775  tilt<=0.333 yaw<=0.291 ba<=0.03579 bg<=0.000340 in3s>=0.9900 nees_pos<=0.4458   nees_vel<=0.1057 nees_att<=0.0165 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
-gnss_latency     2  pos_h<=0.298 pos_v<=0.160 vel<=0.146 pos_h_max<=0.797  tilt<=0.342 yaw<=0.294 ba<=0.03801 bg<=0.000337 in3s>=0.9900 nees_pos<=0.0850  nees_vel<=0.1028 nees_att<=0.0166 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
-correlated       2  pos_h<=1.164 pos_v<=1.155 vel<=0.234 pos_h_max<=2.414  tilt<=0.707 yaw<=2.330 ba<=0.03899 bg<=0.001501 in3s>=0.9882 nees_pos<=1.7329  nees_vel<=0.2913 nees_att<=0.2396 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
-mag_disturbance  2  pos_h<=0.295 pos_v<=0.173 vel<=0.140 pos_h_max<=0.775  tilt<=0.336 yaw<=0.313 ba<=0.03588 bg<=0.000338 in3s>=0.9900 nees_pos<=0.0905   nees_vel<=0.1054 nees_att<=0.0170 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
-gnss_heading     2  pos_h<=0.295 pos_v<=0.173 vel<=0.140 pos_h_max<=0.775 tilt<=0.333 yaw<=0.276 ba<=0.03595 bg<=0.000402 in3s>=0.9900 nees_pos<=0.0905 nees_vel<=0.1054 nees_att<=0.0820 false_valid<=0 false_valid_att<=0 scored>=36600 recovered=0
+static           1  pos_h<=0.666 pos_v<=0.368 vel<=0.142 pos_h_max<=1.041  tilt<=0.530 yaw<=0.655 ba<=0.07601 bg<=0.000913 in3s>=0.9900 nees_pos<=0.3993   nees_vel<=0.1083 nees_att<=0.0380 false_valid<=0   false_valid_att<=0   scored>=11600  recovered=0 noise_gyro=0.000208..0.000338 noise_accel=0.001600..0.002600 noise_baro=0.2800..0.4400
+mission          2  pos_h<=0.329 pos_v<=0.173 vel<=0.140 pos_h_max<=0.823  tilt<=0.332 yaw<=0.289 ba<=0.03584 bg<=0.000339 in3s>=0.9900 nees_pos<=0.0837   nees_vel<=0.1054 nees_att<=0.0163 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0 noise_gyro=0.000208..0.000338 noise_accel=0.001600..0.002600 noise_baro=0.2800..0.4400
+harsh_imu        2  pos_h<=0.330 pos_v<=0.171 vel<=0.145 pos_h_max<=0.830  tilt<=0.835 yaw<=0.812 ba<=0.10883 bg<=0.002133 in3s>=0.9900 nees_pos<=0.0843   nees_vel<=0.1118 nees_att<=0.1044 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0 noise_gyro=0.002080..0.003380 noise_accel=0.016000..0.026000 noise_baro=0.2800..0.4400
+gnss_outage      2  pos_h<=1.703 pos_v<=0.106 vel<=0.211 pos_h_max<=10.984 tilt<=0.341 yaw<=0.329 ba<=0.03606 bg<=0.000341 in3s>=0.9900 nees_pos<=0.2427   nees_vel<=0.0959 nees_att<=0.0166 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
+moving_start     4  pos_h<=0.474 pos_v<=0.913 vel<=0.147 pos_h_max<=0.771  tilt<=1.571 yaw<=1.509 ba<=0.04140 bg<=0.002058 in3s>=0.9900 nees_pos<=0.2258   nees_vel<=0.1086 nees_att<=0.0344 false_valid<=0   false_valid_att<=0   scored>=15999  recovered=0 noise_gyro=none noise_accel=none noise_baro=none
+baro_drift       2  pos_h<=0.329 pos_v<=1.148 vel<=0.141 pos_h_max<=0.823  tilt<=0.332 yaw<=0.288 ba<=0.03579 bg<=0.000340 in3s>=0.9900 nees_pos<=0.5043   nees_vel<=0.1057 nees_att<=0.0163 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
+gnss_latency     2  pos_h<=0.331 pos_v<=0.160 vel<=0.146 pos_h_max<=0.845  tilt<=0.340 yaw<=0.293 ba<=0.03781 bg<=0.000337 in3s>=0.9900 nees_pos<=0.0790  nees_vel<=0.1028 nees_att<=0.0164 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
+correlated       2  pos_h<=1.153 pos_v<=0.800 vel<=0.234 pos_h_max<=2.366  tilt<=0.696 yaw<=2.286 ba<=0.03888 bg<=0.001464 in3s>=0.9882 nees_pos<=1.0411  nees_vel<=0.2913 nees_att<=0.2216 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
+mag_disturbance  2  pos_h<=0.329 pos_v<=0.173 vel<=0.140 pos_h_max<=0.823  tilt<=0.335 yaw<=0.311 ba<=0.03588 bg<=0.000338 in3s>=0.9900 nees_pos<=0.0837   nees_vel<=0.1054 nees_att<=0.0168 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
+gnss_heading     2  pos_h<=0.329 pos_v<=0.173 vel<=0.140 pos_h_max<=0.823 tilt<=0.333 yaw<=0.276 ba<=0.03595 bg<=0.000401 in3s>=0.9900 nees_pos<=0.0837 nees_vel<=0.1054 nees_att<=0.0820 false_valid<=0 false_valid_att<=0 scored>=36600 recovered=0
 # `lever_arm` flies `mission` with the antenna on a 1 m mast (0.5 forward, 0.3 right, 0.8 up) and
 # the fixes generated there; the harness applies the header's offset through (28') and (29'). It
 # scores `mission`'s figures to the noise of one seed (`pos_h` 0.291 against 0.292). Replayed with
 # `--antenna zero` it reads `pos_h` 0.669, `pos_v` 0.451 and `nees_pos` 0.4614, the arm fused as
 # position error, which is what makes the line able to fail.
-lever_arm        2  pos_h<=0.294 pos_v<=0.172 vel<=0.140 pos_h_max<=0.763 tilt<=0.339 yaw<=0.299 ba<=0.03665 bg<=0.000336 in3s>=0.9900 nees_pos<=0.0896 nees_vel<=0.1053 nees_att<=0.0170 false_valid<=0 false_valid_att<=0 scored>=36600 recovered=0
-no_mag           3  pos_h<=0.246 pos_v<=0.212 vel<=0.141 pos_h_max<=0.566 tilt<=0.738 yaw<=6.690 ba<=0.06189 bg<=0.001461 in3s>=0.9900 nees_pos<=0.0794 nees_vel<=0.1060 nees_att<=0.2153 false_valid<=0 false_valid_att<=0 scored>=23600 recovered=0
-logging_dropout  2  pos_h<=0.296 pos_v<=0.153 vel<=0.143 pos_h_max<=2.761  tilt<=0.411 yaw<=0.397 ba<=0.03713 bg<=0.000367 in3s>=0.9900 nees_pos<=0.0853   nees_vel<=0.1060 nees_att<=0.0187 false_valid<=0   false_valid_att<=0   scored>=36360  recovered=0
-flight           8  pos_h<=1.797 pos_v<=0.325 vel<=0.537 pos_h_max<=4.483  tilt<=0.595 yaw<=8.040 ba<=0.08422 bg<=0.001354 in3s>=0.9900 nees_pos<=0.1179   nees_vel<=0.0867 nees_att<=0.1062 false_valid<=0   false_valid_att<=0   scored>=600  recovered=0 noise_gyro=0.000208..0.000338 noise_accel=0.001600..0.002600 noise_baro=0.2800..0.4400
+lever_arm        2  pos_h<=0.327 pos_v<=0.172 vel<=0.140 pos_h_max<=0.811 tilt<=0.337 yaw<=0.297 ba<=0.03665 bg<=0.000336 in3s>=0.9900 nees_pos<=0.0826 nees_vel<=0.1053 nees_att<=0.0167 false_valid<=0 false_valid_att<=0 scored>=36600 recovered=0
+no_mag           3  pos_h<=0.280 pos_v<=0.225 vel<=0.141 pos_h_max<=0.566 tilt<=0.738 yaw<=6.689 ba<=0.06183 bg<=0.001456 in3s>=0.9900 nees_pos<=0.0781 nees_vel<=0.1060 nees_att<=0.2150 false_valid<=0 false_valid_att<=0 scored>=23600 recovered=0
+logging_dropout  2  pos_h<=0.328 pos_v<=0.149 vel<=0.143 pos_h_max<=2.714  tilt<=0.411 yaw<=0.403 ba<=0.03713 bg<=0.000367 in3s>=0.9900 nees_pos<=0.0785   nees_vel<=0.1060 nees_att<=0.0186 false_valid<=0   false_valid_att<=0   scored>=36360  recovered=0
+flight           8  pos_h<=1.794 pos_v<=0.334 vel<=0.536 pos_h_max<=4.433  tilt<=0.595 yaw<=8.040 ba<=0.08396 bg<=0.001354 in3s>=0.9900 nees_pos<=0.1179   nees_vel<=0.0867 nees_att<=0.1062 false_valid<=0   false_valid_att<=0   scored>=600  recovered=0 noise_gyro=0.000208..0.000338 noise_accel=0.001600..0.002600 noise_baro=0.2800..0.4400
 
 # (34)-(36) are what `yaw` reads now, and what it buys depends entirely on what the start knew.
 # Where yaw was never observed the magnetometer is the whole estimate: `moving_start` goes 3.228
@@ -375,3 +375,17 @@ flight           8  pos_h<=1.797 pos_v<=0.325 vel<=0.537 pos_h_max<=4.483  tilt<
 # to 0.531, `pos_h_max` 4.392 to 4.438. Replayed at the gravity `replay --derive` prints for the
 # site, `--set gravity=9.80118`, every line reads its old figures again to within 0.05 %, the
 # printed value's rounding.
+#
+# #194 re-read the `Correlation` defaults on the stream EKF2 fused, at the 5 to 10 Hz the corpus
+# logged it and dated by each receiver's own epoch, where they had been read on a 1 Hz copy dated
+# by its arrival, and raised the four that read longer: GNSS position 4.2 s to 8.5, GNSS height
+# 14 to 40, the barometer 0.20 to 0.26, the magnetometer 1.2 to 1.3. `correlated`, whose `tau` is
+# known, is what they are for: `pos_v` 1.143 m to 0.792 (GNSS height's) and `nees_pos` 1.7158 to
+# 1.0307 (both). The white scenarios pay where a source is deweighted against noise that is in
+# fact white: GNSS position's costs `pos_h`, `mission` 0.292 m to 0.325, `static` 0.516 to 0.659,
+# `moving_start` 0.359 to 0.469; GNSS height's costs height wherever GNSS carries it against a
+# barometer, `moving_start` `pos_v` 0.606 m to 0.903, `baro_drift` 0.918 to 1.136, `static` 0.346
+# to 0.364; the magnetometer's costs heading where it holds yaw alone, `moving_start` `yaw` 1.457
+# deg to 1.494 and `static` 0.632 to 0.648. Each attribution is the line replayed with that one
+# field set back. Why the shorter readings were not taken is GOALS.md's, "Correlated
+# measurement error as equivalent white noise".

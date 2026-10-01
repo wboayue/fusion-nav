@@ -1303,13 +1303,13 @@ mod tests {
             tau,
         };
         let mut taus = [Tau::Absent; SOURCES.len()];
-        taus[GNSS_POS] = read(6.7); // over the default 4.2: taken
-        taus[GNSS_HGT] = read(11.0); // under the default 14: shows nothing
+        taus[GNSS_POS] = read(11.0); // over the default 8.5: taken
+        taus[GNSS_HGT] = read(30.0); // under the default 40: shows nothing
         taus[GNSS_VEL] = Tau::Alternating { rho: -0.4 };
         taus[BARO] = Tau::Unresolved { rho: 0.1, rows: 20 };
         let defaults = Correlation::default();
         let derived = correlation_from(defaults, &taus);
-        assert_eq!(derived.gnss_position, Some(Seconds::from_secs(6.7)));
+        assert_eq!(derived.gnss_position, Some(Seconds::from_secs(11.0)));
         assert_eq!(derived.gnss_height, defaults.gnss_height);
         assert_eq!(derived.gnss_velocity, defaults.gnss_velocity);
         assert_eq!(derived.baro_altitude, defaults.baro_altitude);

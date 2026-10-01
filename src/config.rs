@@ -406,11 +406,11 @@ impl Default for Correlation {
     /// [decision's]: https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#correlated-measurement-error-as-equivalent-white-noise
     fn default() -> Self {
         Self {
-            gnss_position: Some(Seconds::from_secs(4.2)),
-            gnss_height: Some(Seconds::from_secs(14.0)),
+            gnss_position: Some(Seconds::from_secs(8.5)),
+            gnss_height: Some(Seconds::from_secs(40.0)),
             gnss_velocity: Some(Seconds::from_secs(0.5)),
-            baro_altitude: Some(Seconds::from_secs(0.2)),
-            mag_heading: Some(Seconds::from_secs(1.2)),
+            baro_altitude: Some(Seconds::from_secs(0.26)),
+            mag_heading: Some(Seconds::from_secs(1.3)),
             gnss_heading: Some(Seconds::from_secs(0.25)),
             course: Some(Seconds::from_secs(1.4)),
         }

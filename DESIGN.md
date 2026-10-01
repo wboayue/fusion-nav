@@ -474,10 +474,12 @@ between the source's rows. On the `correlated` scenario, seed 1, whose sources a
 | magnetometer | 4.3 | 0.94 |
 
 The autocorrelation decays faster than the error's at every lag out to twelve, not by a constant
-factor, so a ratio of lags is short too. On 50 seeds of `correlated`, `anees_pos` is 1.45 at the
-defaults, 3.16 at the values read, 1.38 at `max(default, read)` and 0.78 at the scenario's own.
-On INSANE the values read move `nees_pos` from 0.47 to 0.24, 0.35 to 0.57 and 0.44 to 0.40, and
-`max(default, read)` to 0.22, 0.35 and 0.32. So `--derive` raises a source's `τ` above the
+factor, so a ratio of lags is short too. On 50 seeds of `correlated`, `anees_pos` is 1.20 at the
+defaults, 3.16 at the values read, 1.19 at `max(default, read)` and 0.78 at the scenario's own.
+On INSANE `nees_pos` reads 0.23, 0.21 and 0.22 at the defaults, 0.24, 0.58 and 0.40 at the values
+read, and 0.19, 0.21 and 0.22 at `max(default, read)`. Measured at the defaults #194 re-read on
+the corpus's own GNSS rate and epochs (8.5 s and 40 s for GNSS position and height); at the 1 Hz
+ones (4.2 s and 14 s) `correlated` read 1.45 and 1.38. So `--derive` raises a source's `τ` above the
 default where the reading exceeds it and otherwise prints the default; an estimator the filter
 does not bias is #195.
 
