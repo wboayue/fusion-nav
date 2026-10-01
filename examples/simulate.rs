@@ -4,7 +4,7 @@
 //! generator and no truth, the PX4 corpus has no truth, and `--reference` gives EKF2's own
 //! position and velocity rather than the vehicle's. This writes both halves of a benchmark: a log
 //! the replay harness reads, and the trajectory it was generated from, so equations (9)–(42) can
-//! be scored against truth as they land (GOALS.md differentiator 6). Scoring is `examples/replay.rs`
+//! be scored against truth as they land (GOALS.md differentiator 6). Scoring is `examples/replay/main.rs`
 //! given a truth file as its third argument; this only produces the data.
 //!
 //! # Truth is analytic, not integrated
@@ -34,7 +34,7 @@
 //!
 //! Two files per scenario:
 //!
-//! - `<scenario>.csv` — the replay format `examples/replay.rs` documents, one row per
+//! - `<scenario>.csv` — the replay format `examples/replay/main.rs` documents, one row per
 //!   measurement, sorted by time. Positions are NED metres, so the log needs no origin and agrees
 //!   with truth by construction.
 //! - `<scenario>.truth.csv` — `t_s,pos_n,pos_e,pos_d,vel_n,vel_e,vel_d,roll,pitch,yaw,`
@@ -66,7 +66,7 @@
 //!
 //! `logging_dropout` is the one scenario with a step longer than `Config::max_predict_dt`: it
 //! writes no row of any kind for 1.2 s, as a logger that lost its buffer does, and the filter
-//! coasts across it (equation (22′)). Its truth file keeps every epoch, and `examples/replay.rs`
+//! coasts across it (equation (22′)). Its truth file keeps every epoch, and `examples/replay/main.rs`
 //! scores the epochs it has, the first after the gap included — the coasted state is what the
 //! filter published.
 
@@ -91,7 +91,7 @@ const GRAVITY: f64 = 9.806_65;
 /// heading enters by (36′) through the field's direction in the body.
 ///
 /// Positions are NED about it, so nothing else reads it. It is written as the log's
-/// `# Navigation origin` line, which is what lets `examples/replay.rs --declination model` look
+/// `# Navigation origin` line, which is what lets `examples/replay/main.rs --declination model` look
 /// the crate's magnetic model up at the site.
 const SITE: [f64; 3] = [40.1164, -88.3697, 200.0];
 
@@ -99,7 +99,7 @@ const SITE: [f64; 3] = [40.1164, -88.3697, 200.0];
 /// with `pygeomag` 1.1.0 rather than the crate's table, so a replay under
 /// `--declination model` scores the table's own error instead of agreeing with itself.
 ///
-/// Also written into the log's header, which is where `examples/replay.rs` reads the
+/// Also written into the log's header, which is where `examples/replay/main.rs` reads the
 /// declination it configures the filter with by default, so a heading fused from these logs
 /// is true heading whatever the constant says.
 const DECLINATION: f64 = -0.06;

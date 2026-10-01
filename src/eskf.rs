@@ -2937,7 +2937,7 @@ mod tests {
     /// needs a network and PX4 tooling, so it runs locally. The margin between the floor and
     /// anything a filter that is propagating and fusing reaches is measured in `math.rs`'s
     /// `FLOOR` — a count here means the floor is masking a collapse rather than preventing
-    /// one, and the `sigma_*` columns of `examples/replay.rs` say which state.
+    /// one, and the `sigma_*` columns of `examples/replay/main.rs` say which state.
     #[test]
     fn an_ordinary_run_never_reaches_the_floor() {
         let mut filter = aided();

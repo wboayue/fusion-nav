@@ -189,7 +189,7 @@ pin_pairs() {
 # The expectations in data/manifest.txt and data/scenarios.txt were produced by the harness
 # they are meant to guard, so a comparator that waves something through turns a miscount into
 # a pinned number and then into the baseline every later change is measured against -- the
-# reason examples/replay.rs carries its own tests. These fixtures are the same argument one
+# reason examples/replay/main.rs carries its own tests. These fixtures are the same argument one
 # level down: every line is a literal, and every verdict beside it is one somebody can check
 # by reading.
 self_test() {

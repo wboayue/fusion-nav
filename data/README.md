@@ -2,7 +2,7 @@
 
 `cargo run --example replay` reads a recorded flight from CSV and writes the estimate back out as
 CSV — the normalized log format the [validation harness](../GOALS.md#harness-constraint) is built
-on. The format itself is documented in `examples/replay.rs`.
+on. The format itself is documented in `examples/replay/main.rs`.
 
 It writes two files. `<out>.csv` is one row per IMU epoch: the state, the covariance diagonal as
 standard deviations, and the last test ratio per source. `<out>.fusion.csv` is one row per
@@ -79,7 +79,7 @@ because a 2° tilt error leaks gravity into the horizontal channel and integrate
 move again when a stage of #31 lands.
 
 What each key means, and what it can and cannot say on these scenarios, is in the module docs of
-`examples/replay.rs`, which owns the definitions. Two things about *using* it belong here:
+`examples/replay/main.rs`, which owns the definitions. Two things about *using* it belong here:
 
 - **No truth file, no `score` line** — not a line of zeros. Every log in the PX4 corpus below has
   no truth, and `pos_h=0.000` on one of them would claim a perfect filter where the honest answer
@@ -744,7 +744,7 @@ and the rest are unscored, and it knows no bias, so `ba=` and `bg=` read `none`.
 carry a `fusion-nav` marker naming the segment and a digest of the three inputs, which the
 harness checks as it checks a scenario's seed.
 
-What a fix's `bad` verdict means is `Judged`'s doc comment in `examples/replay.rs`: the gate a
+What a fix's `bad` verdict means is `Judged`'s doc comment in `examples/replay/main.rs`: the gate a
 perfect state would run, at P999 on the fix's own variance, fixed whatever `Config::gates` or
 `--r-policy` the replay used. `data/urbannav-pins.txt` pins what each receiver did under both
 policies, and the M8T under `--recovery off`, and says what the lines show. Only these scalars are published
@@ -778,7 +778,7 @@ velocity from the RTK baseline's midpoint so the truth's tilt error stays out of
 
 The truth is written at RTK2's epochs, about 7 Hz, and knows no bias. The fixes land between
 them, so the harness judges each on the two rows either side interpolated, within
-`TRUTH_SPAN` (`examples/replay.rs`), and `rms_gnss_pos`/`rms_gnss_hgt` are the fixes' own error. Both files carry a
+`TRUTH_SPAN` (`examples/replay/main.rs`), and `rms_gnss_pos`/`rms_gnss_hgt` are the fixes' own error. Both files carry a
 `fusion-nav` marker naming the sequence and a digest of its archive and the calibrations. The
 replay runs under `--declination model`, since the dataset's own declination has the wrong sign
 at Klagenfurt, and under raw `R` only: every fix claims more than PX4's floors, so `px4`

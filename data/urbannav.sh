@@ -7,7 +7,7 @@
 #
 # The gate benchmark of #60: the one source with hostile GNSS *and* truth, so the one place a
 # rejection is scored as right or wrong (`bad_`, `rejected_bad_`, `rejected_good_` and the
-# recovery split on the `score` line; examples/replay.rs owns what each means). Two receivers
+# recovery split on the `score` line; examples/replay/main.rs owns what each means). Two receivers
 # on one drive: the M8T, which claims a few metres while hundreds out, and the F9P, honest
 # to its own accuracy, which is the test of rejecting good fixes at road speed.
 #
@@ -26,7 +26,7 @@ die() { echo "urbannav: $*" >&2; exit 1; }
 # What a pin line carries. The `summary` keys a hostile receiver moves, and every truth-scored
 # key on the `score` line that says what the gate did and how far off the receiver was
 # (`rms_`); the per-key meanings are in
-# examples/replay.rs. The rest of either line is on the terminal when this runs, and pinning
+# examples/replay/main.rs. The rest of either line is on the terminal when this runs, and pinning
 # all of it would re-pin on every change that touched a figure nobody reads for this.
 keys="recovered rejected_gnss_pos rejected_gnss_hgt rejected_gnss_vel rejected_course
 aligned_at degraded_s dead_reckoning_s transitions status

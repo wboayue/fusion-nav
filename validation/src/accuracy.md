@@ -140,7 +140,7 @@ better than this filter's own estimate.
 
 Every run on this page is the one CI checks (`data/bench.sh`), at the seed pinned in
 `data/scenarios.txt`. Every number is copied from the `score` line that
-`examples/replay.rs` printed for it. The error is `truth ⊖ estimate` in the error state of
+`examples/replay/main.rs` printed for it. The error is `truth ⊖ estimate` in the error state of
 `EQUATIONS.md` (2), computed in one place (`error_state`). Attitude is split into tilt, about the
 two horizontal axes, and heading, about down, the same way the filter's `Validity` reports it.
 The figures are drawn by `tools/replay_report.py` from the run's `<out>.error.csv`, which holds

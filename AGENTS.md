@@ -508,7 +508,7 @@ three things a copy would have carried over:
 ## Commands
 
 ```bash
-cargo test --all-targets          # unit tests: inline `mod tests` across src/, and in examples/replay.rs
+cargo test --all-targets          # unit tests: inline `mod tests` across src/, and in examples/replay/main.rs
 cargo test --doc                  # README.md (included by lib.rs), plus the item doctests
 cargo test --lib eskf::tests::a_gap_is_coasted_on_the_estimated_velocity_and_the_time_still_passes  # one test
 cargo fmt --all -- --check
@@ -558,7 +558,7 @@ python3 tools/validation.py --self-test   # the page renderer's fixtures
 
 Real PX4 logs are fetched, not committed (`data/logs/` is gitignored). `data/manifest.txt`
 pins each by sha256 *and* by expectations (`rate=`, `window=`, `refused=`, `transitions=`,
-`status=`) matched against the `summary` line `examples/replay.rs` prints.
+`status=`) matched against the `summary` line `examples/replay/main.rs` prints.
 
 ```bash
 data/fetch.sh --venv              # once, for --check; .venv is gitignored and found automatically
@@ -673,7 +673,7 @@ nothing else on the line would notice if it started — a floored variance only 
 more conservative, so it moves neither `rejected=` nor `transitions=`. A key whose interesting
 value is the one it does not have still earns its place. `r_policy=` is odder still and earns it
 differently: a choice rather than a count, `raw` on every manifest entry and `px4` only under
-`--r-policy px4`, so it cannot regress and fixtures in `examples/replay.rs` carry the guard
+`--r-policy px4`, so it cannot regress and fixtures in `examples/replay/main.rs` carry the guard
 instead. What it buys is that a published figure names the `R` policy that produced it, which the
 comparison against EKF2 (`data/ekf2.txt`) runs under both.
 Renaming or removing a key breaks every
@@ -722,7 +722,7 @@ The comparison itself is shared, not copied: `data/expect.sh` owns `key=value`, 
 `data/scenarios.txt`, `data/fetch.sh --check` for `data/manifest.txt`. So the pair syntax is one
 language, and the two-sided bound a statistic wants landed as one arm in one `case` rather than as
 a second comparator, which `data/anees.sh` also reads `data/anees.txt` with. It carries fixtures with
-literal verdicts for the same reason `examples/replay.rs` does — the expectations in both files
+literal verdicts for the same reason `examples/replay/main.rs` does — the expectations in both files
 were produced by the harness they guard, so a comparator that waves something through turns a
 miscount into the baseline everything later is measured against.
 
@@ -927,7 +927,7 @@ number typed into a template is the one `--check` cannot re-derive, so it is the
 state a scenario's parameters in prose, never a result.
 
 **Say which file a published number came from.** A score is a claim about a specific run, and
-`examples/replay.rs` refuses a truth file whose `#` header names a different scenario or seed than
+`examples/replay/main.rs` refuses a truth file whose `#` header names a different scenario or seed than
 the log's. That check exists because the obvious guard does not work: an epoch counter that fails
 to match truth rows catches nothing when a 50 Hz log lands on every fourth row of 200 Hz truth, so
 the wrong file scored cleanly and published a figure with nothing tying it to what produced it.
@@ -1058,7 +1058,7 @@ the declination table, and CI builds and tests without it too.
   their evidence", holds the measurement.
 - `src/health.rs` — `Propagation` (`#[must_use]`), `Fusion` (not, deliberately — see its doc
   comment), `SourceHealth`, `Status`.
-- `examples/replay.rs` — the normalized CSV format and the offline harness. Two output files:
+- `examples/replay/main.rs` — the normalized CSV format and the offline harness. Two output files:
   one row per IMU epoch, and one row per `fuse_*` call in `<out>.fusion.csv` with the gates in
   its header. `ν` and `S` are columns without values until the update of (23)–(28) publishes
   them — the harness must not compute them itself, which is "one statistic, one implementation"
@@ -1227,9 +1227,9 @@ Every source touches the same ten places, and three of them are public:
   `Correlation`: a `τ` for (24′), from the source's `acf1_` on the corpus read as white, and the
   source's `fuse_*` calls `.correlated(...)` on its observation.
 - `Validity` and `predicted_validity`: decide whether the source constrains a quantity, and say so.
-- A `summary` key in `examples/replay.rs`, pinned per log in `data/manifest.txt`, plus a corpus log
+- A `summary` key in `examples/replay/main.rs`, pinned per log in `data/manifest.txt`, plus a corpus log
   that uniquely covers the source — or an honest note that none does.
-- `AXES` in `examples/replay.rs`, naming the source's innovation components, since `Innovation`
+- `AXES` in `examples/replay/main.rs`, naming the source's innovation components, since `Innovation`
   carries values and variances and no names for them. Twenty-three consistency keys are generated
   from it and `SOURCES` together, so a source added to one and not the other is an index out of range
   rather than a missing key — caught by an `assert_eq!` in the same file, which is the weakest
@@ -1240,21 +1240,21 @@ Every source touches the same ten places, and three of them are public:
 - The comparison with EKF2, if EKF2 judges the source: its test ratio in `EKF2_RATIOS`
   (`tools/ulog2replay.py`) and `REFERENCE_KINDS["ratio"]` (`tools/replay_report.py`), the pairing
   in `RATIO_OF` (`tools/agreement.py`), and a new `rej_s_` key in every line of `data/ekf2.txt`.
-  If the source reports its own `R` and EKF2 floors it, `RPolicy` in `examples/replay.rs` owns the
+  If the source reports its own `R` and EKF2 floors it, `RPolicy` in `examples/replay/main.rs` owns the
   floor. Harness keys reach the table by prefix (`rejected_`, `nis_`), so those need nothing.
 - `examples/simulate.rs`, which has to model it — an error table, a `sample`, a row — and the
   column legend its generated headers carry. Nothing connects these two to the replay format at
   compile time, which is why they are on this list rather than left to be discovered.
 
 The *truth* format is the one coupling of this kind that is guarded: `write_truth_header` in
-`examples/simulate.rs` and `TRUTH_COLUMNS` in `examples/replay.rs` are still two lists, but the
+`examples/simulate.rs` and `TRUTH_COLUMNS` in `examples/replay/main.rs` are still two lists, but the
 scorer checks the header against its own and refuses the file, so a column renamed or reordered
 stops the run instead of scoring one quantity against another. A new *state* — not a new source —
 is what moves those columns.
 
 The converter's `#` header lines are the other coupling, and they are guarded less. Each is an
 f-string in `tools/ulog2replay.py` and a parser elsewhere: `# Magnetic declination` and
-`# GNSS noise parameters` read by `examples/replay.rs`, `Estimator:`, `EKF2 position in replay
+`# GNSS noise parameters` read by `examples/replay/main.rs`, `Estimator:`, `EKF2 position in replay
 frame:` and `EKF2 aiding:` by `tools/replay_report.py`, which also reads the bounds off
 `tools/anees.py --series`'s `# fusion-nav anees for` line. Both sides carry fixtures on the same literal
 strings, so rewording one side fails a self-test; nothing stops the two sets of literals drifting

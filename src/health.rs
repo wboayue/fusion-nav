@@ -1135,7 +1135,7 @@ pub struct Diagnostics {
     ///
     /// Not counted per state, which would say *which* variance collapsed: a count that
     /// should be zero needs only to be non-zero to be worth reading, and the `sigma_*`
-    /// columns of `examples/replay.rs` name the state as soon as anybody looks.
+    /// columns of `examples/replay/main.rs` name the state as soon as anybody looks.
     ///
     /// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#floor
     pub floored: u32,

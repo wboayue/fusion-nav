@@ -7,7 +7,7 @@
 
     uv run tools/ulog2replay.py data/logs/flight.ulg -o data/logs/flight.csv
 
-The output feeds `cargo run --example replay -- <csv>`. See `examples/replay.rs`
+The output feeds `cargo run --example replay -- <csv>`. See `examples/replay/main.rs`
 for the schema.
 
 With --reference, EKF2's own solution and innovation test ratios are written to a
@@ -1251,7 +1251,7 @@ def table_declination(latitude, longitude):
 
 
 def origin_note(origin):
-    """The header line naming where the replay's NED frame sits, which `examples/replay.rs`
+    """The header line naming where the replay's NED frame sits, which `examples/replay/main.rs`
     reads to look its own magnetic model up at the site (`declination_model=`) and, under
     `--declination model`, hands the filter as its origin.
 
@@ -1280,7 +1280,7 @@ ANTENNA_FIELDS = ("antenna_offset_x", "antenna_offset_y", "antenna_offset_z")
 
 
 def antenna_note(params, gnss):
-    """The header line `examples/replay.rs` reads every GNSS fix's lever arm from: the
+    """The header line `examples/replay/main.rs` reads every GNSS fix's lever arm from: the
     antenna's offset from the IMU in body axes, forward, right, down, as the log's EKF2
     applied it, and where each half came from.
 
@@ -1313,7 +1313,7 @@ def antenna_note(params, gnss):
 
 
 def declination_note(params, origin):
-    """The header line `examples/replay.rs` reads its magnetic declination from.
+    """The header line `examples/replay/main.rs` reads its magnetic declination from.
 
     The declination the log's own EKF2 applied, by its own rule
     (`Ekf::getMagDeclination`, EKF/aid_sources/magnetometer/mag_control.cpp:617-636 at

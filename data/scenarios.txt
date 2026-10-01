@@ -1,6 +1,6 @@
 # scenario  seed  ceilings
 #
-# Ceilings on the `score` line `examples/replay.rs` prints for each scenario of
+# Ceilings on the `score` line `examples/replay/main.rs` prints for each scenario of
 # `examples/simulate.rs`, asserted by `data/bench.sh` in CI. The simulator is the only source
 # with truth to score against, so this file is where the crate says how accurate the filter is
 # rather than how self-consistent -- `data/manifest.txt` is the other half, on real logs with

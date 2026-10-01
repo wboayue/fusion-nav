@@ -56,4 +56,5 @@ proptest = { version = "1.11.0", default-features = false, features = ["alloc", 
 # (`declination_model=`), so it needs the model built in.
 [[example]]
 name = "replay"
+path = "examples/replay/main.rs"
 required-features = ["magnetic-model"]
