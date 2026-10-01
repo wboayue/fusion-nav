@@ -83,7 +83,10 @@ DEFAULT_GNSS_HEADING_VARIANCE = 0.01  # rad^2, sigma = 0.1 rad
 # A *_timestamp_relative of INT32_MAX means "no sample in this message".
 INVALID_RELATIVE = 2_147_483_647
 
-GNSS_TOPICS = ["sensor_gps", "vehicle_gps_position"]
+# The receiver topic EKF2 subscribes to (`_vehicle_gps_position_sub`,
+# src/modules/ekf2/EKF2.hpp:501 at c4e4ef98), and the per-receiver one the sensors
+# module republishes it from. `gnss_stream` chooses between them.
+GNSS_TOPICS = ["vehicle_gps_position", "sensor_gps"]
 
 # Geodetic field spellings, newest first: (fields, lat/lon scale, alt scale).
 # v1.14ish moved from scaled integers to plain floats and renamed everything.
@@ -276,8 +279,63 @@ def gnss_yaw_enabled(params):
     return bool(int(params.get("EKF2_AID_MASK", 0)) & (1 << 7))
 
 
+def logged_rate(dataset):
+    """Messages per second the log kept of `dataset`, or 0 below two messages."""
+    t = dataset.data["timestamp"]
+    span = (int(t[-1]) - int(t[0])) * 1e-6 if len(t) > 1 else 0.0
+    return (len(t) - 1) / span if span > 0 else 0.0
+
+
+def gnss_stream(ulog):
+    """The receiver stream EKF2 fused, at the most complete rate the log kept it, and why.
+
+    EKF2 fuses `vehicle_gps_position`, but the default logger profile keeps it at 10 Hz
+    and `sensor_gps` at 1 Hz (src/modules/logger/logged_topics.cpp:148,243 at c4e4ef98),
+    while some logs keep the opposite (`a299e722`: `sensor_gps` at 10 Hz, its
+    `vehicle_gps_position` at 2). A `sensor_gps` instance is taken only where it is logged
+    faster *and* holds every `vehicle_gps_position` message, timestamp and latitude alike:
+    then both are one receiver's stream and it is the more complete copy. A blend, or a
+    selector switching receivers, fails that and leaves EKF2's own topic. Content rather
+    than `device_id` or `SENS_GPS_MASK`, because a field name does not pin its meaning
+    across versions, and `a299e722`'s `vehicle_gps_position` logs no `device_id` at all.
+
+    Returns `(dataset, label)`, the label naming the instance, its rate and the other
+    topic's, or `(None, None)` with no receiver topic.
+    """
+    fused = next((d for d in ulog.data_list
+                  if d.name == "vehicle_gps_position" and getattr(d, "multi_id", 0) == 0), None)
+    receivers = [d for d in ulog.data_list if d.name == "sensor_gps"]
+
+    def named(d):
+        return f"{d.name}[{getattr(d, 'multi_id', 0)}]" if d.name == "sensor_gps" else d.name
+
+    def described(d, others):
+        rates = ", ".join(f"{named(o)} {logged_rate(o):.2f} Hz" for o in others) or "no other"
+        return f"{logged_rate(d):.2f} Hz; {rates}"
+
+    if fused is None:
+        if not receivers:
+            return None, None
+        chosen = max(receivers, key=logged_rate)
+        rest = [d for d in receivers if d is not chosen]
+        return chosen, f"{named(chosen)} ({described(chosen, rest)}; no vehicle_gps_position)"
+    lat = next((f for f in ("latitude_deg", "lat") if f in fused.data), None)
+
+    def messages(d):
+        return set(zip((int(v) for v in d.data["timestamp"]), (float(v) for v in d.data[lat])))
+
+    wanted = messages(fused) if lat is not None else None
+    for receiver in sorted(receivers, key=logged_rate, reverse=True):
+        if (wanted is not None and lat in receiver.data
+                and logged_rate(receiver) > logged_rate(fused) and wanted <= messages(receiver)):
+            rest = [fused] + [d for d in receivers if d is not receiver]
+            return receiver, (f"{named(receiver)} ({described(receiver, rest)}; holds every "
+                              "vehicle_gps_position message)")
+    return fused, f"{named(fused)} ({described(fused, receivers)}; the topic EKF2 fused)"
+
+
 def convert_gnss(ulog, rows, used, heading_variance=DEFAULT_GNSS_HEADING_VARIANCE):
-    dataset = pick(ulog, GNSS_TOPICS)
+    dataset, label = gnss_stream(ulog)
     if dataset is None:
         print("warning: no GNSS topic; position and velocity aiding omitted", file=sys.stderr)
         return None
@@ -358,7 +416,7 @@ def convert_gnss(ulog, rows, used, heading_variance=DEFAULT_GNSS_HEADING_VARIANC
 
     if origin is None:
         print("warning: no 3D GNSS fix in the log", file=sys.stderr)
-    tally(rows, before, used, "gnss", f"{dataset.name} ({lat_f})")
+    tally(rows, before, used, "gnss", f"{label}, fields {lat_f}")
     return origin
 
 
@@ -519,7 +577,7 @@ def convert(path, baro_variance, mag_variance, heading_variance=DEFAULT_GNSS_HEA
     parameters = [
         origin_note(origin),
         declination_note(ulog.initial_parameters, origin and origin[:2]),
-        antenna_note(ulog.initial_parameters, pick(ulog, GNSS_TOPICS)),
+        antenna_note(ulog.initial_parameters, gnss_stream(ulog)[0]),
         gnss_noise_note(ulog.initial_parameters),
         delays_note,
     ]
@@ -1408,7 +1466,7 @@ def screen_gnss(dataset):
     A constant `eph` and satellite count is the tell of a simulated receiver: a
     real one's accuracy moves with the sky it sees.
     """
-    keys = ("gnss", "fix_max", "eph_min", "eph_max", "sats_min", "sats_max")
+    keys = ("gnss", "gnss_hz", "fix_max", "eph_min", "eph_max", "sats_min", "sats_max")
     if dataset is None:
         return dict.fromkeys(keys, "none")
     fix = dataset.data.get("fix_type")
@@ -1426,6 +1484,7 @@ def screen_gnss(dataset):
     sats_min, sats_max = span(sats, lambda v: f"{v:.0f}")
     return dict(zip(keys, (
         dataset.name,
+        f"{logged_rate(dataset):.2f}",
         "none" if fix is None else f"{max(int(f) for f in fix)}",
         eph_min, eph_max, sats_min, sats_max,
     )))
@@ -1514,7 +1573,7 @@ def screen(ulog):
         "duration": f"{(ulog.last_timestamp - ulog.start_timestamp) * 1e-6:.0f}",
     }
     keys.update(screen_imu_rate(pick(ulog, ["sensor_combined"])))
-    keys.update(screen_gnss(pick(ulog, GNSS_TOPICS)))
+    keys.update(screen_gnss(gnss_stream(ulog)[0]))
     keys.update(screen_vibration(ulog))
     keys["vib_metric"] = vibration_metric(info.get("ver_sw_release", 0))
     keys["ekf2"] = layout_label(key)
@@ -1524,10 +1583,11 @@ def screen(ulog):
 
 
 class Fixture:
-    """A stand-in for a pyulog dataset: a name and a dict of field arrays."""
+    """A stand-in for a pyulog dataset: a name, an instance and a dict of field arrays."""
 
-    def __init__(self, name, **fields):
+    def __init__(self, name, multi_id=0, **fields):
         self.name = name
+        self.multi_id = multi_id
         self.data = fields
 
 
@@ -1599,16 +1659,43 @@ def self_test():
 
     # --screen. A receiver's span is taken over its 3D fixes only: the 2D fix at
     # eph 9.0 is outside it, and counting it would make a constant receiver vary.
-    gps = Fixture("sensor_gps", timestamp=[0, 1, 2, 3], fix_type=[2, 3, 3, 6], eph=[9.0, 0.9, 0.9, 0.9],
-                  satellites_used=[4, 10, 10, 10])
+    second = 1_000_000
+    gps = Fixture("sensor_gps", timestamp=[0, second, 2 * second, 3 * second], fix_type=[2, 3, 3, 6],
+                  eph=[9.0, 0.9, 0.9, 0.9], satellites_used=[4, 10, 10, 10])
     expect("constant receiver", screen_gnss(gps),
-           {"gnss": "sensor_gps", "fix_max": "6", "eph_min": "0.90", "eph_max": "0.90",
+           {"gnss": "sensor_gps", "gnss_hz": "1.00", "fix_max": "6", "eph_min": "0.90", "eph_max": "0.90",
             "sats_min": "10", "sats_max": "10"})
-    gps = Fixture("vehicle_gps_position", timestamp=[0, 1], eph=[1.4, 2.1])
+    gps = Fixture("vehicle_gps_position", timestamp=[0, second], eph=[1.4, 2.1])
     expect("receiver with no fix_type", screen_gnss(gps),
-           {"gnss": "vehicle_gps_position", "fix_max": "none", "eph_min": "1.40",
+           {"gnss": "vehicle_gps_position", "gnss_hz": "1.00", "fix_max": "none", "eph_min": "1.40",
             "eph_max": "2.10", "sats_min": "none", "sats_max": "none"})
     expect("no receiver", screen_gnss(None)["eph_min"], "none")
+
+    # Which receiver stream is fused. Five messages a second against one; the slow
+    # topic's messages are a subset of the fast one's where the two are one stream.
+    def stream(name, stamps, lats, multi_id=0):
+        return Fixture(name, multi_id=multi_id, timestamp=[s * 200_000 for s in stamps],
+                       latitude_deg=lats)
+
+    fast = stream("vehicle_gps_position", range(11), [float(k) for k in range(11)])
+    slow = stream("sensor_gps", range(0, 11, 5), [0.0, 5.0, 10.0])
+    expect("EKF2's topic, kept faster", gnss_stream(FixtureLog(slow, fast))[0], fast)
+    fast_receiver = stream("sensor_gps", range(11), [float(k) for k in range(11)])
+    slow_fused = stream("vehicle_gps_position", range(0, 11, 5), [0.0, 5.0, 10.0])
+    expect("a faster receiver holding every fused message",
+           gnss_stream(FixtureLog(slow_fused, fast_receiver))[0], fast_receiver)
+    # A blend: the fused stream's latitudes are neither receiver's, so EKF2's topic stays
+    # however slowly it was logged. Dropping the containment test takes the receiver here.
+    blend = stream("vehicle_gps_position", range(0, 11, 5), [0.0, 5.5, 10.0])
+    expect("a blend keeps EKF2's topic", gnss_stream(FixtureLog(blend, fast_receiver))[0], blend)
+    # The second receiver holds none of the fused stream; the first holds it all.
+    other = stream("sensor_gps", range(11), [k + 0.5 for k in range(11)], multi_id=1)
+    expect("the instance that holds it", gnss_stream(FixtureLog(other, slow_fused, fast_receiver))[0],
+           fast_receiver)
+    expect("only a receiver topic", gnss_stream(FixtureLog(slow))[0], slow)
+    expect("no receiver topic", gnss_stream(FixtureLog()), (None, None))
+    expect("the label", gnss_stream(FixtureLog(slow, fast))[1],
+           "vehicle_gps_position (5.00 Hz; sensor_gps[0] 1.00 Hz; the topic EKF2 fused)")
     expect("vtol regime", screen_regime(status, vtol), {"type": "vtol", "mode_changes": "4"})
     expect("vtol with no regime logged", screen_regime(status, None),
            {"type": "vtol", "mode_changes": "none"})
