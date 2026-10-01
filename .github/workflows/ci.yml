@@ -28,6 +28,8 @@ jobs:
       - run: cargo clippy --all-targets --no-deps --features defmt
       # Without the magnetic model, whose absence changes what `Eskf::place_origin` reads.
       - run: cargo clippy --all-targets --no-deps --no-default-features
+      # The benchmark member, which no root build selects.
+      - run: cargo clippy -p bench --all-targets --no-deps
       # `tools/check-anchors.sh` owns what this checks and why; its fixtures run first for
       # the reason `data/expect.sh --self-test` does below. The README's snippets are
       # checked by `cargo test --doc`, through the `include_str!` in `src/lib.rs`.
@@ -53,6 +55,9 @@ jobs:
       # answers with its own tests.
       - run: data/expect.sh --self-test
       - run: data/bench.sh
+      # The host benchmarks, each run once: they keep building, and each asserts the call it
+      # times is fused rather than refused. Timings are not gated on a shared runner (#42).
+      - run: cargo bench -p bench -- --test
 
   anees:
     name: anees
