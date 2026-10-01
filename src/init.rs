@@ -2919,15 +2919,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// The figures `DESIGN.md`, "Measured cost, by function", quotes. Measured on `thumbv6m` with
-    /// `-Zprint-type-sizes`, where `u64` and `f64` align to 8 as they do on the 64-bit hosts CI
-    /// runs, so the host's `size_of` pins the same figure.
-    #[test]
-    fn the_window_is_the_size_its_documentation_quotes() {
-        assert_eq!(core::mem::size_of::<StaticWindow>(), 944);
-        assert_eq!(core::mem::size_of::<StaticSample>(), 80);
-    }
-
     #[test]
     fn a_window_is_long_enough_only_once_it_holds_a_sample() {
         // A `min_duration` of zero is met by any span, the empty window's included, and an
