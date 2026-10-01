@@ -316,7 +316,7 @@ application reaching every entry point links:
 
 | | `thumbv6m` `3` | `thumbv6m` `s` | `thumbv7em` `3` | `thumbv7em` `s` |
 | --- | --- | --- | --- | --- |
-| `.text` | 167570 | 107754 | 183772 | 114132 |
+| `.text` | 167578 | 107786 | 183820 | 114116 |
 | of which `libm` | 19532 | 10432 | 20752 | 12064 |
 | of which `compiler_builtins` | 10288 | 10334 | 7558 | 7674 |
 | of which `nalgebra`, out of line | 15348 | 2056 | 4450 | 1454 |
