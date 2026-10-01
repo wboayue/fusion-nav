@@ -297,7 +297,7 @@ as the equation reads until #41's figures say a target needs them.
 #### Sizes
 
 `P` is 900 bytes, so it is passed by reference, and `Covariance::to_rows` is a copy of
-that size on the caller's stack. `StaticWindow` is 936 bytes at any rate and length
+that size on the caller's stack. `StaticWindow` is 944 bytes at any rate and length
 (`the_window_is_the_size_its_documentation_quotes` pins it), where a buffered 2 s window at 400 Hz
 is 800 `StaticSample`s of 80 bytes, 64 KB. The history of (23′) is 1.5 KB of `Eskf`.
 

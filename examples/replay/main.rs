@@ -1351,7 +1351,7 @@ impl Replay {
         self.window_samples = range.len();
         let window = self.window(range.clone(), dt)?;
         let alignment = self.filter.initialize(&window)?;
-        self.noise = window.noise(&self.filter.config().init);
+        self.noise = window.noise(self.filter.config());
         self.alignment = Some(alignment);
         self.initialized_at = Some(t);
         // The filter's own rule: one magnetometer sample anywhere in the window observes

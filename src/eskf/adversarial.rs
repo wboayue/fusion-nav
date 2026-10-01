@@ -450,9 +450,9 @@ fn begin(filter: &mut Eskf, start: &Start) -> Result<(), TestCaseError> {
                     );
                 }
             }
-            let _ = window.is_at_rest(&filter.config().init);
-            let _ = window.is_long_enough(&filter.config().init);
-            let _ = window.noise(&filter.config().init);
+            let _ = window.is_at_rest(filter.config());
+            let _ = window.is_long_enough(filter.config());
+            let _ = window.noise(filter.config());
             let classified = filter.alignment_of(&window);
             let initialized = filter.initialize(&window);
             prop_assert_eq!(

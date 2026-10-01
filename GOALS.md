@@ -201,7 +201,7 @@ reads and commits.
 | GNSS `R` | the receiver; bounding it is the caller's (`PositionNoise::clamped`), and the replay harness fuses it raw (`r_policy=`), or at the log's own EKF2 floors to compare with EKF2 (`--r-policy px4`) | per measurement |
 | `correlation`, how long each source's error persists | `τ = −T / ln ρ` from a replay log's `acf1_` per source, read with every measurement fused as white | offline (#51); the corpus's medians until then |
 | `baro_offset_walk`, the barometric offset's drift | a barometer's drift against GNSS height over a replay log | offline (#51); PX4's 0.13 until then |
-| local gravity `γ` | the origin's latitude, by the WGS-84 gravity formula | the offline tool (#51); a constant in the filter, see the decision below |
+| local gravity `γ` | the site's latitude and height, by the WGS-84 normal gravity formula (`Geodetic::normal_gravity`) | offline, `--derive`; `Config::gravity`, see the decision below |
 | magnetic declination | PX4's WMM table at the GNSS origin, at the table's fixed epoch | the filter, where it places its origin; the `magnetic-model` feature, on by default, for its 2.5 KB of flash |
 
 And what stays with the user, because no amount of data yields it:
@@ -667,7 +667,7 @@ measurement's time against a history keeps the verdict synchronous and the publi
 one `P` describes, for 1.5 KB of history on `Eskf` and, per aged measurement, one `A` and two
 products of `H` with it. The stack high-water mark is still `update::<3>`.
 
-### Local gravity as a constant, derived offline
+### Local gravity configured, derived offline
 
 γ varies by about 0.5 % between the equator and the poles and falls roughly 3 µm s⁻² per metre of
 altitude. At the equator the WGS-84 standard 9.80665 overstates it by about 0.03 m s⁻², which
@@ -681,16 +681,20 @@ boundary: *derived at a defined moment, reported, never silently retuned*. The o
 the first GNSS fix, which can arrive after propagation has begun, so deriving γ there would change
 a propagation constant mid-flight.
 
-**Decided:** `config::GRAVITY` stays the WGS-84 constant, and γ is derived where there is a defined
-moment for it: the offline tool that prints a `Config` from a log (#51), reading the log's own
-origin. The alternative considered and rejected was deriving it at origin placement only when the
-origin precedes the first `predict`: defensible, but two code paths and two possible values of a
-constant, for 0.03 m s⁻² at the extreme. A `Config` field was rejected outright as the thing
-differentiator 7 exists to prevent.
+**Decided (#51):** γ is `Config::gravity`, defaulting to the WGS-84 standard value, and it is
+derived where there is a defined moment for it: before the filter exists, from the site.
+`Geodetic::normal_gravity` is the WGS-84 normal gravity formula, and the replay harness's
+`--derive` prints it from a log's origin. A field is what lets the derivation reach the filter; a
+comment beside a constant would be a derivation nothing reads. It is the shape `correlation` and
+`baro_offset_walk` already have, a value with a working default that the offline tool fills, so it
+demands nothing; a field was first rejected as the demand differentiator 7 exists to prevent,
+which holds only for a field nothing derives. The alternative
+considered and rejected is deriving it at origin placement when the origin precedes the first
+`predict`: two code paths and two possible values of a constant, for 0.03 m s⁻² at the extreme.
 
-The cost is that a vehicle flying far from 45° latitude carries a small constant gravity error
-until someone runs the offline tool, and that the error shows up in the accelerometer bias estimate
-rather than anywhere labelled gravity.
+The cost is that a vehicle flying far from 45° latitude whose integrator never derives a `Config`
+carries that small error, and that it shows up in the accelerometer bias estimate rather than
+anywhere labelled gravity.
 
 ### Magnetic declination from a table, read where the origin is placed
 
@@ -701,7 +705,7 @@ should find it itself, and the origin is where it learns the site.
 
 **Decided:** the filter reads PX4's WMM table (`src/magnetic.rs`) wherever it places its origin,
 unless the caller has set a declination, which then holds for good. This is the rule local gravity
-above turned down, a constant changed where the origin arrives, and the two differ in size and in
+above turned down, a value changed where the origin arrives, and the two differ in size and in
 what the change touches. Gravity's error is 0.03 m s⁻² at the extreme, and deriving it mid-flight
 would change a propagation constant. Declination's is ten degrees, and it changes only what a
 magnetic heading means, so a heading the magnetometer alone referred to north is turned with it

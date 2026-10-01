@@ -24,6 +24,17 @@ const WGS84_A: f64 = 6_378_137.0;
 /// constants keep them, so that precision stays consistent between parameters.
 const WGS84_E2: f64 = 6.694_379_990_141e-3;
 
+/// WGS84 flattening, NGA.STND.0036 v1.0.0 Table 3.1: a defining parameter, as its reciprocal.
+const WGS84_F: f64 = 1.0 / 298.257_223_563;
+
+/// WGS84 normal gravity at the equator, m s⁻², and Somigliana's constant `k`,
+/// NGA.STND.0036 v1.0.0 Table 3.6.
+const WGS84_GAMMA_E: f64 = 9.780_325_335_9;
+const WGS84_K: f64 = 1.931_852_652_458e-3;
+
+/// WGS84 normal gravity formula constant `m = ω²a²b/GM`, NGA.STND.0036 v1.0.0 Table 3.6.
+const WGS84_M: f64 = 3.449_786_506_841e-3;
+
 /// A position on the WGS84 ellipsoid: latitude, longitude, and height.
 ///
 /// `f64` throughout, where the rest of the crate is `f32`: at a latitude of 50° an `f32`
@@ -114,6 +125,27 @@ impl Geodetic {
     #[cfg(feature = "magnetic-model")]
     pub fn magnetic_declination(self) -> Option<crate::units::Radians> {
         crate::magnetic::declination_at(self)
+    }
+
+    /// WGS84 normal gravity here, m s⁻²: the value [`Config::gravity`](crate::Config::gravity)
+    /// is configured with for a site.
+    ///
+    /// Somigliana's closed formula on the ellipsoid, NGA.STND.0036 v1.0.0 equation (4-1), carried
+    /// to the height by the second-order series of (4-3), which the standard gives for small
+    /// heights: it is within a few µm s⁻² of the exact (4-4) at the altitudes a vehicle
+    /// navigates, against the 0.03 m s⁻² the latitude moves it. Not a number for a coordinate that
+    /// is not one.
+    pub fn normal_gravity(self) -> f32 {
+        let sin_phi = ComplexField::sin(self.latitude);
+        let sin2 = sin_phi * sin_phi;
+        // (4-1)
+        let surface =
+            WGS84_GAMMA_E * (1.0 + WGS84_K * sin2) / ComplexField::sqrt(1.0 - WGS84_E2 * sin2);
+        // (4-3)
+        let h = self.height;
+        let first = 2.0 / WGS84_A * (1.0 + WGS84_F + WGS84_M - 2.0 * WGS84_F * sin2) * h;
+        let second = 3.0 / (WGS84_A * WGS84_A) * h * h;
+        (surface * (1.0 - first + second)) as f32
     }
 
     /// Whether every coordinate is a number, neither NaN nor infinite.
@@ -300,6 +332,22 @@ fn prime_vertical_radius(sin_phi: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normal_gravity_meets_the_standards_own_figures() {
+        // NGA.STND.0036 Table 3.6: γe at the equator and γp at the pole, on the ellipsoid. The
+        // pole is not an input, so it checks (4-1) and its constants against each other.
+        let at = |latitude, height| Geodetic::from_degrees(latitude, 0.0, height).normal_gravity();
+        assert_eq!(at(0.0, 0.0), 9.780_325_f32);
+        assert_eq!(at(90.0, 0.0), 9.832_185_f32);
+        assert_eq!(at(-90.0, 0.0), at(90.0, 0.0));
+        // 45°: standard gravity, 9.80665, is a sea-level value near this latitude, not of it.
+        assert!((at(45.0, 0.0) - 9.806_2).abs() < 1e-4, "{}", at(45.0, 0.0));
+        // The free-air gradient, 3.086 mGal m⁻¹, over the first kilometre.
+        let lapse = at(45.0, 0.0) - at(45.0, 1000.0);
+        assert!((lapse - 3.086e-3).abs() < 1e-5, "{lapse}");
+        assert!(at(f64::NAN, 0.0).is_nan());
+    }
 
     /// Zurich, a mid latitude where east and north scales differ visibly.
     fn zurich() -> Geodetic {

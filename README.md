@@ -81,7 +81,7 @@ let antenna = Position::body(0.05, 0.0, -0.12);
 // rather than buffered. A short or moving window still starts the filter, as
 // `Alignment::Coarse`.
 let mut window = StaticWindow::new();
-while !window.is_long_enough(&filter.config().init) {
+while !window.is_long_enough(filter.config()) {
     // A refused sample (not a number, a clock that did not advance) leaves the window as
     // it was, so it is dropped and the window goes on without it.
     if let Err(_refusal) = window.push(next_still_sample()) { /* log it */ }
@@ -238,9 +238,9 @@ The window is a `StaticWindow`, which keeps what the samples reduce to rather th
 so it costs under a kilobyte at any IMU rate; a slice of buffered samples converts with
 `StaticWindow::try_from`. `alignment_of(window)` reports what `initialize` would make of a window
 without touching the filter, for an application that would rather wait for stillness than start
-coarsely. A window only grows, so one that moved is started over, and `window.is_at_rest(&init)`
+coarsely. A window only grows, so one that moved is started over, and `window.is_at_rest(&config)`
 says after every sample whether it has; `try_extend` folds in any iterator of samples.
-`window.noise(&init)` reports the white noise a still window measured on each sensor, a floor
+`window.noise(&config)` reports the white noise a still window measured on each sensor, a floor
 under what `Config::imu` and a barometer's `R` should be, never a replacement for them; it asks
 for no filter and changes nothing unless the application writes it into a `Config`.
 

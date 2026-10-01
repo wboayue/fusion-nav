@@ -157,7 +157,7 @@ fn run(board: &mut impl Board) -> ! {
 fn align(filter: &mut Eskf, board: &mut impl Board) {
     let mut window = StaticWindow::new();
     let (mut baro, mut mag) = (None, None);
-    while !window.is_long_enough(&filter.config().init) {
+    while !window.is_long_enough(filter.config()) {
         // A slower sensor's last reading is held across the samples it spans; the window
         // counts distinct readings, so holding it claims nothing.
         baro = board.baro().map(|(_, altitude)| altitude).or(baro);

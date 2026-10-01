@@ -10,18 +10,12 @@
 use crate::display::{Decimals, Fixed};
 use crate::units::{Meters, MetersPerSecond, MetersPerSecond2, Radians, RadiansPerSecond, Seconds};
 
-/// Standard gravity, m s⁻². The `γ` of equations (5) and (11).
+/// Standard gravity, m s⁻²: [`Config::gravity`]'s default.
 ///
-/// The WGS-84 standard value, and a constant rather than a derived or configured one. Local
-/// gravity varies by about 0.5 % between the equator and the poles, and the filter holds a
-/// geodetic origin whose latitude would give it — but the origin is placed by the first GNSS
-/// fix, which can arrive after propagation has begun, and a propagation constant that changes
-/// mid-flight is the self-retuning `GOALS.md`'s differentiator 7 rules out. The derivation
-/// belongs to the offline tool that prints a `Config` from a log (#51).
-///
-/// What the error costs: 0.03 m s⁻² at the equator, entering (11) as a systematic vertical
-/// specific-force error. The accelerometer bias state absorbs a constant offset, so it shows
-/// up as a bias estimate wrong by that much rather than as vertical drift.
+/// The WGS-84 standard value, which is local gravity at about 45° of latitude and sea level.
+/// Elsewhere it is off by up to 0.03 m s⁻² (0.3 %), entering (11) as a systematic vertical
+/// specific-force error that the accelerometer bias state absorbs, so it shows up as a bias
+/// estimate wrong by that much rather than as vertical drift.
 pub const GRAVITY: f32 = 9.806_65;
 
 /// Tilt uncertainty, per axis, at which a start counts as resolved: the bar behind
@@ -772,6 +766,17 @@ pub struct Config {
     pub init: Initialization,
     /// How good an estimate must be to count as valid.
     pub accuracy: Accuracy,
+    /// Local gravity `γ`, m s⁻²: the `g` of equations (5)–(8), (11) and (22′).
+    ///
+    /// Configured rather than read from the origin the filter places, because the origin
+    /// arrives with the first GNSS fix, which can come after propagation has begun, and a
+    /// propagation constant that changes mid-flight is the retuning differentiator 7 rules out
+    /// ([decision]). The value for a site is [`Geodetic::normal_gravity`](crate::Geodetic::normal_gravity)
+    /// at it, and the replay harness's `--derive` prints it from a log's origin. Bounded to
+    /// Earth's normal gravity, so a value in ft s⁻² or in units of `g` is refused.
+    ///
+    /// [decision]: https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#local-gravity-configured-derived-offline
+    pub gravity: f32,
     /// Largest `dt` [`Eskf::predict`](crate::Eskf::predict) will integrate one IMU sample
     /// over.
     ///
@@ -850,6 +855,7 @@ impl Default for Config {
             correlation: Correlation::default(),
             init: Initialization::default(),
             accuracy: Accuracy::default(),
+            gravity: GRAVITY,
             max_predict_dt: Seconds::from_secs(0.1),
             coast: Some(Coast::default()),
             baro_offset_walk: 0.13,
@@ -914,6 +920,7 @@ impl Config {
                     velocity,
                     horizon,
                 },
+            gravity,
             max_predict_dt,
             coast,
             baro_offset_walk,
@@ -972,6 +979,7 @@ impl Config {
         check("accuracy.position", position.as_meters(), Positive)?;
         check("accuracy.velocity", velocity.as_m_per_s(), Positive)?;
         check("accuracy.horizon", horizon.as_secs(), NonNegative)?;
+        check("gravity", gravity, ConfigBound::Gravity)?;
         check("max_predict_dt", max_predict_dt.as_secs(), Positive)?;
         if let Some(Coast {
             acceleration,
@@ -1058,6 +1066,9 @@ pub enum ConfigBound {
     /// Zero or more, where zero is a claim rather than a fault: a noise density (no noise of
     /// that kind), a window duration or stationarity tolerance, or a projection horizon.
     NonNegative,
+    /// Within Earth's normal gravity, 9.7 to 9.9 m s⁻²: the equator at 30 km to the poles at
+    /// sea level, with margin. Anything outside is a unit, not a site.
+    Gravity,
 }
 
 impl ConfigBound {
@@ -1066,6 +1077,7 @@ impl ConfigBound {
             && match self {
                 Self::Positive => value > 0.0,
                 Self::NonNegative => value >= 0.0,
+                Self::Gravity => (9.7..=9.9).contains(&value),
             }
     }
 }
@@ -1075,6 +1087,7 @@ impl core::fmt::Display for ConfigError {
         let bound = match self.bound {
             ConfigBound::Positive => "finite and positive",
             ConfigBound::NonNegative => "finite and not negative",
+            ConfigBound::Gravity => "Earth's normal gravity, 9.7 to 9.9",
         };
         let value = Fixed::new(self.value, Decimals::Three);
         write!(f, "config {} is {value}, and must be {bound}", self.field)
@@ -1157,7 +1170,7 @@ mod tests {
     /// bound it must meet. Written out as the struct literal names them, so a path that
     /// `validate` misspells is a failure here rather than a message nobody can act on.
     #[allow(clippy::type_complexity)]
-    const FIELDS: [(&str, fn(&mut Config, f32), ConfigBound); 37] = {
+    const FIELDS: [(&str, fn(&mut Config, f32), ConfigBound); 38] = {
         use ConfigBound::{NonNegative, Positive};
         [
             ("imu.gyro_white", |c, v| c.imu.gyro_white = v, NonNegative),
@@ -1317,6 +1330,7 @@ mod tests {
                 |c, v| c.accuracy.horizon = Seconds::from_secs(v),
                 NonNegative,
             ),
+            ("gravity", |c, v| c.gravity = v, ConfigBound::Gravity),
             (
                 "max_predict_dt",
                 |c, v| c.max_predict_dt = Seconds::from_secs(v),
@@ -1355,19 +1369,23 @@ mod tests {
     #[test]
     fn each_field_outside_its_bound_is_refused_by_name() {
         for (field, set, bound) in FIELDS {
-            let bad = [
-                f32::NAN,
-                f32::INFINITY,
-                f32::NEG_INFINITY,
-                -1.0,
-                -f32::MIN_POSITIVE,
-                0.0,
-                -0.0,
-            ];
+            let bad: &[f32] = match bound {
+                // Standard gravity in ft s⁻², and in units of `g`, either side of the band.
+                ConfigBound::Gravity => &[f32::NAN, f32::INFINITY, 0.0, 1.0, 9.69, 9.91, 32.174],
+                _ => &[
+                    f32::NAN,
+                    f32::INFINITY,
+                    f32::NEG_INFINITY,
+                    -1.0,
+                    -f32::MIN_POSITIVE,
+                    0.0,
+                    -0.0,
+                ],
+            };
             // Zero is a claim for a density, not a fault.
-            for value in bad
-                .into_iter()
-                .filter(|v| *v != 0.0 || bound == ConfigBound::Positive)
+            for &value in bad
+                .iter()
+                .filter(|v| **v != 0.0 || bound != ConfigBound::NonNegative)
             {
                 let mut config = Config::default();
                 set(&mut config, value);
@@ -1386,11 +1404,12 @@ mod tests {
         // The smallest value each bound admits, and a large one: the bound is the check, not
         // a range someone thought plausible.
         for (field, set, bound) in FIELDS {
-            let least = match bound {
-                ConfigBound::Positive => f32::MIN_POSITIVE,
-                ConfigBound::NonNegative => 0.0,
+            let (least, most) = match bound {
+                ConfigBound::Positive => (f32::MIN_POSITIVE, 1.0e6),
+                ConfigBound::NonNegative => (0.0, 1.0e6),
+                ConfigBound::Gravity => (9.7, 9.9),
             };
-            for value in [least, 1.0e6] {
+            for value in [least, most] {
                 let mut config = Config::default();
                 set(&mut config, value);
                 assert_eq!(config.validate(), Ok(()), "{field} = {value}");

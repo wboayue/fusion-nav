@@ -331,12 +331,12 @@ impl Eskf {
     /// reports, so the two cannot disagree.
     fn startup(&self, window: &StaticWindow) -> Result<Startup, InitError> {
         let measured = window.measured()?;
-        let alignment = init::classify(&measured, &self.config.init);
+        let alignment = init::classify(&measured, &self.config.init, self.config.gravity);
         // One answer to "was the vehicle on the ground", read by the gyroscope bias of
         // (7), the barometric reference of (30), and what this start establishes.
         // Measured from the window rather than read off `alignment`, because a window too
         // short to align an attitude from can still be a window of a parked vehicle.
-        let at_rest = init::at_rest(measured.peaks, &self.config.init);
+        let at_rest = init::at_rest(measured.peaks, &self.config.init, self.config.gravity);
         let state = init::nominal_state(&measured, self.declination, at_rest);
         let reference = at_rest.then(|| {
             window
@@ -402,12 +402,12 @@ impl Eskf {
         // velocity to difference against — a caller with GNSS in hand has a window, not
         // this entry point.
         let measured = window.measured()?;
-        let alignment = Alignment::Coarse(Coarse::not_stationary(&measured));
+        let alignment = Alignment::Coarse(Coarse::not_stationary(&measured, self.config.gravity));
         // The same rule `initialize` applies: the gyroscope bias is worth taking only
         // where the sample says the vehicle was on the ground, and one reading of a
         // stationary gyroscope is a noisier bias than a window's average but a better
         // one than zero.
-        let at_rest = init::at_rest(measured.peaks, &self.config.init);
+        let at_rest = init::at_rest(measured.peaks, &self.config.init, self.config.gravity);
         let state = init::nominal_state(&measured, self.declination, at_rest);
         // That reading establishes nothing, which is why it is not passed on as one. A
         // window shows rest by holding still over a span of time and this one spans none:
@@ -808,8 +808,7 @@ impl Eskf {
                 self.covariance,
                 self.offset,
                 dt,
-                &self.config.imu,
-                self.config.baro_offset_walk,
+                &self.config,
                 &coast,
             );
             return self.commit_step(coasted, Propagation::Coasted { dt });
@@ -831,14 +830,7 @@ impl Eskf {
             let interval = imu.longest_interval();
             return self.refuse_step(Propagation::InvalidInterval { interval });
         }
-        let propagated = propagate(
-            self.state,
-            self.covariance,
-            self.offset,
-            imu,
-            &self.config.imu,
-            self.config.baro_offset_walk,
-        );
+        let propagated = propagate(self.state, self.covariance, self.offset, imu, &self.config);
         self.commit_step(propagated, Propagation::Propagated)
     }
 
@@ -1239,7 +1231,7 @@ impl Eskf {
         // Mean rates over the age, rather than the last sample's: one sample's specific force
         // carries the airframe's vibration, which the velocities either side of it average out.
         let a_n = (self.state.velocity.vector() - past.velocity.vector()) / tau;
-        let a_b = now.inverse() * (a_n - propagate::gravity());
+        let a_b = now.inverse() * (a_n - propagate::gravity_vector(self.config.gravity));
         let a = propagate::error_dynamics(&self.state, omega.vector(), a_b);
         build(&past, omega).delayed(age, &a)
     }
@@ -2223,6 +2215,7 @@ impl Eskf {
             self.covariance,
             self.config.accuracy.horizon,
             &self.config.imu,
+            self.config.gravity,
         );
         let ahead = self.validity_of(&horizon);
 
@@ -2431,14 +2424,20 @@ impl Eskf {
     ) -> Result<Startup, InitError> {
         // The bias of (7) as committed, so that what it absorbed is not charged a second
         // time as motion the window could not vouch for; see `init::coarse_sigmas`.
-        let (sigma_tilt, sigma_yaw) =
-            init::attitude_sigmas(&self.config.init, alignment, measured, state.gyro_bias);
+        let (sigma_tilt, sigma_yaw) = init::attitude_sigmas(
+            &self.config.init,
+            alignment,
+            measured,
+            state.gyro_bias,
+            self.config.gravity,
+        );
         let covariance = init::initial_covariance(
             &self.config.init,
             &state.attitude,
             sigma_tilt,
             sigma_yaw,
-            measured.level_variance,
+            measured.level_scatter,
+            self.config.gravity,
         );
         let reference_finite = reference.flatten().is_none_or(|(altitude, offset)| {
             altitude.as_meters().is_finite() && offset.variance.is_finite()

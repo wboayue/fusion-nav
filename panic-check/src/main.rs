@@ -138,12 +138,12 @@ fn drive() {
         let _ = black_box(streamed.push(black_box(sample)));
     }
     let _ = black_box(streamed.span());
-    let _ = black_box(streamed.is_long_enough(black_box(&Initialization::default())));
-    let _ = black_box(streamed.is_at_rest(black_box(&Initialization::default())));
+    let _ = black_box(streamed.is_long_enough(black_box(&Config::default())));
+    let _ = black_box(streamed.is_at_rest(black_box(&Config::default())));
     let _ = black_box(streamed.try_extend(black_box(window)));
     let _ = black_box(StaticWindow::try_from(black_box(&window[..])));
     let _ = black_box(filter.alignment_of(black_box(&streamed)));
-    let noise = black_box(streamed.noise(black_box(&Initialization::default())));
+    let noise = black_box(streamed.noise(black_box(&Config::default())));
     let _ = black_box(noise.map(|n| (n.worst_gyro_white(), n.worst_accel_white())));
     let _ = black_box(filter.initialize(black_box(&streamed)));
     let _ = black_box(filter.initialize_coarse(black_box(sample.imu)));
@@ -246,6 +246,7 @@ fn drive() {
     let _ = black_box(fix.latitude_rad());
     let _ = black_box(fix.longitude_rad());
     let _ = black_box(fix.height());
+    let _ = black_box(black_box(fix).normal_gravity());
 
     surface(
         black_box(filter.state()),
