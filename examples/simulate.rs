@@ -77,11 +77,22 @@ use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-/// Standard gravity, m s⁻², down-positive in NED.
+/// Gravity at [`SITE`], m s⁻², down-positive in NED: WGS-84 normal gravity, Somigliana's
+/// formula carried to the height, NGA.STND.0036 v1.0.0 (4-1) and (4-3) with Table 3.1 and 3.6's
+/// constants.
 ///
-/// The same value `fusion_nav::GRAVITY` carries. A defined physical constant is not part of the
-/// model under test, so agreeing on it is not an inverse crime; agreeing on a rotation would be.
-const GRAVITY: f64 = 9.806_65;
+/// Written out here rather than taken from `fusion_nav::Geodetic::normal_gravity`, as nothing
+/// else is taken. A filter configured with the standard 9.80665 flies this site 5.5 mm s⁻²
+/// wrong, which is the error `Config::gravity` and `replay --derive` exist to remove, and a
+/// simulator that agreed with whichever value the filter held could not show it.
+fn gravity() -> f64 {
+    let (a, f, e2) = (6_378_137.0, 1.0 / 298.257_223_563, 6.694_379_990_141e-3);
+    let (gamma_e, k, m) = (9.780_325_335_9, 1.931_852_652_458e-3, 3.449_786_506_841e-3);
+    let sin2 = SITE[0].to_radians().sin().powi(2);
+    let h = SITE[2];
+    let surface = gamma_e * (1.0 + k * sin2) / (1.0 - e2 * sin2).sqrt();
+    surface * (1.0 - 2.0 / a * (1.0 + f + m - 2.0 * f * sin2) * h + 3.0 / (a * a) * h * h)
+}
 
 /// Where every scenario flies, latitude and longitude in degrees and ellipsoidal height in
 /// metres: east of Champaign, Illinois, chosen as the point where WMM2025 at 2026.0 gives the
@@ -406,7 +417,7 @@ fn resolve_in_body(c: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
 /// convention `Eskf::initialize` expects.
 fn specific_force(truth: &Truth) -> [f64; 3] {
     let a = truth.acceleration;
-    resolve_in_body(body_to_nav(truth.euler), [a[0], a[1], a[2] - GRAVITY])
+    resolve_in_body(body_to_nav(truth.euler), [a[0], a[1], a[2] - gravity()])
 }
 
 /// What the gyroscope reads: Euler rates mapped onto body axes for the ZYX sequence.
@@ -1691,7 +1702,7 @@ impl Report {
             self.opening_gyro = self.opening_gyro.max(norm(reading.gyro));
             self.opening_deviation = self
                 .opening_deviation
-                .max((norm(reading.accel) - GRAVITY).abs());
+                .max((norm(reading.accel) - gravity()).abs());
         }
     }
 

@@ -811,11 +811,9 @@ struct Consistency {
     /// `γ` as configured, and the three bounds, all from [`thresholds`].
     gamma: [f32; SOURCES.len()],
     bounds: [[f32; SOURCES.len()]; 3],
-    /// When the first and the last row of each source were recorded, so that a source's
-    /// lag-one autocorrelation can be read as a time constant at the interval it was taken
-    /// over.
-    first: [Option<f64>; SOURCES.len()],
-    last: [f64; SOURCES.len()],
+    /// When each source's rows were recorded, so that its lag-one autocorrelation can be read
+    /// as a time constant at the interval it was taken over.
+    times: [Vec<f64>; SOURCES.len()],
 }
 
 /// The percentiles [`Consistency`] counts exceedances at: the one `nis_over95_` reports, and the
@@ -831,8 +829,7 @@ impl Consistency {
             over: [[0; 3]; SOURCES.len()],
             gamma: thresholds(gates),
             bounds: PERCENTILES.map(|percentile| thresholds(Gates::at(percentile))),
-            first: [None; SOURCES.len()],
-            last: [0.0; SOURCES.len()],
+            times: Default::default(),
         }
     }
 
@@ -853,8 +850,7 @@ impl Consistency {
                 *count += 1;
             }
         }
-        self.first[source].get_or_insert(t);
-        self.last[source] = t;
+        self.times[source].push(t);
         for (axis, (&nu, &variance)) in innovation
             .values()
             .iter()
@@ -895,12 +891,18 @@ impl Consistency {
             .then(|| f64::from(self.over[source][which]) / self.rows(source) as f64)
     }
 
-    /// Mean interval between this source's recorded rows, seconds: the lag `acf1_` is taken
-    /// at. `None` below two rows.
+    /// The median interval between this source's recorded rows, seconds: the lag `acf1_` is
+    /// taken at. The median rather than the mean, because a source that bursts or drops out
+    /// stretches a mean past every interval it actually has: `2c42096b`'s GNSS height reads a
+    /// 1.545 s mean at a 1 s rate. `None` below two rows.
     fn interval(&self, source: usize) -> Option<f64> {
-        let rows = self.rows(source);
-        let first = self.first[source]?;
-        (rows >= 2).then(|| (self.last[source] - first) / (rows - 1) as f64)
+        let times = &self.times[source];
+        let mut steps: Vec<f64> = times.windows(2).map(|pair| pair[1] - pair[0]).collect();
+        if steps.is_empty() {
+            return None;
+        }
+        steps.sort_by(f64::total_cmp);
+        Some(steps[steps.len() / 2])
     }
 
     /// Lag-1 autocorrelation for a source, averaged over its axes.
@@ -4366,10 +4368,22 @@ mod tests {
     fn a_replay_under_set_names_what_it_set() {
         let log = still_start().mag(2.0);
         assert_eq!(key(&replay(&log).summary(), "set"), "none");
-        let mut config = Config::default();
-        settings::set(&mut config, "gravity", "9.79").expect("a field");
-        let (mut set, _) = drive_under(&log, config, RPolicy::Raw, None).expect("fixture replays");
-        set.sets = vec![("gravity".into(), "9.79".into())];
+        let options = Options {
+            sets: vec![("gravity".into(), "9.79".into())],
+            ..Options::default()
+        };
+        let mut set = prepare(&log.0, options.config().expect("a field"), &options, None)
+            .expect("a usable header");
+        super::drive(
+            &mut set,
+            &log.0,
+            Path::new("fixture"),
+            &mut Sinks {
+                epochs: &mut io::sink(),
+                fusions: &mut io::sink(),
+            },
+        )
+        .expect("fixture replays");
         assert_eq!(set.filter.config().gravity, 9.79);
         assert_eq!(key(&set.summary(), "set"), "gravity:9.79");
     }

@@ -183,7 +183,7 @@ gnss_heading     2  pos_h<=0.295 pos_v<=0.173 vel<=0.140 pos_h_max<=0.775 tilt<=
 lever_arm        2  pos_h<=0.294 pos_v<=0.172 vel<=0.140 pos_h_max<=0.763 tilt<=0.339 yaw<=0.299 ba<=0.03665 bg<=0.000336 in3s>=0.9900 nees_pos<=0.0896 nees_vel<=0.1053 nees_att<=0.0170 false_valid<=0 false_valid_att<=0 scored>=36600 recovered=0
 no_mag           3  pos_h<=0.246 pos_v<=0.212 vel<=0.141 pos_h_max<=0.566 tilt<=0.738 yaw<=6.690 ba<=0.06189 bg<=0.001461 in3s>=0.9900 nees_pos<=0.0794 nees_vel<=0.1060 nees_att<=0.2153 false_valid<=0 false_valid_att<=0 scored>=23600 recovered=0
 logging_dropout  2  pos_h<=0.296 pos_v<=0.153 vel<=0.143 pos_h_max<=2.761  tilt<=0.411 yaw<=0.397 ba<=0.03713 bg<=0.000367 in3s>=0.9900 nees_pos<=0.0853   nees_vel<=0.1060 nees_att<=0.0187 false_valid<=0   false_valid_att<=0   scored>=36360  recovered=0
-flight           8  pos_h<=1.797 pos_v<=0.310 vel<=0.530 pos_h_max<=4.436  tilt<=0.595 yaw<=8.040 ba<=0.08422 bg<=0.001354 in3s>=0.9900 nees_pos<=0.1179   nees_vel<=0.0867 nees_att<=0.1062 false_valid<=0   false_valid_att<=0   scored>=600  recovered=0 noise_gyro=0.000208..0.000338 noise_accel=0.001600..0.002600 noise_baro=0.2800..0.4400
+flight           8  pos_h<=1.797 pos_v<=0.325 vel<=0.537 pos_h_max<=4.483  tilt<=0.595 yaw<=8.040 ba<=0.08422 bg<=0.001354 in3s>=0.9900 nees_pos<=0.1179   nees_vel<=0.0867 nees_att<=0.1062 false_valid<=0   false_valid_att<=0   scored>=600  recovered=0 noise_gyro=0.000208..0.000338 noise_accel=0.001600..0.002600 noise_baro=0.2800..0.4400
 
 # (34)-(36) are what `yaw` reads now, and what it buys depends entirely on what the start knew.
 # Where yaw was never observed the magnetometer is the whole estimate: `moving_start` goes 3.228
@@ -367,3 +367,11 @@ flight           8  pos_h<=1.797 pos_v<=0.310 vel<=0.530 pos_h_max<=4.436  tilt<
 # other line is byte-identical, having no latency to place. The history holds 0.293 to 0.295 m
 # across a sweep of 50 to 300 ms and half to twice the speed; the alternatives measured on this
 # line, and the one refused on the corpus, are GOALS.md's, "Measurement latency".
+#
+# #51 flies the simulator at the WGS-84 normal gravity of its site, 9.80118 m/s^2, where it flew
+# at the standard 9.80665 its own origin line contradicted, so every scenario now carries the
+# 5.5 mm/s^2 that `Config::gravity`'s default is off by there. `ba` moves 0.1 to 0.8 % on every
+# line, inside the margin, and `flight` loosens past it: `pos_v` 0.306 m to 0.321, `vel` 0.524
+# to 0.531, `pos_h_max` 4.392 to 4.438. Replayed at the gravity `replay --derive` prints for the
+# site, `--set gravity=9.80118`, every line reads its old figures again to within 0.05 %, the
+# printed value's rounding.

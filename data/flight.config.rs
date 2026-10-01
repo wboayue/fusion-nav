@@ -44,8 +44,8 @@ fusion_nav::Config {
     accuracy: fusion_nav::Accuracy::default(), // the mission's
     // WGS-84 normal gravity at the log's origin, 40.1164° -88.3697° 200 m.
     gravity: 9.80118,
-    // IMU interval: median 20.0 ms, 99.9 % 20.0 ms, longest ordinary 20.0 ms (×1.1 margin), 0 dropouts of 600 intervals.
-    // The default covers it: a lower limit coasts no dropout the default does not.
+    // IMU interval after the start: median 20.0 ms, 99.9 % 20.0 ms, longest ordinary 20.0 ms; widest step among ordinary intervals 1.0x; 0 dropouts of 600 intervals.
+    // The default: 0.025 s with margin is under it, and no dropout falls between the two.
     max_predict_dt: fusion_nav::Seconds::from_secs(0.1),
     // The default: the log has no gap to coast.
     coast: Some(fusion_nav::Coast { acceleration: 2.0, rotation: 0.1 }),

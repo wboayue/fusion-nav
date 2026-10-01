@@ -13,55 +13,44 @@
 //! the gate's own `ε` for the percentiles, the verdicts the fusion file writes for the runs of
 //! rejections and the coasted gaps.
 //!
-//! Two kinds of figure, and the line between them is what keeps "one statistic, one
-//! implementation": what a *run* produced (innovations, verdicts) is read off a [`Replay`];
-//! what the *measurements* hold by themselves (IMU intervals, the barometer against GNSS
-//! height, the site) is read off the rows, and nothing else computes those.
+//! Three layers. The runs ([`derive`]) replay the log under the configurations a reading needs.
+//! The readings take a run or the rows and return numbers: what a *run* produced (innovations,
+//! verdicts) is read off a [`Replay`], what the *measurements* hold by themselves (IMU
+//! intervals, the barometer against GNSS height, the site) off the rows, and nothing else
+//! computes those. The rules (`*_from`) turn readings into a value, and are what the tests
+//! below hold to their evidence in `DESIGN.md`, "Defaults and their evidence".
 
 use std::error::Error;
 use std::io;
 use std::path::Path;
 use std::thread;
 
-use fusion_nav::Seconds;
 use fusion_nav::prelude::*;
+use fusion_nav::{Seconds, Timestamp};
 
 use super::settings::{self, PerSource};
 use super::{
-    GNSS_POS, Options, Record, Replay, SOURCES, Sinks, Verdict, drive, origin_of, prepare,
+    GNSS_HGT, GNSS_POS, GNSS_VEL, Options, Record, Replay, SOURCES, Sinks, Verdict, decided, drive,
+    origin_of, prepare,
 };
 
-/// `Correlation`'s and `Recovery`'s field for each of [`SOURCES`], in that order.
-const FIELDS: [&str; SOURCES.len()] = [
-    "gnss_position",
-    "gnss_height",
-    "gnss_velocity",
-    "baro_altitude",
-    "mag_heading",
-    "gnss_heading",
-    "course",
-];
-
 /// Where the sorted IMU intervals stop being the sensor's and start being dropouts: the first
-/// step up by at least this factor. On the corpus the largest step within ordinary intervals
-/// is 3.0× (`093e806a`, 5.0 → 14.8 ms) and the smallest from ordinary to a dropout is 7.1×
-/// (`f16771dd`, 48 → 340 ms).
+/// step up by at least this factor. On the corpus, after each log's start, the widest step
+/// among ordinary intervals and the narrowest to a dropout straddle it
+/// ([evidence](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#max_predict_dt)).
 const DROPOUT_STEP: f64 = 5.0;
 
 /// The margin `max_predict_dt` keeps over the longest ordinary interval.
 const INTERVAL_MARGIN: f64 = 1.1;
 
-/// Shortest overlap of barometer and GNSS height a drift is read from, seconds. On a simulated
-/// walk of known density the estimate scatters ±11 % over 2 h, ±17 % over 1 h and ±37 % over
-/// 20 min (40 seeds each), so half an hour is where it starts to say something.
+/// Shortest overlap of barometer and GNSS height a drift is read from, seconds: where the
+/// estimate's scatter on simulated walks comes down to a fifth
+/// ([evidence](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#baro_offset_walk)).
 const DRIFT_SPAN: f64 = 1800.0;
 
-/// The shortest lag the drift is read at, seconds, where the log's own GNSS-height `τ` does not
-/// push it further: three of the default's 14 s, rounded up. The lags run to four times the
-/// shortest. GNSS height's correlated noise has to have left the slope by the shortest lag,
-/// hence three `τ` (`e⁻³`, 5 %); longer lags hold fewer independent increments, and on the
-/// same simulated walks reading out to a fifth of the span scattered more (±18 % over 2 h) and
-/// read 14 % low.
+/// The shortest lag the drift is read at, seconds, where the log's GNSS-height `τ` does not
+/// push it further: a minute, over three of the default's 14 s. The lags run to four times
+/// the shortest, where the estimate is both tighter and less biased than at longer ones.
 const DRIFT_LAG: f64 = 60.0;
 
 /// How long after a gap the GNSS verdicts are read for its cost, seconds: past the 7 s
@@ -72,9 +61,15 @@ const SETTLE: f64 = 10.0;
 /// the two the default's doc comment measured, and PX4's.
 const WALKS: [f32; 4] = [0.0, 0.02, 0.05, 0.13];
 
-/// Multiples of `Coast::default()` each gap is tried at. Zero asks whether a gap needs coasting
-/// noise at all.
+/// Multiples of a `Coast::default()` field each gap is tried at, the other field held at its
+/// default. Zero asks whether a gap needs that field's noise at all.
 const COAST_SCALES: [f32; 7] = [0.0, 0.125, 0.25, 0.5, 1.0, 2.0, 4.0];
+
+/// The name `Correlation`, `Recovery` and `Diagnostics` give each of [`SOURCES`], in that order:
+/// `Diagnostics::sources()`'s, the list `SOURCES` is paired with everywhere in the harness.
+fn field(source: usize) -> &'static str {
+    Diagnostics::default().sources()[source].0
+}
 
 /// What `--derive` worked out from a log, and the evidence for each value.
 pub struct Derived {
@@ -90,7 +85,6 @@ pub struct Derived {
     drift: Option<Drift>,
     walks: Vec<(f32, u32, u32)>,
     gaps: Vec<Gap>,
-    coast_scale: Option<f32>,
     check: Check,
 }
 
@@ -102,7 +96,7 @@ struct Exceedance {
 }
 
 /// One source's `τ` as the white run read it.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Tau {
     /// No two rows to correlate: the log does not carry the source.
     Absent,
@@ -116,6 +110,15 @@ enum Tau {
     Measured { rho: f64, interval: f64, tau: f64 },
 }
 
+/// One step the filter takes after the start: the log times either side, and the interval as
+/// [`Eskf::predict`] differences it, in whole microseconds.
+#[derive(Clone, Copy)]
+struct Span {
+    start: f64,
+    end: f64,
+    dt: Seconds,
+}
+
 /// The IMU's intervals after the first epoch, sorted, and what they say.
 struct Intervals {
     count: usize,
@@ -123,19 +126,23 @@ struct Intervals {
     p999: f64,
     /// The longest interval below the first [`DROPOUT_STEP`].
     ordinary: f64,
-    /// Every interval past the ordinary ones, as `(start, end)` log times.
-    dropouts: Vec<(f64, f64)>,
-    /// Every interval, as `(start, end)`, for counting those over a limit.
-    spans: Vec<(f64, f64)>,
+    /// The widest step between neighbouring sorted intervals among the ordinary ones, and the
+    /// step from the longest ordinary one to the shortest dropout, where there is one: the two
+    /// figures [`DROPOUT_STEP`] sits between.
+    widest_step: f64,
+    break_step: Option<f64>,
+    /// Every interval past the ordinary ones.
+    dropouts: Vec<Span>,
+    spans: Vec<Span>,
 }
 
 impl Intervals {
-    /// The steps a filter with this `max_predict_dt` coasts.
-    fn over(&self, limit: f64) -> Vec<(f64, f64)> {
+    /// The steps a filter with this `max_predict_dt` coasts: the comparison `predict` makes.
+    fn over(&self, limit: Seconds) -> Vec<Span> {
         self.spans
             .iter()
             .copied()
-            .filter(|(start, end)| end - start > limit)
+            .filter(|s| s.dt > limit)
             .collect()
     }
 }
@@ -145,17 +152,22 @@ impl Intervals {
 struct Drift {
     span: f64,
     start_to_end: f64,
+    /// The shortest lag read.
+    shortest: f64,
     /// `√slope`, or `None` where the slope is not positive: no drift the log resolves.
     walk: Option<f64>,
 }
 
-/// One coasted gap, and the smallest multiple of `Coast::default()` after which no GNSS position
-/// or velocity was rejected or adopted for [`SETTLE`] seconds: the rule `Coast::default()` was
-/// set by on `4b473e91` (`DESIGN.md`, `Coast`).
+/// One coasted gap, and for each `Coast` field the smallest multiple of its default, the other
+/// field at its own, after which no GNSS position or velocity was rejected or adopted for
+/// [`SETTLE`] seconds: the rule `Coast::default()` was set by on `4b473e91`, a field at a time
+/// (`DESIGN.md`, `Coast`).
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Gap {
     start: f64,
     end: f64,
-    settled_at: Option<f32>,
+    acceleration_at: Option<f32>,
+    rotation_at: Option<f32>,
     /// No GNSS position was decided inside the window, so the gap says nothing about coasting.
     unaided: bool,
 }
@@ -224,10 +236,10 @@ pub fn derive(input: &Path, text: &str, options: &Options) -> Result<Derived, Bo
     let defaults = Config::default();
     let rows = Rows::of(text);
     let site = origin_of(text).map(|site| (site, site.normal_gravity()));
-
-    // The runs that need nothing but the defaults: the baseline, every source white, recovery
-    // off, and the offset walks.
     let has_height = !rows.baro.is_empty() && !rows.gnss_down.is_empty();
+
+    // First the runs that need nothing but the defaults: the baseline, every source white,
+    // recovery off, and the offset walks.
     let mut walks: Vec<f32> = if has_height {
         WALKS.to_vec()
     } else {
@@ -253,57 +265,49 @@ pub fn derive(input: &Path, text: &str, options: &Options) -> Result<Derived, Bo
     else {
         return Err("--derive: a run went missing".into());
     };
-    let walk_counts = |walk: f32, replay: &Replay| {
-        let d = replay.filter.diagnostics();
-        (walk, d.gnss_height.rejected, d.baro_altitude.rejected)
-    };
     let mut walk_rows: Vec<(f32, u32, u32)> = walks
         .iter()
         .zip(first)
         .map(|(&walk, replay)| walk_counts(walk, &replay))
         .collect();
 
-    let correlation = taus(&white);
-    // The drift's shortest lag clears this log's own GNSS-height `τ` as well as the default's.
-    let shortest = match correlation[super::GNSS_HGT] {
-        Tau::Measured { tau, .. } => DRIFT_LAG.max((3.0 * tau).ceil()),
-        _ => DRIFT_LAG,
-    };
-    let drift = drift(&rows.baro, &rows.gnss_down, shortest);
-    let derived_walk = drift
-        .as_ref()
-        .and_then(|d| d.walk)
-        .map(|walk| rounded(walk, 2))
-        .filter(|walk| *walk > 0.0);
-
     let started = baseline
         .initialized_at
         .ok_or("--derive: the log never initialized, so it has no run to derive from")?;
+    let correlation = taus(&white);
+    let drift = drift(
+        &rows.baro,
+        &rows.gnss_down,
+        shortest_lag(correlation[GNSS_HGT]),
+    );
+    let derived_walk = walk_from(drift.as_ref());
     let intervals = Intervals::of(&rows.imu, started);
-    let max_predict_dt = intervals.as_ref().map_or(defaults.max_predict_dt, |i| {
-        let needed = (i.ordinary * INTERVAL_MARGIN / 0.005).ceil() * 0.005;
-        Seconds::from_secs((needed as f32).max(defaults.max_predict_dt.as_secs()))
-    });
+    let max_predict_dt = max_predict_dt_from(intervals.as_ref(), defaults.max_predict_dt);
 
-    // The coast is tried on the gaps the derived limit coasts.
-    let gaps_at = intervals
+    // Then the runs those readings ask for: the derived walk, where the first batch did not
+    // run it, and each `Coast` field at each scale, where the derived limit coasts a gap.
+    let mut gaps: Vec<Gap> = intervals
         .as_ref()
-        .map_or_else(Vec::new, |i| i.over(f64::from(max_predict_dt.as_secs())));
-    let coast = Coast::default();
-    let mut gaps: Vec<Gap> = gaps_at
+        .map_or_else(Vec::new, |i| i.over(max_predict_dt))
         .iter()
-        .map(|&(start, end)| Gap {
-            start,
-            end,
-            settled_at: None,
+        .map(|span| Gap {
+            start: span.start,
+            end: span.end,
+            acceleration_at: None,
+            rotation_at: None,
             unaided: false,
         })
         .collect();
-
-    // The second batch: the derived walk, where it is one the first did not run, and the
-    // coast at each scale, where the log has a gap.
-    let scales: &[f32] = if gaps.is_empty() { &[] } else { &COAST_SCALES };
     let new_walk = derived_walk.filter(|walk| has_height && !walks.contains(walk));
+    let coast = Coast::default();
+    let scaled: Vec<(bool, f32)> = if gaps.is_empty() {
+        Vec::new()
+    } else {
+        [false, true]
+            .into_iter()
+            .flat_map(|rotation| COAST_SCALES.iter().map(move |&scale| (rotation, scale)))
+            .collect()
+    };
     let mut configs: Vec<Config> = new_walk
         .map(|walk| Config {
             baro_offset_walk: walk,
@@ -311,11 +315,18 @@ pub fn derive(input: &Path, text: &str, options: &Options) -> Result<Derived, Bo
         })
         .into_iter()
         .collect();
-    configs.extend(scales.iter().map(|&scale| Config {
+    configs.extend(scaled.iter().map(|&(rotation, scale)| Config {
         max_predict_dt,
-        coast: Some(Coast {
-            acceleration: coast.acceleration * scale,
-            rotation: coast.rotation * scale,
+        coast: Some(if rotation {
+            Coast {
+                rotation: coast.rotation * scale,
+                ..coast
+            }
+        } else {
+            Coast {
+                acceleration: coast.acceleration * scale,
+                ..coast
+            }
         }),
         ..defaults
     }));
@@ -325,69 +336,32 @@ pub fn derive(input: &Path, text: &str, options: &Options) -> Result<Derived, Bo
         walk_rows.push(walk_counts(walk, &replay));
         walks.push(walk);
     }
-    for (&scale, replay) in scales.iter().zip(second) {
+    for (&(rotation, scale), replay) in scaled.iter().zip(second) {
         let trail = replay.trail.as_deref().unwrap_or_default();
-        let ends: Vec<f64> = gaps.iter().map(|g| g.start).skip(1).collect();
+        let next: Vec<f64> = gaps.iter().skip(1).map(|g| g.start).collect();
         for (index, gap) in gaps.iter_mut().enumerate() {
-            let until = ends
+            let until = next
                 .get(index)
-                .map_or(gap.end + SETTLE, |next| next.min(gap.end + SETTLE));
+                .map_or(gap.end + SETTLE, |n| n.min(gap.end + SETTLE));
+            let at = if rotation {
+                &mut gap.rotation_at
+            } else {
+                &mut gap.acceleration_at
+            };
             match settled(trail, gap.end, until) {
                 None => gap.unaided = true,
-                Some(true) if gap.settled_at.is_none() => gap.settled_at = Some(scale),
+                Some(true) if at.is_none() => *at = Some(scale),
                 _ => {}
-            }
-        }
-    }
-    // Twice the largest scale a gap needed, the rule `Coast::default()` was set by. The default
-    // where a gap with GNSS after it never settled, where no gap had GNSS after it, or where
-    // none needed any coasting noise.
-    let aided: Vec<&Gap> = gaps.iter().filter(|g| !g.unaided).collect();
-    let coast_scale = (!aided.is_empty() && aided.iter().all(|g| g.settled_at.is_some()))
-        .then(|| {
-            aided
-                .iter()
-                .filter_map(|g| g.settled_at)
-                .fold(0.0, f32::max)
-                * 2.0
-        })
-        .filter(|scale| *scale > 0.0);
-
-    let noise = baseline.noise;
-    let mut imu = defaults.imu;
-    if let Some(noise) = &noise {
-        imu.gyro_white = imu.gyro_white.max(noise.worst_gyro_white());
-        imu.accel_white = imu.accel_white.max(noise.worst_accel_white());
-    }
-
-    // A measured `τ` is a lower bound, so it moves a source's `τ` only up: one above the
-    // default shows the default too short, and one below it shows nothing. Read as the value,
-    // it made the `correlated` scenario more overconfident, `anees_pos` 1.45 to 3.16 on 50
-    // seeds, where this rule reads 1.38 (`DESIGN.md`, `Correlation`).
-    let mut derived_correlation = defaults.correlation;
-    for (field, tau) in FIELDS.iter().zip(correlation) {
-        let slot = derived_correlation
-            .field_mut(field)
-            .ok_or("--derive: a source with no correlation field")?;
-        if let Tau::Measured { tau, .. } = tau {
-            let measured = Seconds::from_secs(rounded(tau, 2));
-            if slot.is_some_and(|default| measured > default) {
-                *slot = Some(measured);
             }
         }
     }
 
     let config = Config {
-        imu,
-        correlation: derived_correlation,
+        imu: imu_from(defaults.imu, baseline.noise.as_ref()),
+        correlation: correlation_from(defaults.correlation, &correlation),
         gravity: site.map_or(defaults.gravity, |(_, gamma)| rounded(f64::from(gamma), 6)),
         max_predict_dt,
-        coast: coast_scale.map_or(defaults.coast, |scale| {
-            Some(Coast {
-                acceleration: rounded(f64::from(coast.acceleration * scale), 2),
-                rotation: rounded(f64::from(coast.rotation * scale), 2),
-            })
-        }),
+        coast: Some(coast_from(coast, &gaps)),
         baro_offset_walk: derived_walk.unwrap_or(defaults.baro_offset_walk),
         ..defaults
     };
@@ -399,11 +373,9 @@ pub fn derive(input: &Path, text: &str, options: &Options) -> Result<Derived, Bo
         .ok_or("--derive: the check run went missing")?;
     let predicted_coasted = intervals.as_ref().map_or(0, |i| {
         let started = checked.initialized_at.unwrap_or(started);
-        i.spans
+        i.over(max_predict_dt)
             .iter()
-            .filter(|(start, end)| {
-                *start >= started && end - start > f64::from(max_predict_dt.as_secs())
-            })
+            .filter(|span| span.start >= started)
             .count()
     });
     let pair = |of: &dyn Fn(&Replay) -> u32| [of(&baseline), of(&checked)];
@@ -428,7 +400,7 @@ pub fn derive(input: &Path, text: &str, options: &Options) -> Result<Derived, Bo
             |n| n.to_string_lossy().into(),
         ),
         config,
-        noise,
+        noise: baseline.noise,
         gates: exceedances(&baseline),
         runs: honest_runs(off.trail.as_deref().unwrap_or_default()),
         recovered: core::array::from_fn(|source| {
@@ -440,9 +412,97 @@ pub fn derive(input: &Path, text: &str, options: &Options) -> Result<Derived, Bo
         drift,
         walks: walk_rows,
         gaps,
-        coast_scale,
         check,
     })
+}
+
+/// GNSS height's and the barometer's rejections in a run at `walk`.
+fn walk_counts(walk: f32, replay: &Replay) -> (f32, u32, u32) {
+    let d = replay.filter.diagnostics();
+    (walk, d.gnss_height.rejected, d.baro_altitude.rejected)
+}
+
+/// The white noise: the default, or the window's floor where it sits above it, since no `Q`
+/// should claim a sensor quieter than it measured at rest.
+fn imu_from(default: ImuNoise, floor: Option<&WindowNoise>) -> ImuNoise {
+    floor.map_or(default, |floor| ImuNoise {
+        gyro_white: default.gyro_white.max(floor.worst_gyro_white()),
+        accel_white: default.accel_white.max(floor.worst_accel_white()),
+        ..default
+    })
+}
+
+/// Each source's `τ`: the reading where it exceeds the default, and the default otherwise.
+///
+/// A reading through the filter is a lower bound, so one above the default shows the default
+/// too short and one below it shows nothing; read as the value it made the `correlated`
+/// scenario more overconfident than the defaults do
+/// ([measured](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#correlation)). An
+/// estimator the filter does not bias is #195.
+fn correlation_from(default: Correlation, taus: &[Tau; SOURCES.len()]) -> Correlation {
+    let mut derived = default;
+    for (source, tau) in taus.iter().enumerate() {
+        let Some(slot) = derived.field_mut(field(source)) else {
+            continue;
+        };
+        if let Tau::Measured { tau, .. } = *tau {
+            let read = Seconds::from_secs(rounded(tau, 2));
+            if slot.is_some_and(|default| read > default) {
+                *slot = Some(read);
+            }
+        }
+    }
+    derived
+}
+
+/// The longest ordinary interval with [`INTERVAL_MARGIN`], never below the default: a lower
+/// limit catches no dropout on the corpus that the default misses, and the same bound limits
+/// how far a measurement is carried forward.
+fn max_predict_dt_from(intervals: Option<&Intervals>, default: Seconds) -> Seconds {
+    intervals.map_or(default, |i| {
+        let needed = (i.ordinary * INTERVAL_MARGIN / 0.005).ceil() * 0.005;
+        Seconds::from_secs((needed as f32).max(default.as_secs()))
+    })
+}
+
+/// Each `Coast` field at twice the largest multiple of its default that a gap with GNSS after it
+/// needed: the default where a gap never settled at any multiple, where none had GNSS after it,
+/// or where every gap settled with none of that field's noise.
+fn coast_from(default: Coast, gaps: &[Gap]) -> Coast {
+    let aided: Vec<&Gap> = gaps.iter().filter(|g| !g.unaided).collect();
+    let scale = |at: fn(&Gap) -> Option<f32>| -> Option<f32> {
+        if aided.is_empty() || aided.iter().any(|g| at(g).is_none()) {
+            return None;
+        }
+        let largest = aided.iter().filter_map(|g| at(g)).fold(0.0, f32::max);
+        (largest > 0.0).then_some(2.0 * largest)
+    };
+    Coast {
+        acceleration: scale(|g| g.acceleration_at).map_or(default.acceleration, |s| {
+            rounded(f64::from(default.acceleration * s), 2)
+        }),
+        rotation: scale(|g| g.rotation_at).map_or(default.rotation, |s| {
+            rounded(f64::from(default.rotation * s), 2)
+        }),
+    }
+}
+
+/// `q`, where the drift resolves one.
+fn walk_from(drift: Option<&Drift>) -> Option<f32> {
+    drift
+        .and_then(|d| d.walk)
+        .map(|walk| rounded(walk, 2))
+        .filter(|walk| *walk > 0.0)
+}
+
+/// The drift's shortest lag: [`DRIFT_LAG`], or three of the log's GNSS-height `τ` where that is
+/// longer. That `τ` is read through the filter and so is short; the lags can still sit inside
+/// the true one, which pushes `q` up, and `q` is an upper bound either way.
+fn shortest_lag(gnss_height: Tau) -> f64 {
+    match gnss_height {
+        Tau::Measured { tau, .. } => DRIFT_LAG.max((3.0 * tau).ceil()),
+        _ => DRIFT_LAG,
+    }
 }
 
 /// Whether GNSS settled over `[from, until)`: a position was accepted and no position or
@@ -451,8 +511,8 @@ fn settled(trail: &[Verdict], from: f64, until: f64) -> Option<bool> {
     let window: Vec<&Verdict> = trail
         .iter()
         .filter(|v| v.t >= from && v.t < until)
-        .filter(|v| v.source == GNSS_POS || v.source == super::GNSS_VEL)
-        .filter(|v| super::decided(v.outcome))
+        .filter(|v| v.source == GNSS_POS || v.source == GNSS_VEL)
+        .filter(|v| decided(v.outcome))
         .collect();
     if !window.iter().any(|v| v.source == GNSS_POS) {
         return None;
@@ -559,27 +619,35 @@ impl Rows {
 }
 
 impl Intervals {
-    /// The intervals between successive IMU rows from `started` on, as the filter steps them: a
-    /// row not after the last one is refused without moving the clock, so it opens no interval.
+    /// The intervals between successive IMU rows from `started` on, as [`Eskf::predict`] steps
+    /// them: each time rounded to its microsecond, and a row not after the last one refused
+    /// without moving the clock, so that it opens no interval.
     fn of(imu: &[f64], started: f64) -> Option<Self> {
         let mut spans = Vec::new();
-        let mut previous: Option<f64> = None;
+        let mut previous: Option<(f64, Timestamp)> = None;
         for &t in imu {
+            let time = Timestamp::from_secs_f64(t);
             match previous {
-                Some(p) if t <= p => continue,
-                Some(p) if p >= started => spans.push((p, t)),
+                Some((_, clock)) if time <= clock => continue,
+                Some((p, clock)) if p >= started => spans.push(Span {
+                    start: p,
+                    end: t,
+                    dt: time.since(clock),
+                }),
                 _ => {}
             }
-            previous = Some(t);
+            previous = Some((t, time));
         }
-        let mut sorted: Vec<f64> = spans.iter().map(|(start, end)| end - start).collect();
+        let mut sorted: Vec<f64> = spans.iter().map(|s| f64::from(s.dt.as_secs())).collect();
         if sorted.is_empty() {
             return None;
         }
         sorted.sort_by(f64::total_cmp);
         let n = sorted.len();
         let mut i = n / 2;
+        let mut widest_step: f64 = 1.0;
         while i + 1 < n && sorted[i + 1] < DROPOUT_STEP * sorted[i] {
+            widest_step = widest_step.max(sorted[i + 1] / sorted[i]);
             i += 1;
         }
         let ordinary = sorted[i];
@@ -588,21 +656,43 @@ impl Intervals {
             median: sorted[n / 2],
             p999: sorted[((n as f64 * 0.999) as usize).min(n - 1)],
             ordinary,
+            widest_step,
+            break_step: sorted.get(i + 1).map(|next| next / ordinary),
             dropouts: spans
                 .iter()
                 .copied()
-                .filter(|(start, end)| end - start > ordinary)
+                .filter(|s| f64::from(s.dt.as_secs()) > ordinary)
                 .collect(),
             spans,
         })
     }
+
+    /// The dropouts a filter at `limit` integrates as one step that one at `needed` would
+    /// coast.
+    fn integrated_between(&self, needed: Seconds, limit: Seconds) -> usize {
+        self.dropouts
+            .iter()
+            .filter(|s| s.dt > needed && s.dt <= limit)
+            .count()
+    }
 }
 
 /// The barometer's drift against GNSS height, as a random walk: `D(L) = c + q² L`, the mean
-/// squared change of `baro + down` over a lag `L`, fitted over lags from `shortest` ([`DRIFT_LAG`] or three of the log's GNSS-height `τ`) to four times it. A walk's structure function grows linearly in the lag, and the
-/// constant takes both sensors' white noise. GNSS height's own slow wander is in the slope as
-/// well, so `q` is an upper bound on the barometer's.
+/// squared change of `baro + down` over a lag `L`, fitted over eight lags from `shortest` to
+/// four times it. A walk's structure function grows linearly in the lag, and the constant takes
+/// both sensors' white noise. GNSS height's own slow wander is in the slope as well, so `q` is
+/// an upper bound on the barometer's.
 fn drift(baro: &[(f64, f64)], gnss_down: &[(f64, f64)], shortest: f64) -> Option<Drift> {
+    drift_over(baro, gnss_down, shortest, DRIFT_SPAN)
+}
+
+/// [`drift`] on an overlap of at least `least` seconds.
+fn drift_over(
+    baro: &[(f64, f64)],
+    gnss_down: &[(f64, f64)],
+    shortest: f64,
+    least: f64,
+) -> Option<Drift> {
     // `baro + down` at each fix, the barometer interpolated between readings at most 1 s apart.
     let mut difference = Vec::new();
     for &(t, down) in gnss_down {
@@ -624,7 +714,7 @@ fn drift(baro: &[(f64, f64)], gnss_down: &[(f64, f64)], shortest: f64) -> Option
     }
     let (&(start, _), &(end, _)) = (difference.first()?, difference.last()?);
     let span = end - start;
-    if span < DRIFT_SPAN {
+    if span < least {
         return None;
     }
     // On a 1 s grid, linear between fixes at most 5 s apart and a hole elsewhere.
@@ -690,6 +780,7 @@ fn drift(baro: &[(f64, f64)], gnss_down: &[(f64, f64)], shortest: f64) -> Option
     Some(Drift {
         span,
         start_to_end,
+        shortest,
         walk: (slope > 0.0).then(|| slope.sqrt()),
     })
 }
@@ -831,29 +922,25 @@ impl Derived {
                 ));
             }
         }
-        line(format!(
-            "    gates: {},",
-            if gates == Gates::at(Percentile::P999) {
-                "fusion_nav::Gates::at(fusion_nav::Percentile::P999)"
-            } else {
-                "fusion_nav::Gates::default()"
-            }
-        ));
-
-        line(format!(
-            "    timeouts: fusion_nav::Timeouts::default(), // the mission's{}",
-            if timeouts == defaults.timeouts {
-                ""
-            } else {
-                " (not the default)"
-            }
-        ));
+        // What a log cannot derive is printed by name rather than value, so it has to be what
+        // the name says.
+        assert_eq!(
+            gates,
+            Gates::at(Percentile::P999),
+            "--derive keeps the gates"
+        );
+        assert_eq!(timeouts, defaults.timeouts, "--derive keeps the timeouts");
+        assert_eq!(init, defaults.init, "--derive keeps the initialization");
+        assert_eq!(accuracy, defaults.accuracy, "--derive keeps the accuracy");
+        line("    gates: fusion_nav::Gates::at(fusion_nav::Percentile::P999),".into());
+        line("    timeouts: fusion_nav::Timeouts::default(), // the mission's".into());
 
         line("    recovery: fusion_nav::Recovery {".into());
         line("        // The defaults, PX4's; beside each, the longest rejection run that ended in an acceptance with recovery off, and recoveries at the default.".into());
-        for (source, (field, value)) in recovery.fields().into_iter().enumerate() {
+        for (source, (name, value)) in recovery.fields().into_iter().enumerate() {
+            debug_assert_eq!(name, field(source));
             line(format!(
-                "        {field}: {}, // {}; recovered {}",
+                "        {name}: {}, // {}; recovered {}",
                 seconds(value),
                 self.runs[source].map_or("no rejection resolved".into(), |run| format!(
                     "longest honest run {run:.1} s"
@@ -866,7 +953,8 @@ impl Derived {
         line("    correlation: fusion_nav::Correlation {".into());
         line("        // τ = −T / ln ρ from each source's lag-one autocorrelation fused white, a lower bound since an innovation is whiter than the error behind it: printed only where it exceeds the default.".into());
         let defaults_correlation = defaults.correlation.fields().map(|(_, value)| value);
-        for (source, (field, value)) in correlation.fields().into_iter().enumerate() {
+        for (source, (name, value)) in correlation.fields().into_iter().enumerate() {
+            debug_assert_eq!(name, field(source));
             let why = match self.correlation[source] {
                 Tau::Absent => "not in this log: the default".to_string(),
                 Tau::Unresolved { rho, rows } => {
@@ -884,26 +972,15 @@ impl Derived {
                     }
                 }
             };
-            line(format!("        {field}: {}, // {why}", seconds(value)));
+            line(format!("        {name}: {}, // {why}", seconds(value)));
         }
         line("    },".into());
 
-        line(format!(
-            "    init: fusion_nav::Initialization::default(), // the start's tolerances and priors{}",
-            if init == defaults.init {
-                ""
-            } else {
-                " (not the default)"
-            }
-        ));
-        line(format!(
-            "    accuracy: fusion_nav::Accuracy::default(), // the mission's{}",
-            if accuracy == defaults.accuracy {
-                ""
-            } else {
-                " (not the default)"
-            }
-        ));
+        line(
+            "    init: fusion_nav::Initialization::default(), // the start's tolerances and priors"
+                .into(),
+        );
+        line("    accuracy: fusion_nav::Accuracy::default(), // the mission's".into());
 
         line(match self.site {
             Some((site, _)) => format!(
@@ -916,26 +993,41 @@ impl Derived {
         });
         line(format!("    gravity: {},", literal(gravity)));
 
-        line(match &self.intervals {
-            Some(i) => format!(
-                "    // IMU interval: median {:.1} ms, 99.9 % {:.1} ms, longest ordinary {:.1} ms (×{INTERVAL_MARGIN} margin), {} dropouts of {} intervals{}.",
-                i.median * 1e3,
-                i.p999 * 1e3,
-                i.ordinary * 1e3,
-                i.dropouts.len(),
-                i.count,
-                i.dropouts
-                    .iter()
-                    .map(|(start, end)| end - start)
-                    .fold(None, |worst: Option<f64>, gap| Some(
-                        worst.map_or(gap, |w| w.max(gap))
-                    ))
-                    .map_or(String::new(), |worst| format!(", longest {worst:.3} s"))
-            ),
-            None => "    // The default: no IMU interval after the start.".into(),
-        });
-        if max_predict_dt == defaults.max_predict_dt {
-            line("    // The default covers it: a lower limit coasts no dropout the default does not.".into());
+        match &self.intervals {
+            Some(i) => {
+                line(format!(
+                    "    // IMU interval after the start: median {:.1} ms, 99.9 % {:.1} ms, longest ordinary {:.1} ms; widest step among ordinary intervals {:.1}x{}; {} dropouts of {} intervals{}.",
+                    i.median * 1e3,
+                    i.p999 * 1e3,
+                    i.ordinary * 1e3,
+                    i.widest_step,
+                    i.break_step
+                        .map_or(String::new(), |b| format!(", to the first dropout {b:.1}x")),
+                    i.dropouts.len(),
+                    i.count,
+                    i.dropouts
+                        .iter()
+                        .map(|s| s.dt.as_secs())
+                        .reduce(f32::max)
+                        .map_or(String::new(), |worst| format!(", longest {worst:.3} s"))
+                ));
+                let needed = max_predict_dt_from(Some(i), Seconds::from_secs(0.0));
+                if max_predict_dt == defaults.max_predict_dt {
+                    let between = i.integrated_between(needed, max_predict_dt);
+                    line(if between == 0 {
+                        format!(
+                            "    // The default: {} s with margin is under it, and no dropout falls between the two.",
+                            literal(needed.as_secs())
+                        )
+                    } else {
+                        format!(
+                            "    // The default: {between} dropouts between {} s, the ordinary with margin, and it are integrated as one step each.",
+                            literal(needed.as_secs())
+                        )
+                    });
+                }
+            }
+            None => line("    // The default: no IMU interval after the start.".into()),
         }
         line(format!(
             "    max_predict_dt: fusion_nav::Seconds::from_secs({}),",
@@ -945,29 +1037,26 @@ impl Derived {
         line(if self.gaps.is_empty() {
             "    // The default: the log has no gap to coast.".into()
         } else {
+            let at = |at: Option<f32>| at.map_or("never".to_string(), |s| format!("×{s}"));
             let needed: Vec<String> = self
                 .gaps
                 .iter()
                 .map(|g| {
-                    format!(
-                        "{:.2} s at {:.1} s: {}",
-                        g.end - g.start,
-                        g.start,
-                        match (g.unaided, g.settled_at) {
-                            (true, _) => "no GNSS after it".to_string(),
-                            (false, None) => "never".to_string(),
-                            (false, Some(s)) => format!("×{s}"),
-                        }
-                    )
+                    let what = if g.unaided {
+                        "no GNSS after it".to_string()
+                    } else {
+                        format!(
+                            "acceleration {}, rotation {}",
+                            at(g.acceleration_at),
+                            at(g.rotation_at)
+                        )
+                    };
+                    format!("{:.2} s at {:.1} s: {what}", g.end - g.start, g.start)
                 })
                 .collect();
             format!(
-                "    // {}; smallest multiple of the default after which GNSS settles for {SETTLE} s, per gap: {}.",
-                match self.coast_scale {
-                    Some(scale) => format!("Twice the largest, ×{scale}"),
-                    None => "The default".into(),
-                },
-                needed.join(", ")
+                "    // Twice the largest multiple of each default, the other at its own, after which GNSS settles for {SETTLE} s past a gap; the default where none is needed or one never settles. Per gap: {}.",
+                needed.join("; ")
             )
         });
         line(format!(
@@ -989,14 +1078,16 @@ impl Derived {
             Some(Drift {
                 span,
                 start_to_end,
+                shortest,
                 walk: Some(walk),
             }) => format!(
-                "    // Barometer against GNSS height over {span:.0} s: {start_to_end:+.2} m first minute to last; q = {walk:.3}, an upper bound."
+                "    // Barometer against GNSS height over {span:.0} s: {start_to_end:+.2} m first minute to last; q = {walk:.3} at lags from {shortest:.0} s, an upper bound."
             ),
             Some(Drift {
                 span,
                 start_to_end,
                 walk: None,
+                ..
             }) => format!(
                 "    // The default: over {span:.0} s the barometer moved {start_to_end:+.2} m against GNSS height, and no walk resolves."
             ),
@@ -1073,7 +1164,9 @@ mod tests {
         let i = Intervals::of(&t, 0.0).expect("intervals");
         assert!((i.ordinary - 0.0148).abs() < 1e-9, "{}", i.ordinary);
         assert_eq!(i.dropouts.len(), 1);
-        assert_eq!(i.over(0.1).len(), 1);
+        assert_eq!(i.over(Seconds::from_secs(0.1)).len(), 1);
+        assert!((i.widest_step - 0.0148 / 0.005).abs() < 1e-6);
+        assert!((i.break_step.expect("a dropout") - 0.340 / 0.0148).abs() < 1e-6);
     }
 
     #[test]
@@ -1082,7 +1175,7 @@ mod tests {
         let t = [0.0, 1.0, 1.01, 1.01, 1.02, 1.03];
         let i = Intervals::of(&t, 1.0).expect("intervals");
         assert_eq!(i.count, 3);
-        assert!(i.over(0.1).is_empty());
+        assert!(i.over(Seconds::from_secs(0.1)).is_empty());
     }
 
     #[test]
@@ -1187,6 +1280,155 @@ mod tests {
             },
         )];
         assert_eq!(settled(&refused, 0.0, 10.0), None);
+    }
+
+    #[test]
+    fn the_per_source_names_are_the_diagnostics_order() {
+        // `render` pairs `correlation.fields()` and `recovery.fields()` with `SOURCES` by
+        // position; this is what makes the position mean the source.
+        let names: Vec<&str> = (0..SOURCES.len()).map(field).collect();
+        let of = |fields: [(&'static str, Option<Seconds>); 7]| fields.map(|(n, _)| n).to_vec();
+        assert_eq!(of(Correlation::default().fields()), names);
+        assert_eq!(of(Recovery::default().fields()), names);
+    }
+
+    #[test]
+    fn a_tau_read_through_the_filter_only_raises_the_default() {
+        let read = |tau| Tau::Measured {
+            rho: 0.9,
+            interval: 0.2,
+            tau,
+        };
+        let mut taus = [Tau::Absent; SOURCES.len()];
+        taus[GNSS_POS] = read(6.7); // over the default 4.2: taken
+        taus[GNSS_HGT] = read(11.0); // under the default 14: shows nothing
+        taus[GNSS_VEL] = Tau::Alternating { rho: -0.4 };
+        taus[BARO] = Tau::Unresolved { rho: 0.1, rows: 20 };
+        let defaults = Correlation::default();
+        let derived = correlation_from(defaults, &taus);
+        assert_eq!(derived.gnss_position, Some(Seconds::from_secs(6.7)));
+        assert_eq!(derived.gnss_height, defaults.gnss_height);
+        assert_eq!(derived.gnss_velocity, defaults.gnss_velocity);
+        assert_eq!(derived.baro_altitude, defaults.baro_altitude);
+        assert_eq!(derived.mag_heading, defaults.mag_heading);
+    }
+
+    #[test]
+    fn each_coast_field_is_twice_the_most_any_gap_needed_of_it() {
+        let gap = |acceleration_at, rotation_at, unaided| Gap {
+            start: 0.0,
+            end: 1.0,
+            acceleration_at,
+            rotation_at,
+            unaided,
+        };
+        let default = Coast::default();
+        let derived = coast_from(
+            default,
+            &[
+                gap(Some(0.25), Some(0.5), false),
+                gap(Some(0.125), Some(0.0), false),
+                // No GNSS after it: says nothing, whatever it read.
+                gap(Some(4.0), None, true),
+            ],
+        );
+        assert_eq!(derived.acceleration, 1.0, "2 × 0.25 × 2.0");
+        assert_eq!(derived.rotation, 0.1, "2 × 0.5 × 0.1");
+        // A gap that never settled leaves that field at the default; one that needed none of
+        // it, too.
+        let never = coast_from(default, &[gap(None, Some(0.0), false)]);
+        assert_eq!(never, default);
+        assert_eq!(coast_from(default, &[]), default);
+    }
+
+    #[test]
+    fn max_predict_dt_covers_the_ordinary_tail_and_never_falls_below_the_default() {
+        // A straggler under five times the period, so ordinary.
+        let at = |period_ms: f64, ordinary_ms: f64| {
+            let mut t = vec![0.0];
+            for _ in 0..100 {
+                t.push(t.last().unwrap() + period_ms / 1000.0);
+            }
+            t.push(t.last().unwrap() + ordinary_ms / 1000.0);
+            t.push(t.last().unwrap() + period_ms / 1000.0);
+            Intervals::of(&t, 0.0).expect("intervals")
+        };
+        let default = Seconds::from_secs(0.1);
+        // 18.0 ms with 10 % margin is 19.8, rounded up to 20: under the default.
+        assert_eq!(max_predict_dt_from(Some(&at(4.0, 18.0)), default), default);
+        // 92.0 ms is 101.2, rounded up to 105.
+        let raised = max_predict_dt_from(Some(&at(20.0, 92.0)), default).as_secs();
+        assert!((raised - 0.105).abs() < 1e-6, "{raised}");
+    }
+
+    #[test]
+    fn the_dropouts_a_limit_integrates_are_counted() {
+        // 10 ms ordinary, a 60 ms stall: a limit derived at 15 ms would coast it, 100 ms does
+        // not.
+        let mut t = vec![0.0];
+        for _ in 0..100 {
+            t.push(t.last().unwrap() + 0.010);
+        }
+        t.push(t.last().unwrap() + 0.060);
+        t.push(t.last().unwrap() + 0.010);
+        let i = Intervals::of(&t, 0.0).expect("intervals");
+        assert_eq!(
+            i.integrated_between(Seconds::from_secs(0.015), Seconds::from_secs(0.1)),
+            1
+        );
+        assert_eq!(
+            i.integrated_between(Seconds::from_secs(0.015), Seconds::from_secs(0.05)),
+            0
+        );
+    }
+
+    /// The scatter of [`drift`]'s `q` on simulated walks, the figures `DESIGN.md`,
+    /// `baro_offset_walk`, quotes: `cargo test --example replay -- --ignored drift_scatter
+    /// --nocapture`. Each seed walks at 0.1 m/√s with 0.5 m of white noise on top, at 1 Hz.
+    #[test]
+    #[ignore]
+    fn drift_scatter_on_simulated_walks() {
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut uniform = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut normal = move || {
+            let (u, v) = (uniform().max(1e-300), uniform());
+            (-2.0 * u.ln()).sqrt() * (2.0 * core::f64::consts::PI * v).cos()
+        };
+        for span in [1200, 1800, 3600, 7200] {
+            let estimates: Vec<f64> = (0..40)
+                .filter_map(|_| {
+                    let mut level = 0.0;
+                    let baro: Vec<(f64, f64)> = (0..span)
+                        .map(|t| {
+                            level += 0.1 * normal();
+                            (f64::from(t), level + 0.5 * normal())
+                        })
+                        .collect();
+                    let gnss: Vec<(f64, f64)> =
+                        (0..span).map(|t| (f64::from(t) + 0.5, 0.0)).collect();
+                    // Read at any span, to see the scatter below the floor as well.
+                    drift_over(&baro, &gnss, DRIFT_LAG, 0.0).and_then(|d| d.walk)
+                })
+                .collect();
+            let n = estimates.len() as f64;
+            let mean = estimates.iter().sum::<f64>() / n;
+            let sd = (estimates
+                .iter()
+                .map(|q| (q - mean) * (q - mean))
+                .sum::<f64>()
+                / (n - 1.0))
+                .sqrt();
+            println!(
+                "{span} s: {} seeds, mean {mean:.4}, sd {sd:.4}, {:.0} %",
+                estimates.len(),
+                100.0 * sd / 0.1
+            );
+        }
     }
 
     #[test]
