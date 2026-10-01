@@ -281,6 +281,18 @@ plateau in the barometer's structure function, so the walk is read from ten of i
 (`2c42096b` 0.21, ±46 %, against PX4's 0.13); per field, `4b473e91` needs all of the default
 `acceleration` and a quarter of the `rotation`; `max_predict_dt`'s default covers all thirteen
 logs. `data/flight.config.rs` is `--derive data/flight.csv`, compiled and re-rendered by a test.
+#42 landed (#197): what the filter costs a target is pinned, not quoted. `tools/footprint.sh`
+reads type sizes, per-function stack frames and `panic-check`'s flash on both thumb targets, and
+the `footprint` job holds them to `data/footprint.txt` exactly, on a nightly the script pins, so
+a frame that shrinks fails as well as one that grows. Re-measuring found DESIGN's table already
+stale (`initialize_coarse` 1984 → 3576 B) with nothing noticing; the peak, `fuse_gnss_velocity`
+into `update::<3>`, is still 9504 B. `Eskf` is 3776 B on the targets and 3840 on the host, so
+the pin is the target's. A generic function's key is its largest instance, so a chain summed
+from keys is a bound. `bench/` is a non-default member because criterion's `num-traits/std`
+would reach the root's builds. Its first fixture fused every source at the instant it timed
+them, which (24′) prices at `MAX_INFLATION`, so it timed an update that moved nothing and still
+read `Accepted`; each bench now refuses an update moving no variance by 1e-4. #41 keeps the
+hardware: cycle counts and a painted stack.
 
 **Every source the crate publishes is fused; no `fuse_*` is a stub.** Initialization is real —
 equations (5)–(8), so the filter starts at the attitude and biases the window yields — `predict`
