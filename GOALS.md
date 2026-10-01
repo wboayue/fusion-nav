@@ -551,8 +551,8 @@ add eight.
 **What it bought.** `correlated` is the simulator's flight with every aiding error correlated, at
 the median of the corpus's upper half rather than the default, because the corpus understates `τ`
 and a scenario drawn at the filter's own value can only agree with it. Fused as white it reads
-50-seed `anees_pos` 29.16 and `anees_att` 3.48, overconfident on every epoch; under (24′), 1.45
-and 0.23, with `pos_v` 2.350 m to 1.142, yaw 3.57° to 2.36° and 320 falsely valid epochs to none.
+50-seed `anees_pos` 29.16 and `anees_att` 3.48, overconfident on every epoch; under (24′) at the
+defaults it landed with, 1.45 and 0.23, with `pos_v` 2.350 m to 1.142, yaw 3.57° to 2.36° and 320 falsely valid epochs to none.
 The position residual is the slower sources. A sensor's own `τ` read offline does not remove
 it, because read through the filter's innovations it falls short of the sensor's
 ([DESIGN.md](DESIGN.md#correlation)); an estimator the filter does not bias is #195. `moving_start`'s four headings sharing one levelling error (#150), a failure

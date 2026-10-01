@@ -352,7 +352,8 @@ Every value is one number or one word, so most of a gap's criteria are `expect.s
 with `compare_pairs` after sourcing the file. `sw=` carries the firmware type (`v1.16.0-rc`). `imu_hz=`
 is `sensor_combined`'s median rate: a logger profile can sample it at 5 Hz, which replays as a
 coasted step at every epoch. `gnss=` is the stream the conversion would fuse, chosen as
-`# Topics used` says, and `gnss_hz=` the rate the log kept of it.
+`# Topics used` says, and `gnss_hz=` how much of it the log kept, a count over the span where
+`imu_hz=` is a median, since a burst of fixes is more of the stream.
 `ekf2=` names the covariance layout `--reference` will read — `err24`, `err23` or `quat24`, the
 table below — or says `unmapped` (LPE) or `none`. `vib_metric=` says which quantity `vib_p95=`
 is, since PX4 `f2ae8ae814` changed it under one field name: `dv`, a filtered Δv difference in m/s
@@ -555,9 +556,9 @@ epoch CSV's row count, each `rejected_<source>=` against that source's `rejected
 fusion CSV, and the reference's IMU interval against `rate=`.
 
 Two caveats are printed beside the distribution plots rather than left to a reader, because both
-are measured and both look like filter faults. **No source in this corpus is white** — `acf1_`
+are measured and both look like filter faults. **No source in this corpus is white:** `acf1_`
 runs 0.85–1.00 on GNSS position, 0.17–0.97 on the barometer and 0.15–0.98 on the
-magnetometer — because a receiver filters its own solution in time and a 250 Hz magnetometer
+magnetometer, because a receiver filters its own solution in time and a 250 Hz magnetometer
 is sampled far faster than the field it reads changes. And **`R` for the barometer and the
 magnetometer is a converter constant**, so their distribution tests those constants; only GNSS
 tests a receiver's own reported accuracy.

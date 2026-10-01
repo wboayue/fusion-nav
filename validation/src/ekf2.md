@@ -94,10 +94,11 @@ velocities contradict its positions. How long each filter spent refusing its pos
 - this filter, with EKF2's floors (`px4`): {{agreement 093e806a/px4 rej_s_gnss_pos}} s;
 - EKF2: {{agreement 093e806a/raw rej_s_gnss_pos_ekf2}} s.
 
-How much the receiver is trusted explains most of the difference. The rest is how each filter
-reads the receiver's timing: this filter dates each fix by the receiver's own clock and drops a
-fix the autopilot published twice, so under EKF2's floors it has nothing left to refuse, where
-EKF2 dates each fix by when it arrived and fuses the repeats.
+How much the receiver is trusted explains most of the difference. Under EKF2's floors this
+filter refuses nothing, and it also reads the receiver's timing differently: it dates each fix by
+the receiver's own clock and drops a fix the autopilot published twice, where EKF2 dates each fix
+by when it arrived and fuses the repeats. Whether that is the rest of EKF2's refusals is
+consistent with these figures and not shown by them.
 
 {{figure 093e806a/raw ratios}}
 
