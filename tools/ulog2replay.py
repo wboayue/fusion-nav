@@ -83,7 +83,10 @@ DEFAULT_GNSS_HEADING_VARIANCE = 0.01  # rad^2, sigma = 0.1 rad
 # A *_timestamp_relative of INT32_MAX means "no sample in this message".
 INVALID_RELATIVE = 2_147_483_647
 
-GNSS_TOPICS = ["sensor_gps", "vehicle_gps_position"]
+# The receiver topic EKF2 subscribes to (`_vehicle_gps_position_sub`,
+# src/modules/ekf2/EKF2.hpp:501 at c4e4ef98), and the per-receiver one the sensors
+# module republishes it from. `gnss_stream` chooses between them.
+GNSS_TOPICS = ["vehicle_gps_position", "sensor_gps"]
 
 # Geodetic field spellings, newest first: (fields, lat/lon scale, alt scale).
 # v1.14ish moved from scaled integers to plain floats and renamed everything.
@@ -258,6 +261,30 @@ def convert_imu(ulog, rows, used):
     return dataset
 
 
+def averaging_note(dataset):
+    """The header line saying how long each IMU row's rates were averaged over, or None for a
+    build that logs neither interval.
+
+    `sensor_combined` publishes each rate as a mean over `gyro_integral_dt` and
+    `accelerometer_integral_dt`, which equal the row's step only where the logger kept every
+    message. `averaging_of` in `examples/replay/main.rs` reads the line against the step it
+    builds the window on, and says what it corrects and the corpus figures. Medians over the
+    log, microseconds; a float field is seconds (`7592c9b2`).
+    """
+    fields = ("gyro_integral_dt", "accelerometer_integral_dt")
+    if not all(f in dataset.data for f in fields):
+        return None
+
+    def micros(name):
+        values = dataset.data[name]
+        scale = 1e6 if values.dtype.kind == "f" else 1.0
+        return median([float(v) * scale for v in values])
+
+    gyro, accel = micros(fields[0]), micros(fields[1])
+    return (f"IMU averaging interval gyro {gyro:.0f} accel {accel:.0f} us "
+            "(sensor_combined's median gyro_integral_dt and accelerometer_integral_dt)")
+
+
 def is_3d_fix(fix, k):
     """Whether sample `k` is a 3D fix. A receiver logging no `fix_type` is taken at its word."""
     return fix is None or fix[k] >= 3
@@ -276,8 +303,149 @@ def gnss_yaw_enabled(params):
     return bool(int(params.get("EKF2_AID_MASK", 0)) & (1 << 7))
 
 
-def convert_gnss(ulog, rows, used, heading_variance=DEFAULT_GNSS_HEADING_VARIANCE):
-    dataset = pick(ulog, GNSS_TOPICS)
+def logged_rate(dataset):
+    """Messages per second the log kept of `dataset`, or 0 below two messages.
+
+    A count over the span rather than `screen_imu_rate`'s median interval: the question is how
+    complete a copy of the stream the log kept, and a burst of messages is more of it.
+    """
+    t = stamps(dataset)
+    span = (t[-1] - t[0]) * 1e-6 if len(t) > 1 else 0.0
+    return (len(t) - 1) / span if span > 0 else 0.0
+
+
+def gnss_stream(ulog):
+    """The receiver stream EKF2 fused, at the most complete rate the log kept it, and why.
+
+    EKF2 fuses `vehicle_gps_position`, but the default logger profile keeps it at 10 Hz
+    and `sensor_gps` at 1 Hz (src/modules/logger/logged_topics.cpp:148,243 at c4e4ef98),
+    while some logs keep the opposite (`a299e722`: `sensor_gps` at 10 Hz, its
+    `vehicle_gps_position` at 2). A `sensor_gps` instance is taken only where it is logged
+    faster *and* holds every `vehicle_gps_position` message, timestamp and latitude alike:
+    then both are one receiver's stream and it is the more complete copy. A blend, or a
+    selector switching receivers, fails that and leaves EKF2's own topic. Content rather
+    than `device_id` or `SENS_GPS_MASK`, because a field name does not pin its meaning
+    across versions, and `a299e722`'s `vehicle_gps_position` logs no `device_id` at all.
+
+    Returns `(dataset, label)`, the label naming the instance, its rate and the other
+    topic's, or `(None, None)` with no receiver topic.
+    """
+    fused = next((d for d in ulog.data_list
+                  if d.name == "vehicle_gps_position" and getattr(d, "multi_id", 0) == 0), None)
+    receivers = [d for d in ulog.data_list if d.name == "sensor_gps"]
+
+    def named(d):
+        return f"{d.name}[{getattr(d, 'multi_id', 0)}]" if d.name == "sensor_gps" else d.name
+
+    def described(d, others):
+        rates = ", ".join(f"{named(o)} {logged_rate(o):.2f} Hz" for o in others) or "no other"
+        return f"{logged_rate(d):.2f} Hz; {rates}"
+
+    if fused is None:
+        if not receivers:
+            return None, None
+        chosen = max(receivers, key=logged_rate)
+        rest = [d for d in receivers if d is not chosen]
+        return chosen, f"{named(chosen)} ({described(chosen, rest)}; no vehicle_gps_position)"
+    lat = next((f for f in ("latitude_deg", "lat") if f in fused.data), None)
+
+    def messages(d):
+        return set(zip((int(v) for v in d.data["timestamp"]), (float(v) for v in d.data[lat])))
+
+    wanted = messages(fused) if lat is not None else None
+    for receiver in sorted(receivers, key=logged_rate, reverse=True):
+        if (wanted is not None and lat in receiver.data
+                and logged_rate(receiver) > logged_rate(fused) and wanted <= messages(receiver)):
+            rest = [fused] + [d for d in receivers if d is not receiver]
+            return receiver, (f"{named(receiver)} ({described(receiver, rest)}; holds every "
+                              "vehicle_gps_position message)")
+    return fused, f"{named(fused)} ({described(fused, receivers)}; the topic EKF2 fused)"
+
+
+# Messages either side of a fix whose arrival-less-UTC median is its baseline: 51 is 5 to 10 s at
+# the corpus's receivers, over which the log clock drifts from UTC by under a millisecond
+# (25 ppm on `89a498ce`), and long enough that `093e806a`'s 7 % of republished fixes cannot move
+# the median.
+LATENESS_WINDOW = 51
+
+# A message more than this later than usual is taken as on time: a second is five epochs of the
+# slowest receiver here that logs UTC finely, and `093e806a`'s stalest fix is 0.3 s.
+LATENESS_CAP = 1_000_000
+
+
+def utc_dates(t, utc):
+    """Whether a receiver's `time_utc_usec` can date its fixes: logged, and advancing by about
+    as much as the messages do. A coarse or held UTC, whole seconds at 5 Hz, advances by more
+    than half as much again, and its lag would be a sawtooth rather than jitter; its repeats
+    would also read as republished fixes.
+    """
+    if utc is None:
+        return False
+    valid = [k for k in range(len(t)) if int(utc[k]) > 0]
+    pairs = list(zip(valid, valid[1:]))
+    epoch_steps = [int(utc[b]) - int(utc[a]) for a, b in pairs if int(utc[b]) > int(utc[a])]
+    arrival_steps = [int(t[b]) - int(t[a]) for a, b in pairs if int(t[b]) > int(t[a])]
+    return bool(epoch_steps and arrival_steps) and median(epoch_steps) <= 1.5 * median(arrival_steps)
+
+
+def lateness(t, utc):
+    """How much later than usual each message arrived after the epoch it describes, ticks.
+
+    A receiver's `time_utc_usec` is when the fix was valid; the message's `timestamp` is when
+    the log saw it, which jitters by tens of milliseconds behind it (`89a498ce` -17 to +30 ms,
+    p5 to p95) and, for a fix republished unchanged, by a whole epoch. A 1 Hz filter predicts
+    across that; at 5 to 10 Hz a centimetre receiver is rejected for it, 0.27 m along track at
+    10 m/s and 3 mm across. Each message's `timestamp - utc` less its running median over
+    `LATENESS_WINDOW` messages is that jitter, the median being the usual latency the log's
+    `EKF2_GPS_DELAY` already stands for, so the delay keeps its meaning and only the spread
+    about it is removed. Zero for a message with no UTC (`3949f175`, a simulation).
+
+    None where the UTC cannot date a fix (`utc_dates`) or there are too few messages to take
+    a median over. A step in UTC
+    (a leap-second offset learned mid-log) can still reach the first or last half window,
+    whose median is borrowed, so a lateness past `LATENESS_CAP` is taken as none.
+    """
+    if not utc_dates(t, utc):
+        return None
+    valid = [k for k in range(len(t)) if int(utc[k]) > 0]
+    if len(valid) < LATENESS_WINDOW:
+        return None
+    late = [0] * len(t)
+    lag = [int(t[k]) - int(utc[k]) for k in valid]
+    half = LATENESS_WINDOW // 2
+    for i, k in enumerate(valid):
+        centre = min(max(i, half), len(valid) - 1 - half)
+        window = sorted(lag[centre - half:centre + half + 1])
+        late[k] = lag[i] - window[half] if abs(lag[i] - window[half]) <= LATENESS_CAP else 0
+    return late
+
+
+def fix_timing(t, utc, lat, lon, fix):
+    """When each message's fix was taken, and which messages repeat a fix already offered.
+
+    Returns `(late, repeated, dated)`: each message's `lateness` (zeros where UTC cannot date
+    it), whether a 3D fix repeats the previous 3D fix's epoch and position, and whether the
+    fixes are dated by their receiver's clock. A fix the sensors module publishes again
+    unchanged is one measurement, and fused twice it counts double (`093e806a`, 532 of 7153).
+    Repeats are judged only where `utc_dates` trusts the clock: a held UTC repeats while the
+    vehicle moves on.
+    """
+    late = lateness(t, utc)
+    trusted = utc_dates(t, utc)
+    repeated = [False] * len(t)
+    previous = None
+    for k in range(len(t)):
+        if not is_3d_fix(fix, k):
+            continue
+        epoch = (int(utc[k]), float(lat[k]), float(lon[k])) if trusted and utc[k] else None
+        repeated[k] = epoch is not None and epoch == previous
+        previous = epoch
+    return late or [0] * len(t), repeated, late is not None
+
+
+def convert_gnss(ulog, stream, rows, used, heading_variance=DEFAULT_GNSS_HEADING_VARIANCE):
+    """Write `stream`'s fixes, `gnss_stream`'s `(dataset, label)`, as replay rows."""
+    dataset, label = stream
     if dataset is None:
         print("warning: no GNSS topic; position and velocity aiding omitted", file=sys.stderr)
         return None
@@ -319,10 +487,11 @@ def convert_gnss(ulog, rows, used, heading_variance=DEFAULT_GNSS_HEADING_VARIANC
     if heading is not None and not gnss_yaw_enabled(ulog.initial_parameters):
         heading = None
     heading_accuracy = dataset.data.get("heading_accuracy")
+    late, repeated, dated = fix_timing(t, dataset.data.get("time_utc_usec"), lat, lon, fix)
 
     origin = None
     for k in range(len(t)):
-        if not is_3d_fix(fix, k):
+        if not is_3d_fix(fix, k) or repeated[k]:
             continue
         phi = float(lat[k]) * angle_scale
         lam = float(lon[k]) * angle_scale
@@ -343,22 +512,25 @@ def convert_gnss(ulog, rows, used, heading_variance=DEFAULT_GNSS_HEADING_VARIANC
         # makes. See Eskf::fuse_gnss_position.
         horizontal = float(eph[k]) ** 2
         vertical = float(epv[k]) ** 2
-        rows.append((t[k], "gnss_pos", [north, east, down], [horizontal, horizontal, vertical]))
+        rows.append((t[k], "gnss_pos", [north, east, down], [horizontal, horizontal, vertical],
+                     late[k]))
 
         if has_velocity and (valid is None or valid[k]):
             variance = float(speed_sigma[k]) ** 2
             rows.append(
-                (t[k], "gnss_vel", [vn[k], ve[k], vd[k]], [variance, variance, variance])
+                (t[k], "gnss_vel", [vn[k], ve[k], vd[k]], [variance, variance, variance], late[k])
             )
 
         if heading is not None and math.isfinite(heading[k]):
             sigma = float(heading_accuracy[k]) if heading_accuracy is not None else 0.0
             variance = sigma**2 if math.isfinite(sigma) and sigma > 0 else heading_variance
-            rows.append((t[k], "gnss_yaw", [float(heading[k])], [variance]))
+            rows.append((t[k], "gnss_yaw", [float(heading[k])], [variance], late[k]))
 
     if origin is None:
         print("warning: no 3D GNSS fix in the log", file=sys.stderr)
-    tally(rows, before, used, "gnss", f"{dataset.name} ({lat_f})")
+    tally(rows, before, used, "gnss",
+          f"{label}, fields {lat_f}, dated by {'receiver UTC' if dated else 'arrival'}, "
+          f"{sum(repeated)} republished fixes dropped")
     return origin
 
 
@@ -506,7 +678,8 @@ def convert(path, baro_variance, mag_variance, heading_variance=DEFAULT_GNSS_HEA
     used = {}
     note = dropouts(ulog)
     sensor_combined = convert_imu(ulog, rows, used)
-    origin = convert_gnss(ulog, rows, used, heading_variance)
+    stream = gnss_stream(ulog)
+    origin = convert_gnss(ulog, stream, rows, used, heading_variance)
     convert_baro(ulog, rows, used, baro_variance, sensor_combined)
     convert_mag(ulog, rows, used, mag_variance, sensor_combined)
     # The IMU sample interval, for --reference's bias scaling only. Taken here
@@ -519,10 +692,13 @@ def convert(path, baro_variance, mag_variance, heading_variance=DEFAULT_GNSS_HEA
     parameters = [
         origin_note(origin),
         declination_note(ulog.initial_parameters, origin and origin[:2]),
-        antenna_note(ulog.initial_parameters, pick(ulog, GNSS_TOPICS)),
+        antenna_note(ulog.initial_parameters, stream[0]),
         gnss_noise_note(ulog.initial_parameters),
         delays_note,
     ]
+    averaging = averaging_note(sensor_combined)
+    if averaging is not None:
+        parameters.append(averaging)
     return rows, used, note, imu_dt, parameters, origin, delays
 
 
@@ -1408,7 +1584,7 @@ def screen_gnss(dataset):
     A constant `eph` and satellite count is the tell of a simulated receiver: a
     real one's accuracy moves with the sky it sees.
     """
-    keys = ("gnss", "fix_max", "eph_min", "eph_max", "sats_min", "sats_max")
+    keys = ("gnss", "gnss_hz", "fix_max", "eph_min", "eph_max", "sats_min", "sats_max")
     if dataset is None:
         return dict.fromkeys(keys, "none")
     fix = dataset.data.get("fix_type")
@@ -1426,6 +1602,7 @@ def screen_gnss(dataset):
     sats_min, sats_max = span(sats, lambda v: f"{v:.0f}")
     return dict(zip(keys, (
         dataset.name,
+        f"{logged_rate(dataset):.2f}",
         "none" if fix is None else f"{max(int(f) for f in fix)}",
         eph_min, eph_max, sats_min, sats_max,
     )))
@@ -1514,7 +1691,7 @@ def screen(ulog):
         "duration": f"{(ulog.last_timestamp - ulog.start_timestamp) * 1e-6:.0f}",
     }
     keys.update(screen_imu_rate(pick(ulog, ["sensor_combined"])))
-    keys.update(screen_gnss(pick(ulog, GNSS_TOPICS)))
+    keys.update(screen_gnss(gnss_stream(ulog)[0]))
     keys.update(screen_vibration(ulog))
     keys["vib_metric"] = vibration_metric(info.get("ver_sw_release", 0))
     keys["ekf2"] = layout_label(key)
@@ -1524,10 +1701,11 @@ def screen(ulog):
 
 
 class Fixture:
-    """A stand-in for a pyulog dataset: a name and a dict of field arrays."""
+    """A stand-in for a pyulog dataset: a name, an instance and a dict of field arrays."""
 
-    def __init__(self, name, **fields):
+    def __init__(self, name, multi_id=0, **fields):
         self.name = name
+        self.multi_id = multi_id
         self.data = fields
 
 
@@ -1599,16 +1777,137 @@ def self_test():
 
     # --screen. A receiver's span is taken over its 3D fixes only: the 2D fix at
     # eph 9.0 is outside it, and counting it would make a constant receiver vary.
-    gps = Fixture("sensor_gps", timestamp=[0, 1, 2, 3], fix_type=[2, 3, 3, 6], eph=[9.0, 0.9, 0.9, 0.9],
-                  satellites_used=[4, 10, 10, 10])
+    second = 1_000_000
+    gps = Fixture("sensor_gps", timestamp=[0, second, 2 * second, 3 * second], fix_type=[2, 3, 3, 6],
+                  eph=[9.0, 0.9, 0.9, 0.9], satellites_used=[4, 10, 10, 10])
     expect("constant receiver", screen_gnss(gps),
-           {"gnss": "sensor_gps", "fix_max": "6", "eph_min": "0.90", "eph_max": "0.90",
+           {"gnss": "sensor_gps", "gnss_hz": "1.00", "fix_max": "6", "eph_min": "0.90", "eph_max": "0.90",
             "sats_min": "10", "sats_max": "10"})
-    gps = Fixture("vehicle_gps_position", timestamp=[0, 1], eph=[1.4, 2.1])
+    gps = Fixture("vehicle_gps_position", timestamp=[0, second], eph=[1.4, 2.1])
     expect("receiver with no fix_type", screen_gnss(gps),
-           {"gnss": "vehicle_gps_position", "fix_max": "none", "eph_min": "1.40",
+           {"gnss": "vehicle_gps_position", "gnss_hz": "1.00", "fix_max": "none", "eph_min": "1.40",
             "eph_max": "2.10", "sats_min": "none", "sats_max": "none"})
     expect("no receiver", screen_gnss(None)["eph_min"], "none")
+
+    # Which receiver stream is fused. Five messages a second against one; the slow
+    # topic's messages are a subset of the fast one's where the two are one stream.
+    def stream(name, stamps, lats, multi_id=0):
+        return Fixture(name, multi_id=multi_id, timestamp=[s * 200_000 for s in stamps],
+                       latitude_deg=lats)
+
+    fast = stream("vehicle_gps_position", range(11), [float(k) for k in range(11)])
+    slow = stream("sensor_gps", range(0, 11, 5), [0.0, 5.0, 10.0])
+    expect("EKF2's topic, kept faster", gnss_stream(FixtureLog(slow, fast))[0], fast)
+    fast_receiver = stream("sensor_gps", range(11), [float(k) for k in range(11)])
+    slow_fused = stream("vehicle_gps_position", range(0, 11, 5), [0.0, 5.0, 10.0])
+    expect("a faster receiver holding every fused message",
+           gnss_stream(FixtureLog(slow_fused, fast_receiver))[0], fast_receiver)
+    # A blend: the fused stream's latitudes are neither receiver's, so EKF2's topic stays
+    # however slowly it was logged. Dropping the containment test takes the receiver here.
+    blend = stream("vehicle_gps_position", range(0, 11, 5), [0.0, 5.5, 10.0])
+    expect("a blend keeps EKF2's topic", gnss_stream(FixtureLog(blend, fast_receiver))[0], blend)
+    # The second receiver holds none of the fused stream; the first holds it all.
+    other = stream("sensor_gps", range(11), [k + 0.5 for k in range(11)], multi_id=1)
+    expect("the instance that holds it", gnss_stream(FixtureLog(other, slow_fused, fast_receiver))[0],
+           fast_receiver)
+    expect("only a receiver topic", gnss_stream(FixtureLog(slow))[0], slow)
+    # As fast and holding every message is no more complete a copy: EKF2's topic stands.
+    twin = stream("sensor_gps", range(11), [float(k) for k in range(11)])
+    expect("an equal-rate copy keeps EKF2's topic", gnss_stream(FixtureLog(twin, fast))[0], fast)
+    # A second vehicle_gps_position instance is not what EKF2 subscribes to.
+    second = stream("vehicle_gps_position", range(11), [float(k) for k in range(11)], multi_id=1)
+    expect("instance 1 is not EKF2's topic", gnss_stream(FixtureLog(second, slow))[0], slow)
+    expect("no receiver topic", gnss_stream(FixtureLog()), (None, None))
+
+    import numpy
+    # Lateness: a steady 50 ms behind UTC but for one message 30 ms later still, and one with
+    # no UTC. The odd one stands out of the median wherever it sits, including in the first
+    # window, which the edge borrows.
+    epochs = [k * 100_000 for k in range(60)]
+    arrived = [u + 50_000 for u in epochs]
+    arrived[3] += 30_000
+    arrived[40] += 30_000
+    utc = list(epochs)
+    utc[41] = 0
+    late = lateness(arrived, utc)
+    expect("one late message, at the edge and inside", (late[3], late[40]), (30_000, 30_000))
+    expect("the rest on time", sum(abs(x) for k, x in enumerate(late) if k not in (3, 40)), 0)
+    expect("no UTC, nothing to date by", lateness(arrived, None), None)
+    # The log clock drifting from UTC, 1 ms a message, is not lateness: a median over the whole
+    # log reads the middle of the drift as on time and every other message as late.
+    drifting = [k * 100_000 + 50_000 + 1_000 * k for k in range(120)]
+    expect("drift is not lateness", lateness(drifting, [k * 100_000 for k in range(120)])[30:90],
+           [0] * 60)
+    expect("too few to take a median", lateness(arrived[:10], utc[:10]), None)
+    # A clock in whole seconds at 5 Hz is a sawtooth, not jitter: not trusted at all.
+    coarse = [(k * 200_000 // 1_000_000) * 1_000_000 for k in range(60)]
+    expect("a coarse UTC dates nothing", lateness([u + 50_000 for u in range(0, 60 * 200_000, 200_000)],
+                                                   coarse), None)
+    # Past the cap, a message is taken as on time rather than moved by seconds.
+    stepped = list(arrived)
+    stepped[45] += 2_000_000
+    expect("seconds late is not lateness", lateness(stepped, utc)[45], 0)
+    # A fix published twice unchanged is one fix; the same epoch at a new position is not.
+    gps = Fixture("vehicle_gps_position", timestamp=numpy.array([0, 200_000, 400_000, 600_000]),
+                  fix_type=[3] * 4, time_utc_usec=numpy.array([10, 20, 20, 30]),
+                  latitude_deg=numpy.array([56.41, 56.42, 56.42, 56.43]),
+                  longitude_deg=numpy.array([43.76] * 4),
+                  altitude_ellipsoid_m=numpy.array([70.0] * 4), eph=[1.0] * 4, epv=[1.0] * 4)
+    written = []
+    convert_gnss(FixtureLog(gps), gnss_stream(FixtureLog(gps)), written, {})
+    expect("a republished fix dropped", [r[0] for r in written], [0, 200_000, 600_000])
+    gps.data["latitude_deg"] = numpy.array([56.41, 56.42, 56.425, 56.43])
+    written = []
+    convert_gnss(FixtureLog(gps), gnss_stream(FixtureLog(gps)), written, {})
+    expect("an epoch at a new position kept", len(written), 4)
+    # A vehicle standing still repeats its position at every new epoch, and each is a fix.
+    gps.data["latitude_deg"] = numpy.array([56.41] * 4)
+    gps.data["time_utc_usec"] = numpy.array([10, 20, 30, 40])
+    written = []
+    convert_gnss(FixtureLog(gps), gnss_stream(FixtureLog(gps)), written, {})
+    expect("a vehicle standing still kept", len(written), 4)
+    # A UTC held across epochs at 5 Hz says nothing about which fix is a repeat.
+    gps.data["timestamp"] = numpy.array([0, 200_000, 400_000, 600_000, 800_000, 1_000_000])
+    gps.data["time_utc_usec"] = numpy.array([1_000_000] * 5 + [2_000_000])
+    for name in ("latitude_deg", "longitude_deg", "altitude_ellipsoid_m", "eph", "epv"):
+        gps.data[name] = numpy.array([gps.data[name][0]] * 6)
+    gps.data["fix_type"] = [3] * 6
+    written = []
+    convert_gnss(FixtureLog(gps), gnss_stream(FixtureLog(gps)), written, {})
+    expect("a held UTC drops nothing", len(written), 6)
+    # The writer takes a row's lateness off with its delay, and writes it without one.
+    import tempfile
+    with tempfile.TemporaryDirectory() as scratch:
+        out = Path(scratch) / "late.csv"
+        write_replay(out, [], [(0, "imu", [0.0] * 6, []), (500, "gnss_pos", [0.0] * 3, [1.0] * 3, 30),
+                               (900, "baro", [0.0], [1.0], 40)], 0, 1e-6, {"gnss_pos": 100})
+        cells = [line.split(",")[-1] for line in out.read_text().splitlines()[1:]]
+        expect("delay and lateness both off", cells, ["", "0.000370", "0.000860"])
+        # A row more prompt than its source's delay assumes is taken as current, never later.
+        write_replay(out, [], [(500, "gnss_pos", [0.0] * 3, [1.0] * 3, -200)], 0, 1e-6,
+                     {"gnss_pos": 100})
+        expect("never dated after it was logged", out.read_text().splitlines()[1].split(",")[-1],
+               "0.000500")
+        try:
+            write_replay(out, [], [(0, "gnss_pos", [0.0] * 3, [1.0] * 3, 0, 0)], 0, 1e-6)
+            expect("a row of six refused", "written", "refused")
+        except ValueError:
+            pass
+
+    # A row averaged over 2.5 ms that stands for 20 ms, and a seconds-valued field.
+    import numpy
+    combined = Fixture("sensor_combined", timestamp=[0, 20_000, 40_000, 60_000],
+                       gyro_integral_dt=numpy.array([2_500] * 4, dtype=numpy.uint32),
+                       accelerometer_integral_dt=numpy.array([2_490] * 4, dtype=numpy.uint32))
+    expect("averaging interval", averaging_note(combined).split(" us")[0],
+           "IMU averaging interval gyro 2500 accel 2490")
+    combined.data["gyro_integral_dt"] = numpy.array([0.004] * 4, dtype=numpy.float32)
+    expect("seconds read as seconds", averaging_note(combined).split(" accel")[0],
+           "IMU averaging interval gyro 4000")
+    del combined.data["accelerometer_integral_dt"]
+    expect("no interval logged", averaging_note(combined), None)
+    expect("the label", gnss_stream(FixtureLog(slow, fast))[1],
+           "vehicle_gps_position (5.00 Hz; sensor_gps[0] 1.00 Hz; the topic EKF2 fused)")
     expect("vtol regime", screen_regime(status, vtol), {"type": "vtol", "mode_changes": "4"})
     expect("vtol with no regime logged", screen_regime(status, None),
            {"type": "vtol", "mode_changes": "none"})
@@ -1669,9 +1968,9 @@ def self_test():
                   longitude_deg=numpy.array([10.0, 43.76, 43.8]),
                   altitude_ellipsoid_m=numpy.array([0.0, 70.0, 71.0]),
                   eph=[1.0] * 3, epv=[1.0] * 3)
-    expect("origin at the first 3D fix", convert_gnss(FixtureLog(gps), [], {})[:2], (56.41, 43.76))
+    expect("origin at the first 3D fix", convert_gnss(FixtureLog(gps), gnss_stream(FixtureLog(gps)), [], {})[:2], (56.41, 43.76))
     gps.data["altitude_msl_m"] = numpy.array([0.0, 52.0, 53.0])
-    expect("the first fix's MSL height beside it", convert_gnss(FixtureLog(gps), [], {})[2:],
+    expect("the first fix's MSL height beside it", convert_gnss(FixtureLog(gps), gnss_stream(FixtureLog(gps)), [], {})[2:],
            (70.0, 52.0))
     geo = {"EKF2_DECL_TYPE": 3, "EKF2_MAG_DECL": 0.0}
     expect("bit 0 and a fix: the table", declination_note(geo, (56.41, 43.76)).split(" (")[0],

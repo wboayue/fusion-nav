@@ -90,7 +90,9 @@ over seconds, and more slowly than the filter assumes. The filter compensates fo
 changing errors by treating each measurement as noisier than reported, by an amount set by an
 assumed correlation time (`Config::correlation`, equation (24′)). Here the errors last longer
 than assumed, so the compensation is too small. Position ANEES is
-{{anees correlated anees_pos}}, over the strict bound at {{anees correlated any_pos}} moments.
+{{anees correlated anees_pos}}, and a fraction {{anees correlated over_pos}} of moments sits
+above the ordinary bound of {{anees correlated bound}}: an overconfidence that never lets up,
+though never far enough to cross the strict bound ({{anees correlated any_pos}} moments).
 Measuring each sensor's correlation time from a log, without the filter's own bias, is #195.
 
 {{figure correlated anees}}

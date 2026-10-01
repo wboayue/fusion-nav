@@ -672,6 +672,13 @@ fn prepare(
     replay.without = options.without.clone();
     replay.sets = options.sets.clone();
     replay.site = origin_of(text);
+    replay.averaging = averaging_of(text);
+    if !replay
+        .averaging
+        .is_none_or(|a| a.iter().all(|t| t.is_finite() && *t > 0.0))
+    {
+        return Err("the `# IMU averaging interval` header is not a positive interval".into());
+    }
     if options.antenna_from_header {
         replay.antenna = antenna_of(text).unwrap_or_default();
         if !replay.antenna.to_array().iter().all(|v| v.is_finite()) {
@@ -1135,8 +1142,12 @@ struct Replay {
     /// from: a window taken at rest, or the first altitude read against the estimate once
     /// position was established. The filter reports only that it holds one.
     alpha0_from_window: bool,
-    /// What `StaticWindow::noise` made of the window the filter initialized on.
+    /// What `StaticWindow::noise` made of the window the filter initialized on, its densities
+    /// `scaled_by_averaging`.
     noise: Option<WindowNoise>,
+    /// Each IMU sensor's averaging interval, seconds, gyroscope then accelerometer, from the
+    /// `# IMU averaging interval` line; see `averaging_of`.
+    averaging: Option<[f32; 2]>,
     /// When `Eskf::is_aligned` first read true, in log time.
     ///
     /// The filter's own latch rather than `Validity::attitude`: the two read different bars
@@ -1209,6 +1220,7 @@ impl Replay {
             trail: None,
             site: None,
             antenna: Position::zero(),
+            averaging: None,
             last_baro: None,
             pending_velocity: None,
             previous_imu: None,
@@ -1492,7 +1504,12 @@ impl Replay {
         self.window_samples = range.len();
         let window = self.window(range.clone(), dt)?;
         let alignment = self.filter.initialize(&window)?;
-        self.noise = window.noise(self.filter.config());
+        self.noise = window
+            .noise(self.filter.config())
+            .map(|noise| match self.averaging {
+                Some(averaging) => scaled_by_averaging(noise, averaging, dt),
+                None => noise,
+            });
         self.alignment = Some(alignment);
         self.initialized_at = Some(t);
         // The filter's own rule: one magnetometer sample anywhere in the window observes
@@ -2613,6 +2630,43 @@ fn antenna_of(text: &str) -> Option<Position<Body>> {
     let mut numbers = rest.split_whitespace().map(|word| word.parse::<f32>().ok());
     let (forward, right, down) = (numbers.next()??, numbers.next()??, numbers.next()??);
     Some(Position::body(forward, right, down))
+}
+
+/// Each IMU sensor's averaging interval in seconds, gyroscope then accelerometer, from a
+/// leading `# IMU averaging interval gyro <µs> accel <µs>` line, which `tools/ulog2replay.py`
+/// writes from `sensor_combined`'s integral intervals. `None` for a file with none, whose rows
+/// stand for what they averaged.
+///
+/// A rate averaged over `t_avg` carries `N/√t_avg` of noise, which the window reads as an
+/// increment over the step `dt` it builds the window on, so its density is off by `√(dt/t_avg)`
+/// and `scaled_by_averaging` takes it back; propagation keeps the row as the step's rate.
+/// `a299e722` averages 2.5 ms per 20 ms row, so its window reads √8 high.
+fn averaging_of(text: &str) -> Option<[f32; 2]> {
+    let rest = text
+        .lines()
+        .take_while(|line| line.starts_with('#'))
+        .find_map(|line| line.strip_prefix("# IMU averaging interval "))?;
+    let mut words = rest.split_whitespace();
+    let mut value = |name: &str| -> Option<f32> {
+        (words.next()? == name).then_some(())?;
+        words.next()?.parse().ok()
+    };
+    let (gyro, accel) = (value("gyro")?, value("accel")?);
+    Some([gyro * 1e-6, accel * 1e-6])
+}
+
+/// `noise` with each IMU density scaled by `√(t_avg/dt)`, the averaging interval over the step
+/// the window was built on (`averaging_of`).
+///
+/// Capped at one. An average longer than the step overlaps the next row's, and a block's sum
+/// then counts the overlap twice: at `f16771dd`'s 4.9 ms per 4.0 ms row it reads the density
+/// about 6 % high, where the square root would push it a further 11 % high. So only a log that
+/// kept fewer rows than it averaged is corrected.
+fn scaled_by_averaging(mut noise: WindowNoise, averaging: [f32; 2], dt: Seconds) -> WindowNoise {
+    let [gyro, accel] = averaging.map(|t_avg| (t_avg / dt.as_secs()).min(1.0).sqrt());
+    noise.gyro_white = noise.gyro_white.map(|n| n * gyro);
+    noise.accel_white = noise.accel_white.map(|n| n * accel);
+    noise
 }
 
 /// The site a leading `# Navigation origin <lat> <lon> <height>` line names, degrees and
@@ -3891,6 +3945,7 @@ mod tests {
         // Read from the log as `run` reads it, so a fixture turns the course on the way the
         // simulator does.
         replay.course = sideslip_of(&log.0);
+        replay.averaging = averaging_of(&log.0);
         let mut fusions = Vec::new();
         {
             let mut out = Sinks {
@@ -4124,6 +4179,71 @@ mod tests {
         assert_eq!(antenna_of(named), Some(Position::body(0.1, -0.3, -0.057)));
         assert_eq!(antenna_of("# GNSS antenna 1 2\nt_s\n"), None);
         assert_eq!(antenna_of("t_s,source\n# GNSS antenna 1 2 3\n"), None);
+    }
+
+    #[test]
+    fn the_averaging_interval_comes_from_its_header_line_per_sensor() {
+        let named = "# IMU averaging interval gyro 2500 accel 5000 us (why)\nt_s\n";
+        assert_eq!(averaging_of(named), Some([2500e-6, 5000e-6]));
+        assert_eq!(
+            averaging_of("# IMU averaging interval gyro 2500\nt_s\n"),
+            None
+        );
+        assert_eq!(
+            averaging_of("t_s,source\n# IMU averaging interval gyro 1 accel 1\n"),
+            None
+        );
+    }
+
+    /// A gyroscope averaged over a quarter of the step and an accelerometer over a sixteenth
+    /// read their densities twice and four times high, so the window's are halved and
+    /// quartered. Unequal ratios, so a correction applied to the wrong sensor fails.
+    #[test]
+    fn a_window_averaged_over_part_of_its_step_reports_its_density_scaled_back() {
+        let mut log = Log::new();
+        for i in 0..100_u32 {
+            // A deterministic scatter with no period a 50 ms block could cancel.
+            let wobble = ((i.wrapping_mul(2_654_435_761) >> 20) as f32 / 4096.0) - 0.5;
+            let gyro = [1e-3 * wobble, -2e-3 * wobble, 5e-4 * wobble];
+            let accel = [1e-2 * wobble, 2e-2 * wobble, -GRAVITY + 1e-2 * wobble];
+            log = log.imu(f64::from(i) * DT, (gyro, accel));
+        }
+        let plain = replay(&log).noise.expect("the window measures its noise");
+        let header = "# IMU averaging interval gyro 5000 accel 1250 us\n";
+        let averaged = replay(&Log(header.to_string() + &log.0))
+            .noise
+            .expect("and again");
+        // `prepare` is where a file's header reaches the replay; `drive` repeats it for fixtures.
+        let prepared = prepare(header, Config::default(), &Options::default(), None)
+            .map_err(|e| e.to_string())
+            .expect("prepares");
+        assert_eq!(prepared.averaging, Some([5000e-6, 1250e-6]));
+        for refused in [
+            "gyro 0 accel 1250",
+            "gyro 5000 accel inf",
+            "gyro -1 accel 1250",
+        ] {
+            let line = format!("# IMU averaging interval {refused} us\n");
+            assert!(prepare(&line, Config::default(), &Options::default(), None).is_err());
+        }
+        let close = |a: f32, b: f32| (a - b).abs() <= 1e-6 * b.abs();
+        for axis in 0..3 {
+            assert!(close(
+                averaged.gyro_white[axis],
+                plain.gyro_white[axis] * 0.5
+            ));
+            assert!(close(
+                averaged.accel_white[axis],
+                plain.accel_white[axis] * 0.25
+            ));
+        }
+        // Averaged over longer than the step, a sensor is left as read.
+        let longer = "# IMU averaging interval gyro 20000 accel 24650 us\n";
+        let overlapping = replay(&Log(longer.to_string() + &log.0))
+            .noise
+            .expect("once more");
+        assert_eq!(overlapping.gyro_white, plain.gyro_white);
+        assert_eq!(overlapping.accel_white, plain.accel_white);
     }
 
     #[test]

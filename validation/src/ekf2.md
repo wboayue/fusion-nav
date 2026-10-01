@@ -94,8 +94,11 @@ velocities contradict its positions. How long each filter spent refusing its pos
 - this filter, with EKF2's floors (`px4`): {{agreement 093e806a/px4 rej_s_gnss_pos}} s;
 - EKF2: {{agreement 093e806a/raw rej_s_gnss_pos_ekf2}} s.
 
-So how much the receiver is trusted explains most of the difference between the filters, and
-EKF2 refuses more than this filter under either setting.
+How much the receiver is trusted explains most of the difference. Under EKF2's floors this
+filter refuses nothing, and it also reads the receiver's timing differently: it dates each fix by
+the receiver's own clock and drops a fix the autopilot published twice, where EKF2 dates each fix
+by when it arrived and fuses the repeats. Whether that is the rest of EKF2's refusals is
+consistent with these figures and not shown by them.
 
 {{figure 093e806a/raw ratios}}
 
@@ -112,7 +115,7 @@ comes back. Trusting the receiver fully, this filter refuses
 return from one. Some refuse the offset fix itself, and those refusals can be seen to be right:
 a step that reverts within seconds was never the vehicle moving. The others are the cost of
 trusting the receiver: where an offset was small enough to pass the gate the filter followed it,
-then refused the receiver's return, once until it adopted a fix. With EKF2's
+then refused the receiver's return until the two met again. With EKF2's
 floors it refuses {{summary 2b2ad123/px4 rejected_gnss_pos}}, and EKF2 refuses none. Over the
 whole flight the two filters agree to
 {{agreement 2b2ad123/raw pos_n_rms}} m RMS north.

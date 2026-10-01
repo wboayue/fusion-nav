@@ -277,7 +277,26 @@ and `t_meas_s` when it was taken: `t_s` less `EKF2_GPS_DELAY` for a fix (`SENS_G
 build that has it), `EKF2_BARO_DELAY` and `EKF2_MAG_DELAY` for the other two, blank where the
 delay is zero. A `# Measurement delays` header line says which parameter each figure came from.
 No corpus receiver logs a sample time of its own: `sensor_gps.timestamp_sample` is zero or equal
-to `timestamp` wherever it appears.
+to `timestamp` wherever it appears. Each does log `time_utc_usec`, the epoch the fix describes,
+and a fix's `t_meas_s` also takes off how much later than usual it arrived after that epoch: its
+`timestamp - time_utc_usec` less the running median over 51 messages, the median being the usual
+latency the delay parameter stands for. The arrival time jitters by tens of milliseconds behind
+the epoch (`89a498ce` -17 to +30 ms, p5 to p95), which at 10 m/s is 0.27 m along track, beyond a
+centimetre receiver's σ, so dated by arrival `89a498ce` rejects 884 fixes and dated by its epoch
+none (#194). A fix that arrived more promptly than the delay assumes is taken as current, never
+as taken after it was logged: 284 of `093e806a`'s, whose 5 Hz epochs slip against the sensors
+module's steady 201 ms publication, so a fix usually waits up to an epoch to be published and now
+and then does not. The UTC is trusted only where it advances with the messages, and a lateness
+past a second is taken as none. A fix republished unchanged, same epoch and same position, is
+dropped rather than fused twice: 532 of `093e806a`'s.
+
+The receiver topic is the one EKF2 fused, `vehicle_gps_position`, which the default logger keeps
+at 5–10 Hz, rather than the per-receiver `sensor_gps` it keeps at 1 Hz
+(`src/modules/logger/logged_topics.cpp:148,243` at c4e4ef98). A `sensor_gps` instance is taken
+instead only where it is logged faster and holds every `vehicle_gps_position` message, timestamp
+and latitude alike: one receiver's stream kept more completely, which is `a299e722` (10 Hz against
+2). A blend or a receiver switch fails that and keeps EKF2's topic. `# Topics used` names the
+stream, both rates, how its fixes are dated and how many republished fixes were dropped.
 
 A `gnss_yaw` row, `v0` the heading in radians and `var0` its variance, is written only where the
 log's own EKF2 fused a dual-antenna heading: `EKF2_GPS_CTRL` bit 3, or `EKF2_AID_MASK` bit 7 on a
@@ -329,14 +348,16 @@ manifest — and read what the ULog alone can say about it:
 ```console
 $ uv run tools/ulog2replay.py candidate.ulg --screen
 screen sitl=no hw=PX4_FMU_V5 sw=v1.11.3 duration=7127 imu_hz=199 gnss=vehicle_gps_position
-  fix_max=4 eph_min=1.17 eph_max=2.18 sats_min=17 sats_max=26 clip=0 vib_p95=0.094 vib_metric=dv
+  gnss_hz=0.65 fix_max=4 eph_min=1.17 eph_max=2.18 sats_min=17 sats_max=26 clip=0 vib_p95=0.094 vib_metric=dv
   ekf2=quat24 vehicle_imu=yes type=mc mode_changes=0
 ```
 
 Every value is one number or one word, so most of a gap's criteria are `expect.sh` pairs, checked
 with `compare_pairs` after sourcing the file. `sw=` carries the firmware type (`v1.16.0-rc`). `imu_hz=`
 is `sensor_combined`'s median rate: a logger profile can sample it at 5 Hz, which replays as a
-coasted step at every epoch.
+coasted step at every epoch. `gnss=` is the stream the conversion would fuse, chosen as
+`# Topics used` says, and `gnss_hz=` how much of it the log kept, a count over the span where
+`imu_hz=` is a median, since a burst of fixes is more of the stream.
 `ekf2=` names the covariance layout `--reference` will read — `err24`, `err23` or `quat24`, the
 table below — or says `unmapped` (LPE) or `none`. `vib_metric=` says which quantity `vib_p95=`
 is, since PX4 `f2ae8ae814` changed it under one field name: `dv`, a filtered Δv difference in m/s
@@ -539,9 +560,9 @@ epoch CSV's row count, each `rejected_<source>=` against that source's `rejected
 fusion CSV, and the reference's IMU interval against `rate=`.
 
 Two caveats are printed beside the distribution plots rather than left to a reader, because both
-are measured and both look like filter faults. **No source in this corpus is white** — `acf1_`
-runs 0.5736–0.9885 on GNSS position, 0.1712–0.8511 on the barometer and 0.1793–0.9851 on the
-magnetometer — because a 1 Hz receiver filters its own solution in time and a 250 Hz magnetometer
+are measured and both look like filter faults. **No source in this corpus is white:** `acf1_`
+runs 0.85–1.00 on GNSS position, 0.17–0.97 on the barometer and 0.15–0.98 on the
+magnetometer, because a receiver filters its own solution in time and a 250 Hz magnetometer
 is sampled far faster than the field it reads changes. And **`R` for the barometer and the
 magnetometer is a converter constant**, so their distribution tests those constants; only GNSS
 tests a receiver's own reported accuracy.
@@ -634,8 +655,8 @@ for three measured reasons:
 
 - **A floor erases the figure rather than bounding it.** The `EKF2_GPS_V_NOISE` each log flew,
   0.25–0.3 m/s (the 0.5 in `EKF/common.h:370` is an initializer the parameter overrides), sits
-  above 9988 of the corpus's 15021 velocity solutions: every one on `093e806a`, `2b2ad123`,
-  `4b473e91`, `89a498ce` and `a299e722`, 98.9 % or more on `285ee2e7`, `cd7e0001` and `eb799954`, 55.9 % on
+  above 57380 of the corpus's 73823 velocity solutions: every one on `2b2ad123`, `4b473e91`,
+  `89a498ce` and `a299e722`, 98.9 % or more on `093e806a`, `285ee2e7`, `cd7e0001` and `eb799954`, 55.9 % on
   `7ce66f0d`, 12.4 % on `2c42096b` and none on the SITL log. Honest receivers included, it is the
   operative value on most logs rather than a backstop. The position floors bind on four receivers:
   reported σ_h falls to 0.297 m on `093e806a` and 0.436 m on `4b473e91` against a 0.5 m bound,
@@ -644,16 +665,16 @@ for three measured reasons:
   is 0.622 m and up on the rest, and σ_v averages 0.51–6.26 m against 0.75 where there is no
   RTK. Since the barometer and the magnetometer already carry
   converter constants, flooring would leave almost no receiver-reported variance in the corpus.
-- **It costs most or all of the only GNSS rejections the multirotors have.** `a299e722` (314
-  velocities, 70 positions) and `2b2ad123` (18 positions, 1 velocity) are the only non-zero GNSS
-  counts across the nine multirotor and SITL logs, and under their own floors they read 40 and 0.
-  `2b2ad123`'s show what that erases in both directions. Its receiver's position runs one or two
-  epochs off its own velocity for seconds at a time, under its centimetre σ. Eight rejections
-  refuse an offset fix, which the floors would fuse. Ten refuse the receiver's return after the
-  state followed an offset the gate let through, and one such episode locks the filter out until
-  the log's one recovery, which the floors would have prevented (#169; its manifest entry has the
-  figures, taken at the converter's 1 Hz, #194). So raw `R` pays for a receiver whose σ does not
-  cover its own epoch errors with a lockout, where a floor hides the fault from the gate. (Of
+- **It costs most or all of the only GNSS rejections the multirotors have.** `a299e722` (315
+  velocities, 70 positions), `2b2ad123` (118 positions) and `cd7e0001` (one velocity) are the only
+  non-zero GNSS counts across the nine multirotor and SITL logs, and under their own floors they
+  read 38, 0 and 0. `2b2ad123`'s show what that erases. Its receiver's position runs one or two
+  epochs off its own velocity for seconds at a time, under its centimetre σ, in six episodes, and
+  every one of the 118 is inside an episode or the 6 s after it: an offset fix, or the receiver's
+  return after the state followed one. The floors fuse all of them (#169; its manifest entry has
+  the figures, at the 6.1 Hz EKF2 fused and each fix dated by its epoch, #194). So raw `R` pays
+  for a receiver whose σ does not cover its own epoch errors in rejections, where a floor hides the
+  fault from the gate. (Of
   the four airframe logs, measured at `Recovery::OFF` with every fix fused as white, the floors
   correct one: `093e806a`'s 860 position rejections read 92 under them, where recovery alone read
   291, and 278 with (24′). They leave `4b473e91`'s

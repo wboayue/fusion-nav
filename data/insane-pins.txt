@@ -8,15 +8,15 @@
 # sits a little above the receiver's own against truth (rms_gnss_pos, 3.92, 1.87 and 2.82 m;
 # the fixes are judged at `t_meas_s`, on truth interpolated between RTK2's epochs): an
 # ordinary receiver's error persists, and no filter removes what its only position source
-# shares. What these read is whether the covariance covers it: nees_pos 0.35 to 0.47,
-# conservative, and (24') is why; GOALS.md, "Correlated measurement error as equivalent white
+# shares. What these read is whether the covariance covers it: nees_pos 0.21 to 0.23,
+# conservative, and (24') is why, at Config::correlation's GNSS defaults of 8.5 s and 37 s; GOALS.md, "Correlated measurement error as equivalent white
 # noise", owns what fusing white reads and what (24') costs. mars_1's receiver claims 0.77 m
 # and errs by 1.87 m, so it is the correlation that covers it, not the receiver's claim: 143
 # of its 483 fixes are bad against their own R (bad_gnss_pos), and the gate rejects none: it
 # tests a fix against the estimate, which follows the receiver's persistent error, not truth.
 # Height is the barometer's to hold: the fixes are 8.80, 2.68 and 5.57 m off vertically
-# (rms_gnss_hgt; on average 8.0 m high, 1.9 m low and 5.3 m high) against pos_v 1.88, 0.39
-# and 2.04, and `--without baro` outdoor_1 and mars_19 read pos_v 9.35 and 5.72, the fixes'
+# (rms_gnss_hgt; on average 8.0 m high, 1.9 m low and 5.3 m high) against pos_v 1.33, 0.29
+# and 1.55, and `--without baro` outdoor_1 and mars_19 read pos_v 9.45 and 5.77, the fixes'
 # own. The unjudged fixes fall outside the truth's time range (mars_19's truth covers 280 s of
 # 371), all but 10 and 13, in truth gaps wider than `TRUTH_SPAN` (examples/replay/main.rs).
 # Velocity is more conservative still (nees_vel 0.03 to 0.07): no GNSS velocity is fused,
@@ -31,6 +31,6 @@
 # (5 s means); and logging that drops IMU, magnetometer and barometer samples, each gap past
 # a source's timeout flickering `Degraded` (transitions=220): the magnetometer is silent at
 # 68 of the 109 onsets, the barometer at 19.
-outdoor_1 raw rejected_gnss_pos=0 rejected_gnss_hgt=0 rejected_baro=0 rejected_mag=0 recovered=0 alpha0=window floored=0 degraded_s=0.47..0.49 dead_reckoning_s=0.00..0.02 transitions=42 status=Healthy pos_h=4.272..4.360 pos_v=1.858..1.896 vel=0.851..0.869 pos_h_max=7.833..7.993 nees_pos=0.4616..0.4710 nees_vel=0.0712..0.0728 offered_gnss_pos=958 bad_gnss_pos=0 unjudged_gnss_pos=308 rms_gnss_pos=3.883..3.963 offered_gnss_hgt=958 bad_gnss_hgt=0 unjudged_gnss_hgt=308 rms_gnss_hgt=8.710..8.886
-mars_1 raw rejected_gnss_pos=0 rejected_gnss_hgt=0 rejected_baro=0 rejected_mag=0 recovered=0 alpha0=window floored=0 degraded_s=0.19..0.21 dead_reckoning_s=0.19..0.21 transitions=36 status=Healthy pos_h=1.902..1.942 pos_v=0.389..0.397 vel=0.305..0.313 pos_h_max=3.563..3.635 nees_pos=0.3506..0.3578 nees_vel=0.0314..0.0322 offered_gnss_pos=483 bad_gnss_pos=143 unjudged_gnss_pos=1 rms_gnss_pos=1.849..1.887 offered_gnss_hgt=483 bad_gnss_hgt=27 unjudged_gnss_hgt=1 rms_gnss_hgt=2.649..2.703
-mars_19 raw rejected_gnss_pos=0 rejected_gnss_hgt=0 rejected_baro=0 rejected_mag=0 recovered=0 alpha0=window floored=0 degraded_s=1.98..2.04 dead_reckoning_s=0.07..0.09 transitions=220 status=Healthy pos_h=2.860..2.918 pos_v=2.022..2.064 vel=0.424..0.434 pos_h_max=4.339..4.427 nees_pos=0.4354..0.4442 nees_vel=0.0640..0.0654 offered_gnss_pos=1350 bad_gnss_pos=0 unjudged_gnss_pos=451 rms_gnss_pos=2.788..2.846 offered_gnss_hgt=1350 bad_gnss_hgt=0 unjudged_gnss_hgt=451 rms_gnss_hgt=5.516..5.628
+outdoor_1 raw rejected_gnss_pos=0 rejected_gnss_hgt=0 rejected_baro=0 rejected_mag=0 recovered=0 alpha0=window floored=0 degraded_s=0.47..0.49 dead_reckoning_s=0.00..0.02 transitions=42 status=Healthy pos_h=4.512..4.604 pos_v=1.315..1.343 vel=0.963..0.983 pos_h_max=9.394..9.584 nees_pos=0.2291..0.2339 nees_vel=0.0646..0.0660 offered_gnss_pos=958 bad_gnss_pos=0 unjudged_gnss_pos=308 rms_gnss_pos=3.883..3.963 offered_gnss_hgt=958 bad_gnss_hgt=0 unjudged_gnss_hgt=308 rms_gnss_hgt=8.710..8.886
+mars_1 raw rejected_gnss_pos=0 rejected_gnss_hgt=0 rejected_baro=0 rejected_mag=0 recovered=0 alpha0=window floored=0 degraded_s=0.19..0.21 dead_reckoning_s=0.19..0.21 transitions=36 status=Healthy pos_h=1.931..1.971 pos_v=0.290..0.296 vel=0.335..0.343 pos_h_max=3.714..3.790 nees_pos=0.2066..0.2108 nees_vel=0.0290..0.0296 offered_gnss_pos=483 bad_gnss_pos=143 unjudged_gnss_pos=1 rms_gnss_pos=1.849..1.887 offered_gnss_hgt=483 bad_gnss_hgt=27 unjudged_gnss_hgt=1 rms_gnss_hgt=2.649..2.703
+mars_19 raw rejected_gnss_pos=0 rejected_gnss_hgt=0 rejected_baro=0 rejected_mag=0 recovered=0 alpha0=window floored=0 degraded_s=1.98..2.04 dead_reckoning_s=0.07..0.09 transitions=220 status=Healthy pos_h=2.905..2.965 pos_v=1.534..1.566 vel=0.456..0.466 pos_h_max=4.485..4.577 nees_pos=0.2274..0.2320 nees_vel=0.0557..0.0569 offered_gnss_pos=1350 bad_gnss_pos=0 unjudged_gnss_pos=451 rms_gnss_pos=2.788..2.846 offered_gnss_hgt=1350 bad_gnss_hgt=0 unjudged_gnss_hgt=451 rms_gnss_hgt=5.516..5.628

@@ -1287,24 +1287,25 @@ fn scenarios() -> Vec<Scenario> {
         // Every aiding error persisting between samples, which (24) fuses as independent and
         // averages down. The time constants are the corpus's: each real log's `acf1_` per source
         // with every measurement fused as white, read as τ = −T / ln ρ at that log's own sample
-        // interval, over the logs whose autocorrelation is positive. `Config::correlation`
-        // takes their median; this takes the median of their upper half, sources slower than
-        // the filter assumes. Not the default on purpose: an error drawn at the filter's own `τ`
-        // scores it against its assumption, and innovations are whiter than the error behind
-        // them, so the corpus understates `τ` and slower is the direction a real sensor errs in.
+        // interval, over the logs whose autocorrelation is positive, GNSS on the stream EKF2
+        // fused and dated by its receiver's epoch. `Config::correlation` takes their median;
+        // this takes the median of their upper half, sources slower than the filter assumes.
+        // Not the default on purpose: an error drawn at the filter's own `τ` scores it against
+        // its assumption, and innovations are whiter than the error behind them, so the corpus
+        // understates `τ` and slower is the direction a real sensor errs in.
         Scenario {
             name: "correlated",
             covers: "the baseline with every aiding error correlated in time, slower than the filter \
-                     assumes: GNSS position 8.7 s and 38 s, velocity 0.89 s, barometer 1.1 s, \
-                     magnetometer 4.3 s",
+                     assumes: GNSS position 23 s and 106 s, velocity 0.43 s, barometer 1.3 s, \
+                     magnetometer 3.3 s",
             gnss: GnssErrors {
-                tau_horizontal: 8.7,
-                tau_vertical: 38.0,
-                tau_velocity: 0.89,
+                tau_horizontal: 23.0,
+                tau_vertical: 106.0,
+                tau_velocity: 0.43,
                 ..GNSS
             },
-            baro: BaroErrors { tau: 1.1, ..BARO },
-            mag: MagErrors { tau: 4.3, ..MAG },
+            baro: BaroErrors { tau: 1.3, ..BARO },
+            mag: MagErrors { tau: 3.3, ..MAG },
             ..base
         },
         // Gating: 10 s of a field turned 30° about the down axis, which reads as a 30° heading
