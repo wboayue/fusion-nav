@@ -15,8 +15,9 @@ consistency keys of #112 surfaced, no corpus source white while (24) fused each 
 `R_m (1+ρ)/(1−ρ)`, `ρ = exp(−Δt/τ)`, gated on `R_m`, with `Δt` from the source's last fused
 measurement and one `τ` per source in `Config::correlation` (corpus medians of `−T/ln acf1`
 read as white). A posterior floor, the issue's option 3, was measured and lost: honest, but it
-raised the gain. The `correlated` scenario's residual (`anees_pos` 1.45, sources slower than the
-defaults) was to be #51's per-sensor τ; #51 measured that a τ read through the filter cannot remove
+raised the gain. The `correlated` scenario's residual (`anees_pos` 1.09 and `over_pos` 0.12 since
+#194 redrew it at the upper half of the corpus's readings, sources slower than the defaults) was to
+be #51's per-sensor τ; #51 measured that a τ read through the filter cannot remove
 it, and it is #195's. Overconfidence is the
 lockout precondition, and #116 (#143) recovers from lockout by default: per-source
 `Config::recovery` at PX4's timeouts, `Recovery::OFF` byte-identical to the filter that only
@@ -127,8 +128,8 @@ The harness judges each GNSS fix against truth (`Judged`: the gate's own test at
 `bad_`, `rejected_bad_`, `rejected_good_`, `accepted_far_`, `adopted_bad_`,
 `recovered_after_{bad,lockout}_` and `unjudged_` per half; truth may leave bias columns blank and
 be sparser than the IMU. The F9P rejects none of its 654 good fixes. The M8T, 200–470 m out while
-claiming 5–25 m, captures the filter: 32 of 338 bad fixes rejected, 59 good ones, 258 m RMS,
-heading lost; 12 of 16 position recoveries end lockouts, and `--recovery off` is 61 km. No gate
+claiming 5–25 m, captures the filter: 33 of 338 bad fixes rejected, 59 good ones, 257 m RMS,
+heading lost; 12 of 16 position recoveries end lockouts, and `--recovery off` is 70 km. No gate
 percentile helps, so P999 and recovery-on stand; the persistent-error failure is #181.
 #9 landed (#182): INSANE is the accuracy benchmark on a real UAV for position, height and
 velocity, **not attitude**. `data/insane.txt` is its own manifest (BSD-2 with a no-Sell
@@ -139,8 +140,8 @@ gravity 5–17° from vertical, and its timeline lags the IMU by 80–170 ms, wh
 `tools/insane2replay.py` measures per sequence and removes. It fuses the PX4 receiver,
 barometer and magnetometer (on its logged axes: the calibration's extrinsic made heading
 worse), no GNSS velocity (horizontal only, no accuracy). The finding is (24′)'s: `nees_pos`
-0.47 / 0.35 / 0.44, where fused white reads 39.2 / 11.6 / 16.1, at 0.05–0.37 m of horizontal
-RMS over the fixes' own error, which is `rms_gnss_pos`/`rms_gnss_hgt` since #184 (#186): each
+0.23 / 0.21 / 0.23 at #194's defaults (0.47 / 0.35 / 0.44 at the 1 Hz ones), where fused white
+reads 39.2 / 11.6 / 16.1, at 0.08–0.64 m of horizontal RMS over the fixes' own error, which is `rms_gnss_pos`/`rms_gnss_hgt` since #184 (#186): each
 decided fix against truth at its time, interpolated between rows at most `TRUTH_SPAN` (0.3 s)
 apart where none lands on it, so INSANE's fixes are judged too (unjudged 1799 → 451 on
 `mars_19`, the rest outside its truth). It found `mars_1` accepting 143 of 483 fixes its own `R`
@@ -261,10 +262,7 @@ epochs off its own velocity for seconds at a time, under a 1.4–2.0 cm σ. Eigh
 fix; ten refuse the receiver's return after the filter followed one, one episode into
 `recovered=1`. It is the price of `r_policy=raw` (`data/README.md`), and detecting it is #181's,
 for which `2b2ad123` is the case to fire on and `89a498ce` the one not to. The investigation
-found #194: the converter fuses `sensor_gps`, which the default logger keeps at 1 Hz, where EKF2
-fused `vehicle_gps_position`, kept at 5–10 Hz, on 9 of 13 logs, so every GNSS key there reads a
-filter aided a fifth to a tenth as often as EKF2 (`2b2ad123` at 6.1 Hz: 741 rejections, none
-recovered).
+found #194, which landed below: at the real rate and epoch, all 118 are offset fixes or returns.
 #51 landed (#196): differentiator 7's offline channel. `cargo run --example replay -- --derive
 <log>` replays the log in-process (`examples/replay/` is now `main.rs`, `derive.rs`, `settings.rs`)
 and prints a commented `Config` literal and the `--set` line that reproduces it, then replays the
@@ -293,6 +291,26 @@ would reach the root's builds. Its first fixture fused every source at the insta
 them, which (24′) prices at `MAX_INFLATION`, so it timed an update that moved nothing and still
 read `Accepted`; each bench now refuses an update moving no variance by 1e-4. #41 keeps the
 hardware: cycle counts and a painted stack.
+#194 and #177 landed (#198): the corpus is fused as EKF2 fused it. The converter takes
+`vehicle_gps_position`, EKF2's topic, at the 5–10 Hz the default logger keeps (`sensor_gps` is
+kept at 1 Hz), unless a `sensor_gps` instance is logged faster and holds every one of its
+messages (`a299e722`, `gnss_stream`). At that rate the log's arrival time was the finding: it
+jitters −17 to +30 ms behind the receiver's epoch on `89a498ce`, 0.27 m along track at 10 m/s,
+and dated by arrival the RTK log rejected 884 fixes. Each fix is now dated by `time_utc_usec`
+(`fix_timing`: arrival less a 51-message running median, so `EKF2_GPS_DELAY` keeps its meaning;
+UTC trusted only where it advances with the messages; never dated after it was logged, which
+`093e806a`'s epochs slipping against a 201 ms publication would otherwise do 284 times), and a
+fix republished unchanged is dropped (532 on `093e806a`). `89a498ce` rejects none, `2b2ad123`
+118, every one inside or just after #169's six episodes, `093e806a` 1164, still its receiver.
+`Config::correlation` was re-read on these streams and only raised, a reading being a lower
+bound: GNSS position 4.2 → 8.5 s, height 14 → 37, barometer 0.20 → 0.26, magnetometer 1.2 → 1.3;
+velocity's 0.31 and the course's 1.08 left 0.50 and 1.4, since taking velocity's cost every white
+scenario height and made `correlated` worse. `correlated` was redrawn at the upper half of the same
+readings (23 s, 106 s, 0.43, 1.3, 3.3): 1.57 at the old defaults, 1.09 at the new. The white
+scenarios pay (`mission` `pos_h` 0.292 → 0.325 m); EKF2 agreement improves on velocity and moves
+away on height. #177 is the `# IMU averaging interval` line: `a299e722` averages 2.5 ms per 20 ms
+row and its noise floor falls √8; the correction is capped at one, since overlapping averages
+(`f16771dd`) read high, not low, which review caught after the issue predicted the opposite.
 
 **Every source the crate publishes is fused; no `fuse_*` is a stub.** Initialization is real —
 equations (5)–(8), so the filter starts at the attitude and biases the window yields — `predict`
@@ -870,7 +888,8 @@ evidence, it is none, and quoting it is worse than quoting nothing because it re
 source's correlation time off its innovations, as the `Correlation` defaults had been read, and on
 the one scenario with known `τ` it came out 1.7–6× short at every lag: the filter follows part of
 the error, so its innovations decorrelate faster than the error does. Taken as the value it made
-`correlated` more overconfident than the defaults (`anees_pos` 3.16 against 1.45). Before
+`correlated` more overconfident than the defaults (`anees_pos` 3.16 against 1.45, as #51 measured
+it). Before
 deriving a sensor property from innovations, check it on a simulated source whose answer is
 known, and treat what survives as a bound, not a value.
 
@@ -886,6 +905,13 @@ dropped eleven off-level fixes and quoted 19 rejections falling to 2, but seven 
 were rejections themselves. The review's version drops only the four *accepted* ones, the
 claimed cause, and a control of four ordinary fixes: 19 → 9 against 19 → 19. Remove the cause,
 count the effect elsewhere, and run the same removal on rows that should not matter.
+
+**A log's timestamp is when the message arrived, not when it was true.** At 1 Hz a filter
+predicts a second across tens of milliseconds of delivery jitter; at 5–10 Hz the same jitter
+reads as along-track position error a centimetre receiver cannot absorb, and #194 first read it
+as RTK receivers rejected by the hundred. Before a rate change is read as the sensor, date the
+measurement by the source's own clock where it logs one (`time_utc_usec`), and check that the
+dating is never later than the log's own.
 
 **A simulator's IMU cannot judge a method that reads one sample.** Its noise is ~58 times under
 `ImuNoise`'s defaults and it has no vibration, so a method that uses the last IMU sample and one
@@ -1310,8 +1336,8 @@ stops the run instead of scoring one quantity against another. A new *state* —
 is what moves those columns.
 
 The converter's `#` header lines are the other coupling, and they are guarded less. Each is an
-f-string in `tools/ulog2replay.py` and a parser elsewhere: `# Magnetic declination` and
-`# GNSS noise parameters` read by `examples/replay/main.rs`, `Estimator:`, `EKF2 position in replay
+f-string in `tools/ulog2replay.py` and a parser elsewhere: `# Magnetic declination`,
+`# GNSS noise parameters` and `# IMU averaging interval` read by `examples/replay/main.rs`, `Estimator:`, `EKF2 position in replay
 frame:` and `EKF2 aiding:` by `tools/replay_report.py`, which also reads the bounds off
 `tools/anees.py --series`'s `# fusion-nav anees for` line. Both sides carry fixtures on the same literal
 strings, so rewording one side fails a self-test; nothing stops the two sets of literals drifting
