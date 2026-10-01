@@ -3,7 +3,7 @@
 //! A benchmark that times a refusal reads as a fast update, so each starts from a filter in
 //! which every source is fused rather than refused, adopted or rejected: seeded level and
 //! heading north at 5 m/s, then flown two seconds at 400 Hz with every source agreeing with
-//! the seed. `benches/filter.rs` asserts the outcome of each call it times before timing it.
+//! the seed. `benches/filter.rs` asserts each call it times is fused, and moves a variance.
 
 use fusion_nav::prelude::*;
 
@@ -90,8 +90,8 @@ pub fn velocity_noise() -> VelocityNoise<Ned> {
     VelocityNoise::from_speed_accuracy(0.2)
 }
 
-/// The filter two seconds into the flight, at [`now`]. Every source has been fused at that
-/// time, so a GNSS velocity is fresh for `fuse_course`.
+/// The filter two seconds into the flight, at [`now`]. Every source has been fused up to its
+/// last period before it, so a GNSS velocity is fresh for `fuse_course`.
 pub fn aided() -> Eskf {
     let mut filter = Eskf::default();
     // Declination fixed, so the magnetic model turns nothing at the origin and the seed's
@@ -124,6 +124,11 @@ pub fn aided() -> Eskf {
     for n in 1..=2 * IMU_HZ {
         let time = sample_time(n);
         assert!(filter.predict(imu_sample(time)).is_propagated());
+        // Nothing at the last sample: a timed measurement there then arrives a period after
+        // its source's last, as one does in flight, rather than at the same instant.
+        if n == 2 * IMU_HZ {
+            continue;
+        }
         if n % (IMU_HZ / 5) == 0 {
             let t = n as f32 / IMU_HZ as f32;
             filter.fuse_gnss_position(time, position(t), position_noise(), Position::zero());

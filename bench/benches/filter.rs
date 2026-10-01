@@ -1,7 +1,7 @@
 //! Host timings of the filter's hot path: `predict`, every `fuse_*`, and a start (#42).
 //!
 //! A host figure is not a target figure, and nothing gates on one: CI runs each benchmark
-//! once (`cargo bench -p bench -- --test`) so that they keep building and every outcome
+//! once (`cargo test -p bench --benches`) so that they keep building and every outcome
 //! asserted here keeps holding. What they are for is a before-and-after on one machine,
 //! which catches an update that turned cubic before #41's hardware does.
 //!
@@ -15,8 +15,10 @@ use bench::{
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use fusion_nav::prelude::*;
 
-/// Time `call` on a fresh clone of `filter`, having checked once that it is fused there: a
-/// refusal or a rejection is cheap, and would time as a fast update.
+/// Time `call` on a fresh clone of `filter`, having checked once that it is fused there and
+/// carries information. A refusal or a rejection is cheap and would time as a fast update; so,
+/// in a sense, would a measurement taken when its source's last one was, which (24′) prices at
+/// its ceiling, `R` a million times over, and fuses as nothing.
 fn bench_fusion<T>(
     c: &mut Criterion,
     name: &str,
@@ -24,9 +26,20 @@ fn bench_fusion<T>(
     call: fn(&mut Eskf) -> T,
     fused: fn(T) -> bool,
 ) {
+    let mut probe = filter.clone();
     assert!(
-        fused(call(&mut filter.clone())),
+        fused(call(&mut probe)),
         "{name} is not fused from the fixture"
+    );
+    let (before, after) = (filter.covariance().to_rows(), probe.covariance().to_rows());
+    let shrink = (0..before.len())
+        .map(|i| 1.0 - after[i][i] / before[i][i])
+        .fold(0.0, f32::max);
+    // The fixture's weakest real update, the magnetometer's, moves yaw by 4.4e-4; the same
+    // measurements at their sources' last instants moved none by more than 1.7e-6.
+    assert!(
+        shrink > 1e-4,
+        "{name} moved no variance by a ten-thousandth: {shrink}"
     );
     c.bench_function(name, |b| {
         b.iter_batched_ref(|| filter.clone(), call, BatchSize::SmallInput)
@@ -119,6 +132,7 @@ fn hot_path(c: &mut Criterion) {
 fn start(c: &mut Criterion) {
     let full = window();
     let next = stationary_sample(10_000);
+    assert!(full.clone().push(next).is_ok());
     c.bench_function("StaticWindow::push", |b| {
         b.iter_batched_ref(|| full.clone(), |w| w.push(next), BatchSize::SmallInput)
     });
