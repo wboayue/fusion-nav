@@ -261,6 +261,37 @@ def convert_imu(ulog, rows, used):
     return dataset
 
 
+def averaging_note(dataset):
+    """The header line saying how long each IMU row's rates were averaged over, against the
+    interval the row stands for, or None for a build that logs neither interval.
+
+    `sensor_combined` publishes each rate as a mean over `gyro_integral_dt` and
+    `accelerometer_integral_dt`, which equal the timestamp step only where the logger kept
+    every message: `a299e722` averages 2.5 ms per 20 ms row, so a still window's scatter
+    reads its noise density sqrt(8) high, and `f16771dd`'s accelerometer, averaged over
+    4.9 ms per 4.0 ms row, reads it low. `examples/replay/main.rs` scales the window's
+    densities by the square root of each ratio; propagation keeps the row as the step's
+    rate. Medians over the log, microseconds; a float field is seconds (`7592c9b2`).
+    """
+    fields = ("gyro_integral_dt", "accelerometer_integral_dt")
+    if not all(f in dataset.data for f in fields):
+        return None
+    t = stamps(dataset)
+    step = median([b - a for a, b in zip(t, t[1:]) if b > a])
+    if step is None:
+        return None
+
+    def micros(name):
+        values = dataset.data[name]
+        scale = 1e6 if values.dtype.kind == "f" else 1.0
+        return median([float(v) * scale for v in values])
+
+    gyro, accel = micros(fields[0]), micros(fields[1])
+    return (f"IMU averaging interval gyro {gyro:.0f} accel {accel:.0f} step {step:.0f} us "
+            "(sensor_combined's median gyro_integral_dt and accelerometer_integral_dt, and "
+            "its median timestamp step)")
+
+
 def is_3d_fix(fix, k):
     """Whether sample `k` is a 3D fix. A receiver logging no `fix_type` is taken at its word."""
     return fix is None or fix[k] >= 3
@@ -581,6 +612,9 @@ def convert(path, baro_variance, mag_variance, heading_variance=DEFAULT_GNSS_HEA
         gnss_noise_note(ulog.initial_parameters),
         delays_note,
     ]
+    averaging = averaging_note(sensor_combined)
+    if averaging is not None:
+        parameters.append(averaging)
     return rows, used, note, imu_dt, parameters, origin, delays
 
 
@@ -1694,6 +1728,19 @@ def self_test():
            fast_receiver)
     expect("only a receiver topic", gnss_stream(FixtureLog(slow))[0], slow)
     expect("no receiver topic", gnss_stream(FixtureLog()), (None, None))
+
+    # A row averaged over 2.5 ms that stands for 20 ms, and a seconds-valued field.
+    import numpy
+    combined = Fixture("sensor_combined", timestamp=[0, 20_000, 40_000, 60_000],
+                       gyro_integral_dt=numpy.array([2_500] * 4, dtype=numpy.uint32),
+                       accelerometer_integral_dt=numpy.array([2_490] * 4, dtype=numpy.uint32))
+    expect("averaging interval", averaging_note(combined).split(" us")[0],
+           "IMU averaging interval gyro 2500 accel 2490 step 20000")
+    combined.data["gyro_integral_dt"] = numpy.array([0.004] * 4, dtype=numpy.float32)
+    expect("seconds read as seconds", averaging_note(combined).split(" accel")[0],
+           "IMU averaging interval gyro 4000")
+    del combined.data["accelerometer_integral_dt"]
+    expect("no interval logged", averaging_note(combined), None)
     expect("the label", gnss_stream(FixtureLog(slow, fast))[1],
            "vehicle_gps_position (5.00 Hz; sensor_gps[0] 1.00 Hz; the topic EKF2 fused)")
     expect("vtol regime", screen_regime(status, vtol), {"type": "vtol", "mode_changes": "4"})
