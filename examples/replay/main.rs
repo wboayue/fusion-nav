@@ -4365,6 +4365,15 @@ mod tests {
     }
 
     #[test]
+    fn a_source_interval_is_the_median_not_stretched_by_a_gap() {
+        // 1 s apart with one 7 s dropout: the mean reads 2.2 s, the source's rate is 1 s.
+        let mut consistency = Consistency::new(Gates::default());
+        consistency.times[GNSS_HGT] = vec![0.0, 1.0, 2.0, 3.0, 10.0, 11.0];
+        assert_eq!(consistency.interval(GNSS_HGT), Some(1.0));
+        assert_eq!(consistency.interval(GNSS_POS), None, "no rows");
+    }
+
+    #[test]
     fn a_replay_under_set_names_what_it_set() {
         let log = still_start().mag(2.0);
         assert_eq!(key(&replay(&log).summary(), "set"), "none");

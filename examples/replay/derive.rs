@@ -1173,8 +1173,9 @@ mod tests {
 
     #[test]
     fn intervals_start_at_the_first_epoch_and_skip_a_repeated_time() {
-        // A 1 s gap before the start is the window's, and a repeated row opens no interval.
-        let t = [0.0, 1.0, 1.01, 1.01, 1.02, 1.03];
+        // A 1 s gap before the start is the window's, and a repeated row opens no interval, nor
+        // does one 0.4 µs later, which `predict` reads as the same microsecond.
+        let t = [0.0, 1.0, 1.01, 1.01, 1.010_000_4, 1.02, 1.03];
         let i = Intervals::of(&t, 1.0).expect("intervals");
         assert_eq!(i.count, 3);
         assert!(i.over(Seconds::from_secs(0.1)).is_empty());
@@ -1340,6 +1341,12 @@ mod tests {
         // it, too.
         let never = coast_from(default, &[gap(None, Some(0.0), false)]);
         assert_eq!(never, default);
+        // One gap settling is not the log settling.
+        let one_of_two = coast_from(
+            default,
+            &[gap(Some(0.25), Some(0.5), false), gap(None, None, false)],
+        );
+        assert_eq!(one_of_two, default);
         assert_eq!(coast_from(default, &[]), default);
     }
 
