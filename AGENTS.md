@@ -535,15 +535,15 @@ panic-check/run.sh                # no reachable panic, both thumb targets; need
 tools/check-anchors.sh            # every `.md#anchor` resolves; --self-test runs its fixtures
 cargo +1.89 build --lib           # MSRV
 
-# Stack frame per function, which `propagate_covariance` and `enforce_symmetry` both cite a
-# measured figure from. Needs `rustup target add --toolchain nightly <target>` once.
-# llvm-readobj is not on PATH here: it ships with rustup's llvm-tools, at
-# ~/.rustup/toolchains/*/lib/rustlib/*/bin/llvm-readobj.
-RUSTFLAGS=-Zemit-stack-sizes cargo +nightly build --lib --release --target thumbv6m-none-eabi
-llvm-readobj --stack-sizes target/thumbv6m-none-eabi/release/libfusion_nav.rlib | grep -A1 predict
-# When a frame grows, bisect it: strip one candidate per build and re-measure. #122's +4168
-# bytes on `update::<3>` was not only the 16 x 16 it looked like -- returning `(Covariance,
-# Offset)` as a tuple through `reset` cost a 900-byte copy of P on its own.
+tools/footprint.sh                # type sizes, stack frames, flash on both thumb targets vs data/footprint.txt; CI
+tools/footprint.sh --pin          # the file's keys at their measured values: re-pin by copying
+tools/footprint.sh --all          # every key measured, to choose what to pin
+# It installs nothing: `rustup toolchain install "$(tools/footprint.sh --toolchain)" --profile
+# minimal -c llvm-tools -t thumbv6m-none-eabi,thumbv7em-none-eabihf` once. When a frame grows,
+# bisect it: strip one candidate per build and re-measure. #122's +4168 bytes on `update::<3>`
+# was not only the 16 x 16 it looked like -- returning `(Covariance, Offset)` as a tuple through
+# `reset` cost a 900-byte copy of P on its own.
+cargo bench -p bench              # host timings of predict, every fuse_* and a start; never gated
 
 cargo run --example basic         # minimal integration loop
 cargo run --example degradation   # timeouts, status transitions, application-driven recovery
@@ -1135,6 +1135,10 @@ the declination table, and CI builds and tests without it too.
   `cargo clippy` and `cargo package` at the root never try to build a `no_std` binary for the
   host. Its build knobs live in `run.sh`, not in its `Cargo.toml`, where a member's `[profile]`
   would be ignored. The only way in is `panic-check/run.sh`.
+- `bench/` — a third, unpublished member: criterion benchmarks of the hot path on the host. A
+  member rather than a root dev-dependency because criterion turns on `num-traits/std`, which
+  at the root would move every replay output (the dev-dependency rule under Replay corpus). Not a default
+  member; `cargo bench -p bench` is the way in, and CI runs it with `-- --test`.
 
 ### Invariants worth knowing before editing
 
