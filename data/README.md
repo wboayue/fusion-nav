@@ -344,14 +344,15 @@ manifest — and read what the ULog alone can say about it:
 ```console
 $ uv run tools/ulog2replay.py candidate.ulg --screen
 screen sitl=no hw=PX4_FMU_V5 sw=v1.11.3 duration=7127 imu_hz=199 gnss=vehicle_gps_position
-  fix_max=4 eph_min=1.17 eph_max=2.18 sats_min=17 sats_max=26 clip=0 vib_p95=0.094 vib_metric=dv
+  gnss_hz=0.65 fix_max=4 eph_min=1.17 eph_max=2.18 sats_min=17 sats_max=26 clip=0 vib_p95=0.094 vib_metric=dv
   ekf2=quat24 vehicle_imu=yes type=mc mode_changes=0
 ```
 
 Every value is one number or one word, so most of a gap's criteria are `expect.sh` pairs, checked
 with `compare_pairs` after sourcing the file. `sw=` carries the firmware type (`v1.16.0-rc`). `imu_hz=`
 is `sensor_combined`'s median rate: a logger profile can sample it at 5 Hz, which replays as a
-coasted step at every epoch.
+coasted step at every epoch. `gnss=` is the stream the conversion would fuse, chosen as
+`# Topics used` says, and `gnss_hz=` the rate the log kept of it.
 `ekf2=` names the covariance layout `--reference` will read — `err24`, `err23` or `quat24`, the
 table below — or says `unmapped` (LPE) or `none`. `vib_metric=` says which quantity `vib_p95=`
 is, since PX4 `f2ae8ae814` changed it under one field name: `dv`, a filtered Δv difference in m/s
