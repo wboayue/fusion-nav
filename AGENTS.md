@@ -16,7 +16,8 @@ consistency keys of #112 surfaced, no corpus source white while (24) fused each 
 measurement and one `τ` per source in `Config::correlation` (corpus medians of `−T/ln acf1`
 read as white). A posterior floor, the issue's option 3, was measured and lost: honest, but it
 raised the gain. The `correlated` scenario's residual (`anees_pos` 1.45, sources slower than the
-defaults) is #51's per-sensor τ to remove, and #117 is closed on that basis. Overconfidence is the
+defaults) was to be #51's per-sensor τ; #51 measured that a τ read through the filter cannot remove
+it, and it is #195's. Overconfidence is the
 lockout precondition, and #116 (#143) recovers from lockout by default: per-source
 `Config::recovery` at PX4's timeouts, `Recovery::OFF` byte-identical to the filter that only
 reported, `recovered=` pinned on every scenario and log so a recovery masking #117 is a diff.
@@ -74,7 +75,7 @@ scenario (`mission` 0.414° → 0.330); `7ce66f0d` recovered 28 times rather tha
 a reader who has never computed a NEES. Every number and table comes through a placeholder in
 `validation/src/`, and every figure through `replay_report.py --figures`. `tools/validation.sh`
 regenerates them from the gates it runs, and `--check` re-derives them. The pages state the
-losses: `correlated` (#51) is overconfident and `7ce66f0d` levels wrong (#59). #47, the release,
+losses: `correlated` (#195) is overconfident and `7ce66f0d` levels wrong (#59). #47, the release,
 is next: the *API frozen* milestone is closed. #174 became bad vertical-accelerometer detection,
 internal and reported through `Diagnostics`, so it left the milestone (clipping, its first shape,
 is 22 samples on the corpus); #41 needs a board.
@@ -264,6 +265,22 @@ found #194: the converter fuses `sensor_gps`, which the default logger keeps at 
 fused `vehicle_gps_position`, kept at 5–10 Hz, on 9 of 13 logs, so every GNSS key there reads a
 filter aided a fifth to a tenth as often as EKF2 (`2b2ad123` at 6.1 Hz: 741 rejections, none
 recovered).
+#51 landed (#196): differentiator 7's offline channel. `cargo run --example replay -- --derive
+<log>` replays the log in-process (`examples/replay/` is now `main.rs`, `derive.rs`, `settings.rs`)
+and prints a commented `Config` literal and the `--set` line that reproduces it, then replays the
+log under it and fails if it coasts a step its `max_predict_dt` did not predict. `--set
+<field>=<value>` writes any derivable field by its `Config` path (`set=` on the `summary` line),
+and `data/anees.sh` passes `REPLAY_ARGS`. `Config::gravity` exists, filled from
+`Geodetic::normal_gravity` (GOALS' local-gravity decision rewritten; `StaticWindow` keeps the
+least and most ‖f‖, 944 B, and its queries take `&Config`), and the simulator flies its site's
+9.80118, so every scenario now carries the 5.5 mm/s² the default is off by (`flight` re-pinned).
+The findings are `DESIGN.md`'s, one heading each: a `τ` read through the filter is 1.7–6× short
+of `correlated`'s own (`anees_pos` 3.16 read as the value), so `--derive` prints
+`max(default, read)` (1.38) and #195 owns the estimator; GNSS height's correlated error puts a
+plateau in the barometer's structure function, so the walk is read from ten of its `τ`
+(`2c42096b` 0.21, ±46 %, against PX4's 0.13); per field, `4b473e91` needs all of the default
+`acceleration` and a quarter of the `rotation`; `max_predict_dt`'s default covers all thirteen
+logs. `data/flight.config.rs` is `--derive data/flight.csv`, compiled and re-rendered by a test.
 
 **Every source the crate publishes is fused; no `fuse_*` is a stub.** Initialization is real —
 equations (5)–(8), so the filter starts at the attitude and biases the window yields — `predict`
@@ -534,6 +551,11 @@ cargo build --example embedded --target thumbv7em-none-eabihf [--features defmt]
 cargo run --example replay        # replays data/flight.csv -> target/replay.csv (CI smoke test)
 cargo run --example replay -- <input.csv> <output.csv> [truth.csv]   # truth adds a `score` line
 cargo run --example replay -- data/flight.csv target/replay.csv data/flight.truth.csv
+cargo run --release --example replay -- --derive <log.csv> > config.rs   # a Config from a log; evidence on stderr
+cargo run --example replay -- --derive data/flight.csv > data/flight.config.rs  # regenerate the fixture a test pins
+cargo run --example replay -- --set correlation.gnss_height=29 <in.csv> <out.csv>   # any derivable field; `set=` names it
+REPLAY_ARGS="--set ..." data/anees.sh correlated   # the ANEES gate under a derived Config
+cargo test --example replay -- --ignored drift_scatter --nocapture   # the drift estimator's scatter DESIGN quotes
 
 cargo run --example simulate      # seeded flights with truth -> target/sim/<scenario>{,.truth}.csv
 cargo run --example simulate -- flight data   # regenerate the committed data/flight.csv
@@ -1058,7 +1080,9 @@ the declination table, and CI builds and tests without it too.
   their evidence", holds the measurement.
 - `src/health.rs` — `Propagation` (`#[must_use]`), `Fusion` (not, deliberately — see its doc
   comment), `SourceHealth`, `Status`.
-- `examples/replay/main.rs` — the normalized CSV format and the offline harness. Two output files:
+- `examples/replay/` — `main.rs`, the normalized CSV format and the offline harness;
+  `derive.rs`, `--derive`, which reads a `Config` off a log as runs, readings and pure `*_from`
+  rules and prints it; `settings.rs`, the `--set` names and their inverse. Two output files:
   one row per IMU epoch, and one row per `fuse_*` call in `<out>.fusion.csv` with the gates in
   its header. `ν` and `S` are columns without values until the update of (23)–(28) publishes
   them — the harness must not compute them itself, which is "one statistic, one implementation"
@@ -1339,7 +1363,7 @@ corpus measured both directions (`DESIGN.md`, `WindowNoise`). Keep its boundary:
 moment and reported, never silently retuned in flight, which would cost the determinism claim; a
 recovery is an adoption on a schedule `Config::recovery` fixes in advance, not a retuning.
 Anything the window cannot honestly measure, the noise to configure above the floor included,
-goes to an offline tool that prints a `Config` (#51), not into the filter.
+goes to `replay --derive`, which prints a `Config` from a log (#51), not into the filter.
 
 ### Documentation is the specification
 
