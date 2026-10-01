@@ -407,7 +407,7 @@ impl Default for Correlation {
     fn default() -> Self {
         Self {
             gnss_position: Some(Seconds::from_secs(8.5)),
-            gnss_height: Some(Seconds::from_secs(40.0)),
+            gnss_height: Some(Seconds::from_secs(37.0)),
             gnss_velocity: Some(Seconds::from_secs(0.5)),
             baro_altitude: Some(Seconds::from_secs(0.26)),
             mag_heading: Some(Seconds::from_secs(1.3)),

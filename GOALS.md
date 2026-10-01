@@ -544,7 +544,7 @@ they actually carry, equation (24′), `R_m (1 + ρ)/(1 − ρ)` with `ρ = exp(
 own `R_m`, with the interval `Δt` measured from the source's last fused measurement, since a
 rejected one fused nothing the next could repeat. `τ` is `Config::correlation`, per source like `Recovery`, a property of the sensor
 configured the way `ImuNoise` is, and defaults to the corpus's medians: GNSS position 8.5 s
-horizontally and 40 s in height, velocity 0.50 s, barometer 0.26 s, magnetometer 1.3 s. The
+horizontally and 37 s in height, velocity 0.50 s, barometer 0.26 s, magnetometer 1.3 s. The
 covariance stays fifteen states: a Gauss–Markov state per source and axis would be exact and would
 add eight.
 
@@ -567,9 +567,11 @@ against truth), so what covers it is the correlation (24′) prices, not the rec
 is not free: white, the horizontal error matches the fixes' own (3.95 m against their 3.92 on
 `outdoor_1`), and under (24′) it is 0.05 to 0.37 m RMS worse, which is what an honest
 covariance cost on a receiver whose error persists. Those figures are (24′) at the defaults it
-landed with; at the ones #194 read below, `correlated` reads `anees_pos` 1.20 (no epoch past the
-family-wise bound, half past the per-epoch one), and INSANE `nees_pos` 0.23, 0.21 and 0.22 with
-`pos_v` 1.30, 0.30 and 1.52 m and the horizontal error 0.08 to 0.64 m RMS over the fixes'.
+landed with, and `correlated` as it was then drawn. #194 read both again below and redrew
+`correlated` from the new readings: on it the new defaults read `anees_pos` 1.09 against 1.57 at
+the old ones (no epoch past the family-wise bound, 0.12 of them past the per-epoch one), and
+INSANE reads `nees_pos` 0.23, 0.21 and 0.23 with `pos_v` 1.33, 0.29 and 1.55 m and the horizontal
+error 0.08 to 0.64 m RMS over the fixes'.
 
 **What it did not buy.** `harsh_imu` (#149) and `gnss_latency` stopped failing on attitude
 because the covariance widened, not because the error shrank: `harsh_imu`'s tilt moved 1.19° to
@@ -606,12 +608,12 @@ fused, at the 5 to 10 Hz the log kept it, each fix dated by its receiver's own e
 | source | logs | range, s | median, s | 1 Hz, by arrival |
 | ------ | ---- | -------- | --------- | ---------------- |
 | GNSS horizontal position | 8 | 1.8–45 | 8.5 | 4.2 |
-| GNSS height | 8 | 11–200 | 40 | 14 |
+| GNSS height | 8 | 11–200 | 37 | 14 |
 | GNSS velocity | 4 | 0.05–0.54 | 0.31 | 0.50 |
 | barometer | 10 | 0.006–4.1 | 0.26 | 0.20 |
-| magnetometer | 10 | 0.006–15.8 | 1.26 | 1.2 |
+| magnetometer | 10 | 0.006–16.5 | 1.26 | 1.2 |
 | dual-antenna GNSS heading | 1 | 0.25 | 0.25 | 0.25 |
-| course constraint | 1 | 1.13 | 1.13 | 1.37 |
+| course constraint | 1 | 1.08 | 1.08 | 1.37 |
 
 The last column is what the defaults were first read from: the 1 Hz `sensor_gps` the converter
 had taken, dated by its arrival in the log. The stream EKF2 fused carries five to ten times the
@@ -624,13 +626,14 @@ did not touch, move only with the GNSS gain beside them.
 A reading is a lower bound, never a value: read through the filter's innovations it falls short
 of the error behind them ([DESIGN.md](DESIGN.md#correlation)), and the more often the filter is
 corrected the shorter. So a default moves only up. GNSS position, GNSS height, the barometer and
-the magnetometer took the longer reading; GNSS velocity's 0.31 s and the course's 1.13 s, read
+the magnetometer took the longer reading; GNSS velocity's 0.31 s and the course's 1.08 s, read
 shorter at the higher rate, left their 0.50 s and 1.4 s standing, since a shorter reading is the
-bias, not the sensor. On the simulator that choice is visible: taking velocity's 0.31 s cost every
-white scenario a fifth of its height accuracy (`mission` `pos_v` 0.171 m to 0.216) and made
-`correlated` more overconfident, not less (one seed's `nees_pos` 1.72 to 2.18). Raising position and height is what `correlated`, whose `τ` is known
-(8.7 s and 38), reads best: `anees_pos` 1.45 to 1.20 and `pos_v` 1.143 m to 0.792. The white
-scenarios pay in horizontal position and in height where GNSS carries it against a barometer
+bias, not the sensor. On the simulator that choice is visible: taking velocity's 0.31 s costs every
+white scenario height (`mission` `pos_v` 0.172 m to 0.222) and makes `correlated` more
+overconfident, not less (one seed's `nees_pos` 1.26 to 1.50). Raising position and height is what
+`correlated`, whose `τ` is known (drawn at the upper half's median, 23 s and 106), reads best:
+`anees_pos` 1.57 to 1.09 and one seed's `pos_v` 1.184 m to 0.743. The white scenarios pay in
+horizontal position and in height where GNSS carries it against a barometer
 (`data/scenarios.txt`). `2b2ad123`, the second RTK log, reads a GNSS-position `τ` of 0.88 s, and
 `89a498ce` 0.51 s, under the range above: an RTK receiver's error is short, and a vehicle's own
 goes through `--derive` (#51), which can only raise a source's `τ`.
@@ -638,7 +641,7 @@ goes through `--derive` (#51), which can only raise a source's `τ`.
 GNSS heading rests on one log, `a299e722`, the only one whose EKF2 fused a dual-antenna yaw:
 `acf1_gnss_yaw` 0.6709 at 10 Hz. The course constraint rests on one too, `093e806a`, the
 fixed-wing, replayed as a vehicle without a magnetometer (`--without mag --course 3`):
-`acf1_course` 0.8368 at 5 Hz, `τ` 1.13 s, and 0.8231 with its magnetometer, 1.03 s; at the 1 Hz it
+`acf1_course` 0.8295 at 5 Hz, `τ` 1.08 s, and 0.8196 with its magnetometer, 1.01 s; at the 1 Hz it
 was first read at, 1.37 and 1.43, which is the default's 1.4. What persists
 there is the sideslip, which the constraint cannot observe, and fused white the simulator's
 `no_mag` read a heading NEES of 2.7 on a sideslip it averaged as noise.
@@ -803,7 +806,7 @@ could be argued back:
 - **Truth scored it (#60).** UrbanNav's M8T is wrong by tens to hundreds of metres for a minute
   at a time while claiming 5 to 25, and 338 of its 517 fixes fail their own `R` against SPAN-CPT.
   With recovery the filter reads 258 m horizontal RMSE, and 12 of its 16 position recoveries end
-  a lockout of good fixes; with `Recovery::OFF` it rejects 499 of 517 fixes and reads 108 km
+  a lockout of good fixes; with `Recovery::OFF` it rejects 499 of 517 fixes and reads 70 km
   (`data/urbannav-pins.txt` pins both). Neither is a working filter, and the gate is not what
   could make one: on #60's branch, setting `Config::gates` to every percentile from P99 to P99999
   landed between 257 and 266 m with recovery on. A receiver whose error persists is followed a

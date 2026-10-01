@@ -283,8 +283,12 @@ and a fix's `t_meas_s` also takes off how much later than usual it arrived after
 latency the delay parameter stands for. The arrival time jitters by tens of milliseconds behind
 the epoch (`89a498ce` -17 to +30 ms, p5 to p95), which at 10 m/s is 0.27 m along track, beyond a
 centimetre receiver's σ, so dated by arrival `89a498ce` rejects 884 fixes and dated by its epoch
-none (#194). A fix republished unchanged, same epoch and same position, is dropped rather than
-fused twice: 532 of `093e806a`'s.
+none (#194). A fix that arrived more promptly than the delay assumes is taken as current, never
+as taken after it was logged: 284 of `093e806a`'s, whose 5 Hz epochs slip against the sensors
+module's steady 201 ms publication, so a fix usually waits up to an epoch to be published and now
+and then does not. The UTC is trusted only where it advances with the messages, and a lateness
+past a second is taken as none. A fix republished unchanged, same epoch and same position, is
+dropped rather than fused twice: 532 of `093e806a`'s.
 
 The receiver topic is the one EKF2 fused, `vehicle_gps_position`, which the default logger keeps
 at 5–10 Hz, rather than the per-receiver `sensor_gps` it keeps at 1 Hz

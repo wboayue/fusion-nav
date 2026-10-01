@@ -35,13 +35,15 @@
 # removed, so the line is rewritten in the diff that fixes it rather than left passing silently.
 #
 #   correlated       position only, and on `over_pos` rather than `any_pos`: every aiding error
-#                    correlated, slower than `Config::correlation`'s defaults, which are the
-#                    corpus's medians and understate it (`examples/simulate.rs`). (24') fuses it
-#                    at too small a variance: anees_pos=1.20 against a bound of 1.1972,
-#                    over_pos=0.51, no epoch past bound_any. The medians read at 1 Hz and dated
-#                    by arrival left it at anees_pos=1.45, over_pos=0.95, any_pos=5197; read at
-#                    the receivers' own rate and epochs (#194) GNSS position's and height's are
-#                    8.5 s and 40 rather than 4.2 and 14, nearer the scenario's. Fused as white it read
+#                    correlated, at the median of the upper half of the corpus's readings where
+#                    `Config::correlation`'s defaults take the median (`examples/simulate.rs`).
+#                    (24') fuses it at too small a variance: anees_pos=1.09, over_pos=0.12
+#                    against the 0.10 allowance, no epoch past bound_any. At the defaults read
+#                    at 1 Hz and dated by arrival (4.2 s and 14 for GNSS position and height)
+#                    the same flight reads anees_pos=1.57, over_pos=0.97, any_pos=10680; read
+#                    at the receivers' own rate and epochs (#194), 8.5 s and 37. The flight was
+#                    redrawn by #194 from those readings; drawn from the 1 Hz ones it read
+#                    anees_pos=1.45 at the 1 Hz defaults, and fused as white
 #                    anees_pos=29.16 and anees_att=3.48, over on every epoch of both. The
 #                    `tau` replay --derive prints for one seed (#51) does not remove it
 #                    (DESIGN.md, `Correlation`); an estimator the filter does not bias is

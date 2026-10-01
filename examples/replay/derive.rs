@@ -1304,7 +1304,7 @@ mod tests {
         };
         let mut taus = [Tau::Absent; SOURCES.len()];
         taus[GNSS_POS] = read(11.0); // over the default 8.5: taken
-        taus[GNSS_HGT] = read(30.0); // under the default 40: shows nothing
+        taus[GNSS_HGT] = read(30.0); // under the default 37: shows nothing
         taus[GNSS_VEL] = Tau::Alternating { rho: -0.4 };
         taus[BARO] = Tau::Unresolved { rho: 0.1, rows: 20 };
         let defaults = Correlation::default();
