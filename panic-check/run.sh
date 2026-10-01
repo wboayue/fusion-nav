@@ -15,9 +15,10 @@ cd "$(dirname "$0")"
 
 # shellcheck source=panic-check/profile.sh
 . ./profile.sh
+link_profile
 
 TARGETS=("${@:-}")
-[[ -z "${TARGETS[0]}" ]] && TARGETS=(thumbv7em-none-eabihf thumbv6m-none-eabi)
+[[ -z "${TARGETS[0]}" ]] && TARGETS=("${THUMB_TARGETS[@]}")
 
 HOST=$(rustc -vV | sed -n 's/^host: //p')
 TOOLS="$(rustc --print sysroot)/lib/rustlib/$HOST/bin"

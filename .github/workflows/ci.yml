@@ -57,7 +57,7 @@ jobs:
       - run: data/bench.sh
       # The host benchmarks, each run once: they keep building, and each asserts the call it
       # times is fused rather than refused. Timings are not gated on a shared runner (#42).
-      - run: cargo bench -p bench -- --test
+      - run: cargo test -p bench --benches
 
   anees:
     name: anees
@@ -101,12 +101,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: |
-          toolchain=$(tools/footprint.sh --toolchain)
-          rustup toolchain install "$toolchain" --profile minimal --component llvm-tools \
-            --target thumbv6m-none-eabi,thumbv7em-none-eabihf
+      - run: tools/footprint.sh --install
+      # Keyed on the script, which pins the nightly: a new nightly's build shares nothing with
+      # the old one's.
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ hashFiles('tools/footprint.sh') }}
+      # The comparator and the parser fail as themselves before either reads a measurement.
       - run: data/expect.sh --self-test
+      - run: python3 tools/footprint.py --self-test
       - run: tools/footprint.sh
 
   msrv:
