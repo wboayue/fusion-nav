@@ -2636,7 +2636,12 @@ fn antenna_of(text: &str) -> Option<Position<Body>> {
 /// an increment over the step, so its density is off by `√(step/t_avg)` and the harness scales
 /// it back; propagation keeps the row as the step's rate. `tools/ulog2replay.py` writes the
 /// line from `sensor_combined`'s integral intervals, `a299e722` at 2.5 ms per 20 ms row.
-/// `None` for a file with none, whose rows stand for what they averaged.
+///
+/// Capped at one. An average longer than the step overlaps the next row's, and a block's sum
+/// then counts the overlap twice: at `f16771dd`'s 4.9 ms per 4.0 ms row it reads the density
+/// about 6 % high, where the square root would push it a further 11 % high. So only a log that
+/// kept fewer rows than it averaged is corrected. `None` for a file with none, whose rows stand
+/// for what they averaged.
 fn averaging_of(text: &str) -> Option<[f32; 2]> {
     let rest = text
         .lines()
@@ -2648,7 +2653,7 @@ fn averaging_of(text: &str) -> Option<[f32; 2]> {
         words.next()?.parse().ok()
     };
     let (gyro, accel, step) = (value("gyro")?, value("accel")?, value("step")?);
-    Some([gyro / step, accel / step])
+    Some([(gyro / step).min(1.0), (accel / step).min(1.0)])
 }
 
 /// The site a leading `# Navigation origin <lat> <lon> <height>` line names, degrees and
@@ -4167,6 +4172,9 @@ mod tests {
     fn the_averaging_interval_comes_from_its_header_line_per_sensor() {
         let named = "# IMU averaging interval gyro 2500 accel 5000 step 20000 us (why)\nt_s\n";
         assert_eq!(averaging_of(named), Some([0.125, 0.25]));
+        // Longer than the step on one sensor: that one is left alone.
+        let overlapping = "# IMU averaging interval gyro 4000 accel 4930 step 4000 us\nt_s\n";
+        assert_eq!(averaging_of(overlapping), Some([1.0, 1.0]));
         assert_eq!(
             averaging_of("# IMU averaging interval gyro 2500 step 20000\nt_s\n"),
             None
@@ -4195,6 +4203,13 @@ mod tests {
         let averaged = replay(&Log(header.to_string() + &log.0))
             .noise
             .expect("and again");
+        // `prepare` is where a file's header reaches the replay; `drive` repeats it for fixtures.
+        let prepared = prepare(header, Config::default(), &Options::default(), None)
+            .map_err(|e| e.to_string())
+            .expect("prepares");
+        assert_eq!(prepared.averaging, [0.25, 0.0625]);
+        let refused = "# IMU averaging interval gyro 0 accel 1250 step 20000 us\n";
+        assert!(prepare(refused, Config::default(), &Options::default(), None).is_err());
         for axis in 0..3 {
             assert_eq!(averaged.gyro_white[axis], plain.gyro_white[axis] * 0.5);
             assert_eq!(averaged.accel_white[axis], plain.accel_white[axis] * 0.25);
