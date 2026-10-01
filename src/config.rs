@@ -103,7 +103,7 @@ impl Default for ImuNoise {
     /// The white noise is PX4's per-step σ taken as a density, which is ten times the density PX4's
     /// 1.5e-2 rad s⁻¹ and 0.35 m s⁻² stand for at its 10 ms step (`module.yaml:118-131`). The
     /// factor stands for two things this filter does not model: the floors both estimators put
-    /// under a receiver's reported accuracy (#105), and vibration, which PX4 meets only by
+    /// under a receiver's reported accuracy, and vibration, which PX4 meets only by
     /// inflating accelerometer noise on clipping (`covariance.cpp:125-133`). Replay measured both
     /// spending it: at 0.3× `accel_white`, `2c42096b` vibrating on the ground peaks at 4.6° of tilt
     /// against 2.5°, and `a299e722`'s raw `R` rejects 493 velocity solutions against 283. A change
@@ -1129,7 +1129,7 @@ mod tests {
 
     #[test]
     fn each_threshold_is_the_quantile_it_names() {
-        // The three-significant-figure values this table replaced (7.81, 3.84) miss by 1e-4,
+        // Three-significant-figure values (7.81, 3.84) miss by 1e-4,
         // so the bound separates a quantile from a rounded one.
         for (percentile, p) in PERCENTILES {
             let one = Gate::<1>::at(percentile).threshold();

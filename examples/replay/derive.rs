@@ -1,4 +1,4 @@
-//! `--derive`: work a `Config` out from one log, and print it as Rust (#51).
+//! `--derive`: work a `Config` out from one log, and print it as Rust.
 //!
 //! The offline half of `GOALS.md` differentiator 7: what the static window cannot measure,
 //! derived from a replay log at a defined moment and printed for a reader to commit, never

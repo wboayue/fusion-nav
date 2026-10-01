@@ -1,4 +1,4 @@
-//! The flight every benchmark in `benches/filter.rs` starts from (#42).
+//! The flight every benchmark in `benches/filter.rs` starts from.
 //!
 //! A benchmark that times a refusal reads as a fast update, so each starts from a filter in
 //! which every source is fused rather than refused, adopted or rejected: seeded level and

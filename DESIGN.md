@@ -4,13 +4,9 @@ How `fusion-nav` is built and why. For how to use it see [README.md](README.md);
 mathematics see [EQUATIONS.md](EQUATIONS.md); for positioning and decisions already made see
 [GOALS.md](GOALS.md).
 
-> **Status: complete and aided by GNSS position and velocity, the barometer and magnetic
-> heading.** The structure below is built, not intended: initialization, equations (5)–(8);
-> nominal propagation, (9)–(15), and covariance propagation, (16)–(22); the measurement update,
-> (23)–(30), (34)–(36) with the levelling variance (36′), and (37)–(41), wired to every source
-> the crate carries; and the conditioning of (42) and (42′). Two are not implemented: three-axis
-> magnetometer fusion, (31)–(33), which is out of scope rather than pending, and (5′), whose
-> in-motion levelling term is measured and reported but not yet subtracted.
+> **Status:** every equation of `EQUATIONS.md` is built except two. Three-axis magnetometer
+> fusion, (31)–(33), is out of scope. (5′)'s in-motion levelling term is measured and reported
+> but not subtracted. Not built: #59.
 
 ## Error-State Kalman Filter
 
@@ -69,18 +65,22 @@ measurements together with their associated uncertainty.
 | ------ | ----- |
 | `src/eskf.rs` | `Eskf`, the whole public filter: `initialize*`, `predict`, `fuse_*`, `state`, `reset_*_to` |
 | `src/init.rs` | initialization types (`StaticSample`, `StaticWindow`, `Alignment`, `Coarse`, `InitError`) and the pure functions the `initialize*` methods commit |
-| `src/propagate.rs` | `ImuSample`; equations (9)–(22) land here |
+| `src/propagate.rs` | `ImuSample`; equations (9)–(22), the coast of (22′), and `error_dynamics`, the `A` that (23′) carries `H` through |
 | `src/history.rs` | the recent past of the nominal state, which a measurement is fused against at the time it was taken, equation (23′) |
+| `src/update.rs` | the update every observation shares: (23)–(27) in Joseph form, the gate of (37)–(38), the injection and reset of (39)–(41) |
+| `src/observation/` | one module per sensor forming `y`, `H` and `R_m`: `gnss.rs` (28)–(29) at the antenna, `baro.rs` (30), `mag.rs` (34)–(35) and (36′), `heading.rs` (36), (35′) and (35″) |
 | `src/math.rs` | the primitives the equations share: `skew`, `exp_quat`, `wrap_pi`, and the symmetry enforcement of (42) |
 | `src/state.rs` | `State`, `Covariance`, and `ErrorState`, whose order defines the covariance layout `[δp δv δθ δβa δβg]` |
 | `src/health.rs` | `Propagation`, `Fusion`, `Status`, `Validity`, per-source diagnostics |
 | `src/config.rs` | tuning; each default's doc comment says where its number came from or that it is a placeholder, and [Defaults and their evidence](#defaults-and-their-evidence) holds the measurements |
 | `src/units.rs`, `src/frames.rs` | typed quantities and the sealed `Ned` / `Enu` / `Body` frame markers |
 | `src/geodetic.rs` | `Geodetic` and `LocalOrigin`: the navigation origin the filter holds and the tangent plane about it, equations (43)–(44) |
-| `src/lib.rs` | the crate root: `no_std` and the lint gates, and the prelude — the one list of public types, minus three names too generic to glob-import |
+| `src/magnetic.rs` | PX4's WMM declination table and its lookup, behind the `magnetic-model` feature |
+| `src/display.rs` | `Fixed`, which prints an `f32` without core's float formatting and so without a panic path |
+| `src/lib.rs` | the crate root: `no_std` and the lint gates, and the prelude, the one list of public types, minus three names too generic to glob-import |
 
 The [equation-to-code mapping](EQUATIONS.md#equation-to-code-mapping) names the function
-intended to implement each numbered equation, including modules not yet written.
+that implements each numbered equation.
 
 ## State Propagation
 
@@ -99,9 +99,11 @@ flowchart TD
 
 What matters here rather than in the equations is that this is a first-order discretization over
 a short interval, which is why `Config::max_predict_dt` exists: one IMU sample cannot describe a
-long gap, so `predict` refuses a step beyond the limit instead of producing a number that looks
-like an estimate. The health timers advance through the refusal, because the time passed whether
-or not the state moved.
+long gap, so `predict` never integrates a step beyond the limit from that sample. It coasts it,
+equation (22′): position on the estimated velocity, and `P` grown by `Config::coast`'s acceleration
+and rotation densities, so the covariance prices the assumption. With `Config::coast` off the
+step is refused as `Propagation::StepTooLong`. The health timers advance either way, because the
+time passed whether or not the state moved.
 
 A sample carrying a NaN or an infinity is refused the same way, timers included, as
 `Propagation::NotFinite`. It has to be refused at this boundary because nothing downstream can
@@ -128,13 +130,13 @@ See [observation models](EQUATIONS.md#observation-models) for the measurement Ja
 The filter converts the fix rather than accepting a converted one, because it owns the navigation
 origin: the fix and the estimate are then relative to the same point by construction.
 `fuse_gnss_geodetic` takes latitude and longitude and converts about that origin;
-`fuse_gnss_position` is for a caller whose positions were never geodetic — a local RTK base,
-motion capture — and is right only if the caller's origin is the filter's.
+`fuse_gnss_position` is for a caller whose positions were never geodetic (a local RTK base,
+motion capture) and is right only if the caller's origin is the filter's.
 
 A fix is fused as two measurements rather than one: (28)'s north–east rows under a `Gate<2>`,
 then its down row under a `Gate<1>`, each with its own `Fusion` in the `GnssFusion` returned and
 its own `SourceHealth`. A receiver's height is the half that wanders and the half another source
-disputes, and one joint test turns every such dispute into lost horizontal aiding — on
+disputes, and one joint test turns every such dispute into lost horizontal aiding: on
 `2c42096b`, with its barometer fused, 3945 of 4616 fixes, every one of them vertical. PX4 runs
 GNSS position and GNSS height as separate aid sources and ArduPilot gates them apart; `Gates`
 carries the citations.
@@ -155,10 +157,11 @@ rather than waiting for the position error it would become.
 Barometric altitude is the vertical observation that is available when GNSS is not, and at a
 higher rate when it is.
 
-The barometer reference is captured at initialization and estimated from then on: its error is
-an offset carried beside the 15-state covariance, correlated with height and corrected whenever
-a barometer and a GNSS height disagree, and it walks so that slow drift — weather, ground effect,
-sensor warm-up — can be followed rather than becoming vertical position error. `State` and
+The barometer reference is captured by a window at rest, or read from the estimate at the first
+altitude after a start that leaves none, and estimated from then on: its error is an offset
+carried beside the 15-state covariance, correlated with height and corrected whenever a barometer
+and a GNSS height disagree, and it walks so that slow drift (weather, ground effect, sensor
+warm-up) can be followed rather than becoming vertical position error. `State` and
 `Covariance` do not carry it. See
 [barometric reference as an estimated offset](GOALS.md#barometric-reference-as-an-estimated-offset)
 and [equation (30′)](EQUATIONS.md#barometric-offset).
@@ -175,14 +178,14 @@ as one measurement, leaving roll and pitch to gravity where they are well determ
 disturbance can then corrupt one state rather than three, and the innovation gate has a
 one-dimensional quantity to act on.
 
-Three-axis field fusion is documented for completeness but is not the default. `fusion-nav`
+Three-axis field fusion, (31)–(33), is documented for completeness and not built. `fusion-nav`
 carries no magnetic-field or magnetometer-bias states, so hard- and soft-iron calibration is the
 application's responsibility; an uncalibrated magnetometer produces a heading bias the filter
 cannot detect.
 
 What the filter *can* price is the other half of that error. Reducing the field to a heading
 means rotating it by the attitude estimate, so a tilt error tips the field and turns the heading
-it yields by `tan δ` times as much — twice as much as the tilt itself, at the dip the corpus
+it yields by `tan δ` times as much, twice as much as the tilt itself, at the dip the corpus
 carries. The caller hands over a field and never sees that rotation, so the variance it supplies
 cannot describe it; the filter adds it, equation (36′). It goes into `R` rather than `H`: the
 heading becomes less trustworthy without being made to look like an observation of the tilt that
@@ -258,8 +261,8 @@ loop costs nothing. Timing detail lives in `diagnostics()`, which is not on the 
 
 Every figure a doc comment would otherwise carry about stack, flash or arithmetic lives here, keyed
 by the function it measures; the comment keeps the one sentence saying why its form was chosen.
-These are host-side measurements: #41 measures stack high-water and execution time on hardware,
-and its figures land in this section. The current sizes, frames and flash below (the tables'
+These are host-side measurements; stack high-water and execution time on hardware are not
+measured yet (#41), and belong in this section. The current sizes, frames and flash below (the tables'
 measured columns, and the figures the prose gives for present code) are pinned exactly in
 `data/footprint.txt`, which `tools/footprint.sh` measures in CI on a pinned nightly, so one that
 moves fails a build rather than going stale. Sums of them are not pinned, and the "against the
@@ -280,9 +283,9 @@ chosen the *difference* against the rejected one is the figure that carries the 
 | `reparameterize` (in `update`) | | | the full `G P Gᵀ` cost 864 more of `update`'s frame |
 | `fuse_gnss_velocity` → `update::<3>` | 9504 | | the crate's high-water mark; `fuse_gnss_velocity` is 1416 with `apply_or_recover` out of line, 2384 inlined |
 | `Eskf::observe::<3>` | 1464 | | `Observation::delayed` 752 and `error_dynamics` 400 beneath it; inlined into `fuse_gnss_velocity` it put the high-water mark at 10800 |
-| `Eskf::fuse_heading` | 1232 over `update::<1>` | 1240 | its largest instance, the magnetometer's; the course's is 1224, read by hand and not pinned, so with `fuse_course`'s 256 above it 7848 at the peak, against 7624 when `fuse_mag_heading` did the work in its own 1240-byte frame |
+| `Eskf::fuse_heading` | 1232 over `update::<1>` | 1240 | its largest instance, the magnetometer's; the course's is 1224, read by hand and not pinned, so with `fuse_course`'s 256 above it 7848 at the peak, against 7624 with `fuse_mag_heading` doing the work in its own 1240-byte frame |
 | `Eskf::adopt_position`, `adopt_velocity` | | | inlined, +976 on `fuse_gnss_position` and +952 on `fuse_gnss_velocity`; out of line they follow `update` rather than stacking on it |
-| `propagate_covariance` | 2832 | 2760 | the largest frame propagation reaches; with `predict` (2176, 2160) and `propagate` (1088, 1096) above it the chain is 6096 (6016). With one caller it inlined and the same three temporaries sat in `predict` |
+| `propagate_covariance` | 2832 | 2760 | the largest frame propagation reaches; with `predict` (2176, 2160) and `propagate` (1088, 1096) above it the chain is 6096 (6016). Inlined into its one caller, the same three temporaries sit in `predict` |
 | `project` | 1952 | 1936 | with `predicted_validity`'s 1856 above and `propagate_covariance` below, 6640; through `coast` the arming query's chain measured 9 KB, over `update::<3>` |
 | `coast` | 2152 | 2144 | with `predict` above and `propagate_covariance` below, 7160 |
 | `enforce_symmetry::<15>` | 128 | 8 | the equation form, `(P + Pᵀ)/2`, is 1884 (1820): two 15 × 15 temporaries under `predict` |
@@ -327,9 +330,9 @@ arithmetic a single-precision FPU lacks, beside `memcpy`, 64-bit division and `f
 What `nalgebra` costs is mostly not in its row: its generics are inlined into the filter's
 functions under LTO and counted there.
 
-A measurement dimension is what costs flash, not a source: the barometer brought `update::<1>` into
-existence for 4.1 %, and the magnetic heading of (34)–(36), sharing it, added 1204 bytes, 2.4 %.
-Measured by hand when it landed (#170), and not pinned: the `magnetic-model` table is 1408 bytes of `.rodata` and its lookup 1096 of `.text` (1520 on
+A measurement dimension is what costs flash, not a source: `update::<1>`, which the barometer
+needs, costs 4.1 %, and the magnetic heading of (34)–(36), sharing it, 1204 bytes, 2.4 %.
+Measured by hand, and not pinned: the `magnetic-model` table is 1408 bytes of `.rodata` and its lookup 1096 of `.text` (1520 on
 `thumbv7em`), about 2.5 KB, at `opt-level = "s"`; the same lookup in `f64` linked 4496 bytes of
 `.text` in software doubles.
 
@@ -390,7 +393,7 @@ airframe's.
 
 **Against the floor the sensors measure**, `StaticWindow::noise`: on the worst axis of the nine
 real logs whose window is still, less `a299e722`, whose rows each average 2.5 ms while standing for
-20 ms and so read `√8` high (#177), gyroscopes read 8.4e-5 to 1.6e-3 rad s⁻¹/√Hz and
+20 ms and so read `√8` high before the converter's `# IMU averaging interval` corrects them, gyroscopes read 8.4e-5 to 1.6e-3 rad s⁻¹/√Hz and
 accelerometers 1.5e-3 to 5.6e-2 m s⁻²/√Hz, so the default is 9 to 180 times the one and 6 to 230
 times the other. That is the factor measured from below; a default under the floor would be the
 error. Against PX4's own densities, a tenth of these, the floor comes within reach: `2c42096b`'s
@@ -414,8 +417,7 @@ four, because PX4's `eph` and `epv` are far wider than the innovations they come
 test ratio at 95 % was 0.0023–0.0449 across the three logs then carrying GNSS and the largest
 0.33, where a consistent `R` would put the mean near 0.38. Those figures move as the filter gains
 aiding, in the direction to expect: every source that tightens `P` tightens `S = H P Hᵀ + R`, so
-the same innovation reads as a larger ratio. They were 0.005–0.02 and 0.21 when position was the
-only gated source. `nis_gnss_pos=` on the `summary` line is the maintained form of this claim,
+the same innovation reads as a larger ratio. `nis_gnss_pos=` on the `summary` line is the maintained form of this claim,
 per log, pinned in `data/manifest.txt`, and stated as a distribution rather than as a distance
 from a threshold that itself moves.
 
@@ -424,7 +426,7 @@ tight end. On `mission`, 95 % rejects 30 of 915 good fixes and 99 % rejects 4, w
 RMSE 0.716 m and 0.702 m and vertical 0.796 m and 0.749 m. 99.9 % rejects 1 and 5σ none, and
 both give the same 0.702 m and 0.749 m that 99 % does. So 95 % buys worse accuracy, and one good
 fix in thirty turned away, for protection against outliers that nothing there contains. Between
-99.9 % and 5σ good data says nothing; hostile data (#60, UrbanNav) found no percentile that helps,
+99.9 % and 5σ good data says nothing; hostile data (UrbanNav) found no percentile that helps,
 so 99.9 % stands.
 
 ### `Coast`
@@ -439,14 +441,13 @@ in the simulator any value passes. Refused, its gaps cost 12 recoveries, 39 reje
 the heading innovation afterwards sits at −0.60 rad under an `S` that did not grow, and the stale
 heading steers velocity off until the gate turns it down (7 recoveries at `acceleration` 1.0).
 With `rotation` at 0.02 or more and `acceleration` at 2.0 no gap causes a rejection or a recovery.
-When this was measured (#144), two positions and two velocities were still rejected, fixes
-timestamped inside a gap and fused before the IMU sample that ends it; since #52 those are refused
+Fixes timestamped inside a gap, ahead of the state until the IMU sample that ends it, are refused
 as `Fusion::OutOfHorizon`, and the log reads `rejected_gnss_pos=0 rejected_gnss_vel=0`. `acceleration` at 1.0 still needs `rotation` at 0.1, and at
 0.5 leaves 7 recoveries at any `rotation`.
 
 `logging_dropout` (1.2 s at 20 m/s in a turn) passes at `acceleration` 0.5 or more whatever the
 rotation, and reads the same across the whole range: `pos_h_max` 23.25 m refused, 2.74 m coasted,
-`false_valid` 1946 → 0.
+`false_valid` 1946 refused, 0 coasted.
 
 `replay --derive` asks the same question a field at a time, the other at its default: the
 smallest multiple of each after which no GNSS position or velocity is rejected or adopted for
@@ -536,14 +537,14 @@ the five aligned statically, and the fifth, peak deviation 6.2 m s⁻², stayed 
 **`sigma_accel_bias`, 0.2 m/s².** At 0.1 the `harsh_imu` scenario's 0.186 m/s² sat at 1.86σ, and
 its attitude was overconfident on 50 seeds wherever (24′) did not inflate the covariance past it:
 2281 epochs over the family-wise bound at `Correlation::WHITE`, none at 0.2 with the
-correlation. On the corpus it is worth most on `7ce66f0d`, the hand launch levelled 12° wrong:
-69 recoveries → 28, and aligned at 17.7 s rather than 32.7.
+correlation. On the corpus it is worth most on `7ce66f0d`, the hand launch levelled 12° wrong: when
+measured, 28 recoveries against 69 at 0.1, and aligned at 17.7 s rather than 32.7.
 
 ### `FLOOR`
 
 The floor of (42′) is PX4's values, and the corpus says they sit below anything an honest source
-drives the filter to: across the thirteen logs of `data/manifest.txt` and the thirteen scenarios
-`examples/simulate.rs` had before `lever_arm` (#170), the smallest variance any state reaches at an epoch is 1.9e-4 m² of
+drives the filter to: across the thirteen logs of `data/manifest.txt` and every scenario in
+`examples/simulate.rs` but `lever_arm`, the smallest variance any state reaches at an epoch is 1.9e-4 m² of
 position on `89a498ce`, an RTK receiver, 1.7e-6 (rad/s)² of gyroscope bias, the bias walk's steady
 state, reached on six logs, 9.0e-5 rad² of attitude on `gnss_heading`, 7.3e-4 (m s⁻²)² of
 accelerometer bias on `093e806a` and 5.6e-4 (m/s)² of velocity on `cd7e0001`. Two to six decades
@@ -576,7 +577,7 @@ variance, 5 % in the sigma, where a 5 s horizon at `PROJECTION_STEP` is 6.5 % an
 ### `WindowNoise`
 
 **Blocks rather than samples** (`Density`, equation (8″)). Taken on each real log's window, the
-rows the filter started on (`a299e722` aside, #177), the lag-one autocorrelation runs from −0.98
+rows the filter started on (`a299e722` aside, its rows averaging 2.5 ms of 20), the lag-one autocorrelation runs from −0.98
 to +0.96 across the axes, and on the worst axis one sample's scatter reads `093e806a`'s
 accelerometer 6.0 times the blocks' figure and `4b473e91`'s 2.9 (vibration aliased near the
 sample rate, which cancels within a block), `89a498ce`'s gyroscope 2.9 times low (filtered or
@@ -607,20 +608,20 @@ each of those five.
 
 Eight blocks, measured against an exact split (4096 blocks, which no window the replay harness
 builds fills, and which reproduces every scenario and corpus output byte for byte). The halves'
-disagreement moves, exact to 8 blocks, on the coarse starts: `7ce66f0d` 26.50° → 22.45° of tilt
-and 26.27° → 27.13° of heading, `cd7e0001` 0.29° → 0.50° and 1.27° → 1.70°, `moving_start`
-0.00° → 0.02° and 12.23° → 11.94°. The outputs barely do, because it reaches only `coarse_sigmas`
+disagreement, exact against 8 blocks, on the coarse starts: `7ce66f0d` 26.50° against 22.45° of
+tilt and 26.27° against 27.13° of heading, `cd7e0001` 0.29° against 0.50° and 1.27° against 1.70°,
+`moving_start` 0.00° against 0.02° and 12.23° against 11.94°. The outputs barely do, because it reaches only `coarse_sigmas`
 and only where it is the largest bound: at 8 blocks and at 16, one corpus log, `7ce66f0d`, moves
 by one in the last printed digit of three innovation keys, and no scenario moves.
 
 ## Initial Scope
 
-The first version focuses on:
+The filter covers:
 
 ```mermaid
 flowchart TD
     imu["IMU propagation"] --> eskf["15-state ESKF"]
-    eskf --> upd["GNSS position update<br/>GNSS velocity update<br/>barometric altitude update<br/>magnetometer update"]
+    eskf --> upd["GNSS position update<br/>GNSS velocity update<br/>barometric altitude update<br/>heading update: magnetometer,<br/>dual-antenna GNSS, course"]
     upd --> out["position + velocity + attitude"]
 ```
 
@@ -643,41 +644,34 @@ as PX4 EKF2.
 
 ## Staging the implementation
 
-`EQUATIONS.md` is implemented in stages rather than in one pass, each one verifiable on its own
-before the next builds on it. Four constraints set that order, and none of them is the order the
-equations are numbered in.
+`EQUATIONS.md` was built in stages, each verifiable on its own before the next built on it. Four
+constraints set the order, none of them the order the equations are numbered in, and each still
+applies to new work.
 
 **Verification leads the mathematics.** The seeded simulator, the scoring against its truth and
-the ratcheted ceilings — `examples/simulate.rs`, the `score` line, `data/scenarios.txt` — landed
-before the equations they measure, so a stage has acceptance criteria on the day it lands rather
-than an audit afterwards. The other order is worse than slower: an equation eyeballed once becomes
-the baseline everything later is compared against. It paid immediately. When nominal propagation
-(9)–(15) landed, every ceiling in `data/scenarios.txt` moved, in both directions, and `harsh_imu`
-separated from `mission` for the first time — neither of which a reading of the diff would have
-shown.
+the ratcheted ceilings (`examples/simulate.rs`, the `score` line, `data/scenarios.txt`) exist
+before the equation they measure, so a change has acceptance criteria when it lands rather than
+an audit afterwards. The other order is worse than slower: an equation eyeballed once becomes the
+baseline everything later is compared against. Nominal propagation (9)–(15) moved every ceiling,
+in both directions, and separated `harsh_imu` from `mission`, neither of which a reading of the
+diff would have shown.
 
 **A key is pinned before the behaviour it counts exists.** `data/manifest.txt` matches the
 `summary` line and nothing else, so a behaviour with no key on that line lands entirely unpinned.
-The gate's `rejected=` was therefore added while every `fuse_*` was still a stub returning a zero
-test ratio. A key whose value is trivially constant still fixes the corpus baseline that its first
-real value is read against, so defining a statistic before there are values to put in it is the
-normal order here rather than a workaround. It paid at stage 6. `rejected=` had been zero across
-five logs and all four candidate gates while GNSS position was the only gated source; the first
-velocity fusion turned down 284 of one log's 609 solutions, and that arrived as a diff against a
-pinned zero rather than as a number nobody had a baseline for. The same argument is why `ba=` and
-`bg=` were added to the `score` line on the stub filter one commit before (29) landed.
+A key whose value is trivially constant still fixes the baseline its first real value is read
+against, so a statistic is defined before there are values to put in it. `rejected=` read zero on
+every log while each `fuse_*` was a stub, and the first velocity fusion's 284 of one log's 609
+solutions arrived as a diff against that pinned zero.
 
 **`-D warnings` decides what can land alone.** The generic update of (23)–(28) has no caller of
-its own — an observation model is what calls it — so a module holding it and nothing else fails
-the build. It ships with its first observation instead of as a stage of its own, and any primitive
-introduced ahead of its user has the same problem.
+its own (an observation model is what calls it), so a module holding it and nothing else fails
+the build. A primitive ships with its first user.
 
-**A covariance that moves invalidates a bar that was set against one that did not.** While `P` was
+**A covariance that moves invalidates a bar set against one that did not.** While `P` was
 constant, a `Config::accuracy` threshold equal to the `Initialization` prior it is compared against
 passed by exactly zero margin, and the first real `predict` took it away; `Accuracy`'s doc comment
 records what that read on the corpus. A mission bar and an alignment prior are two numbers with two
-justifications even where they are numerically equal, and stages that move `P` are where the
-difference stops being academic.
+justifications even where they are numerically equal.
 
 ## Design Philosophy
 
@@ -685,7 +679,7 @@ The mathematics should be visible in the code rather than hidden behind an abstr
 equations in the implementation correspond directly to the numbered equations in the crate's
 documentation. The [equation-to-code mapping](EQUATIONS.md#equation-to-code-mapping) is the
 concrete form of that promise: every numbered equation names the function that implements it,
-including the ones not yet written.
+and the two that are not built say so.
 
 Positioning, the differentiators this follows from, and the decisions already made are in
 [GOALS.md](GOALS.md).
@@ -695,9 +689,9 @@ Positioning, the differentiators this follows from, and the decisions already ma
 The architecture is informed by established error-state inertial-navigation literature and
 production UAV estimators, including PX4 EKF2 and ArduPilot EK3.
 
-Those two are read as source rather than as documentation — defaults in
+Those two are read as source rather than as documentation (defaults in
 `src/modules/ekf2/EKF/common.h`, alignment in `EKF/ekf.cpp`, the status model in
-`filter_control_status_u`, and ArduPilot's equivalents — because published figures drift from what
+`filter_control_status_u`, and ArduPilot's equivalents), because published figures drift from what
 the code does. `fusion-nav` is an independent Rust implementation rather than a source-code port
 of either.
 

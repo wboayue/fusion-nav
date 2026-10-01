@@ -2448,7 +2448,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// [`StaticWindow::span`]'s `f64`: the sum in `f32` falls short of the product it replaced.
+    /// [`StaticWindow::span`]'s `f64`: the sum in `f32` falls short of the product `n Δt`.
     #[test]
     fn a_window_of_exactly_the_minimum_duration_is_long_enough_at_any_rate() {
         for (dt, samples) in [(0.02, 100), (0.01, 200), (0.005, 400), (0.0025, 800)] {

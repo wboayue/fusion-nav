@@ -1,4 +1,4 @@
-//! Host timings of the filter's hot path: `predict`, every `fuse_*`, and a start (#42).
+//! Host timings of the filter's hot path: `predict`, every `fuse_*`, and a start.
 //!
 //! A host figure is not a target figure, and nothing gates on one: CI runs each benchmark
 //! once (`cargo test -p bench --benches`) so that they keep building and every outcome

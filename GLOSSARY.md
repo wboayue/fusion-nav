@@ -68,8 +68,8 @@ the difference is the kind that costs a day.
 * **Inertial navigation**, **dead reckoning** — integrating gyroscope and accelerometer readings
   to carry position, velocity and attitude forward with no outside reference. It is exact for an
   instant and hopeless over a minute, because every error integrates: an attitude error tips
-  gravity into the horizontal channel and integrates twice. The 1261 m and 0.70 m quoted around
-  the repository are the same 185 s flight dead-reckoned and aided.
+  gravity into the horizontal channel and integrates twice. On the simulated 185 s `mission`
+  flight, dead reckoning ends over a kilometre out where the aided filter holds tenths of a metre.
 * **Kalman filter** — the recursive estimator underneath all of this: carry a state estimate and
   a covariance, **predict** both forward with a model, **correct** both when a measurement
   arrives, weighting the two by how much each claims to be trusted.
@@ -91,9 +91,7 @@ the difference is the kind that costs a day.
   [equations (23)–(27)](EQUATIONS.md#measurement-update).
 * **Aiding** — any measurement from outside the IMU that constrains the drift: GNSS, barometer,
   magnetometer. A filter that is *aided* is being corrected; an *unaided* one is dead reckoning,
-  whatever its covariance looked like a second ago. Which of those sources corrects anything
-  *yet* is an implementation status, carried by `README.md` and `EQUATIONS.md` rather than by
-  the word.
+  whatever its covariance looked like a second ago.
 * **Injection and reset** — the ESKF's extra step: the estimated error is added into the nominal
   state, then the error state is zeroed and the covariance rotated by the **reset Jacobian**
   `G`. This is why the error state's prior is always zero.
@@ -189,8 +187,10 @@ the difference is the kind that costs a day.
 * **Adoption** — taking a measurement as the state outright instead of fusing it, the
   zero-information limit of the update. Used once for a quantity the start never established,
   and again for a source locked out past its `Config::recovery` timeout — which is **recovery**.
-* **Latency** — the age of a measurement when it is fused. GNSS solutions are 100–200 ms stale;
-  this filter does not model that, which is in the README's limitations.
+* **Latency** — the age of a measurement when it is fused. GNSS solutions are 100–200 ms stale.
+  Each `fuse_*` takes the time the measurement was taken and fuses it against the state as it was
+  then, [equation (23′)](EQUATIONS.md#delayed-measurements); knowing the latency is the caller's,
+  which is in the README's limitations.
 
 ## Scoring a run
 

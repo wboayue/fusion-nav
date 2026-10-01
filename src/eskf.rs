@@ -1020,7 +1020,7 @@ impl Eskf {
     /// 5 s time constant before bounding it (`AP_NavEKF3_Measurements.cpp:609-633` at
     /// `368dc0c4`), so a spike in `eph` deweights the fixes after it for seconds there and
     /// only its own fix here. The replay harness takes the same stance, for the reasons
-    /// `data/README.md` gives under `r_policy=` (#105). What
+    /// `data/README.md` gives under `r_policy=`. What
     /// the filter does add is the receiver's rather than the fix's: a fix's error persists
     /// into the next one, and the update is computed at the variance that leaves, equation
     /// (24′), with the gate still reading `noise` itself. See
@@ -2200,7 +2200,7 @@ impl Eskf {
     /// window brings it in and (20)'s gyroscope-bias term takes it back out, on a schedule
     /// the covariance knows and no acceptance timer does. At [`ImuNoise`](crate::ImuNoise)'s
     /// defaults an unaided start holds tilt for 3.83 s, so a horizon under that arms and one
-    /// over it does not — an answer, where before there was only the current value repeated.
+    /// over it does not, which the current value alone cannot say.
     ///
     /// The projection reads slightly optimistic and the amount is measured: a first-order
     /// step understates growth, and `propagate.rs`'s `PROJECTION_STEP` holds that within
@@ -2786,7 +2786,7 @@ mod tests {
         assert_eq!(Eskf::default().config(), &Config::default());
     }
 
-    // Found by the adversarial suite (#44), `adversarial.rs`, and kept as literals so each
+    // Found by the adversarial suite, `adversarial.rs`, and kept as literals so each
     // names the defect it guards.
 
     #[test]
@@ -3035,7 +3035,7 @@ mod tests {
     }
 
     /// The `Eskf`-level check that (16)–(22) are wired at all: a step grows the uncertainty it
-    /// was initialized with. Before this stage a static start held `Initialization`'s sigmas
+    /// was initialized with. Without them a static start would hold `Initialization`'s sigmas
     /// for the whole flight.
     #[test]
     fn a_step_grows_the_covariance() {
@@ -4700,7 +4700,7 @@ mod tests {
     fn a_reset_below_the_floor_is_floored_and_counted_rather_than_refused() {
         // The seed is refused because it writes the covariance in whole; a reset writes one
         // block against an estimate that exists, so the floor repairs it instead. This is
-        // what keeps `floored` reachable from the public API at all now that
+        // what keeps `floored` reachable from the public API at all, since
         // `initialize_from` turns the other path away.
         let mut filter = aided();
         assert_eq!(filter.diagnostics().floored, 0);

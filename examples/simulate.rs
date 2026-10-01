@@ -49,7 +49,7 @@
 //! ```
 //!
 //! `--seed` replaces every selected scenario's seed, and is how `data/anees.sh` flies the
-//! ensemble ANEES is averaged over (#89). The table's seed is the one `data/scenarios.txt` pins.
+//! ensemble ANEES is averaged over. The table's seed is the one `data/scenarios.txt` pins.
 //!
 //! # Reproducibility, and its boundary
 //!
@@ -96,8 +96,8 @@ fn gravity() -> f64 {
 
 /// Where every scenario flies, latitude and longitude in degrees and ellipsoidal height in
 /// metres: east of Champaign, Illinois, chosen as the point where WMM2025 at 2026.0 gives the
-/// [`DECLINATION`] the scenarios were first drawn at, so placing them on a map moved no
-/// ceiling. It needed choosing: `moving_start`'s `yaw` reads 1.71° rather than 1.46° with the
+/// [`DECLINATION`] the scenarios fly, so the site and the declination agree. It needed
+/// choosing: `moving_start`'s `yaw` reads 1.71° rather than 1.46° with the
 /// field turned 7° east (at Zurich, PX4's SITL home), since the tilt that levels a first
 /// heading enters by (36′) through the field's direction in the body.
 ///
@@ -650,7 +650,7 @@ struct Fix {
 ///
 /// `w_k` is the white draw at the stationary σ, so the error's σ is the same whatever `τ` is and
 /// the sample the sensor reports stays honest about it; what correlation changes is how much of
-/// the error averaging can remove, which is equation (24)'s assumption and #117's subject. The
+/// the error averaging can remove, which is equation (24)'s assumption and what (24′) prices. The
 /// first draw comes from the stationary distribution, `w_0` itself. At `τ = 0`, `φ = 0` and the
 /// result is `w_k` bit for bit, which keeps every white scenario paired with one that is not.
 struct GaussMarkov<const N: usize> {
@@ -1247,7 +1247,7 @@ fn scenarios() -> Vec<Scenario> {
         // coarse start, `Status::Aligning`, all three `Fusion::Reset` adoptions -- the position
         // and velocity a moving start never had, and the heading it could not level -- and the
         // barometric reference a window taken in motion cannot establish, read from the estimate
-        // instead (#115).
+        // instead.
         Scenario {
             name: "moving_start",
             covers: "airborne from t=0 in a banked turn: coarse alignment, Fusion::Reset, a \
@@ -1356,7 +1356,7 @@ fn scenarios() -> Vec<Scenario> {
             },
             ..base
         },
-        // A fixed-wing with no magnetometer, the vehicle #53 is for: nothing observes yaw until
+        // A fixed-wing with no magnetometer, the vehicle `fuse_course` is for: nothing observes yaw until
         // it moves, and then only the course does. The sideslip the harness allows, 0.05 rad, is
         // wider than the truth's, 0.02 ± 0.035, as a caller who knows the airframe would state it.
         Scenario {
@@ -1480,7 +1480,7 @@ struct Overrides {
     /// `--seed <n>`, in place of the table's.
     seed: Option<u64>,
     /// `--speed <k>`: every translational wave scaled by `k`, so speed and acceleration scale
-    /// with it and the attitude does not. #52's "at more than one speed".
+    /// with it and the attitude does not: a latency's cost, read at more than one speed.
     speed: Option<f64>,
     /// `--latency <s>`: the receiver's latency, in place of the table's.
     latency: Option<f64>,
@@ -1524,7 +1524,7 @@ impl Overrides {
 /// The positional arguments, and the [`Overrides`] named in place of the table's.
 ///
 /// The seed is an override rather than a column of seeds per scenario: `data/anees.sh` flies each
-/// scenario on fifty of them (#89), and the table's own seed stays the one `data/scenarios.txt`
+/// scenario on fifty of them, and the table's own seed stays the one `data/scenarios.txt`
 /// pins.
 fn split_options(args: impl Iterator<Item = String>) -> Result<(Vec<String>, Overrides), String> {
     let mut positional = Vec::new();

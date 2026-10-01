@@ -123,7 +123,7 @@ pub(crate) enum Update {
 /// formed here it costs a 16 × 16 for every 15 × 15 temporary, on the frame that is already the
 /// crate's largest ([measured]).
 ///
-/// `M` is a type parameter so that a `Gate<M>` of the wrong dimension is a compile error (#58).
+/// `M` is a type parameter so that a `Gate<M>` of the wrong dimension is a compile error.
 /// What that costs is one monomorphization per dimension, so a dimension costs flash and a new
 /// source of an existing dimension does not.
 ///
