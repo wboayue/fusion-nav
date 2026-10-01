@@ -23,6 +23,10 @@
 //! `--antenna zero` fuses every GNSS row as the IMU's rather than at the header's antenna.
 //! `--recovery off` replays with `Recovery::OFF`, the filter that only reports, which is how a
 //! lockout recovery ends is priced (`recovery=` on the `summary` line says which ran).
+//! `--set <field>=<value>`, repeatable, sets one `Config` field by its path, `--set
+//! correlation.gnss_position=2.5`; `settings.rs` lists the names, and `set=` on the `summary`
+//! line repeats them. `--derive` is the mode that works those values out from a log; see
+//! `derive.rs`.
 //! It also writes `<out>.nees.csv`, `ε` per block per epoch, which `data/anees.sh` averages
 //! across seeds (#89), and `<out>.error.csv`, the truth error on navigation axes beside its σ,
 //! which `tools/replay_report.py` draws.
@@ -206,6 +210,8 @@ use std::path::{Path, PathBuf};
 
 use fusion_nav::STATES;
 use fusion_nav::prelude::*;
+
+mod settings;
 use nalgebra::{Quaternion, SMatrix, SVector, UnitQuaternion, Vector3};
 
 /// Capacity of the initialization window, in samples.
@@ -483,6 +489,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut model_declination = false;
     let mut antenna_from_header = true;
     let mut recovery = true;
+    let mut sets = Vec::new();
     let mut positional = Vec::new();
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -512,6 +519,12 @@ fn run() -> Result<(), Box<dyn Error>> {
                 Some("off") => false,
                 _ => return Err("--recovery wants `on` or `off`".into()),
             };
+        } else if arg == "--set" {
+            let pair = args.next().ok_or("--set wants <field>=<value>")?;
+            let (name, value) = pair
+                .split_once('=')
+                .ok_or_else(|| format!("--set `{pair}`: want <field>=<value>"))?;
+            sets.push((name.to_string(), value.to_string()));
         } else if arg == "--without" {
             let name = args.next().ok_or("--without wants an input source name")?;
             if !DROPPABLE.contains(&name.as_str()) {
@@ -533,6 +546,10 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut config = Config::default();
     if !recovery {
         config.recovery = Recovery::OFF;
+    }
+    // After `--recovery off`, so a source's own timeout can be put back on top of it.
+    for (name, value) in &sets {
+        settings::set(&mut config, name, value)?;
     }
     let policy = match policy.as_deref() {
         None | Some("raw") => RPolicy::Raw,
@@ -566,6 +583,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         return Err("the course sideslip is not a positive number".into());
     }
     replay.without = without;
+    replay.sets = sets;
     replay.site = origin_of(&text);
     if antenna_from_header {
         replay.antenna = antenna_of(&text).unwrap_or_default();
@@ -966,6 +984,8 @@ struct Replay {
     /// An input source whose rows are skipped, `--without mag`: a vehicle without that sensor,
     /// replayed from a log that has one.
     without: Option<String>,
+    /// The `--set` pairs the `Config` was built with, as given, for `set=`.
+    sets: Vec<(String, String)>,
     /// The geodetic point the file's positions are relative to, from its `# Navigation
     /// origin` line; see `origin_of`.
     site: Option<Geodetic>,
@@ -1066,6 +1086,7 @@ impl Replay {
             last_mag: None,
             course: None,
             without: None,
+            sets: Vec::new(),
             site: None,
             antenna: Position::zero(),
             last_baro: None,
@@ -2063,7 +2084,7 @@ impl Replay {
         format!(
             "summary rate={:.0} window={} {} align={} an={} alpha0={} heading={} \
              roll0={roll0:.2} pitch0={pitch0:.2} yaw0={yaw0:.2} declination={:.2} declination_model={} antenna={} resets={} \
-             recovered={} aligned_at={} attitude_lost={} r_policy={} recovery={} course={} without={} rejected={}{} discarded={} coasted={} refused={} \
+             recovered={} aligned_at={} attitude_lost={} r_policy={} recovery={} course={} without={} set={} rejected={}{} discarded={} coasted={} refused={} \
              invalid={} floored={} epochs={}{} {} \
              degraded_s={:.2} dead_reckoning_s={:.2} transitions={} status={:?}",
             self.interval.map_or(0.0, |interval| 1.0 / interval),
@@ -2155,6 +2176,17 @@ impl Replay {
                 |s| format!("{:.1}", s.as_radians().to_degrees())
             ),
             self.without.as_deref().unwrap_or("none"),
+            // A config other than the default names itself, so a figure taken under `--set`
+            // cannot pass for the default's.
+            if self.sets.is_empty() {
+                "none".to_string()
+            } else {
+                self.sets
+                    .iter()
+                    .map(|(name, value)| format!("{name}:{value}"))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            },
             // The gate's verdict, which no other key on this line reports: `refused=` and
             // `invalid=` are propagation steps, not measurements, so a change that started
             // turning down every fix in the corpus would pass `--check` unmoved without
@@ -4207,6 +4239,18 @@ mod tests {
         assert!(kept.filter.diagnostics().mag_heading.has_been_used());
         assert!(!dropped.filter.diagnostics().mag_heading.has_been_used());
         assert_eq!(key(&dropped.summary(), "without"), "mag");
+    }
+
+    #[test]
+    fn a_replay_under_set_names_what_it_set() {
+        let log = still_start().mag(2.0);
+        assert_eq!(key(&replay(&log).summary(), "set"), "none");
+        let mut config = Config::default();
+        settings::set(&mut config, "gravity", "9.79").expect("a field");
+        let (mut set, _) = drive_under(&log, config, RPolicy::Raw, None).expect("fixture replays");
+        set.sets = vec![("gravity".into(), "9.79".into())];
+        assert_eq!(set.filter.config().gravity, 9.79);
+        assert_eq!(key(&set.summary(), "set"), "gravity:9.79");
     }
 
     #[test]
