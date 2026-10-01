@@ -853,6 +853,21 @@ error it was cited as ruling out. `f16771dd`, where the period moved 12 ms → 1
 that could have. A statistic that reads the same whether or not the code is right is not weak
 evidence, it is none, and quoting it is worse than quoting nothing because it reads as checked.
 
+**A quantity read through the filter is the filter's as much as the sensor's.** #51 read each
+source's correlation time off its innovations, as the `Correlation` defaults had been read, and on
+the one scenario with known `τ` it came out 1.7–6× short at every lag: the filter follows part of
+the error, so its innovations decorrelate faster than the error does. Taken as the value it made
+`correlated` more overconfident than the defaults (`anees_pos` 3.16 against 1.45). Before
+deriving a sensor property from innovations, check it on a simulated source whose answer is
+known, and treat what survives as a bound, not a value.
+
+**A reference with errors of its own puts their shape in the statistic.** #51's barometer walk
+was read against GNSS height, whose correlated error lifts the structure function to a plateau
+over a few of its `τ`: a slope read at 60–240 s reported that rise as barometer drift, 0.15 on
+`2c42096b` and 0.20 on `7ce66f0d`, and both moved when the lag range did. Plot the statistic
+across its whole range before fitting a piece of it, and suspect a figure that flips with a
+window you chose.
+
 **An ablation that removes the rows it counts proves nothing about them.** #169's first draft
 dropped eleven off-level fixes and quoted 19 rejections falling to 2, but seven of the eleven
 were rejections themselves. The review's version drops only the four *accepted* ones, the
