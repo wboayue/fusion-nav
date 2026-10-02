@@ -19,7 +19,7 @@ run that produced it:
     {{score urbannav-m8t/raw bad_gnss_pos}}   an UrbanNav run's, per receiver and R policy
     {{score insane-mars_1/raw pos_h}}  an INSANE run's, per sequence and R policy
     {{seed mission}}                   the seed data/scenarios.txt pins for that scenario
-    {{footprint thumbv6m size.eskf.Eskf}}   a figure data/footprint.txt pins for that target
+    {{footprint thumbv6m-none-eabi size.eskf.Eskf}}   a figure data/footprint.txt pins for it
     {{footprint toolchain}}            the nightly tools/footprint.sh measures with
     {{count scenarios}}                how many runs a list names (lists below)
     {{table score mission,static pos_h,pos_v}}   one row per run, one column per key
@@ -380,12 +380,13 @@ def self_test():
         if got != want:
             failures.append(f"{name}: got {got!r}, want {want!r}")
 
-    def refused(name, action):
+    def refused(name, action, because=None):
         try:
             action()
             failures.append(f"{name}: accepted")
-        except ValueError:
-            pass
+        except ValueError as e:
+            if because is not None and because not in str(e):
+                failures.append(f"{name}: refused for another reason: {e}")
 
     with tempfile.TemporaryDirectory() as tmp:
         root, out = Path(tmp) / "repo", Path(tmp) / "runs"
@@ -417,8 +418,11 @@ def self_test():
             "thumbv6m-none-eabi frame.update.update.3=8088\n"
             "thumbv7em-none-eabihf size.eskf.Eskf=3784\n")
         (root / "tools").mkdir()
-        # Trailing blanks on the pin are not part of the toolchain's name.
-        (root / "tools/footprint.sh").write_text("set -e\nTOOLCHAIN=nightly-2026-08-06  \n")
+        # Read as bash would: the last assignment wins, a comment naming the variable is not one,
+        # and trailing blanks are not part of the name.
+        (root / "tools/footprint.sh").write_text(
+            "set -e\nTOOLCHAIN=nightly-2026-01-01\nTOOLCHAIN=nightly-2026-08-06  \n"
+            "# a re-pin follows any TOOLCHAIN=change\n")
         runs = Runs(out, root)
 
         def rendered(text, page="validation/accuracy.md"):
@@ -484,10 +488,16 @@ def self_test():
             ("a kind with a dash", "{{ score-x mission }}"),
             ("a key the target lacks", "{{footprint thumbv7em-none-eabihf text.3}}"),
             ("a target not pinned", "{{footprint thumbv8m size.eskf.Eskf}}"),
-            ("a footprint key with no target", "{{footprint size.eskf.Eskf}}"),
         ]:
             refused(name, lambda text=text: render(text, runs, "validation/accuracy.md"))
         refused("drawing no scenario", lambda: runs.draw_command("hover", ["a"]))
+        # A footprint takes a target and a key, or `toolchain`; any other count is no placeholder,
+        # rather than a split that happens to fail.
+        for name, text in [("a footprint key with no target", "{{footprint size.eskf.Eskf}}"),
+                           ("a footprint with a third word",
+                            "{{footprint thumbv6m-none-eabi text.3 extra}}")]:
+            refused(name, lambda text=text: render(text, runs, "validation/cost.md"),
+                    because="is not a placeholder this renders")
 
         # Committed state against what renders: a page that differs past its stamp, an orphaned
         # page, a figure placed and missing, and one committed and placed nowhere.
@@ -521,6 +531,13 @@ def self_test():
         (root / "validation/cost.md").write_text(render_all(src, bare, "cost.md")[
             Path("validation/cost.md")])
         expect("one page, current", check(src, bare, root, "cost.md"), [])
+        # The command line CI runs: `--only` after the three paths, and an exit only on a problem.
+        import contextlib, io
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                main(["check", str(src), str(Path(tmp) / "none"), str(root), "--only", "cost.md"])
+        except SystemExit as e:
+            failures.append(f"check --only from the command line: exited {e.code!r}")
         (root / "validation/cost.md").write_text(
             (root / "validation/cost.md").read_text().replace("167578", "167579"))
         expect("one page, stale", len(check(src, bare, root, "cost.md")), 1)
