@@ -2,26 +2,6 @@
 
 Embedded-first inertial navigation using a 15-state Error-State Kalman Filter (ESKF).
 
-> **Status: complete and aided by GNSS position and velocity, the barometer, and heading from
-> a magnetometer, a dual-antenna receiver or the course.** Equations (1)–(44) are implemented, bar two: the three-axis magnetometer of
-> (31)–(33), which is
-> [out of scope](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#magnetometer-without-magnetic-field-states)
-> rather than pending, and (5′), whose in-motion levelling term is measured and reported but not
-> yet subtracted. Initialization levels, takes a heading and a gyroscope bias, and sets
-> its covariance; `predict` propagates the state *and* its uncertainty, (9)–(22); every
-> `fuse_*` corrects both through the innovation gate of (37)–(38) — `fuse_gnss_position`,
-> `fuse_gnss_geodetic`, `fuse_gnss_velocity` and `fuse_baro_altitude` by (23)–(30),
-> `fuse_mag_heading` by (34)–(36), `fuse_gnss_heading` and `fuse_course` by (35′), (35″) and
-> (36). Yaw is the one attitude component any of them observes
-> directly; roll and pitch are corrected as far as the covariance carries an observation into
-> them. Where no aiding arrives, the uncertainty grows without bound and `Validity` says so:
-> each flag goes false as its own variance passes `Config::accuracy`, 10 s in for tilt at
-> the default noise on an unaided start from a still window. Accuracy is measured rather than asserted — see
-> [VALIDATION.md](https://github.com/wboayue/fusion-nav/blob/main/VALIDATION.md) for the
-> figures, against simulated truth and beside PX4's EKF2 on real flights, and
-> [data/README.md](https://github.com/wboayue/fusion-nav/blob/main/data/README.md) for the
-> harness. The API is not yet frozen.
-
 `fusion-nav` estimates 3D attitude, velocity, and position by fusing IMU measurements with GNSS,
 barometric altitude, and magnetometer observations. It is `no_std`, allocation-free, and aimed at
 flight controllers, UAVs, and other embedded navigation.

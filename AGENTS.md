@@ -56,8 +56,8 @@ Known losses, stated in the published pages:
 - On `2c42096b`, height disagrees with EKF2 because EKF2 follows its barometer and this filter
   follows GNSS height's low frequencies; horizontal agrees to 0.3 m RMS.
 
-Keep the status banners in `README.md`, `DESIGN.md`, `EQUATIONS.md` and `GOALS.md` saying what is
-true (`src/lib.rs` inherits the README's). `EQUATIONS.md`'s is the one to watch: it sits above a
+Keep the status banners in `DESIGN.md`, `EQUATIONS.md` and `GOALS.md` saying what is true (the
+README carries none, so `src/lib.rs` has none). `EQUATIONS.md`'s is the one to watch: it sits above a
 mapping table that separately marks functions as unbuilt, so the two can contradict each other.
 The example module docs rot the same way, since `basic` and `degradation` compile in CI and never
 run. `GLOSSARY.md` repeats no caveat by design, but entries that name unbuilt work (the GSF yaw
