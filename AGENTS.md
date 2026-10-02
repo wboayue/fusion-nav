@@ -41,9 +41,9 @@ Validation: thirteen PX4 logs (`data/manifest.txt`), the simulator's scenarios
 (`data/scenarios.txt`, and `data/anees.txt` for the covariance's honesty on 50 seeds), agreement
 with EKF2 on every log (`data/ekf2.txt`), UrbanNav for hostile GNSS against truth and INSANE for
 accuracy on a real UAV. `VALIDATION.md` and `validation/*.md` publish them, rendered by
-`tools/validation.sh`. Stack frames, type sizes and flash are pinned (`data/footprint.txt`) and
-published on `validation/cost.md`, which CI checks against the pins; the whole stack path is not
-pinned yet (#202). Replay derives a `Config` from a log (`--derive`).
+`tools/validation.sh`. Type sizes, stack frames, the deepest stack path from each entry point
+and flash are pinned (`data/footprint.txt`) and published on `validation/cost.md`, which CI
+checks against the pins. Replay derives a `Config` from a log (`--derive`).
 
 Known losses, stated in the published pages:
 
@@ -231,8 +231,10 @@ tools/footprint.sh                # type sizes, stack frames, flash on both thum
 tools/footprint.sh --pin          # the file's keys at their measured values: re-pin by copying
 python3 tools/validation.py render validation/src target/validation . --only cost.md   # after a re-pin
 tools/footprint.sh --all          # every key measured, to choose what to pin
-tools/footprint.sh --install      # once: its pinned nightly, llvm-tools and both thumb targets
-python3 tools/footprint.py --self-test   # the parser's fixtures
+tools/footprint.sh --install      # once: its pinned nightly, llvm-tools, rust-src and both thumb targets
+python3 tools/footprint.py --self-test   # the parser's and the call-graph walk's fixtures
+d=target/footprint/thumbv6m-none-eabi; python3 tools/footprint.py --path chain.eskf.Eskf.predict \
+    $d/types.txt $d/frames.txt $d/flash.txt $d/code.txt   # one chain, frame by frame, after a run
 # When a frame grows, bisect it: strip one candidate per build and re-measure. #122's +4168 bytes on `update::<3>`
 # was not only the 16 x 16 it looked like -- returning `(Covariance, Offset)` as a tuple through
 # `reset` cost a 900-byte copy of P on its own.
@@ -623,10 +625,13 @@ vanish in the squash merge, so a figure measured on a branch whose `src/` matche
 `main`'s commit.
 
 **A sum of named frames is not a path.** The crate's stack peak was quoted for months as
-`fuse_gnss_velocity` plus `update::<3>`, 9504 B. Walked through the rlib's call edges it is
-11408, because the deepest frame below `update` is `nalgebra`'s 15 × 15 product, which
-`-Zemit-stack-sizes` measures and `tools/footprint.py` keys out as another crate's. A figure built
-from the functions someone thought to name is bounded by that list; #202 makes the path a pin.
+`fuse_gnss_velocity` plus `update::<3>`, 9504 B. Walked through the rlib's call edges at
+`9e3fcca` it was 11408, because the deepest frame below `update` is `nalgebra`'s 15 × 15 product,
+which `-Zemit-stack-sizes` measures and `tools/footprint.py` keyed out as another crate's. A
+figure built from the functions someone thought to name is bounded by that list, and the hand walk
+had a list too: it stopped at `nalgebra`, and #202's walk through every crate found the soft-float
+multiply beneath it, 100 B more. So `chain.` follows every call, refuses what it cannot bound,
+and `stack_peak` is the pin.
 
 **An absence is measured only on what was fused.** `Gates`' doc comment dismissed the cost of a
 joint GNSS gate because "the corpus shows no such fix" — true, because `2c42096b`'s barometer was
