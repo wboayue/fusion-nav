@@ -628,7 +628,7 @@ impl Eskf {
     /// magnetic heading plus the old value and is that plus the new one. A static start is
     /// the usual case: it levels before any fix names the site, and the first fix arrives a
     /// declination later. Left alone, that is a standing innovation of the whole change on
-    /// every heading (13.8° at 56° N, 44° E), which the gate of (37) reads as a disturbed
+    /// every heading (14.0° at 56° N, 44° E), which the gate of (37) reads as a disturbed
     /// magnetometer and turns away until [`Config::recovery`](crate::Config::recovery)
     /// adopts one. The covariance is kept as it was: the turn composes on the left, so the
     /// body-frame error `δθ` of (2) is the same error before and after it, and the tilt a
@@ -690,7 +690,7 @@ impl Eskf {
     /// east-positive, the angle that turns a magnetic heading into a true one.
     ///
     /// Optional where the `magnetic-model` feature is on, as it is by default: the filter
-    /// reads the declination from PX4's World Magnetic Model table wherever it places its
+    /// reads the declination from a World Magnetic Model table wherever it places its
     /// [`origin`](Self::origin), and turns a heading only the magnetometer has referred to
     /// north along with it (see [`Geodetic::magnetic_declination`]). A value set here is the
     /// caller's and the model never overrides it; that is the call for a site the table
@@ -1374,7 +1374,7 @@ impl Eskf {
         // Equation (44): the origin under the estimate when the fix was taken, and the fix's
         // error as the position's. The estimate of the antenna's position, which is what the
         // fix measures, (28′), with the heading the site's declination turns it to first: read
-        // before, a 1 m arm under a 13.8° turn misplaces the origin by 0.24 m. The turn is
+        // before, a 1 m arm under a 14.0° turn misplaces the origin by 0.24 m. The turn is
         // committed only once the origin is found, so a fix refused here changes nothing.
         let learned = self.declination_at(fix);
         let turn = learned.map_or(0.0, |(_, turn)| turn);
@@ -5959,7 +5959,7 @@ mod tests {
         );
     }
 
-    /// A site whose declination is large, 13.8° east in PX4's table, so a heading that
+    /// A site whose declination is large, about 14° east, so a heading that
     /// missed it is far outside any gate.
     fn east_of_moscow() -> Geodetic {
         Geodetic::from_degrees(56.41, 43.76, 150.0)
@@ -6194,7 +6194,7 @@ mod tests {
     #[cfg(feature = "magnetic-model")]
     #[test]
     fn the_origin_goes_under_the_antenna_the_turned_heading_puts() {
-        // A magnetometer-levelled heading turned 13.8° by the first fix: the arm has to be
+        // A magnetometer-levelled heading turned 14.0° by the first fix: the arm has to be
         // read after the turn, or the origin sits 0.24 m from where the estimate puts the
         // antenna.
         let mut filter = Eskf::default();

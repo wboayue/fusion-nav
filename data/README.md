@@ -590,8 +590,8 @@ once a fix has established position, or `none`), `heading=` (`Validity::heading`
 log ended, which would only restate `transitions=`), `declination=` (the magnetic declination
 the harness configured, in degrees, read from the log's `# Magnetic declination` header line —
 zero where it has none), `declination_model=` (the crate's own magnetic model at the log's
-`# Navigation origin`, which agrees with `declination=` wherever that line says PX4's table was
-read at the first fix, since the two are one table; `none` without an origin), `antenna=` (the
+`# Navigation origin`, which differs from `declination=`, wherever that line says PX4's table was
+read at the first fix, only by the two tables' models and epochs; `none` without an origin), `antenna=` (the
 lever arm every GNSS fix was fused with, forward, right, down in metres), `resets=` (adoptions, per source, so a GNSS fix adopted whole counts in both its halves),
 `aligned_at=` (seconds from the end of the window to the first epoch `Eskf::is_aligned` read true,
 or `never`), `attitude_lost=` (seconds to the first epoch at or after it where `Validity::attitude`

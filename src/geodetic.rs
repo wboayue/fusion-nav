@@ -112,9 +112,9 @@ impl Geodetic {
         self.height
     }
 
-    /// The magnetic declination here, east-positive, from PX4's World Magnetic Model table
-    /// (WMM-2020 at epoch 2024.41, 10° grid, bilinear): `None` for a coordinate that is not a
-    /// number. Height is ignored.
+    /// The magnetic declination here, east-positive, from the crate's World Magnetic Model
+    /// table (one epoch, 10° grid, bilinear): `None` for a coordinate that is not a number.
+    /// Height is ignored.
     ///
     /// The value [`Eskf`](crate::Eskf) applies itself where it places its origin, unless
     /// [`set_magnetic_declination`](crate::Eskf::set_magnetic_declination) has been called.
