@@ -630,7 +630,7 @@ vanish in the squash merge, so a figure measured on a branch whose `src/` matche
 which `-Zemit-stack-sizes` measures and `tools/footprint.py` keyed out as another crate's. A
 figure built from the functions someone thought to name is bounded by that list, and the hand walk
 had a list too: it stopped at `nalgebra`, and #202's walk through every crate found the soft-float
-multiply beneath it, 100 B more. So `chain.` follows every call, refuses what it cannot bound,
+multiply beneath it, 100 B more on `thumbv6m` (88 on `thumbv7em`, `memcpy`). So `chain.` follows every call, refuses what it cannot bound,
 and `stack_peak` is the pin.
 
 **An absence is measured only on what was fused.** `Gates`' doc comment dismissed the cost of a

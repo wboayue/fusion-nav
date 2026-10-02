@@ -20,10 +20,14 @@ is a library call) and `thumbv7em-none-eabihf` (Cortex-M4 and M7 with a single-p
 - **Stack** is each function's own frame at `opt-level = 3`, read from the compiler
   (`-Zemit-stack-sizes`), and the deepest path beneath each entry point: its frame plus its
   deepest callee's, walked call by call through the library's relocations, down into `nalgebra`,
-  `libm`, `core` and `compiler_builtins`. Every frame on a path is the compiler's, except two
-  hand-written division routines, which are read from their pushes. A call through a function
-  pointer counts as deep as the deepest function whose address the entry point takes. For a
-  generic function the figure is its largest instance.
+  `libm`, `core` and `compiler_builtins`. Every frame on a path is the compiler's, except the
+  hand-written division routines (two on `thumbv6m`, one on `thumbv7em`), which are read from
+  their pushes. A call through a function pointer counts as deep as the deepest function whose
+  address the entry point's code takes, directly or through the data it reads. For a generic
+  function the figure is its largest instance.
+- **Not in the stack figures:** the caller's own frames, and the 32 bytes a Cortex-M stacks on
+  an exception (104 with the M4F's floating-point context). The frames are the library build's,
+  and an application built with LTO can inline them differently.
 - **Flash** is a bare-metal binary (`panic-check/`) that calls the whole public API, linked
   with fat LTO. An application reaching fewer entry points links less.
 - **Not measured:** cycle counts and a painted stack high-water mark on a real board. Both are
@@ -52,7 +56,7 @@ Sizes in bytes.
 
 ## Stack
 
-The deepest stack each entry point reaches, in bytes: the figure to plan RAM against.
+The deepest stack a call into each entry point takes, in bytes, before the caller's frames.
 
 | entry point | `thumbv6m` | `thumbv7em` |
 | --- | --- | --- |
