@@ -102,8 +102,8 @@ published*. Trackers carry the area label but no milestone, since they span all 
 
 **When looking for gaps, audit `GOALS.md` rather than the issue list.** The six differentiators,
 the two open design questions and the derived-configuration table are commitments, and a
-commitment with no issue against it is the gap — differentiator 1, the one GOALS calls most
-defensible, had zero representation in the backlog until #41 and #42.
+commitment with no issue against it is the gap — differentiator 1, the one GOALS says matters
+most, had zero representation in the backlog until #41 and #42.
 
 Differentiators are cited **by number** here, in issue bodies and in `data/manifest.txt`, so
 `GOALS.md` numbers them 1–4, 6, 7: 5 was ecosystem coherence, dropped in #63, and the gap stays.

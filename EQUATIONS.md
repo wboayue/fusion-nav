@@ -188,8 +188,8 @@ Roll and pitch follow from the accelerometer. With $`f = a_m`$ averaged over the
 ```
 
 The signs follow from the down-positive convention: a level, stationary accelerometer reads
-$`f = [0, 0, -\gamma]^\mathsf{T}`$. A window taken in motion is levelled by (5′),
-[after (8′)](#levelling-a-window-taken-in-motion).
+$`f = [0, 0, -\gamma]^\mathsf{T}`$. (5′), [after (8′)](#levelling-a-window-taken-in-motion), says
+how a moving window would be levelled; its subtraction is not built, #59.
 
 Yaw follows from the magnetometer, levelled by the roll and pitch just computed. With
 $`R_0 = R_y(\theta_0) R_x(\phi_0)`$ and $`m_b`$ the averaged magnetometer reading:
@@ -542,9 +542,9 @@ directly, its $`\delta v`$ grows only as $`t`$:
 ```mermaid
 flowchart LR
     bg["δβg<br/>constant"] -- "(18): −δβg" --> th["δθ<br/>∝ t"]
-    th -- "(17): −R[a_b]× δθ<br/>gravity tipped sideways" --> v["δv<br/>∝ t²"]
-    ba["δβa<br/>constant"] -- "(17): −R δβa<br/>δv ∝ t" --> v
-    v -- "(16)" --> p["δp<br/>∝ t³"]
+    th -- "(17): −R[a_b]× δθ<br/>gravity tipped sideways" --> v["δv<br/>∝ t² from δβg"]
+    ba["δβa<br/>constant"] -- "(17): −R δβa<br/>its own δv ∝ t, δp ∝ t²" --> v
+    v -- "(16)" --> p["δp<br/>∝ t³ from δβg"]
 ```
 
 A measurement of any one of them reaches the others only through the correlations this chain
@@ -1091,7 +1091,8 @@ The measurements are [the decision's](GOALS.md#barometric-reference-as-an-estima
 
 ### Magnetometer, heading only
 
-This is the **default**. It constrains yaw alone, leaving roll and pitch to gravity.
+Heading-only fusion is the **default** magnetometer model, and the three-axis one below is not
+built. It constrains yaw alone, leaving roll and pitch to gravity.
 
 Rotate the measurement into the navigation frame with the current attitude estimate:
 
@@ -1183,7 +1184,7 @@ eigenvalue's margin stood in for the correlation across readings. (24′) prices
 directly, as the magnetometer's $`\tau`$, and the gap closes. On 50 seeds both forms then sit
 inside the attitude bound on every scenario, their ANEES within a few percent.
 
-| scenario, measure | field axis, $`\hat f^\mathsf{T} P \hat f`$ | exact per reading | eigenvalue, $`\lambda_{\max}`$ | larger N/E diagonal |
+| scenario or log, measure | field axis, $`\hat f^\mathsf{T} P \hat f`$ | exact per reading | eigenvalue, $`\lambda_{\max}`$ | larger N/E diagonal |
 | --- | --- | --- | --- | --- |
 | `gnss_outage` horizontal error, fused white | 2.630 m | 2.620 m | 2.227 m | |
 | `gnss_outage` horizontal error, under (24′) | 1.255 m | | 1.252 m | |
@@ -1219,7 +1220,7 @@ observes the tilt that made it so. That is `R` inflation with no cross-covarianc
 here because the error it prices does not persist: velocity fusion keeps correcting the tilt
 between headings. An error shared unchanged across readings needs the cross-covariance as well,
 which is (30′). On `moving_start`, whose coarse start is where an unpriced levelling error is
-largest:
+largest, measured with every source fused white, before (24′):
 
 | `moving_start` | (36) alone | (36′) |
 | --- | --- | --- |

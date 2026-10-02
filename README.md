@@ -780,7 +780,7 @@ issue that removes them, where one is open.
   with `τ` from `Config::correlation`, whose defaults are read off the corpus: medians across
   logs, and one log each for the dual-antenna heading and the course, the only logs that carry
   them. A sensor whose error persists longer than its `τ` still shrinks the covariance below what
-  it supports. A `τ` read off a log is a lower bound: an estimator the filter does not bias is
+  it supports, and one reporting a σ too small is gated on that σ and weighted less besides. A `τ` read off a log is a lower bound: an estimator the filter does not bias is
   [#195](https://github.com/wboayue/fusion-nav/issues/195). See
   [correlated measurement error](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#correlated-measurement-error-as-equivalent-white-noise).
 * **An IMU gap is coasted on an assumption.** Across a step longer than `Config::max_predict_dt`
@@ -794,8 +794,8 @@ issue that removes them, where one is open.
   conversion is exact at any range
   ([equation (43)](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#geodetic-origin)),
   but a plane leaves a curved Earth: `d` from the origin it sits `d²/2R` above the surface, 8 cm
-  at 1 km and 7.8 m at 10 km, so `-p_D` far out is not height. The barometer model does not correct for it,
-  and [equation (30)](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#barometric-altitude)
+  at 1 km and 7.8 m at 10 km, so `-p_D` far out is not height. The barometer model does not
+  correct for it, and [equation (30)](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#barometric-altitude)
   records the measurement behind that.
 
 Features out of scope (wind, terrain, optical flow, airspeed, ...) are listed in

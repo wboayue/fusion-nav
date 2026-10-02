@@ -229,12 +229,13 @@ See [magnetometer, heading only](EQUATIONS.md#magnetometer-heading-only).
 
 Each source has its own gate, a chi-square test in the observation's degrees of freedom. One
 mechanism covers GNSS glitches, barometer transients and magnetic interference. Rejections are
-counted and typed, because a filter that silently discards everything looks like one that works.
+counted and exposed as typed outcomes, because a filter that silently discards everything looks like one that works.
 See [innovation gating](EQUATIONS.md#innovation-gating).
 
 ### Measurement rejection
 
-A gate can lock out a filter that is itself wrong ([gate lockout](EQUATIONS.md#gate-lockout)). So
+If the filter itself is wrong, correct measurements look inconsistent, all are rejected, and it
+dead-reckons while looking confident: [gate lockout](EQUATIONS.md#gate-lockout). So
 health is per source and carried on the estimate, and recovery is per source too: adoption, one
 switch each in `Config::recovery`. The user-facing side is [README.md](README.md#health-reporting);
 the reasoning is GOALS.md's
@@ -243,7 +244,7 @@ the reasoning is GOALS.md's
 
 ## Embedded Design
 
-`fusion-nav` targets flight-control microcontrollers. The implementation therefore favors:
+`fusion-nav` is intended for the microcontrollers flight controllers run on. The implementation therefore favors:
 
 * fixed-size matrices
 * compile-time dimensions
@@ -379,10 +380,8 @@ knock at 4757 s. PX4's own pair gives 2.4°. A ceiling on `σ_ba` at PX4's 0.35 
 clamp on the bias at its 0.4 gives 4.4°, and neither is reached once the walk is converted.
 
 **White noise at ten times PX4's density**, because replay measured the factor being spent.
-The simulator's IMU is 58 times quieter than this figure, so a scenario favouring less noise
-states the simulator's preference, not an airframe's.
-
-`accel_white` at 0.3× breaks something each source can say:
+`accel_white` at 0.3× breaks the one thing each real source can say, and the simulator does not
+need the factor:
 
 * `2c42096b`, a real airframe vibrating on the ground, reads a tilt peak of 4.6° against 2.5°
   (EKF2 never leaves 1.08°), still 4.5° under PX4's `R` floors: the vibration needs it.
@@ -392,7 +391,9 @@ states the simulator's preference, not an airframe's.
   at 0.3× as at 1×; fused as current, it read 888 at 0.3×.
 
 `gyro_white` at 0.7× improves `tilt` and `yaw` on every scenario, but `harsh_imu`'s `nees_att`
-crosses 1 (1.07), and `f16771dd` grows a 14.1° tilt at t = 51 s where EKF2 reads 2.6°.
+crosses 1 (1.07), and `f16771dd` grows a 14.1° tilt at t = 51 s where EKF2 reads 2.6°. The
+simulator's IMU is 58 times quieter than this figure, so the scenarios favouring less gyroscope
+noise state the simulator's preference, not an airframe's.
 
 **Against the floor the sensors measure**, `StaticWindow::noise`, on the worst axis of the nine
 real logs whose window is still:
@@ -404,8 +405,8 @@ real logs whose window is still:
 
 `a299e722` is left out: its rows each average 2.5 ms while standing for 20 ms, so read `√8` high
 until the converter's `# IMU averaging interval` corrects them. This is the factor measured from
-below; a default under the floor would be the error. PX4's own densities, a tenth of these, come
-within reach of it: `2c42096b`'s accelerometer, a grounded airframe with props spinning, reads
+below; a default under the floor would be the error. PX4's own densities, a tenth of the
+defaults, come within reach of it: `2c42096b`'s accelerometer, a grounded airframe with props spinning, reads
 1.6 times PX4's, and `f16771dd`'s gyroscope 1.1 times.
 
 ### `Gates`
@@ -592,10 +593,10 @@ Against a 0.01 rad/s prior on every start:
 | `flight` tilt, 30 seeds | 0.620° | 0.823° |
 | `flight` horizontal position, 30 seeds | 1.17 m | 1.47 m |
 | `harsh_imu` yaw, 30 seeds (bias walks at nearly twice the filter's rate) | 1.027° | 0.953° |
-| attitude ANEES, 50 seeds | moves under 0.03 on every scenario; `harsh_imu` 0.140 | 0.117 |
+| attitude ANEES, 50 seeds, `harsh_imu` (every scenario within 0.03) | 0.140 | 0.117 |
 | unaided tilt held, `7592c9b2` | 10.32 s | 3.88 s |
 | unaided tilt held, `f16771dd` | 9.83 s | 3.84 s |
-| `a299e722` | tilt never lost; 324 GNSS velocity rejections | 315 |
+| `a299e722` GNSS velocity rejections (its tilt never lost with the window's mean) | 324 | 315 |
 
 On those windows the mean's variance `R` is, on the worst axis, 1/36 of the 0.01 rad/s prior's
 on `2c42096b`'s 0.8 s window to 1/25000 on `7592c9b2`'s. So `K`, the share of `ω̄` (7) takes,

@@ -282,7 +282,7 @@ window and establishes attitude only at `initialize`**; either alone would be su
 `fusion-nav` is not that estimator: it does not refuse a usable window (2), it adopts the first
 heading (3), and velocity fusion corrects tilt through the covariance from then on.
 
-The options, in the order they were worth doing:
+The options, in the order they are worth doing:
 
 | option | state |
 | --- | --- |
@@ -388,8 +388,9 @@ The options, in the order they were worth doing:
 6. **An EKF-GSF yaw estimator.** A bank of small filters over yaw hypotheses weighted by GNSS
    velocity innovations: ArduPilot's invention, since ported into PX4, and the general answer to
    aligning yaw while moving without a magnetometer. Effective, and genuinely a second estimator
-   inside a crate whose pitch is being small enough to read. Not built (#165): 5 serves the
-   vehicles that move along their heading, and 6 is for the multirotor that does not.
+   inside a crate whose pitch is being small enough to read. Not built (#165), and only if 4
+   and 5 prove insufficient: 5 serves the vehicles that move along their heading, and 6 is for
+   the multirotor that does not.
 
 Two API decisions shape the rest, and both are settled:
 
@@ -501,7 +502,7 @@ configured, per differentiator 7, and a mean rather than a median: a median of a
 magnetometer (`eb799954`) read its burst spacing as the rate and flapped the status 14025 times.
 Both production estimators fix their timeouts as constants instead.
 
-**Costs:** a knob. `Config::accuracy` is the deliberate exception to
+**Costs:** a knob, `Config::accuracy`. It is the deliberate exception to
 [differentiator 7](#7-configuration-derived-not-demanded): how accurate is good enough is a
 property of the mission, not of the hardware or the mathematics, and no flight data settles it.
 That is also why it moves `Validity` and nothing else: alignment is settled by two production
@@ -1026,8 +1027,8 @@ truth's timeline also lags the IMU's by 80 to 170 ms, which the converter measur
 flight. Three of the twenty GNSS sequences are not used, because windows where their truth fails
 outright (12 to 16° RMS off the gyroscope over a second, against medians near 2°) would set their
 lag. Three flights are scored: the airfield, a desert flight whose receiver overstates its
-accuracy, and a desert hover with 280 s of truth. On all three the reported position uncertainty covers the
-error, and (24′) is why
+accuracy, and a desert hover with 280 s of truth. On all three the reported position uncertainty
+covers the error, and (24′) is why
 ([correlated measurement error](#correlated-measurement-error-as-equivalent-white-noise)).
 
 The data is licensed BSD-2-Clause **with an added condition**: no right to sell a product or
