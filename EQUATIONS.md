@@ -18,17 +18,19 @@ why it exists, [DESIGN.md](DESIGN.md) how it is built, this one what it computes
 
 ## The filter at a glance
 
-The equations in the order the filter runs them. A start runs once; propagation runs on every IMU
-sample; an update runs on every measurement, against the state at the time it was taken.
+The equations in the order the filter runs them. A start runs once. Propagation runs on every IMU
+sample. An update runs on every measurement, against the state at the time it was taken.
 
 ```mermaid
 flowchart LR
     init["start<br/>(5)–(8″)"] --> prop["propagate<br/>(9)–(15), (20)–(22)<br/>a gap: (22′)"]
     prop --> prop
-    prop --> past["place in the past<br/>(23′)"]
+    z["measurement,<br/>at its time"] --> past["place in the past<br/>(23′)"]
+    prop -. "state history" .-> past
     past --> model["form y, H, R<br/>(28)–(36), (43)<br/>R widened by (24′)"]
     model --> gate{"gate<br/>(37)–(38)"}
     gate -- "r > 1" --> rej(["rejected"])
+    rej --> prop
     gate -- "r ≤ 1" --> upd["update<br/>(24)–(27)"]
     upd --> reset["inject and reset<br/>(39)–(41)"]
     reset --> cond["condition<br/>(42), (42′)"]
@@ -49,7 +51,8 @@ flowchart LR
 | when, and how often | (23′), (24′) | [measurement time and correlation](#measurement-time-and-correlation) |
 
 The sections below follow that order. Equations keep the numbers the code cites, so the numbers
-jump: (27) is followed by (37)–(44), then (28)–(36), then (23′) and (24′).
+jump: (27) is followed by (37)–(44), then (28)–(36) with the unbuilt (31)–(33) last, then (23′)
+and (24′). Within initialization, (5′) follows (8′).
 
 ## Notation and conventions
 
@@ -65,9 +68,9 @@ navigation-frame vector.
 
 The navigation frame is down-positive, so gravity has a **positive** $`z`$ component.
 
-The attitude error is defined as a **local** (body-frame) perturbation, $`q = \hat{q} \otimes \delta q`$.
+The attitude error is a **local** (body-frame) perturbation, $`q = \hat{q} \otimes \delta q`$.
 Every Jacobian below follows from that choice. The global alternative
-$`q = \delta q \otimes \hat{q}`$ does not flip signs — it moves $`R`$: Solà (295) and (311) against
+$`q = \delta q \otimes \hat{q}`$ does not flip signs; it moves $`R`$. Solà (295) and (311) against
 his (238) and (270) give $`-[\,R a_b\,]_\times`$ for $`-R[\,a_b\,]_\times`$ in (17) and (20),
 $`I`$ for $`R\{\omega\Delta t\}^\mathsf{T}`$ in the attitude block, and $`-R\Delta t`$ for
 $`-I\Delta t`$ where the gyroscope bias enters. Solà numbers are v1's throughout; see
@@ -127,14 +130,11 @@ subscript.
 ### Gravity
 
 $`g = [0, 0, \gamma]^\mathsf{T}`$ with $`\gamma`$ the local gravity magnitude, entering the
-propagation of (11) and the levelling of (5)–(8). It is `Config::gravity`, the WGS-84 standard value
-9.80665 m s⁻² unless configured, and constant for a filter's life: $`\gamma`$ varies by roughly
-0.5 % between the equator and the poles and the filter holds a geodetic origin, but that origin is
-placed by the first fix, which can arrive after propagation has begun. Deriving it there would
-change a propagation constant mid-flight. It is derived offline instead, from the site, by
-`Geodetic::normal_gravity` (NGA.STND.0036 (4-1) and (4-3)), which the replay harness's `--derive`
-prints from a log; see [GOALS.md](GOALS.md#local-gravity-configured-derived-offline) for the
-decision.
+propagation of (11) and the levelling of (5)–(8). It is `Config::gravity`, the WGS-84 standard
+value 9.80665 m s⁻² unless configured, and constant for a filter's life. A site's value comes
+offline from `Geodetic::normal_gravity` (NGA.STND.0036 (4-1) and (4-3)), which `replay --derive`
+prints from a log, for the reasons in
+[the decision](GOALS.md#local-gravity-configured-derived-offline).
 
 ## State definitions
 
@@ -175,9 +175,9 @@ non-singular and preserves the unit-norm constraint on $`q`$ automatically.
 
 ## Initialization
 
-The filter is initialized from a quasi-static interval: the vehicle stationary, with gravity the
-only specific force. Initialization quality dominates early-flight performance, so the static
-assumption must be validated rather than assumed.
+The filter starts from a quasi-static interval: the vehicle stationary, gravity the only specific
+force. Initialization quality dominates early flight, so the static assumption is validated, not
+assumed.
 
 Roll and pitch follow from the accelerometer. With $`f = a_m`$ averaged over the interval:
 
@@ -188,49 +188,8 @@ Roll and pitch follow from the accelerometer. With $`f = a_m`$ averaged over the
 ```
 
 The signs follow from the down-positive convention: a level, stationary accelerometer reads
-$`f = [0, 0, -\gamma]^\mathsf{T}`$.
-
-### Levelling a window taken in motion
-
-Stationarity is what lets (5) read $`f`$ as gravity alone, and a vehicle that is accelerating
-breaks it. Equation (11) read backwards says by how much: $`R^\mathsf{T}(a_n - g) = f`$, so the
-vector to level is the averaged specific force with the vehicle's own acceleration taken out of
-it,
-
-**(5′)**
-
-```math
-\bar{f}' = \bar{f} - R^\mathsf{T} \bar{a}_n, \qquad
-\bar{a}_n = \frac{v_n(t_1) - v_n(t_0)}{t_1 - t_0}
-```
-
-with $`v_n`$ the GNSS velocity at the first and the last sample of the window carrying one. At
-rest $`\bar a_n = 0`$ and (5′) is (5). Applying (5) to $`\bar f'`$ rather than to $`\bar f`$ is
-the whole of in-motion levelling
-([GOALS.md, alignment option 4](GOALS.md#alignment-beyond-the-static-window)).
-
-Two properties keep it a *coarse* alignment, and neither improves with care:
-
-* $`\bar a_n`$ is a difference of two noisy velocities over the span between them. A receiver
-  reporting $`\sigma_v`$ = 0.28 m s⁻¹ at 1 Hz, differenced over 1 s, puts 0.39 m s⁻² of noise into
-  a term whose whole purpose is to be subtracted from 9.8 — so the corrected tilt inherits an
-  error the static case does not have, and the result must not promote to `Alignment::Static`.
-  The window mean is taken from the endpoints for this reason: the mean of a derivative is its
-  endpoint difference, and differencing the samples in between would add their noise back.
-* $`R^\mathsf{T}`$ is part of what is being solved for. The correction splits by axis, which
-  decides how much of it is available: the third column of $`R^\mathsf{T}`$ is the body-frame
-  down direction, so the **vertical** part of $`\bar a_n`$ needs only the tilt and can be taken by
-  fixed-point iteration from the uncorrected (5) — one pass is worth
-  $`\lVert\bar a_n\rVert / \gamma`$, and a fixed count rather than a convergence test, for the
-  reason `geodetic.rs` fixes its own. The **horizontal** part needs the yaw as well, so it is
-  available only where (6) supplies one, iterating (5) and (6) together. A bare vehicle
-  accelerating horizontally with no heading source is the case option 4 does not reach on its own;
-  that is what [option 5](GOALS.md#alignment-beyond-the-static-window) is for.
-
-Solving instead for the rotation that carries $`\bar f`$ onto the known navigation vector
-$`\bar a_n - g`$ would need no iteration and would observe part of the yaw, but it degenerates as
-$`\bar a_n \to 0`$ — the regime most launches sit in — and it couples heading into a step whose
-job is tilt.
+$`f = [0, 0, -\gamma]^\mathsf{T}`$. A window taken in motion is levelled by (5′),
+[after (8′)](#levelling-a-window-taken-in-motion).
 
 Yaw follows from the magnetometer, levelled by the roll and pitch just computed. With
 $`R_0 = R_y(\theta_0) R_x(\phi_0)`$ and $`m_b`$ the averaged magnetometer reading:
@@ -252,21 +211,21 @@ The nominal state is then initialized as
 with $`q_{ZYX}`$ the quaternion of the yaw-pitch-roll sequence
 $`R = R_z(\psi) R_y(\theta) R_x(\phi)`$, matching $`R_0`$ in (6).
 
-The gyroscope bias is observable at rest, and the window's mean rate
-$`\overline{\omega_m} = \sum \Delta\theta / \sum T`$ is a measurement of it, weighed against
-the prior per body axis by $`K = \sigma_{\beta g}^2 / (\sigma_{\beta g}^2 + R)`$, with
-$`\sigma_{\beta g}`$ `Initialization::sigma_gyro_bias` and $`R`$ the variance of the mean, below
-(8). On the corpus's still windows $`K`$ is near one (`DESIGN.md`,
+The gyroscope bias is observable at rest. The window's mean rate
+$`\overline{\omega_m} = \sum \Delta\theta / \sum T`$ measures it, weighed against the prior per
+body axis by $`K = \sigma_{\beta g}^2 / (\sigma_{\beta g}^2 + R)`$, with $`\sigma_{\beta g}`$
+`Initialization::sigma_gyro_bias` and $`R`$ the variance of the mean, given with (8). On the
+corpus's still windows $`K`$ is near one (`DESIGN.md`,
 [`Initialization`](DESIGN.md#initialization)); one sample's $`R`$ is far above the prior's, and
-$`K`$ near zero. The accelerometer bias is not separable from attitude error at rest and is
-initialized to zero.
+$`K`$ near zero. The accelerometer bias is not separable from attitude error at rest and starts
+at zero.
 
-The weighing holds only where the window was taken **at rest**, which is what makes the bias
-observable; a window taken in motion offers the vehicle's own rotation under the same name, so
-it starts at zero instead, $`K = 0`$. That test is `init::at_rest`, not the `Alignment` — the
-same distinction `α₀` draws below. Neither production estimator averages at all: ArduPilot zeroes
-the bias at bootstrap (`libraries/AP_NavEKF3/AP_NavEKF3_core.cpp:546`, `368dc0c4`) and PX4 refuses
-to initialize outside 0.8–1.2 g and 15°/s (`src/modules/ekf2/EKF/ekf.cpp:213-227`, `c4e4ef98`).
+The weighing needs a window taken **at rest**, which is what makes the bias observable. A window
+taken in motion offers the vehicle's own rotation under the same name, so it starts at zero
+instead, $`K = 0`$. The test is `init::at_rest`, not the `Alignment`: the same distinction `α₀`
+draws below. Neither production estimator averages at all. ArduPilot zeroes the bias at bootstrap
+(`libraries/AP_NavEKF3/AP_NavEKF3_core.cpp:546`, `368dc0c4`); PX4 refuses to initialize outside
+0.8–1.2 g and 15°/s (`src/modules/ekf2/EKF/ekf.cpp:213-227`, `c4e4ef98`).
 
 The initial covariance is diagonal apart from attitude and the attitude's correlation with the
 accelerometer bias:
@@ -292,9 +251,10 @@ P_{\theta\beta_a} = -\frac{\sigma_{\beta a,0}^2}{\gamma} [\hat d]_\times,
 ```
 
 with $`\hat d = R(\hat q_0)^\mathsf{T} e_3`$, navigation down in body axes, and $`\lambda`$ the
-window's own scatter across gravity as a tilt: the sample covariance $`C`$ of the specific force,
-$`\lambda = \tfrac{1}{2}\bigl(\operatorname{tr} C - \hat d^\mathsf{T} C \hat d\bigr) / (N \gamma^2)`$
-per horizontal axis. A window of one measures none, and takes $`\lambda = \sigma_{\text{tilt},0}^2`$.
+window's own scatter across gravity as a tilt. With $`C`$ the sample covariance of the specific
+force, per horizontal axis,
+$`\lambda = \tfrac{1}{2}\bigl(\operatorname{tr} C - \hat d^\mathsf{T} C \hat d\bigr) / (N \gamma^2)`$.
+A window of one measures none, and takes $`\lambda = \sigma_{\text{tilt},0}^2`$.
 
 The gyroscope-bias prior is what the weighing of (7) leaves. Where the window was at rest, per
 body axis,
@@ -303,13 +263,14 @@ body axis,
 \sigma_{\beta g,0}^2 = K R + \Omega_{ie}^2, \qquad R = \frac{\hat N^2}{T} \cdot \frac{J - 1}{J - 3}
 ```
 
-with $`\hat N`$ the gyroscope's density of (8″) over $`J`$ blocks and the window's span $`T`$.
+with $`\hat N`$ the gyroscope's density over $`J`$ blocks, defined by
+[(8″)](#what-a-still-window-measures-of-its-sensors) below, and $`T`$ the window's span.
 $`\hat N^2`$ is a $`\chi^2`$ of $`J - 1`$ degrees of freedom, and $`(J - 1)/(J - 3)`$ is the
-expected overconfidence an inverse of it carries, so $`R`$ is scaled by it and taken from four
-blocks; under four, or on an axis whose blocks did not scatter at all, $`R = N^2 / T`$ at the
-configured `ImuNoise::gyro_white`. $`\Omega_{ie}`$ is
-the Earth's rotation rate, which (9)–(15) leave out and $`\overline{\omega_m}`$ therefore holds.
-In motion $`\sigma_{\beta g,0}`$ is `Initialization::sigma_gyro_bias`.
+expected overconfidence its inverse carries. So $`R`$ is scaled by it and needs four blocks.
+Under four, or on an axis whose blocks did not scatter at all, $`R = N^2 / T`$ at the configured
+`ImuNoise::gyro_white`. $`\Omega_{ie}`$ is the Earth's rotation rate, which (9)–(15) leave out
+and $`\overline{\omega_m}`$ therefore holds. In motion $`\sigma_{\beta g,0}`$ is
+`Initialization::sigma_gyro_bias`.
 
 The cross block is what (5) does to a biased accelerometer. At rest the sensor reads
 $`\bar f = R^\mathsf{T}(-\gamma e_3) + \beta_a`$, and (5) levels to $`\bar f`$ as though
@@ -319,35 +280,37 @@ $`\hat\beta_{a,0} = 0`$ of (7) were the bias, so to first order the committed at
 \delta\theta = -\frac{1}{\gamma} [\hat d]_\times\, \delta\beta_a
 ```
 
-This is the horizontal bias read as a lean, and the vertical one read as nothing, since it moves
-$`\lVert \bar f \rVert`$ and not its direction. At $`t_0`$ the tilt error and the accelerometer-bias
-error are one error, and $`P_{\theta\beta_a} = \mathrm{E}[\delta\theta\, \delta\beta_a^\mathsf{T}]`$ says so.
-Left out, velocity fusion that learns the bias has no way to move the tilt it caused. The share of
-the tilt the bias explains, $`\sigma_{\beta a,0}/\gamma`$ per horizontal axis, is part of
-$`\sigma_{\text{tilt},0}`$ rather than added to it, and where it is the larger it is the prior.
-What is left once the bias is known, the Schur complement across tilt, is the second term, and
-$`\lambda`$ keeps it from zero: at the defaults the bias's share is over
-$`\sigma_{\text{tilt},0}`$, and without $`\lambda`$ the prior would call every level error the
-bias, leaving none for the vibration or noise the average levelled through.
-A seeded start commits the caller's covariance instead, having levelled nothing. What the
-correlation and the `max` were each measured against is `init::initial_covariance`'s.
+The horizontal bias reads as a lean. The vertical one reads as nothing, since it moves
+$`\lVert \bar f \rVert`$ and not its direction. At $`t_0`$ the tilt error and the
+accelerometer-bias error are one error, and
+$`P_{\theta\beta_a} = \mathrm{E}[\delta\theta\, \delta\beta_a^\mathsf{T}]`$ says so. Left
+out, velocity fusion that learns the bias has no way to move the tilt it caused.
 
-Tilt and yaw are uncertainties about navigation axes — rotation about north and east, and about
-down — while $`\delta\theta`$ is a body-frame rotation vector whose navigation-frame counterpart
-is $`R(\hat q)\,\delta\theta`$, as (36) uses. So the attitude block is the navigation-frame
-diagonal rotated into body axes, and it is diagonal only when the start is level. On a vehicle
-standing on its tail, body x points up and the yaw prior belongs on $`\delta\theta_x`$. Every
-reader of tilt and heading takes the same diagonal back out, $`\mathrm{diag}(R\, P_{\theta\theta} R^\mathsf{T})`$
+The share of the tilt the bias explains, $`\sigma_{\beta a,0}/\gamma`$ per horizontal axis, is
+part of $`\sigma_{\text{tilt},0}`$ rather than added to it; where it is the larger, it is the
+prior. What is left once the bias is known, the Schur complement across tilt, is the second term,
+and $`\lambda`$ keeps it from zero. At the defaults the bias's share exceeds
+$`\sigma_{\text{tilt},0}`$, so without $`\lambda`$ the prior would call every level error the
+bias and leave none for the vibration or noise the average levelled through. A seeded start
+commits the caller's covariance instead, having levelled nothing. What the correlation and the
+`max` were each measured against is `init::initial_covariance`'s.
+
+Tilt and yaw are uncertainties about navigation axes: rotation about north and east, and about
+down. $`\delta\theta`$ is a body-frame rotation vector, whose navigation-frame counterpart is
+$`R(\hat q)\,\delta\theta`$, as (36) uses. So the attitude block is the navigation-frame diagonal
+rotated into body axes, diagonal only when the start is level. On a vehicle standing on its tail,
+body x points up and the yaw prior belongs on $`\delta\theta_x`$. Every reader of tilt and
+heading takes the same diagonal back out, $`\mathrm{diag}(R\, P_{\theta\theta} R^\mathsf{T})`$
 (`AttitudeVariance`): `Validity`, the alignment latch and the heading adoption. (36′) reads the
 same block's largest horizontal eigenvalue instead.
 
-Yaw uncertainty $`\sigma_{\psi,0}`$ is set much larger than tilt uncertainty
-$`\sigma_{\text{tilt},0}`$: roll and pitch come from gravity and are well determined, whereas yaw
+Yaw uncertainty $`\sigma_{\psi,0}`$ is much larger than tilt uncertainty
+$`\sigma_{\text{tilt},0}`$: roll and pitch come from gravity and are well determined, while yaw
 comes from the magnetometer and inherits its calibration error.
 
 A window that is *not* a static interval keeps that shape and reads both figures off what it
-measured. (5)–(6) level **averages**, so what bounds the attitude they yield is how far those
-averages sit from what a still vehicle reads — not how far the worst sample in the window was:
+measured. (5)–(6) level **averages**, so what bounds their attitude is how far those averages sit
+from what a still vehicle reads, not how far the worst sample strayed:
 
 **(8′)**
 
@@ -365,42 +328,90 @@ averages sit from what a still vehicle reads — not how far the worst sample in
 ```
 
 with $`T`$ the window's span, $`\hat d = -\bar f / \lVert \bar f \rVert`$ the direction (5)
-levelled to, and the subscripts 1 and 2 the same averages taken over the first and the second
-**half** of the window — $`\psi_i`$ being the heading (6) yields from that half alone, so the
-declination cancels. The code takes the window one sample at a time and cannot know its middle
-until it ends, so it splits at the nearest of the block boundaries it keeps, which leaves each
-half between 37.5 % and 62.5 % of the window (`init::BLOCKS`). The rotation charged is what (7) did *not* take,
-$`\bar\omega_r = \bar\omega - \hat\beta_{g,0}`$: a window at rest commits the whole average as
-gyroscope bias, and the same quantity cannot be both removed from the state and charged to the
-prior around it. Where (7) left the bias at zero, $`\bar\omega_r = \bar\omega`$.
+levelled to, and subscripts 1 and 2 the same averages over the first and second **half** of the
+window. $`\psi_i`$ is the heading (6) yields from that half alone, so the declination cancels.
+The rotation charged is what (7) did *not* take, $`\bar\omega_r = \bar\omega - \hat\beta_{g,0}`$:
+a window at rest commits the whole average as gyroscope bias, and the same quantity cannot be both
+removed from the state and charged to the prior around it. Where (7) left the bias at zero,
+$`\bar\omega_r = \bar\omega`$.
 
-Past the configured floor and the specific force that is not gravity, the attitude is bounded by
-two witnesses to how far it moved while it was being averaged, and **both** are needed because
-each is blind to what the other sees. The gyroscope's net rotation splits about $`\hat d`$:
-across it spoils the tilt, since $`\dot{\hat g} = -\omega \times \hat g`$ has magnitude
-$`\lVert \omega_\perp \rVert`$, while about it turns the vehicle without moving that vector
-in body axes and spoils the heading instead. But a net rotation cancels for a vehicle that swings
-out and comes back, charging nothing where the attitude (5) commits is the middle of an arc
-already left. The disagreement between the window's two halves never cancels — and cannot see a
-*coordinated* turn, where the specific force stays put in body axes while the vehicle banks, so
-every average agrees and the tilt is wrong by the bank angle. Neither alone is a bound; the
-evidence for that is in `data/scenarios.txt`.
+The code takes the window one sample at a time and cannot know its middle until it ends. It
+splits at the nearest of the block boundaries it keeps, which leaves each half between 37.5 % and
+62.5 % of the window (`init::BLOCKS`).
+
+Past the configured floor and the specific force that is not gravity, two witnesses bound how far
+the attitude moved while it was being averaged. **Both** are needed, because each is blind to
+what the other sees:
+
+* **The gyroscope's net rotation** splits about $`\hat d`$. Across it, it spoils the tilt, since
+  $`\dot{\hat g} = -\omega \times \hat g`$ has magnitude $`\lVert \omega_\perp \rVert`$. About
+  it, it turns the vehicle without moving that vector in body axes, and spoils the heading
+  instead. But a net rotation cancels for a vehicle that swings out and comes back, charging
+  nothing where the attitude (5) commits is the middle of an arc already left.
+* **The disagreement between the window's two halves** never cancels. It cannot see a
+  *coordinated* turn, though: the specific force stays put in body axes while the vehicle banks,
+  so every average agrees and the tilt is wrong by the bank angle.
+
+Neither alone is a bound; the evidence is in `data/scenarios.txt`.
 
 $`\sigma_{\psi,0} = \pi/\sqrt 3`$, a heading uniform on the circle, where no magnetometer
 observed the window, where its field has no horizontal part, or where the bound above would claim
 more spread than a circle holds. The dip $`\delta`$ is read off the same averaged field (6) takes
 its heading from, and is the rate at which a tilt error turns that heading.
 
+### Levelling a window taken in motion
+
+(5) reads $`f`$ as gravity alone only while the vehicle is still; an accelerating vehicle breaks
+that. Equation (11) read backwards says by how much, $`R^\mathsf{T}(a_n - g) = f`$, so the vector
+to level is the averaged specific force with the vehicle's own acceleration taken out:
+
+**(5′)**
+
+```math
+\bar{f}' = \bar{f} - R^\mathsf{T} \bar{a}_n, \qquad
+\bar{a}_n = \frac{v_n(t_1) - v_n(t_0)}{t_1 - t_0}
+```
+
+with $`v_n`$ the GNSS velocity at the first and the last sample of the window carrying one. At
+rest $`\bar a_n = 0`$ and (5′) is (5). Applying (5) to $`\bar f'`$ rather than to $`\bar f`$ is
+the whole of in-motion levelling
+([GOALS.md, alignment option 4](GOALS.md#alignment-beyond-the-static-window)).
+
+Two properties keep it a *coarse* alignment, and neither improves with care:
+
+* $`\bar a_n`$ is a difference of two noisy velocities over the span between them. A receiver
+  reporting $`\sigma_v`$ = 0.28 m s⁻¹ at 1 Hz, differenced over 1 s, puts 0.39 m s⁻² of noise
+  into a term whose whole purpose is to be subtracted from 9.8. The corrected tilt inherits an
+  error the static case does not have, so the result must not promote to `Alignment::Static`.
+  The window mean comes from the endpoints for this reason: the mean of a derivative is its
+  endpoint difference, and differencing the samples in between would add their noise back.
+* $`R^\mathsf{T}`$ is part of what is being solved for. The correction splits by axis, and the
+  split decides how much of it is available. The third column of $`R^\mathsf{T}`$ is the
+  body-frame down direction, so the **vertical** part of $`\bar a_n`$ needs only the tilt. It is
+  taken by fixed-point iteration from the uncorrected (5): one pass is worth
+  $`\lVert\bar a_n\rVert / \gamma`$, and the count is fixed rather than tested for convergence,
+  for the reason `geodetic.rs` fixes its own. The **horizontal** part needs the yaw as well, so
+  it is available only where (6) supplies one, iterating (5) and (6) together. A bare vehicle
+  accelerating horizontally with no heading source is the case option 4 does not reach on its
+  own; [option 5](GOALS.md#alignment-beyond-the-static-window) is for that.
+
+Solving instead for the rotation that carries $`\bar f`$ onto the known navigation vector
+$`\bar a_n - g`$ would need no iteration and would observe part of the yaw. But it degenerates as
+$`\bar a_n \to 0`$, the regime most launches sit in, and it couples heading into a step whose job
+is tilt.
+
 ### What a still window measures of its sensors
 
-A window at rest also measures each sensor's white noise, which the filter reports and never
-applies as noise: a floor under $`Q`$ and $`R_m`$, since a vehicle on the ground is quieter than one in
-the air. What it does apply is $`\hat N^2 / T`$, how well this window's own average is known, in
-the weighing of (7) and the bias prior of (8). A white-noise density $`N`$ on a rate gives an increment of variance $`N^2 T`$ over any
-interval $`T`$, so the rates of samples $`\Delta t`$ apart scatter by $`N/\sqrt{\Delta t}`$, and
-(21) adds $`N^2 \Delta t`$ per step. The window sums each IMU's increments into blocks $`B_j`$ of
-length $`T_j \approx T`$ and weights each squared deviation by $`1/T_j`$, which makes blocks of
-unequal length count alike:
+A window at rest also measures each sensor's white noise. The filter reports it and never applies
+it as noise: it is a floor under $`Q`$ and $`R_m`$, since a vehicle on the ground is quieter than
+one in the air. What it does apply is $`\hat N^2 / T`$, how well this window's own average is
+known, in the weighing of (7) and the bias prior of (8).
+
+A white-noise density $`N`$ on a rate gives an increment of variance $`N^2 T`$ over any interval
+$`T`$. So rates of samples $`\Delta t`$ apart scatter by $`N/\sqrt{\Delta t}`$, and (21) adds
+$`N^2 \Delta t`$ per step. The window sums each IMU's increments into blocks $`B_j`$ of length
+$`T_j \approx T`$ and weights each squared deviation by $`1/T_j`$, which makes blocks of unequal
+length count alike:
 
 **(8″)**
 
@@ -414,24 +425,24 @@ expectation is $`c^2 \sum T + J N^2`$ and the second's $`c^2 \sum T + N^2`$, so 
 unbiased and $`c`$ cancels. For blocks of one sample it is $`N = s\sqrt{\Delta t}`$, with $`s`$
 the rates' standard deviation.
 
-Blocks of $`T = 50`$ ms rather than single samples, because a still airframe's samples are not
-white: vibration aliased near the sample rate cancels within a block, and filtered noise
-accumulates across it, where one sample's scatter would read the first as noise and miss the
-second. `DESIGN.md`, [`WindowNoise`](DESIGN.md#windownoise), carries the corpus figures. The barometer's floor is the plain
-sample variance of its distinct readings, the scatter (30) already takes for $`\alpha_0`$ before
-dividing by their count.
+Blocks are $`T = 50`$ ms rather than single samples because a still airframe's samples are not
+white. Vibration aliased near the sample rate cancels within a block, and filtered noise
+accumulates across it; one sample's scatter would read the first as noise and miss the second.
+`DESIGN.md`, [`WindowNoise`](DESIGN.md#windownoise), carries the corpus figures. The barometer's
+floor is the plain sample variance of its distinct readings, the scatter (30) already takes for
+$`\alpha_0`$ before dividing by their count.
 
 ## Nominal state propagation
 
 The IMU supplies **increments**: a rotation $`\Delta\theta_m`$ integrated over $`\Delta t_\theta`$
 and a velocity $`\Delta v_m`$, specific force integrated over $`\Delta t_v`$, as both PX4's
 `imuSample` and ArduPilot's `imu_elements` carry them. The equations are written in rates, where
-the algebra is clearer, and the code evaluates each one multiplied through by its interval, so
+the algebra is clearer. The code evaluates each one multiplied through by its interval, so
 $`\omega \Delta t_\theta`$ below is the corrected increment itself and no rate is ever formed. A
 rate gyroscope is the case $`\Delta\theta_m = \omega_m \Delta t`$, which `ImuSample::from_rates`
-forms. The two intervals are each increment's own, and the time between samples is neither: it is
-differenced from their timestamps, and it is what the health timers and the gap test of
-[coasting](#coasting-across-a-gap) read.
+forms. The two intervals are each increment's own. The time between samples is neither: it is
+differenced from their timestamps, and the health timers and the gap test of
+[coasting](#coasting-across-a-gap) read it.
 
 Bias-corrected IMU measurements:
 
@@ -487,7 +498,7 @@ $`\Delta t = \Delta t_\theta`$:
 ```
 
 > **Order matters.** Equation (13) uses the **pre-update** velocity. Applying (14) first and then
-> (13) adds a spurious $`a_n \Delta t^2`$ to position on every propagation step — a bias that
+> (13) adds a spurious $`a_n \Delta t^2`$ to position on every propagation step, a bias that
 > integrates without bound. Implementations must evaluate (13) before (14), or compute both from
 > a saved copy of $`\hat{v}`$.
 
@@ -523,15 +534,16 @@ Linearized continuous-time error dynamics, local attitude error:
 ```
 
 Equation (17) is the coupling that motivates the whole filter: an attitude error rotates the
-measured specific force incorrectly, which integrates into velocity and then position. Followed
-from an unestimated gyroscope bias, each arrow below is one term of (16)–(18), and each step
-integrates once more:
+measured specific force incorrectly, which integrates into velocity and then position. Each arrow
+below is one term of (16)–(18), and each step integrates once more. From an unestimated gyroscope
+bias the chain reaches position as $`t^3`$; from an accelerometer bias, which enters velocity
+directly, its $`\delta v`$ grows only as $`t`$:
 
 ```mermaid
 flowchart LR
     bg["δβg<br/>constant"] -- "(18): −δβg" --> th["δθ<br/>∝ t"]
     th -- "(17): −R[a_b]× δθ<br/>gravity tipped sideways" --> v["δv<br/>∝ t²"]
-    ba["δβa"] -- "(17): −R δβa" --> v
+    ba["δβa<br/>constant"] -- "(17): −R δβa<br/>δv ∝ t" --> v
     v -- "(16)" --> p["δp<br/>∝ t³"]
 ```
 
@@ -561,7 +573,7 @@ skew of the corrected velocity increment and $`\omega\Delta t`$ the corrected an
 and $`F`$ reads the sample as it arrived.
 
 The attitude block $`R\{\omega\Delta t\}^\mathsf{T}`$ may be approximated as
-$`I - [\,\omega\,]_\times \Delta t`$ where the cost of the exact form is not justified; that
+$`I - [\,\omega\,]_\times \Delta t`$ where the exact form's cost is not justified. That
 approximation is the usual source of small attitude-covariance error at high rotation rates.
 
 Discrete process noise, impulse form:
@@ -572,42 +584,6 @@ Discrete process noise, impulse form:
 Q = \mathrm{diag}\left( 0,\quad \sigma_a^2 \Delta t\, I,\quad \sigma_g^2 \Delta t\, I,\quad \sigma_{\beta a}^2 \Delta t\, I,\quad \sigma_{\beta g}^2 \Delta t\, I \right)
 ```
 
-Every block carries $`\Delta t`$, the accelerometer's two over $`\Delta t_v`$ and the gyroscope's
-over $`\Delta t_\theta`$, and the four $`\sigma`$ are **spectral densities**:
-`ImuNoise`'s fields are stated per $`\sqrt{\mathrm{Hz}}`$ and `examples/simulate.rs` draws its
-per-sample noise as $`\sigma / \sqrt{\Delta t}`$, so a density's contribution to variance over a
-step is $`\sigma^2 \Delta t`$ — for the white-noise blocks exactly as for the two random walks.
-
-Solà writes the white-noise blocks with $`\Delta t^2`$ (262)–(265), and so do PX4 and ArduPilot,
-because the $`\sigma`$ each of them names is one sample's increment rather than a density: Solà
-states $`\sigma_{\tilde a}`$ in m s⁻² (452) and holds it constant across the step (427), (444);
-PX4 has `sq(dt) * accel_var` with `accel_var = sq(ekf2_acc_noise)`
-(`src/modules/ekf2/EKF/python/ekf_derivation/generated/predict_covariance.h:161-164`,
-`EKF/covariance.cpp:119-133`, at `c4e4ef98e9`); ArduPilot has `dvxVar = sq(dt * _accNoise)`
-(`libraries/AP_NavEKF3/AP_NavEKF3_core.cpp:1177` at `368dc0c428`). The two forms are one
-equation, since $`\sigma_{\text{sample}} = \sigma / \sqrt{\Delta t}`$ carries
-$`\sigma_{\text{sample}}^2 \Delta t^2`$ into $`\sigma^2 \Delta t`$; what differs is which of the
-two is held fixed when the rate changes. Holding the per-sample $`\sigma`$ fixed ties $`Q`$ to
-the sample rate — the variance it adds over $`T`$ seconds is $`\sigma^2 \Delta t\, T`$, so the
-same airframe logged at 400 Hz is given eight times less process noise than at 50 Hz — and the
-logs in `data/manifest.txt` run from 50 Hz to 250 Hz against one `Config`. Holding the density
-fixed is rate-independent, and `propagate::process_noise` implements that.
-
-What the form does not do is convert a number. A production default is a per-step
-$`\sigma_{\text{sample}}`$ at that estimator's own prediction step — 10 ms for PX4, 12 ms for
-ArduPilot — so the density it stands for is $`\sigma_{\text{sample}} \sqrt{\Delta t}`$, about a
-tenth of it. The random walks carry the same per-step form, $`(\sigma \Delta t)^2`$ in both
-estimators. `ImuNoise`'s bias walks are converted this way. Its white noise is kept at ten times PX4's
-density, because replay measured this filter needing it; `DESIGN.md`,
-[`ImuNoise`](DESIGN.md#imunoise), carries the figures and what each choice measured.
-
-The velocity block of (21) is the rotated accelerometer noise $`R \Sigma_a R^\mathsf{T}`$. Writing
-it as $`\sigma_a^2 I`$ is exact only when the accelerometer noise is **isotropic**, since
-$`R (\sigma_a^2 I) R^\mathsf{T} = \sigma_a^2 I`$ for orthogonal $`R`$. Real IMUs are not
-isotropic — the z axis is typically noisier. Either use a per-axis $`\Sigma_a`$ and carry the
-rotation, or set $`\sigma_a`$ to the worst axis and document the conservatism; the code takes the
-second, which is also what lets $`Q`$ be built as a diagonal rather than a matrix.
-
 Covariance propagation:
 
 **(22)**
@@ -616,15 +592,56 @@ Covariance propagation:
 P \leftarrow F P F^\mathsf{T} + Q
 ```
 
+The velocity block of (21) is the rotated accelerometer noise $`R \Sigma_a R^\mathsf{T}`$. Writing
+it as $`\sigma_a^2 I`$ is exact only when the accelerometer noise is **isotropic**, since
+$`R (\sigma_a^2 I) R^\mathsf{T} = \sigma_a^2 I`$ for orthogonal $`R`$. Real IMUs are not: the
+z axis is typically noisier. Either use a per-axis $`\Sigma_a`$ and carry the rotation, or set
+$`\sigma_a`$ to the worst axis and document the conservatism. The code takes the second, which
+also lets $`Q`$ be built as a diagonal rather than a matrix.
+
+### Densities, not per-sample σ
+
+Every block of (21) carries $`\Delta t`$, the accelerometer's two over $`\Delta t_v`$ and the
+gyroscope's over $`\Delta t_\theta`$, because the four $`\sigma`$ are **spectral densities**.
+`ImuNoise`'s fields are stated per $`\sqrt{\mathrm{Hz}}`$, and `examples/simulate.rs` draws its
+per-sample noise as $`\sigma / \sqrt{\Delta t}`$. So a density adds $`\sigma^2 \Delta t`$ of
+variance over a step, for the white-noise blocks exactly as for the two random walks.
+
+Solà writes the white-noise blocks with $`\Delta t^2`$ (262)–(265), and so do PX4 and ArduPilot,
+because the $`\sigma`$ each names is one sample's increment rather than a density:
+
+* Solà states $`\sigma_{\tilde a}`$ in m s⁻² (452) and holds it constant across the step
+  (427), (444).
+* PX4 has `sq(dt) * accel_var` with `accel_var = sq(ekf2_acc_noise)`
+  (`src/modules/ekf2/EKF/python/ekf_derivation/generated/predict_covariance.h:161-164`,
+  `EKF/covariance.cpp:119-133`, at `c4e4ef98e9`).
+* ArduPilot has `dvxVar = sq(dt * _accNoise)`
+  (`libraries/AP_NavEKF3/AP_NavEKF3_core.cpp:1177` at `368dc0c428`).
+
+The two forms are one equation: $`\sigma_{\text{sample}} = \sigma / \sqrt{\Delta t}`$ carries
+$`\sigma_{\text{sample}}^2 \Delta t^2`$ into $`\sigma^2 \Delta t`$. They differ in which is held
+fixed when the rate changes. Holding the per-sample $`\sigma`$ fixed ties $`Q`$ to the sample
+rate: the variance it adds over $`T`$ seconds is $`\sigma^2 \Delta t\, T`$, so the same airframe
+logged at 400 Hz gets eight times less process noise than at 50 Hz. The logs in
+`data/manifest.txt` run from 50 Hz to 250 Hz against one `Config`. Holding the density fixed is
+rate-independent, and `propagate::process_noise` implements that.
+
+The form does not convert a number. A production default is a per-step
+$`\sigma_{\text{sample}}`$ at that estimator's own prediction step (10 ms for PX4, 12 ms for
+ArduPilot), so the density it stands for is $`\sigma_{\text{sample}} \sqrt{\Delta t}`$, about a
+tenth of it. The random walks carry the same per-step form, $`(\sigma \Delta t)^2`$ in both
+estimators. `ImuNoise`'s bias walks are converted this way. Its white noise is kept at ten times
+PX4's density, because replay measured this filter needing it; `DESIGN.md`,
+[`ImuNoise`](DESIGN.md#imunoise), carries the figures and what each choice measured.
+
 ### Coasting across a gap
 
-A step longer than `Config::max_predict_dt` has no sample describing it: one IMU reading cannot
-stand for seconds of flight, so (9)–(22) are not run on it. What the filter can say about the
-gap is what it assumes, and the uncertainty of the assumption. It assumes the vehicle was
-unaccelerated and not rotating, which is the input
-$`\omega = 0`$, $`a_b = -R(\hat{q})^\mathsf{T} g`$: through (13)–(15) that moves position by
-$`\hat{v}\Delta t`$ and nothing else, and through (20) it gives the $`F`$ of the same
-assumption. What the assumption leaves out enters as two white densities, an acceleration
+A step longer than `Config::max_predict_dt` has no sample describing it. One IMU reading cannot
+stand for seconds of flight, so (9)–(22) are not run on it. What the filter can state about the
+gap is an assumption and its uncertainty. It assumes the vehicle was unaccelerated and not
+rotating, the input $`\omega = 0`$, $`a_b = -R(\hat{q})^\mathsf{T} g`$. Through (13)–(15) that
+moves position by $`\hat{v}\Delta t`$ and nothing else; through (20) it gives the $`F`$ of the
+same assumption. What the assumption leaves out enters as two white densities, an acceleration
 $`\sigma_c`$ and a rotation $`\sigma_r`$ (`Config::coast`):
 
 **(22′)**
@@ -635,12 +652,12 @@ P \leftarrow F^n P (F^n)^\mathsf{T} + \sum_{k<n} F^k (Q + Q_r) (F^k)^\mathsf{T} 
 ```
 
 that is, (22) run $`n`$ times at $`\Delta t = T / n`$ with $`Q_r`$ added to (21), then the
-acceleration's white-noise integral added once to the position–velocity block. The steps are
-$`n = \lceil T / 0.1\,\mathrm{s} \rceil`$, at most 64, as `project` takes them, because a single
-first-order step of (20) understates what reaches position. The acceleration term needs no steps:
-it reaches nothing but position, through the $`I\Delta t`$ block that is exact at any
-$`\Delta t`$, so its integral is exact in closed form. The rotation reaches velocity through
-(17)'s gravity term, which only the steps integrate.
+acceleration's white-noise integral added once to the position–velocity block. `project` takes
+$`n = \lceil T / 0.1\,\mathrm{s} \rceil`$ steps, at most 64, because a single first-order step
+of (20) understates what reaches position. The acceleration term needs no steps: it reaches
+nothing but position, through the $`I\Delta t`$ block that is exact at any $`\Delta t`$, so its
+integral is exact in closed form. The rotation reaches velocity through (17)'s gravity term,
+which only the steps integrate.
 
 Refusing the step instead, as `Propagation::StepTooLong` does with `Config::coast` off, leaves a
 moving vehicle stale by $`\hat{v}\Delta t`$ under a $`P`$ that did not grow, so every fix after
@@ -691,6 +708,24 @@ P \leftarrow (I - KH)\,P\,(I - KH)^\mathsf{T} + K R_m K^\mathsf{T}
 Joseph form costs more than $`P \leftarrow (I - KH)P`$ but is the appropriate default for `f32`
 arithmetic on an embedded target.
 
+(23′) and (24′), [at the end](#measurement-time-and-correlation), refine this for a measurement's
+age and its correlation.
+
+### Adoption
+
+Some measurements are written as the state rather than fused into it. Adoption is the update's
+limit as the prior's variance goes to infinity, taken exactly. For a position fix:
+
+```math
+\hat{p} \leftarrow z, \qquad P_{pp} \leftarrow R, \qquad P_{p\ast} \leftarrow 0
+```
+
+which is $`\lim_{P_{pp} \to \infty}`$ of (24)–(27). The correlations go to zero because the new
+error is the measurement's and has nothing to do with what preceded it. Adoption applies once to a
+quantity never established, such as the first fix after a coarse start, with the vehicle moving
+through somewhere it cannot name. It also applies to a source locked out past its
+`Config::recovery` timeout; see [gate lockout](#gate-lockout).
+
 ## Innovation gating
 
 The normalized innovation squared
@@ -711,11 +746,11 @@ $`\dim(z)`$ degrees of freedom. The measurement is rejected when $`\epsilon > \g
 | 3 | GNSS velocity, three-axis magnetometer | 7.8147 | 11.3449 | 16.2662 |
 
 `Gate::at` holds these, typed by $`\dim(z)`$, and `Gates::at` builds one per source from a single
-percentile. The test is joint over every component of $`z`$ rather than per axis as PX4 and
-ArduPilot gate; why, and what it costs, is on `Gates`. A GNSS position fix is the one
-observation applied as two: (28)'s north–east rows and its down row, each gated on its own
-(`GnssFusion`), because a joint test lets a height the estimate disagrees with reject a good
-horizontal fix — ArduPilot's split, and PX4's two aid sources.
+percentile. The test is joint over every component of $`z`$, not per axis as PX4 and ArduPilot
+gate; why, and what it costs, is on `Gates`. A GNSS position fix is the one observation applied
+as two: (28)'s north–east rows and its down row, each gated on its own (`GnssFusion`). A joint
+test would let a height the estimate disagrees with reject a good horizontal fix. This is
+ArduPilot's split, and PX4's two aid sources.
 
 Rather than reporting $`\epsilon`$ directly, the filter exposes the dimensionless **test ratio**
 
@@ -725,33 +760,32 @@ Rather than reporting $`\epsilon`$ directly, the filter exposes the dimensionles
 r = \frac{\epsilon}{\gamma}
 ```
 
-so that $`r > 1`$ means rejected regardless of the degrees of freedom of the observation. One
-number is then comparable across GNSS position, barometric altitude, and magnetic heading, and
-on the same scale as the innovation test ratios PX4 publishes in its logs, so a replay puts
-rejection behaviour beside EKF2's. The two group components differently, PX4's per axis; the
-glossary's [innovation test ratio](GLOSSARY.md#coming-from-px4-or-ardupilot) says how.
+so that $`r > 1`$ means rejected whatever the observation's degrees of freedom. One number is
+then comparable across GNSS position, barometric altitude and magnetic heading. It is on the
+scale of the innovation test ratios PX4 logs, so a replay puts rejection behaviour beside EKF2's.
+The two group components differently, PX4's per axis; the glossary's
+[innovation test ratio](GLOSSARY.md#coming-from-px4-or-ardupilot) says how.
 
 This single mechanism covers GNSS glitches, barometer transients, and magnetic interference.
 
 ### Gate lockout
 
 Gating creates its own failure, **gate lockout**. If the **filter** is wrong rather than the
-measurement (a poor initialization, an unmodelled bias, a divergence), correct measurements are inconsistent
-with the state, every one of them is rejected, and the filter locks itself out of the very data
-that would correct it. It then dead-reckons on the IMU alone while continuing to report a
-solution whose covariance says it is confident.
+measurement (a poor initialization, an unmodelled bias, a divergence), correct measurements are
+inconsistent with the state. Every one is rejected, and the filter locks itself out of the very
+data that would correct it. It then dead-reckons on the IMU alone, still reporting a solution
+whose covariance says it is confident.
 
 A filter that gates without a route out of this state is more dangerous than one that does not
 gate at all.
 
 `fusion-nav` therefore tracks, per observation source, the time since a measurement was last
-accepted and the number of consecutive rejections, reports an aggregate status alongside the
-state estimate, and takes the route out: a source rejected for longer than `Config::recovery`
-allows has its next measurement adopted, as [GNSS position](#gnss-position) adopts a first fix,
-rather than discarded. The adoption
-sets the covariance block to the measurement's `R`, which undoes the overconfidence that locked
-the gate rather than only moving the state. Each source has its own switch, and `Recovery`'s doc
-comment owns the timeouts and the PX4 behaviour they follow; the decision is
+accepted and the number of consecutive rejections, and reports an aggregate status beside the
+state estimate. It also takes the route out: a source rejected for longer than `Config::recovery`
+allows has its next measurement [adopted](#adoption) rather than discarded. The adoption sets the
+covariance block to the measurement's `R`, which undoes the overconfidence that locked the gate
+rather than only moving the state. Each source has its own switch. `Recovery`'s doc comment owns
+the timeouts and the PX4 behaviour they follow; the decision is
 [rejection handling](GOALS.md#rejection-handling-recover-by-default-opt-out-per-source).
 
 The design obligation is that a recovery cannot be missed either: it is `Fusion::Reset` on the
@@ -787,11 +821,11 @@ keeps the exact block, and `reset` says why.
 
 $`I - [\tfrac{1}{2}\delta\hat{\theta}]_\times`$ is itself first order in the correction, which is
 sound for an update and not for an adoption. Where the nominal attitude is replaced rather than
-corrected (a heading adoption, which can turn it by half a circle), (41) still applies
-and $`G`$'s attitude block is the exact change of body frame, $`R(\hat{q}^+)^\mathsf{T} R(\hat{q})`$.
-The tilt block is near-isotropic and largely survives either choice; the attitude–bias
-cross-blocks do not, because the bias states are in physical body axes that do not turn with the
-nominal, so they transform on one side only.
+corrected (a heading adoption, which can turn it by half a circle), (41) still applies, and
+$`G`$'s attitude block is the exact change of body frame,
+$`R(\hat{q}^+)^\mathsf{T} R(\hat{q})`$. The tilt block is near-isotropic and largely survives
+either choice. The attitude–bias cross-blocks do not: the bias states are in physical body axes
+that do not turn with the nominal, so they transform on one side only.
 
 ## Numerical conditioning
 
@@ -813,22 +847,22 @@ P_{ii} \leftarrow \max\left(P_{ii},\ \underline{\sigma}^2_i\right)
 
 A variance that reaches zero is a state the filter claims to know exactly, and the claim is
 self-sealing: $`K = P H^\mathsf{T} S^{-1}`$ is zero in that row, so no measurement moves it
-again. With `f32` that is reachable by rounding rather than by arithmetic — the Joseph form of
-(27) keeps $`P`$ positive semi-definite, and semi-definite includes zero — so this is not an
-optional refinement; it is what keeps a 15-state filter stable over a long flight.
+again. With `f32`, rounding reaches it even where the arithmetic would not: the Joseph form of
+(27) keeps $`P`$ positive semi-definite, and semi-definite includes zero. So the floor is not an
+optional refinement. It is what keeps a 15-state filter stable over a long flight.
 
-One floor per state group rather than one for the matrix, because the fifteen states carry
-five units — m², (m/s)², rad², (m s⁻²)², (rad/s)² — and a single small number is a different
-claim in each of them. Both production estimators floor per group for the same reason. The
-values of $`\underline{\sigma}^2`$ are `math.rs`'s `FLOOR`, which is where they are written
-down, beside the PX4 and ArduPilot citations they were taken from and the headroom the corpus
-measures against them; a second copy here would rot the moment a floor moved.
+There is one floor per state group, not one for the matrix. The fifteen states carry five units,
+m², (m/s)², rad², (m s⁻²)² and (rad/s)², and one small number is a different claim in each. Both
+production estimators floor per group for the same reason. The values of
+$`\underline{\sigma}^2`$ are `math.rs`'s `FLOOR`, written down beside the PX4 and ArduPilot
+citations they come from and the headroom the corpus measures against them; a second copy here
+would rot the moment a floor moved.
 
-The two halves answer different faults and so are applied in different places. Symmetry
-repairs the drift a product introduces, so it belongs to the product — (22) and (41). The
-floor bounds a value, so it belongs to the value: `Eskf::commit_covariance` applies it to
-every covariance the filter stores, which covers the covariances no product built, such as an
-adopted block or the (8) a window commits.
+The two halves answer different faults, so they apply in different places. Symmetry repairs the
+drift a product introduces, so it belongs to the product: (22) and (41). The floor bounds a
+value, so it belongs to the value. `Eskf::commit_covariance` applies it to every covariance the
+filter stores, which covers those no product built, such as an adopted block or the (8) a window
+commits.
 
 ## Geodetic origin
 
@@ -855,21 +889,22 @@ C_e^n = \begin{bmatrix}
 \end{bmatrix}
 ```
 
-Exact at every range, including the poles; the only rounding is the final narrowing to `f32`,
-1 mm at 10 km. The inverse is $`r^e = r^e_0 + (C_e^n)^\mathsf{T} p`$ followed by ECEF to geodetic,
-whose latitude is the fixed point of $`\varphi = \operatorname{atan2}(z + e^2 N(\varphi)\sin\varphi,\ p_{xy})`$:
-each pass shrinks the error by about $`e^2`$, so five passes from the geocentric latitude reach
-below a micrometre. Height is $`h = p_{xy}\cos\varphi + z\sin\varphi - a\sqrt{1 - e^2\sin^2\varphi}`$,
-which stays finite at the poles.
+(43) is exact at every range, including the poles; the only rounding is the final narrowing to
+`f32`, 1 mm at 10 km. The inverse is $`r^e = r^e_0 + (C_e^n)^\mathsf{T} p`$ followed by ECEF to
+geodetic. Its latitude is the fixed point of
+$`\varphi = \operatorname{atan2}(z + e^2 N(\varphi)\sin\varphi,\ p_{xy})`$; each pass shrinks
+the error by about $`e^2`$, so five passes from the geocentric latitude reach below a micrometre.
+Height is $`h = p_{xy}\cos\varphi + z\sin\varphi - a\sqrt{1 - e^2\sin^2\varphi}`$, which
+stays finite at the poles.
 
-Exact conversion does not make the plane follow the Earth. At a horizontal distance $`d`$ from the
-origin, the plane sits $`d^2 / 2R`$ above the surface — 8 cm at 1 km, 7.8 m at 10 km — so
+Exact conversion does not make the plane follow the Earth. At a horizontal distance $`d`$ from
+the origin the plane sits $`d^2 / 2R`$ above the surface (8 cm at 1 km, 7.8 m at 10 km), so
 $`-p_D`$ there is not height above the origin. A GNSS fix converted by (43) carries that
-curvature; a barometer does not, which is what the [barometric model](#barometric-altitude) has
-to account for.
+curvature and a barometer does not, which the [barometric model](#barometric-altitude) has to
+account for.
 
 The first geodetic fix $`z_g`$ places the origin. A filter that already has a position estimate
-$`\hat{p}`$ — it has been navigating relative to its own start — places it so the fix lands on the
+$`\hat{p}`$, having navigated relative to its own start, places it so the fix lands on the
 estimate:
 
 **(44)**
@@ -879,17 +914,19 @@ r^e_0 = r^e(z_g) - (C_e^n)^\mathsf{T}\,\hat{p}
 ```
 
 where $`C_e^n`$ is itself the origin's, so the equation is solved by iteration: start at the fix,
-and take each pass's axes from the previous guess. The error shrinks by $`|\hat{p}| / R`$ a pass —
-from 10 km, three passes leave 40 µm — and `LocalOrigin::placing` runs five, then checks that the
-fix lands on the estimate rather than assuming it did, because near a pole the passes need not
-converge and an origin putting the fix at the estimate need not exist at all. The first fix then carries no information about position,
-which is correct: before it, the filter's absolute position was unknown, not wrong. It is spent
-placing the origin and is not fused as well, which would count it twice.
+and take each pass's axes from the previous guess. The error shrinks by $`|\hat{p}| / R`$ a pass;
+from 10 km, three passes leave 40 µm. `LocalOrigin::placing` runs five, then checks that the fix
+lands on the estimate rather than assuming it did. Near a pole the passes need not converge, and
+an origin putting the fix at the estimate need not exist at all.
 
-It does fix the position uncertainty. With $`e_g`$ the fix's error, the origin sits $`e_g`$
-from where it should, so the position error about it is $`\delta p = -e_g`$ — whatever $`P`$
-said about position relative to the start no longer applies, and $`e_g`$ is independent of
-every other error state:
+The first fix then carries no information about position. That is correct: before it, the
+filter's absolute position was unknown, not wrong. The fix is spent placing the origin and is not
+fused as well, which would count it twice.
+
+It does fix the position uncertainty. With $`e_g`$ the fix's error, the origin sits $`e_g`$ from
+where it should, so the position error about it is $`\delta p = -e_g`$. Whatever $`P`$ said about
+position relative to the start no longer applies, and $`e_g`$ is independent of every other error
+state:
 
 ```math
 P_{pp} \leftarrow R_g, \qquad P_{px} \leftarrow 0
@@ -899,16 +936,16 @@ the covariance half of `Eskf::reset_position_to`, with $`\hat{p}`$ unchanged. Fu
 instead, at zero innovation, would give $`(P_{pp}^{-1} + R_g^{-1})^{-1}`$: after a static start,
 where $`P_{pp}`$ is small, an estimate claiming centimeters about an origin placed to meters.
 
-Without an estimate (a coarse start) the origin is the fix and the fix is adopted as
-$`\hat{p} = 0`$, per (28).
+Without an estimate (a coarse start) the origin is the fix, and the fix is
+[adopted](#adoption) as $`\hat{p} = 0`$.
 
 ## Observation models
 
-Which error-state blocks each observation's $`H`$ touches directly, as fused at the present;
-everything else it corrects through the correlations in $`P`$. A measurement fused at its own
+Which error-state blocks each observation's $`H`$ touches directly, as fused at the present.
+Everything else it corrects through the correlations in $`P`$. A measurement fused at its own
 time, (23′), reaches further through $`A`$.
 
-| observation | $`\delta p`$ | $`\delta v`$ | $`\delta\theta`$ | $`\delta\beta_a`$ | $`\delta\beta_g`$ | $`b`$ |
+| observation | $`\delta p`$ | $`\delta v`$ | $`\delta\theta`$ | $`\delta\beta_a`$ | $`\delta\beta_g`$ | $`b`$ (30′) |
 | --- | --- | --- | --- | --- | --- | --- |
 | (28) GNSS position | ● | | | | | |
 | (28′) at the antenna | ● | | ● | | | |
@@ -930,30 +967,22 @@ coupling, and at rest that coupling cannot separate its horizontal part from til
 z = p_{\text{GNSS}}, \qquad h(x) = p, \qquad H = \begin{bmatrix} I_3 & 0 & 0 & 0 & 0 \end{bmatrix}
 ```
 
-Where the filter has no position estimate at all — a coarse initialization, with the vehicle
-moving through somewhere it cannot name — the first fix is adopted rather than fused:
-
-```math
-\hat{p} \leftarrow z, \qquad P_{pp} \leftarrow R, \qquad P_{p\ast} \leftarrow 0
-```
-
-which is $`\lim_{P_{pp} \to \infty}`$ of the update above, taken exactly. The correlations go to
-zero because the new error is the measurement's and has nothing to do with what preceded it.
-Applies to a quantity never established, once, and to a source locked out past its
-`Config::recovery` timeout; see [gate lockout](#gate-lockout).
+Where the filter has no position estimate at all, the first fix is [adopted](#adoption) rather
+than fused.
 
 **(28′)** At the antenna. A receiver measures where its antenna is, and the antenna sits at
 $`r`$ from the IMU in body axes. With the body-frame attitude error of (2),
-$`R = \hat{R}(I + [\delta\theta]_\times)`$, so $`R r \approx \hat{R} r - \hat{R}[r]_\times \delta\theta`$:
+$`R = \hat{R}(I + [\delta\theta]_\times)`$, so
+$`R r \approx \hat{R} r - \hat{R}[r]_\times \delta\theta`$:
 
 ```math
 h(x) = p + R r, \qquad H = \begin{bmatrix} I_3 & 0 & -\hat{R}[r]_\times & 0 & 0 \end{bmatrix}
 ```
 
 A zero arm is (28). PX4 subtracts $`\hat{R} r`$ from the fix and keeps (28)'s $`H`$; this one
-carries the attitude term, so a fix observes attitude through a long mast. The adoption above
-writes $`z - \hat{R} r`$, and (44) places the origin under the estimate of the antenna rather
-than of the IMU.
+carries the attitude term, so a fix observes attitude through a long mast. An adoption writes
+$`z - \hat{R} r`$, and (44) places the origin under the estimate of the antenna rather than of
+the IMU.
 
 ### GNSS velocity
 
@@ -963,12 +992,13 @@ than of the IMU.
 z = v_{\text{GNSS}}, \qquad h(x) = v, \qquad H = \begin{bmatrix} 0 & I_3 & 0 & 0 & 0 \end{bmatrix}
 ```
 
-Velocity observations matter disproportionately: velocity error grows linearly from accelerometer
-and attitude error, so constraining it directly also constrains those states through the
-covariance.
+Velocity observations matter disproportionately. Velocity error grows linearly from
+accelerometer and attitude error, so constraining it directly also constrains those states
+through the covariance.
 
-The same adoption applies to the first velocity solution after a coarse start, and matters more
-there: a static initialization knows the vehicle is at rest, a coarse one knows nothing at all.
+[Adoption](#adoption) applies to the first velocity solution after a coarse start too, and
+matters more there: a static initialization knows the vehicle is at rest, a coarse one knows
+nothing at all.
 
 **(29′)** At the antenna, which moves about the IMU as the vehicle turns. With
 $`\omega = \omega_m - \beta_g`$ from (9), $`\omega \times r = -[r]_\times \omega`$, and the attitude
@@ -993,12 +1023,27 @@ navigation frame is down-positive:
 z = -(\alpha - \alpha_0), \qquad h(x) = p_D, \qquad H = \begin{bmatrix} e_3^\mathsf{T} & 0 & 0 & 0 & 0 \end{bmatrix}
 ```
 
-$`\alpha_0`$ is the barometric altitude that corresponds to the navigation origin: recorded by a
-window taken at rest, or named by the caller. It is not known exactly — a window's mean carries
-its readings' noise — and it does not stay put, since the reference drifts with weather, ground
-effect and sensor warm-up. Its error is shared by every altitude, so no $`R_m`$ can express it:
-(24) treats each reading's error as independent and averages $`S`$ down by about $`N`$ over
-$`N`$ readings however large $`R_m`$ is. (30′) carries it in the covariance instead.
+The barometer measures height, and the navigation frame is a plane. Written as above, (30)
+treats $`-p_D`$ as height. That is off by the plane's rise above the surface, $`d^2 / 2R`$ at a
+horizontal distance $`d`$ from the origin: 1 cm at 357 m, growing with its square
+([geodetic origin](#geodetic-origin)). GNSS positions converted by (43) carry that rise and the
+barometer does not, so beyond a few kilometres the two disagree about height by exactly that
+amount. Removing it means writing $`h(x)`$ as minus the height of $`\hat{p}`$ above $`h_0`$, by
+the inverse of (43), which is $`p_D - (p_N^2 + p_E^2) / 2R`$ to second order. Both sides are then
+heights, and $`H`$ is unchanged to first order.
+
+`altitude_observation` does not write it. The corpus reaches the term: `2b2ad123` flies 5.13 km
+from its origin, a rise of 2.07 m, and `89a498ce` 4.07 km, 1.30 m, both on RTK receivers whose
+height is reported to centimetres. But the simulator generates its reading from $`-p_D`$ on a
+flat plane, and `circuit()` reaches 144 m, worth 1.6 mm, so no scenario could score the
+correction. Not built: #124.
+
+$`\alpha_0`$ is the barometric altitude at the navigation origin, recorded by a window taken at
+rest or named by the caller. It is not known exactly, since a window's mean carries its readings'
+noise. Nor does it stay put: the reference drifts with weather, ground effect and sensor warm-up.
+Its error is shared by every altitude, so no $`R_m`$ can express it. (24) treats each reading's
+error as independent and averages $`S`$ down by about $`N`$ over $`N`$ readings, however large
+$`R_m`$ is. (30′) carries it in the covariance instead.
 
 ### Barometric offset
 
@@ -1020,74 +1065,29 @@ P_{xb} \leftarrow F P_{xb}, \quad P_{bb} \leftarrow P_{bb} + q_b^2\,\Delta t, \q
 \hat\alpha_0 \leftarrow \hat\alpha_0 - \delta\hat b
 ```
 
-Every other observation has $`H_b = 0`$, and still moves $`P_{xb}`$ and $`\delta\hat b`$ through
-the height the two are correlated with: a GNSS height and a barometer that disagree are what
-makes $`b`$ observable. The update is (23)–(27) on the augmented covariance, taken in blocks so
+Every other observation has $`H_b = 0`$ and still moves $`P_{xb}`$ and $`\delta\hat b`$, through
+the height the two are correlated with. A GNSS height and a barometer that disagree are what
+make $`b`$ observable. The update is (23)–(27) on the augmented covariance, taken in blocks so
 that nothing 16 × 16 is formed. An adoption zeroes the adopted rows of $`P_{xb}`$ as it zeroes
 their correlations in $`P`$, and (41) rotates its attitude rows on one side, as it does the bias
 blocks'. $`q_b`$ is `Config::baro_offset_walk`.
 
 Initialization gives $`P_{xb} = 0`$ either way, since the origin is defined where the reference
-was measured, and $`P_{bb}`$ from what was measured: a window at rest takes the sample variance of
-its $`N`$ readings over $`N`$, the standard error of the mean it sets $`\hat\alpha_0`$ to; a caller
-naming $`\alpha_0`$ names its $`\sigma`$ too. A reference read from the estimate,
+was measured, and $`P_{bb}`$ from what was measured. A window at rest takes the sample variance
+of its $`N`$ readings over $`N`$, the standard error of the mean it sets $`\hat\alpha_0`$ to. A
+caller naming $`\alpha_0`$ names its $`\sigma`$ too. A reference read from the estimate,
 $`\hat\alpha_0 = \alpha + \hat p_D`$, is the one start that correlates them: its error is
 $`-\delta p_D`$ plus the reading's noise, so $`P_{bb} = P_{DD} + R_m`$ and
 $`P_{xb} = -P_{\ast D}`$.
 
-Two alternatives were measured against this and lost: holding $`\hat\alpha_0`$ constant with its
-variance added to $`R_m`$, which fails for the reason above, and a **consider** state, the same
-augmentation with $`K_b`$ zeroed so that $`b`$ is carried and never corrected (Zanetti & D'Souza,
-(26) and (29)), which cannot follow a barometer that drifts. The measurements are
-[the decision's](GOALS.md#barometric-reference-as-an-estimated-offset).
+Two alternatives were measured against this and lost:
 
-The barometer measures height, and the navigation frame is a plane. Written as above, (30)
-treats $`-p_D`$ as height, which is off by the plane's rise above the surface, $`d^2 / 2R`$ at a
-horizontal distance $`d`$ from the origin, 1 cm at 357 m and growing with its square
-([geodetic origin](#geodetic-origin)). GNSS positions converted by (43) carry that rise and the barometer does not, so
-beyond a few kilometres the two disagree about height by exactly that amount. Removing it means
-writing $`h(x)`$ as minus the height of $`\hat{p}`$ above $`h_0`$, by the inverse of (43) —
-$`p_D - (p_N^2 + p_E^2) / 2R`$ to second order — so both sides are heights; $`H`$ is unchanged to
-first order.
+* holding $`\hat\alpha_0`$ constant with its variance added to $`R_m`$, which fails for the
+  reason above;
+* a **consider** state, the same augmentation with $`K_b`$ zeroed so that $`b`$ is carried and
+  never corrected (Zanetti & D'Souza, (26) and (29)), which cannot follow a barometer that drifts.
 
-`altitude_observation` does not write it: the corpus reaches the term (`2b2ad123` flies 5.13 km
-from its origin, a rise of 2.07 m, and `89a498ce` 4.07 km, 1.30 m, both on RTK receivers whose
-height is reported to centimetres), but the simulator generates its reading from $`-p_D`$ on a
-flat plane and `circuit()` reaches 144 m, worth 1.6 mm, so no scenario could score the
-correction. Not built: #124.
-
-### Magnetometer, three-axis
-
-With $`m_n`$ the reference field in the navigation frame, the predicted body-frame measurement is
-
-**(31)**
-
-```math
-\hat{m}_b = R(\hat{q})^\mathsf{T} m_n
-```
-
-Perturbing with a local attitude error, $`R = R(\hat{q})\,\mathrm{Exp}(\delta\theta)`$, and using
-$`[\,u\,]_\times v = -[\,v\,]_\times u`$:
-
-**(32)**
-
-```math
-m_b \approx \hat{m}_b + [\,\hat{m}_b\,]_\times\, \delta\theta
-```
-
-so
-
-**(33)**
-
-```math
-z = m_b^{\text{meas}}, \qquad h(x) = \hat{m}_b, \qquad H = \begin{bmatrix} 0 & 0 & [\,\hat{m}_b\,]_\times & 0 & 0 \end{bmatrix}
-```
-
-Three-axis fusion constrains all three attitude components from the magnetometer. That is a
-liability rather than a benefit here: hard- and soft-iron errors and local field anomalies
-corrupt roll and pitch, which the accelerometer already determines well, and `fusion-nav` carries
-no magnetic-field states to absorb them. See
-[Magnetometer without magnetic-field states](GOALS.md#magnetometer-without-magnetic-field-states).
+The measurements are [the decision's](GOALS.md#barometric-reference-as-an-estimated-offset).
 
 ### Magnetometer, heading only
 
@@ -1129,20 +1129,20 @@ $`(-\pi, \pi]`$ and a heading near ±180° does not produce a spurious 2π innov
 
 ### What the levelling costs
 
-$`R_m`$ is not $`\sigma_\psi^2`$ alone. Perturbing (35) exactly — writing
+$`R_m`$ is not $`\sigma_\psi^2`$ alone. Perturb (35) exactly, writing
 $`\varphi = R(\hat q)\,\delta\theta`$ for the navigation-frame error and
 $`\tilde m_n = (\tilde m_{n,N}, \tilde m_{n,E}, \tilde m_{n,D})`$ with
-$`h^2 = \tilde m_{n,N}^2 + \tilde m_{n,E}^2`$ — gives
+$`h^2 = \tilde m_{n,N}^2 + \tilde m_{n,E}^2`$:
 
 ```math
 y = \varphi_D - \frac{\tilde m_{n,D}}{h^2}\bigl( \varphi_N\, \tilde m_{n,N} + \varphi_E\, \tilde m_{n,E} \bigr)
 ```
 
-(36) keeps the first term and drops the second. That second term is the **levelling error**: (34)
-rotates the measurement by the *estimated* attitude, so a tilt error tips the field and turns its
-horizontal part by $`\tan\delta`$ times as much — the same leak (8′) charges a coarse window's
-heading prior for, and at the 1.107 rad of dip the corpus carries it is a factor of 2.0, twice
-the sensitivity (36) keeps.
+(36) keeps the first term and drops the second, the **levelling error**. (34) rotates the
+measurement by the *estimated* attitude, so a tilt error tips the field and turns its horizontal
+part by $`\tan\delta`$ times as much. It is the same leak (8′) charges a coarse window's heading
+prior for. At the 1.107 rad of dip the corpus carries it is a factor of 2.0, twice the
+sensitivity (36) keeps.
 
 Dropping it from $`H`$ and saying nothing leaves $`S`$ too small, so the filter treats a heading
 spoiled by its own tilt as evidence about yaw and gyroscope bias. It is priced in $`R_m`$ instead:
@@ -1160,63 +1160,82 @@ Q = \bigl[\, \hat f_b \;\; d_b \times \hat f_b \,\bigr]
 ```
 
 $`\tan\delta`$ is the ratio (8′) already defines, measured off this field rather than
-configured, and it is an angle between a field and a direction — the same number in whichever
-frame the two are expressed together, so the implementation reads it in body axes, where
-navigation down is (36)'s Jacobian row transposed. $`d_b = R^\mathsf{T} e_3`$ is that axis and
-$`\hat f_b`$ the unit horizontal part of $`m_b`$ about it, so $`Q`$ is an orthonormal basis of the
-horizontal plane in body axes and $`Q^\mathsf{T} P_{\theta\theta} Q`$ is the tilt block: the
-eigenvalue is the variance of tilt about the worst horizontal axis, the same on any basis of
-the plane, which is what frees it from a choice of axes.
+configured. It is an angle between a field and a direction, the same number in whichever frame
+the two are expressed together, so the implementation reads it in body axes. There navigation
+down is (36)'s Jacobian row transposed, $`d_b = R^\mathsf{T} e_3`$, and $`\hat f_b`$ is the unit
+horizontal part of $`m_b`$ about it. So $`Q`$ is an orthonormal basis of the horizontal plane in
+body axes, and $`Q^\mathsf{T} P_{\theta\theta} Q`$ is the tilt block. Its eigenvalue is the
+variance of tilt about the worst horizontal axis, the same on any basis of the plane, which frees
+it from a choice of axes.
 
-To first order only tilt about $`\hat f`$ leaks: the error tips the field's vertical component
-sideways by $`\delta\theta_t \times v e_3`$, whose part across $`\hat f`$ is
-$`-v\, \hat f \cdot \delta\theta_t`$, so $`\delta\psi = -\tan\delta\; \hat f \cdot \delta\theta_t`$ and
-the exact price of one reading is $`\tan^2\!\delta \cdot \hat f^\mathsf{T} P_{\text{tilt}} \hat f`$. The
-bound is taken over it on purpose. Velocity fusion corrects the tilt error over seconds while
-headings arrive every 50 ms in the simulator, so consecutive headings share most of it. Fused
-as white, (24) took each reading's share as independent and a run of headings was believed too
-much in aggregate: the field-axis form took `gnss_outage` to 2.630 m of horizontal error against
-2.227 for the eigenvalue, and adding the tilt–heading covariance that `R` inflation drops, which
-makes $`S`$ exact per reading, measured the same (2.620 m), so it was the correlation across
-readings that the margin stood in for. (24′) prices that correlation directly, as the
-magnetometer's $`\tau`$, and the gap closes: 1.255 m against 1.252, and on 50 seeds both forms sit
-inside the attitude bound on every scenario, their ANEES within a few percent. What is left
-favours the eigenvalue on yaw by about 0.006° on the white scenarios and the field axis on a
-coarse start (`moving_start` 1.364° against 1.461°, `7ce66f0d` 63 recoveries against 69). `static`,
-whose tilt block is isotropic, reads the same under every form. The eigenvalue is kept as the
-bound rather than for a margin: it is never below either diagonal, it is the same on any basis
-of the plane, and a $`\sigma`$ too large only slows the heading's correction while one too small
-is a filter claiming an attitude it does not have.
+**The price.** To first order only tilt about $`\hat f`$ leaks. The error tips the field's
+vertical component sideways by $`\delta\theta_t \times v e_3`$, whose part across $`\hat f`$ is
+$`-v\, \hat f \cdot \delta\theta_t`$. So $`\delta\psi = -\tan\delta\; \hat f \cdot \delta\theta_t`$,
+and the exact price of one reading is
+$`\tan^2\!\delta \cdot \hat f^\mathsf{T} P_{\text{tilt}} \hat f`$.
 
-The larger of the north and east diagonals is the axis-dependent alternative: on an
-anisotropic block it moves with the vehicle's yaw, so taking the pair on body axes or on north
-and east gives `f16771dd` a different mean heading innovation with nothing about the log
-changed. Against it the eigenvalue is ahead or level on every scenario but `flight`, 0.1–0.3 %
-behind there on `pos_h`, `vel` and `tilt` (`pos_h` 2.503 m against 2.499), and its `nees_att` sits up to 1.4 % lower, the direction of a
-larger `R`: a covariance a little more conservative about attitude, not a filter more certain of
-it.
+**Which tilt.** (36′) takes the bound over that price on purpose. Velocity fusion corrects the
+tilt error over seconds, while headings arrive every 50 ms in the simulator, so consecutive
+headings share most of it. Fused as white, (24) took each reading's share as independent, and a
+run of headings was believed too much in aggregate. Adding the tilt–heading covariance that `R`
+inflation drops makes $`S`$ exact per reading, and measured the same as the field axis, so the
+eigenvalue's margin stood in for the correlation across readings. (24′) prices that correlation
+directly, as the magnetometer's $`\tau`$, and the gap closes. On 50 seeds both forms then sit
+inside the attitude bound on every scenario, their ANEES within a few percent.
 
-Widening $`R_m`$ rather than extending $`H`$ is deliberate, and the alternative was measured. The
-exact Jacobian *does* constrain tilt, and using it is worse than dropping the term: it corrects
-from a scalar carrying 3° of noise a quantity gravity determines an order of magnitude better,
-which took the `mission` scenario to 9.0° of tilt error and 1.26 m/s² of accelerometer bias
-against 0.58° and 0.053 for (36′). What (36′) says is that the heading is less trustworthy than
-its own noise suggests, without claiming it observes the tilt that made it so. That is `R`
-inflation with no cross-covariance, and it is enough here because the error it prices does not
-persist: velocity fusion keeps correcting the tilt between headings. An error that is shared
-unchanged across readings needs the cross-covariance as well, which is (30′). On the `moving_start`
-scenario, whose coarse start is where an unpriced levelling error is largest, it holds tilt to
-1.665° against 2.653° with (36) alone, yaw to 0.917° against 3.777°, `nees_att` to 0.226 against
-1.634, and falsely-valid attitude quantity-epochs to none against 840.
+| scenario, measure | field axis, $`\hat f^\mathsf{T} P \hat f`$ | exact per reading | eigenvalue, $`\lambda_{\max}`$ | larger N/E diagonal |
+| --- | --- | --- | --- | --- |
+| `gnss_outage` horizontal error, fused white | 2.630 m | 2.620 m | 2.227 m | |
+| `gnss_outage` horizontal error, under (24′) | 1.255 m | | 1.252 m | |
+| `moving_start` yaw, under (24′) | 1.364° | | 1.461° | |
+| `7ce66f0d` recoveries, under (24′) | 63 | | 69 | |
+| `flight` `pos_h` | | | 2.503 m | 2.499 m |
 
-$`R_m`$ prices the **adoption** as well as the update. The first heading a filter with no
-established yaw receives is taken outright rather than gated — a yaw error of a radian is not a
-small-angle quantity and no variance expresses it — and the variance it carries away is this
+Under (24′) what is left favours the eigenvalue on yaw by about 0.006° on the white scenarios, and
+the field axis on a coarse start. `static`, whose tilt block is isotropic, reads the same under
+every form. The eigenvalue is kept as the bound, not for a margin. It is never below either
+diagonal and is the same on any basis of the plane. A $`\sigma`$ too large only slows the
+heading's correction; one too small is a filter claiming an attitude it does not have.
+
+The larger of the north and east diagonals is the axis-dependent alternative. On an anisotropic
+block it moves with the vehicle's yaw, so taking the pair on body axes or on north and east gives
+`f16771dd` a different mean heading innovation with nothing about the log changed. Against it the
+eigenvalue is ahead or level on every scenario but `flight`, where it is 0.1–0.3 % behind on
+`pos_h`, `vel` and `tilt`. Its `nees_att` sits up to 1.4 % lower, the direction of a larger `R`:
+a covariance a little more conservative about attitude, not a filter more certain of it.
+
+**Why R, not H.** Widening $`R_m`$ rather than extending $`H`$ is deliberate, and the alternative
+was measured. The exact Jacobian *does* constrain tilt, and using it is worse than dropping the
+term. It corrects, from a scalar carrying 3° of noise, a quantity gravity determines an order of
+magnitude better:
+
+| `mission` | exact $`H`$ | (36′) |
+| --- | --- | --- |
+| tilt error | 9.0° | 0.58° |
+| accelerometer bias | 1.26 m/s² | 0.053 m/s² |
+
+(36′) says the heading is less trustworthy than its own noise suggests, without claiming it
+observes the tilt that made it so. That is `R` inflation with no cross-covariance. It is enough
+here because the error it prices does not persist: velocity fusion keeps correcting the tilt
+between headings. An error shared unchanged across readings needs the cross-covariance as well,
+which is (30′). On `moving_start`, whose coarse start is where an unpriced levelling error is
+largest:
+
+| `moving_start` | (36) alone | (36′) |
+| --- | --- | --- |
+| tilt | 2.653° | 1.665° |
+| yaw | 3.777° | 0.917° |
+| `nees_att` | 1.634 | 0.226 |
+| falsely-valid attitude quantity-epochs | 840 | none |
+
+**The adoption.** $`R_m`$ prices the adoption as well as the update. The first heading a filter
+with no established yaw receives is taken outright rather than gated: a yaw error of a radian is
+not a small-angle quantity, and no variance expresses it. The variance it carries away is this
 $`R_m`$, not $`\sigma_\psi^2`$. It is levelled by (34) like any other, on the worst tilt the
-filter ever holds, so an adoption storing the magnetometer's own number is precisely the falsely
-valid attitude (36′) exists to remove, reintroduced where the error is largest. On `moving_start`
-the adopted variance is 0.582 rather than 0.01: $`\sigma`$ = 0.76 rad, outside `Accuracy::heading`,
-so the heading is established and honestly reported invalid.
+filter ever holds. An adoption storing the magnetometer's own number would be precisely the
+falsely valid attitude (36′) exists to remove, reintroduced where the error is largest. On
+`moving_start` the adopted variance is 0.582 rather than 0.01: $`\sigma`$ = 0.76 rad, outside
+`Accuracy::heading`, so the heading is established and honestly reported invalid.
 
 ### Heading from GNSS
 
@@ -1243,8 +1262,9 @@ antennas' mounting angle removed by the caller:
 y = \mathrm{wrap}\big(\psi_m - \hat{\psi}\big), \qquad H \text{ from (36)}, \qquad R_m = \sigma_\psi^2
 ```
 
-PX4 differentiates the antenna baseline's heading exactly, so its $`H`$ carries tilt; (36) is
-kept here for the reason the magnetometer keeps it, [What the levelling costs](#what-the-levelling-costs).
+PX4 differentiates the antenna baseline's heading exactly, so its $`H`$ carries tilt. (36) is kept
+here for the reason the magnetometer keeps it:
+[what the levelling costs](#what-the-levelling-costs).
 
 The **course constraint** reads no sensor. It states that the vehicle points along its velocity
 to within a sideslip $`\beta`$, $`h(x) = \psi - \chi`$ measured as zero, with the course taken
@@ -1264,28 +1284,61 @@ H = \begin{bmatrix} 0 & -\nabla_v\chi^\mathsf{T} & e_3^\mathsf{T} R(\hat{q}) & 0
 Taking $`\chi`$ from a GNSS velocity instead would count that velocity's cross-track error
 twice, once in (29) and again here as if independent. Read off the state, it reaches $`S`$
 through $`P`$ with its correlations, and $`R_m`$ is the one thing the constraint adds. The same
-term sets when it is refused: $`\sigma_\chi^2 = \nabla_v\chi^\mathsf{T} P_{vv} \nabla_v\chi`$ over
-$`\sin^2 15°`$ (ArduPilot's `GPS_VEL_YAW_ALIGN_MAX_ANG_ERR`, `AP_NavEKF3_core.h:125` at
-`368dc0c4`), so the speed threshold is the velocity's own accuracy rather than a parameter. An
-adoption carries $`\sigma_\beta^2 + \sigma_\chi^2`$. The sideslip persists as long as the wind
-and the trim do, which (24′) prices; what it cannot do is observe it, so the heading is no
-better than $`\beta`$.
+term decides when it is refused: when
+$`\sigma_\chi^2 = \nabla_v\chi^\mathsf{T} P_{vv} \nabla_v\chi`$ exceeds $`\sin^2 15°`$
+(ArduPilot's `GPS_VEL_YAW_ALIGN_MAX_ANG_ERR`, `AP_NavEKF3_core.h:125` at `368dc0c4`). So the
+speed threshold is the velocity's own accuracy rather than a parameter. An adoption carries
+$`\sigma_\beta^2 + \sigma_\chi^2`$. The sideslip persists as long as the wind and the trim do,
+which (24′) prices. (24′) cannot observe it, though, so the heading is no better than $`\beta`$.
+
+### Magnetometer, three-axis
+
+With $`m_n`$ the reference field in the navigation frame, the predicted body-frame measurement is
+
+**(31)**
+
+```math
+\hat{m}_b = R(\hat{q})^\mathsf{T} m_n
+```
+
+Perturbing with a local attitude error, $`R = R(\hat{q})\,\mathrm{Exp}(\delta\theta)`$, and using
+$`[\,u\,]_\times v = -[\,v\,]_\times u`$:
+
+**(32)**
+
+```math
+m_b \approx \hat{m}_b + [\,\hat{m}_b\,]_\times\, \delta\theta
+```
+
+so
+
+**(33)**
+
+```math
+z = m_b^{\text{meas}}, \qquad h(x) = \hat{m}_b, \qquad H = \begin{bmatrix} 0 & 0 & [\,\hat{m}_b\,]_\times & 0 & 0 \end{bmatrix}
+```
+
+Three-axis fusion constrains all three attitude components from the magnetometer. Here that is a
+liability. Hard- and soft-iron errors and local field anomalies corrupt roll and pitch, which the
+accelerometer already determines well, and `fusion-nav` carries no magnetic-field states to
+absorb them. See
+[Magnetometer without magnetic-field states](GOALS.md#magnetometer-without-magnetic-field-states).
 
 ## Measurement time and correlation
 
 (23)–(27) take a measurement as current and its error as independent of the last one's. Neither
-holds for a real sensor, and these two refine the update without changing its form: (23′) fuses a
+holds for a real sensor. These two refine the update without changing its form: (23′) fuses a
 measurement at the time it was taken, and (24′) prices an error that persists across readings.
 
 ### Delayed measurements
 
-A measurement describes the vehicle when it was taken, and it reaches the filter later: a GNSS
+A measurement describes the vehicle when it was taken, and reaches the filter later: a GNSS
 solution 100–200 ms after the epoch it was computed for (PX4 configures 110 ms,
 `EKF2_GPS_DELAY`). Fused as though current, the innovation of (23) carries the distance flown in
-the delay as error, and a velocity fix the change in velocity: at 20 m s⁻¹ and 3.7 m s⁻², 150 ms is
-3 m and 0.55 m s⁻¹ that $`R`$ does not describe. Every `fuse_*` therefore takes the time
-the measurement was taken, and with $`\tau`$ its age against the state's time, the model is
-evaluated on the state as it was and its Jacobian carried to today's error:
+the delay as error, and a velocity fix the change in velocity. At 20 m s⁻¹ and 3.7 m s⁻², 150 ms
+is 3 m and 0.55 m s⁻¹ that $`R`$ does not describe. So every `fuse_*` takes the time the
+measurement was taken. With $`\tau`$ its age against the state's time, the model is evaluated on
+the state as it was, and its Jacobian carried to today's error:
 
 **(23′)**
 
@@ -1294,50 +1347,50 @@ y = z - h\big(\hat{x}(t - \tau)\big), \qquad
 H_\tau = H\,e^{-A\tau} \approx H\left(I - A\tau + \tfrac{1}{2}A^2\tau^2\right)
 ```
 
-$`H_\tau`$ replaces $`H`$ in (24)–(27); the correction is still applied to the current state,
-which is what makes the verdict synchronous: the `Fusion` a call returns is the gate's. $`A`$ is
-the continuous error dynamics (16)–(19) as a matrix, since
-$`\delta x(t-\tau) \approx e^{-A\tau}\,\delta x(t)`$ with the process noise over the age left
-out, taken at the mean rates over the age: $`\bar\omega`$ from the attitude then and now,
-$`\bar a_n`$ from the velocities. A position fix $`\tau`$ old observes $`\delta p - \tau\,\delta v
-+ \dots`$, so $`S`$ carries $`\tau^2 P_{vv}`$ and the fix informs velocity through the right
-correlation.
+$`H_\tau`$ replaces $`H`$ in (24)–(27). The correction is still applied to the current state,
+which makes the verdict synchronous: the `Fusion` a call returns is the gate's.
 
-$`\hat{x}(t-\tau)`$ is read from a history of the nominal state, position, velocity and
-attitude at intervals of about 10 ms across `LATENCY_HORIZON`, interpolated between entries. Two
-things about it are not optional:
+$`H`$ is carried by $`e^{-A\tau}`$ because
+$`\delta x(t-\tau) \approx e^{-A\tau}\,\delta x(t)`$, with the process noise over the age left
+out. $`A`$ is the continuous error dynamics (16)–(19) as a matrix, taken at the mean rates over
+the age: $`\bar\omega`$ from the attitude then and now, $`\bar a_n`$ from the velocities. A
+position fix $`\tau`$ old observes $`\delta p - \tau\,\delta v + \dots`$, so $`S`$ carries
+$`\tau^2 P_{vv}`$ and the fix informs velocity through the right correlation.
+
+$`\hat{x}(t-\tau)`$ is read from a history of the nominal state: position, velocity and attitude
+at intervals of about 10 ms across `LATENCY_HORIZON`, interpolated between entries. Two things
+about it are not optional:
 
 * **It is the state as it stood, not an extrapolation.** Extrapolating back from the present on
-  the last IMU sample, $`\hat v - a_n\tau`$, matches the history on a simulated IMU and fails on a
-  real one: one sample's specific force carries the airframe's vibration, which the velocities
-  either side of it average out. GOALS.md, "Measurement latency", has the corpus figures.
+  the last IMU sample, $`\hat v - a_n\tau`$, matches the history on a simulated IMU and fails on
+  a real one. One sample's specific force carries the airframe's vibration, which the velocities
+  either side of it average out. [GOALS.md](GOALS.md#measurement-latency) has the corpus figures.
 * **Every correction reaches it.** An update moves the estimate of the past with the present, so
-  each one is applied to every entry. Without it a fix taken before the previous fix was fused is
+  each one is applied to every entry. Otherwise a fix taken before the previous fix was fused is
   judged against a past that fix never corrected, and the same error is corrected twice.
 
-At either end the history runs out. A measurement timed between the last IMU sample and the
-next, ahead of the state, is placed on the present carried forward, position on its velocity
-and attitude on the last sample's rate, and $`\tau`$ is negative. One older than the history, which only happens in the first moments after a
-start, is placed at the history's oldest entry, and $`\tau`$ is the age of that entry, so that
-$`h`$ and $`H_\tau`$ describe the same moment.
+At either end the history runs out. A measurement timed between the last IMU sample and the next,
+ahead of the state, is placed on the present carried forward: position on its velocity, attitude
+on the last sample's rate, and $`\tau`$ negative. One older than the history, which happens only
+in the first moments after a start, is placed at the history's oldest entry, with $`\tau`$ that
+entry's age, so that $`h`$ and $`H_\tau`$ describe the same moment.
 
-An adoption, which writes a measurement as the state, carries it forward by the state's own
-motion over the age: $`p \leftarrow z + \hat p - \hat p(t-\tau)`$. PX4 answers the same
-question with a delayed fusion horizon, the whole filter run $`\tau_{\max}`$ behind and an output
-predictor bringing it forward (`src/modules/ekf2/EKF/output_predictor/`); why this crate does not
-is [the decision](GOALS.md#measurement-latency).
+An [adoption](#adoption) carries the measurement forward by the state's own motion over the age:
+$`p \leftarrow z + \hat p - \hat p(t-\tau)`$. PX4 answers the same question with a delayed
+fusion horizon: the whole filter runs $`\tau_{\max}`$ behind, and an output predictor brings it
+forward (`src/modules/ekf2/EKF/output_predictor/`). Why this crate does not is
+[the decision](GOALS.md#measurement-latency).
 
 ### Correlated measurements
 
-(24) treats each measurement's error as independent of the last, and a sensor's rarely is: a
-receiver filters its own solution in time, and a barometer or magnetometer is sampled faster than
-the error it carries changes. Nearly every source on every real corpus log has positively
+(24) treats each measurement's error as independent of the last, and a sensor's rarely is. A
+receiver filters its own solution in time; a barometer or magnetometer is sampled faster than the
+error it carries changes. Nearly every source on every real corpus log has positively
 autocorrelated innovations (`acf1_` in `data/manifest.txt`). Take the error as first-order
-Gauss–Markov with time constant $`\tau`$, so that measurements $`\Delta t`$ apart share the
-fraction $`\rho = e^{-\Delta t/\tau}`$ of it. The mean of $`n`$ such measurements has variance
-$`\sigma^2 (1+\rho) / \big((1-\rho)\, n\big)`$ as $`n`$ grows, which is what $`n`$ independent ones
-of variance $`\sigma^2 (1+\rho)/(1-\rho)`$ carry. So the gain is computed with that variance, per
-axis:
+Gauss–Markov with time constant $`\tau`$, so measurements $`\Delta t`$ apart share the fraction
+$`\rho = e^{-\Delta t/\tau}`$ of it. As $`n`$ grows, the mean of $`n`$ such measurements has
+variance $`\sigma^2 (1+\rho) / \big((1-\rho)\, n\big)`$: what $`n`$ independent ones of variance
+$`\sigma^2 (1+\rho)/(1-\rho)`$ carry. So the gain is computed with that variance, per axis:
 
 **(24′)**
 
@@ -1347,23 +1400,25 @@ axis:
 ```
 
 in place of $`R_m`$ and $`S`$ in (25) and (27), with $`\Delta t`$ the interval since the source's
-previous measurement fused and $`\tau`$ the source's, from `Config::correlation`. The
-factor is 1 as $`\Delta t / \tau \to \infty`$, where measurements are independent again, and
-$`2\tau/\Delta t`$ as $`\Delta t / \tau \to 0`$, so a source sampled faster than its error changes
-buys no more per second than one sampled at $`\tau`$. At $`\Delta t = 0`$ the same error arrives
-twice and the factor saturates rather than diverging.
+previous measurement fused and $`\tau`$ the source's, from `Config::correlation`. The factor is 1
+as $`\Delta t / \tau \to \infty`$, where measurements are independent again, and
+$`2\tau/\Delta t`$ as $`\Delta t / \tau \to 0`$. So a source sampled faster than its error
+changes buys no more per second than one sampled at $`\tau`$. At $`\Delta t = 0`$ the same error
+arrives twice, and the factor saturates rather than diverging.
 
-Two things keep $`R_m`$. The gate of (37) tests one measurement against (24)'s $`S`$, because one
-measurement's innovation variance is $`H P H^\mathsf{T} + R_m`$ however correlated the next is:
-tested against $`\tilde{S}`$, an innovation $`(1+\rho)/(1-\rho)`$ times larger passes, which on
-`logging_dropout` turned a lockout and its recovery into seconds of slow acceptance. And an
-adoption writes $`R_m`$ onto the covariance, since one measurement's error is its stationary
-variance.
+Two things keep $`R_m`$:
 
-This is the equivalent white noise of the correlated sequence, not a model of it: exact for the
-mean of a long run, conservative for a short one, and free of the Gauss–Markov state per source
-and axis that would model the error exactly and grow the covariance past fifteen states. What it
-was measured against, a floor on $`P`$ and PX4's floor on $`R`$, is in
+* **The gate** of (37) tests one measurement against (24)'s $`S`$, because one measurement's
+  innovation variance is $`H P H^\mathsf{T} + R_m`$ however correlated the next is. Against
+  $`\tilde{S}`$, an innovation $`(1+\rho)/(1-\rho)`$ times larger passes; on `logging_dropout`
+  that turned a lockout and its recovery into seconds of slow acceptance.
+* **An adoption** writes $`R_m`$ onto the covariance, since one measurement's error is its
+  stationary variance.
+
+This is the equivalent white noise of the correlated sequence, not a model of it. It is exact for
+the mean of a long run and conservative for a short one. It is also free of the Gauss–Markov state
+per source and axis that would model the error exactly and grow the covariance past fifteen
+states. What it was measured against, a floor on $`P`$ and PX4's floor on $`R`$, is in
 [the decision](GOALS.md#correlated-measurement-error-as-equivalent-white-noise).
 
 ## Equation-to-code mapping
@@ -1374,7 +1429,7 @@ Each implementing function cites its equation numbers in a doc comment.
 | --------- | ------- | ------ | -------- |
 | (1)–(4) | state definitions | `state.rs` | `State`, `ErrorState` |
 | (5)–(8) | static initialization | `init.rs` | `StaticWindow::push` and `measured`, `level_from_accel`, `heading_from_mag`, `nominal_state`, `classify`, `attitude_sigmas`, `Measured::gyro_bias`, `initial_covariance`, with `state.rs`'s `AttitudeVariance::in_body` and `Covariance::set_attitude_accel_bias_block` |
-| (8′) | what a coarse window supports | `init.rs` | `coarse_sigmas`, `window_drift`, `heading_sensitivity` — `tan δ` shared with (36′) |
+| (8′) | what a coarse window supports | `init.rs` | `coarse_sigmas`, `window_drift`, `heading_sensitivity`; `tan δ` shared with (36′) |
 | (8″) | white noise a still window measures | `init.rs` | `Density`, `BaroReadings::noise`, and `Density::mean_variance` for the bias of (7)–(8); reported by `StaticWindow::noise` as `WindowNoise` |
 | (5′) `ā_n` | in-motion levelling | `init.rs` | `Velocities::inertial_acceleration`; the correction itself: not built, #59 |
 | (30) `α₀` | barometric reference and its variance | `init.rs` | `BaroReadings::reference`, through `StaticWindow::alpha0` |
@@ -1413,10 +1468,10 @@ Each implementing function cites its equation numbers in a doc comment.
 
 ## References
 
-* J. Solà, *Quaternion kinematics for the error-state Kalman filter*, [arXiv:1711.02508](https://arxiv.org/abs/1711.02508) — the primary source for the error-state formulation and the Jacobians above; [Correspondence with Solà](#correspondence-with-solà) says which equation here is which of his
-* P. D. Groves, *Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems*, 2nd ed. — (2.112), the geodetic-to-ECEF conversion of (43), and the one citation here that needs a book. The ellipsoid constants it is evaluated with are cited in `src/geodetic.rs` to NGA.STND.0036, which is free and in [`reference/`](reference/README.md)
-* R. Zanetti and C. D'Souza, *Recursive Implementations of the Consider Filter*, NASA NTRS [20120010515](https://ntrs.nasa.gov/citations/20120010515) — the consider (Schmidt–Kalman) update (30′) was measured against: Joseph form valid for any gain, their (5), and the consider gain as the optimal one with its parameter rows zeroed, (26), leaving $`P_{pp}`$ unchanged, (29). In [`reference/`](reference/README.md)
-* [PX4 EKF2](https://docs.px4.io/main/en/advanced_config/tuning_the_ecl_ekf) — reference for practical behavior, not for derivations
+* J. Solà, *Quaternion kinematics for the error-state Kalman filter*, [arXiv:1711.02508](https://arxiv.org/abs/1711.02508): the primary source for the error-state formulation and the Jacobians above; [Correspondence with Solà](#correspondence-with-solà) says which equation here is which of his
+* P. D. Groves, *Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems*, 2nd ed.: (2.112), the geodetic-to-ECEF conversion of (43), and the one citation here that needs a book. The ellipsoid constants it is evaluated with are cited in `src/geodetic.rs` to NGA.STND.0036, which is free and in [`reference/`](reference/README.md)
+* R. Zanetti and C. D'Souza, *Recursive Implementations of the Consider Filter*, NASA NTRS [20120010515](https://ntrs.nasa.gov/citations/20120010515): the consider (Schmidt–Kalman) update (30′) was measured against: Joseph form valid for any gain, their (5), and the consider gain as the optimal one with its parameter rows zeroed, (26), leaving $`P_{pp}`$ unchanged, (29). In [`reference/`](reference/README.md)
+* [PX4 EKF2](https://docs.px4.io/main/en/advanced_config/tuning_the_ecl_ekf): reference for practical behavior, not for derivations
 
 ### Correspondence with Solà
 
@@ -1434,7 +1489,7 @@ Section 5, the locally-defined angular error; Section 7 is the global alternativ
 | (13)–(15) | (260a)–(260c) | (260a) takes the pre-update velocity, as (13) does |
 | (16)–(19) | (238) | without $`\delta g`$, which this filter does not estimate |
 | (20) | (270) | block for block |
-| (21) | (262)–(265) | densities rather than per-sample $`\sigma`$; see [above](#covariance-propagation) |
+| (21) | (262)–(265) | densities rather than per-sample $`\sigma`$; see [above](#densities-not-per-sample-σ) |
 | (22) | (269) | |
 | (23)–(26) | (274), (275) | |
 | (27) | footnote 26 | Joseph form, which he recommends over his own (276) |
@@ -1443,5 +1498,6 @@ Section 5, the locally-defined angular error; Section 7 is the global alternativ
 | $`\mathrm{Exp}(\phi)`$ | (101) | |
 
 The rest is not his. Initialization (5)–(8) follows the practice of PX4 and ArduPilot cited at
-(7), except (8)'s tilt–bias correlation, which neither carries; (43) is Groves (2.112); the observation models (28)–(36), the gating of (37)–(38) and the
-origin placement of (44) are derived here.
+(7), except (8)'s tilt–bias correlation, which neither carries. (43) is Groves (2.112). The
+observation models (28)–(36), the gating of (37)–(38) and the origin placement of (44) are
+derived here.
