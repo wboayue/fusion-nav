@@ -377,7 +377,6 @@ are integrated over their own intervals. The result is `#[must_use]`:
 | ------ | ----------- |
 | `fuse_gnss_geodetic(time, fix, noise, antenna)` | latitude, longitude, height; converted about the filter's origin |
 | `fuse_gnss_position(time, position, noise, antenna)` | NED position about the filter's origin, for a caller that converts itself |
-
 | `fuse_gnss_velocity(time, velocity, noise, antenna)` | NED velocity |
 | `fuse_baro_altitude(time, altitude, noise)` | altitude, relative to `α₀` |
 | `fuse_mag_heading(time, field, noise)` | body-frame field, reduced to a heading and fused as one scalar |
