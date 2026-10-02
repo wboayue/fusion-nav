@@ -16,7 +16,8 @@ What the filter does, and where each decision's evidence lives:
 - **Start.** `StaticWindow` folds a still window in as it arrives and seeds attitude, biases and
   the barometric reference, (5)–(8), with tilt correlated to accelerometer bias; a short or moving
   window starts coarse under `Status::Aligning`. `StaticWindow::noise` reports a noise floor,
-  (8″), never applied. Evidence: `DESIGN.md`, "Defaults and their evidence".
+  (8″), never applied as noise; the same blocks price the window's mean rate, which (7) weighs
+  against `sigma_gyro_bias` as the gyroscope bias (#176). Evidence: `DESIGN.md`, "Defaults and their evidence".
 - **Propagation.** (9)–(22) in increments; a step past `max_predict_dt` is coasted by (22′) on
   `Config::coast`.
 - **Time.** Every measurement carries its own `Timestamp` and is fused at that time, (23′),
@@ -917,10 +918,11 @@ the declination table, and CI builds and tests without it too.
   or a constraining source is being accepted. Both exist because PX4 and ArduPilot answer
   per-quantity validity and a single ladder cannot.
 - **An unaided filter loses its outputs on a schedule the defaults set**, and the schedule is
-  measured: at `ImuNoise`'s defaults a static start holds tilt for 3.83 s and heading for 37.8 s.
-  Those two figures are cited by `Accuracy`'s doc comment and pinned by a test; the gyroscope-bias
-  prior entering attitude through (20)'s `−I Δt` is what sets them, not the white-noise density,
-  which alone would give 10.4 s and 674 s. They move `Validity` only — `Status` is answering on
+  measured: at `ImuNoise`'s defaults a static start holds tilt for 10.3 s and heading for 274 s
+  from a window that measured its gyroscope, 4.84 s and 51.4 s from one whose gyroscope never
+  scattered. Those figures are cited by `Accuracy`'s doc comment and pinned by a test; the
+  gyroscope-bias prior entering attitude through (20)'s `−I Δt` sets them, and only a window that
+  measured the bias makes it small enough to leave tilt to the white noise's 10.4 s. They move `Validity` only — `Status` is answering on
   the aiding timers well before then, and the alignment latch keeps `Aligning` out of it.
 - **`Status` precedence is most-severe-first**: `DeadReckoning` > `Aligning` > `Degraded` >
   `Healthy`. Aligning outranking Degraded is deliberate, and what it costs is measured: the
@@ -1107,7 +1109,9 @@ while it started coarse); the LPE log
 The same window also *measures* the barometer and IMU noise, `StaticWindow::noise` (#50, equation
 (8″)), under GOALS.md differentiator 7, "Configuration derived, not demanded". What it hands back
 is a floor, not a starting `R`/`Q`: a vehicle on the ground is quieter than one in flight, and the
-corpus measured both directions (`DESIGN.md`, `WindowNoise`). Keep its boundary: derived at a defined
+corpus measured both directions (`DESIGN.md`, `WindowNoise`). The one use the filter makes of the
+blocks is the variance of the window's own mean rate, which prices the gyroscope bias the start
+takes (#176): a property of that average, not a `Q`. Keep its boundary: derived at a defined
 moment and reported, never silently retuned in flight, which would cost the determinism claim; a
 recovery is an adoption on a schedule `Config::recovery` fixes in advance, not a retuning.
 Anything the window cannot honestly measure, the noise to configure above the floor included,
