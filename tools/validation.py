@@ -39,9 +39,8 @@ that policy, each in its file's order.
 
 A `footprint` placeholder reads the repository, not a run: data/footprint.txt is what CI's
 footprint job measures and asserts exactly, so a page placing only those needs no replay, and
-`--only` renders or checks it alone. CI runs that check on validation/src/cost.md, so a re-pin
-that leaves the page behind fails there rather than at the next local run. `--only` compares the
-page's text and nothing else; orphaned pages and figures are the whole run's to find.
+`--only` renders or checks it alone (validation/README.md, "The cost page"). `--only` compares
+the page's text and nothing else; orphaned pages and figures are the whole run's to find.
 
 A placeholder naming a run, key or figure that does not exist is refused rather than rendered
 empty, and so is a `{{` left in the page because it was malformed: a missing key is how a
@@ -112,7 +111,9 @@ class Runs:
     its stdout, `<runs>/anees/<name>.{anees,csv}` its ensemble, `<runs>/compare/` what
     data/fetch.sh --compare wrote, `<runs>/<dataset>/<name>.<policy>.out` what
     data/urbannav.sh or data/insane.sh did (`TRUTH_DATASETS`), `<runs>/figures/<run>/<slug>.{png,md}` a figure and its
-    caption, and `<runs>/commit` the build.
+    caption, and `<runs>/commit` the build. Two files are the repository's rather than a run's:
+    data/footprint.txt's pins and the nightly tools/footprint.sh measures them on, its
+    `TOOLCHAIN=`, which is all a `footprint` placeholder reads.
     """
 
     def __init__(self, runs, root):
@@ -416,7 +417,8 @@ def self_test():
             "thumbv6m-none-eabi frame.update.update.3=8088\n"
             "thumbv7em-none-eabihf size.eskf.Eskf=3784\n")
         (root / "tools").mkdir()
-        (root / "tools/footprint.sh").write_text("set -e\nTOOLCHAIN=nightly-2026-08-06\n")
+        # Trailing blanks on the pin are not part of the toolchain's name.
+        (root / "tools/footprint.sh").write_text("set -e\nTOOLCHAIN=nightly-2026-08-06  \n")
         runs = Runs(out, root)
 
         def rendered(text, page="validation/accuracy.md"):
@@ -523,6 +525,16 @@ def self_test():
             (root / "validation/cost.md").read_text().replace("167578", "167579"))
         expect("one page, stale", len(check(src, bare, root, "cost.md")), 1)
         refused("one page with no template", lambda: render_all(src, bare, "speed.md"))
+        # A name is the template's whole name: `cost.md` is not `unit-cost.md`, which would
+        # otherwise be checked too, or alone.
+        (src / "unit-cost.md").write_text("{{footprint thumbv6m-none-eabi text.3}}\n")
+        expect("one page among similar names", list(render_all(src, bare, "cost.md")),
+               [Path("validation/cost.md")])
+        (src / "unit-cost.md").unlink()
+        # A script with no `TOOLCHAIN=` names no compiler, and a blank is not one.
+        (root / "tools/footprint.sh").write_text("set -e\n")
+        refused("no toolchain pinned", lambda: render(
+            "{{footprint toolchain}}", Runs(Path(tmp) / "none", root), "validation/cost.md"))
 
         # Two logs sharing the prefix a page names: refused rather than read from whichever
         # sorts first, for a summary and for an agreement line alike.
