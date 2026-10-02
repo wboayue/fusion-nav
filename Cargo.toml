@@ -6,12 +6,11 @@ rust-version = "1.89"
 authors = ["Wil Boayue <wil@wsbsolutions.com>"]
 description = "A no_std, allocation-free 15-state error-state Kalman filter for inertial navigation. Fuses IMU with GNSS, barometric altitude, and magnetometer heading. For attitude or altitude only, see fusion-ahrs and fusion-altitude."
 readme = "README.md"
-homepage = "https://github.com/wboayue/fusion-nav/"
 repository = "https://github.com/wboayue/fusion-nav/"
 documentation = "https://docs.rs/fusion-nav"
 license = "MIT"
-keywords = ["eskf", "navigation", "sensor-fusion", "gnss", "embedded"]
-categories = ["embedded", "no-std", "algorithms", "science"]
+keywords = ["eskf", "kalman", "sensor-fusion", "gnss", "embedded"]
+categories = ["embedded", "no-std", "algorithms", "aerospace::unmanned-aerial-vehicles"]
 # `data/flight.truth.csv` is 31 KB of the packaged crate and nothing on the published side reads
 # it: scoring a replay against truth happens in this repository, never in a dependent's build.
 # `data/flight.csv` stays, because `cargo run --example replay` is the first thing a reader runs.
