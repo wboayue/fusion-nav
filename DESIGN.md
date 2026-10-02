@@ -283,8 +283,8 @@ set against each other was measured together, at the commit named where the code
 | `update::<3>` | the offset of (30′) in blocks costs 968 over the fifteen-state update; the augmented 16 × 16 written out cost 4168 more (a 1024-byte matrix per 900-byte temporary, plus a copy in and out); (24′)'s second Cholesky factor costs 272 (64) |
 | `update::<1>` | the second factor costs 320 (64) |
 | `reparameterize` (in `update`) | the full `G P Gᵀ` cost 864 more of `update`'s frame |
-| `fuse_gnss_velocity` → `update::<3>` | the crate's deepest path; `apply_or_recover` out of line sits beside `update` rather than above it. Inlined, it cost `fuse_gnss_velocity`'s frame 984 (2384 against 1400, a434a30); walked through the call graph at 05d994c, it costs `fuse_gnss_position`'s 1024 and moves the peak to a geodetic fix, 12272 against 11408 |
-| `Eskf::observe::<3>` | `Observation::delayed` 752 and `error_dynamics` 400 beneath it; inlined into `fuse_gnss_velocity` it put the high-water mark at 10800 against 9520 (a434a30), and walked at 05d994c at 11760 against 11408 |
+| `fuse_gnss_velocity` → `update::<3>` | the crate's deepest path; `apply_or_recover` out of line sits beside `update` rather than above it. Inlined, it cost `fuse_gnss_velocity`'s frame 984 (2384 against 1400, a434a30); walked through the call graph at 9e3fcca, it costs `fuse_gnss_position`'s 1024 and moves the peak to a geodetic fix, 12272 against 11408 |
+| `Eskf::observe::<3>` | `Observation::delayed` 752 and `error_dynamics` 400 beneath it; inlined into `fuse_gnss_velocity` it put the high-water mark at 10800 against 9520 (a434a30), and walked at 9e3fcca at 11760 against 11408 |
 | `Eskf::fuse_heading` | one frame for every heading source, its largest instance the magnetometer's; read by hand, the course's path through it peaked at 7872 against 7624 with `fuse_mag_heading` doing the work in a frame of its own (eaf3b81) |
 | `Eskf::adopt_position`, `adopt_velocity` | inlined, +976 on `fuse_gnss_position` and +952 on `fuse_gnss_velocity`; out of line they follow `update` rather than stacking on it |
 | `propagate_covariance` | the largest frame propagation reaches. Inlined into its one caller, the same three temporaries sit in `predict` |
@@ -295,7 +295,7 @@ set against each other was measured together, at the commit named where the code
 | `History::clear` | rebuilding the ring put a 1552-byte temporary in `Eskf::apply_alignment` |
 | `StaticWindow::halve` | a copy of the blocks is 512 bytes |
 
-Walked through the call graph at 05d994c, frames from `-Zemit-stack-sizes` and edges from the
+Walked through the call graph at 9e3fcca, frames from `-Zemit-stack-sizes` and edges from the
 rlib's relocations, the deepest path is `fuse_gnss_velocity` into `update::<3>` into `nalgebra`'s
 15 × 15 product, 11408 (11200). `predict` reaches 9064, the arming query (`predicted_validity`
 over `project` over `propagate_covariance`) 8544, and the deepest start 6112, so no path but an
