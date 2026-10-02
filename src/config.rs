@@ -611,7 +611,22 @@ pub struct Initialization {
     ///
     /// [evidence]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#initialization
     pub sigma_accel_bias: MetersPerSecond2,
-    /// Initial gyroscope bias standard deviation.
+    /// Initial gyroscope bias standard deviation, before the window's mean rate is weighed.
+    ///
+    /// A window at rest weighs its own mean rate against this, (7), and a still window measures
+    /// the bias far better ([evidence]); so this is the prior of a start in motion, where the
+    /// bias starts at zero, and no start at rest ends wider than it but for the Earth's
+    /// rotation, which (8) adds. PX4 starts every bias at zero under 0.1 rad/s
+    /// (`EKF2_GBIAS_INIT`, `src/modules/ekf2/params_gyro_bias.yaml:5-14`, `c4e4ef98`), and
+    /// ArduPilot's fallback is 2.5°/s (`libraries/AP_InertialSensor/AP_InertialSensor.cpp:1536-1542`,
+    /// `368dc0c4`).
+    ///
+    /// 0.01 rad/s against both, because the corpus's biases are smaller than either assumes
+    /// (EKF2's per-log medians 1.2 × 10⁻³ rad/s RMS, none past 4.5 × 10⁻³), and a wider prior
+    /// lets a coarse start explain its attitude error as bias: at PX4's 0.1, `7ce66f0d`, the hand
+    /// launch, rejects 58157 measurements against 4877 ([evidence]).
+    ///
+    /// [evidence]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#initialization
     pub sigma_gyro_bias: RadiansPerSecond,
 }
 
@@ -707,12 +722,13 @@ impl Default for Accuracy {
     /// again. On every static log in `data/manifest.txt` that read as a valid attitude for
     /// exactly one sample.
     ///
-    /// What these buy, measured on a static start at [`ImuNoise`]'s defaults: 3.83 s of unaided
-    /// propagation before tilt leaves the bar, 37.8 s before heading does
-    /// (`an_unaided_start_holds_its_attitude_for_the_margin_the_defaults_buy`). Neither is the
-    /// `σ_g² t` the white-noise density alone gives, which would be 10.4 s and 674 s — the
-    /// gyroscope-bias prior enters attitude through equation (20)'s `−I Δt` and grows as
-    /// `σ_βg² t²`, overtaking the white-noise term inside two seconds.
+    /// What these buy, measured on a static start at [`ImuNoise`]'s defaults: 10.3 s of unaided
+    /// propagation before tilt leaves the bar and 274 s before heading does, from a window that
+    /// measured its gyroscope, and 4.84 s and 51.4 s from one whose gyroscope never scattered
+    /// (`an_unaided_start_holds_its_attitude_for_the_margin_the_defaults_buy`). The window sets
+    /// them: the gyroscope-bias prior enters attitude through equation (20)'s `−I Δt` and grows
+    /// as `σ_βg² t²`, and only a window that measured the bias makes that prior small (see
+    /// [`Initialization::sigma_gyro_bias`]).
     ///
     /// What those two times move is [`Validity`](crate::Validity), and nothing else.
     /// [`Status`](crate::Status) is already answering on the aiding timers by then — an unaided
@@ -726,8 +742,8 @@ impl Default for Accuracy {
     /// [`horizon`](Accuracy::horizon) is 1 s, and it is a placeholder in a stronger sense
     /// than the other four: they are bars some estimator uses, while no estimator publishes
     /// this one at all. A second is the shortest horizon that is not simply
-    /// [`validity`](crate::Eskf::validity) asked twice — long enough that the gyroscope-bias
-    /// term of (20) has started to tell on tilt, short enough that a vehicle expecting a
+    /// [`validity`](crate::Eskf::validity) asked twice — long enough that (20) has started to
+    /// tell on tilt, short enough that a vehicle expecting a
     /// GNSS fix on takeoff is not failed for the gap before it.
     fn default() -> Self {
         Self {

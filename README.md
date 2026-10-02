@@ -15,8 +15,8 @@ Embedded-first inertial navigation using a 15-state Error-State Kalman Filter (E
 > (36). Yaw is the one attitude component any of them observes
 > directly; roll and pitch are corrected as far as the covariance carries an observation into
 > them. Where no aiding arrives, the uncertainty grows without bound and `Validity` says so:
-> each flag goes false as its own variance passes `Config::accuracy`, 3.83 s in for tilt at
-> the default noise on an unaided start. Accuracy is measured rather than asserted — see
+> each flag goes false as its own variance passes `Config::accuracy`, 10 s in for tilt at
+> the default noise on an unaided start from a still window. Accuracy is measured rather than asserted — see
 > [VALIDATION.md](https://github.com/wboayue/fusion-nav/blob/main/VALIDATION.md) for the
 > figures, against simulated truth and beside PX4's EKF2 on real flights, and
 > [data/README.md](https://github.com/wboayue/fusion-nav/blob/main/data/README.md) for the
@@ -483,9 +483,10 @@ that is inside its bar now and will not be in a second reads false here and true
 no horizontal position to propagate, and that fixes are arriving is the whole answer.
 
 Tilt is where it matters most, because nothing aids it — a static window brings it in and
-gyroscope-bias uncertainty takes it back out, on a schedule only the covariance knows. At the
-default noise an unaided start holds tilt for 3.83 s, so a horizon under that arms and one over
-it does not.
+the gyroscope's noise and bias uncertainty take it back out, on a schedule only the covariance
+knows. At the default noise an unaided start holds tilt for 10.3 s from a 2 s window that
+measured its gyroscope, 4.84 s from one whose gyroscope never scattered, so a horizon under that
+arms and one over it does not.
 
 `Accuracy::horizon` is the one number in the crate no data could settle: how long after arming
 you need the estimate. It defaults to 1 s. Set it to zero and nothing is projected, leaving the
