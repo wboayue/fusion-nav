@@ -10,7 +10,7 @@
 UrbanNav is the gate benchmark of #60: a car in Hong Kong's urban canyons, receivers that
 are wrong by metres to hundreds of metres for tens of seconds while claiming a few, and a
 SPAN-CPT solution to say they were wrong. `data/urbannav.txt` pins the three files this
-reads and carries the terms: UrbanNav states no licence, so neither the inputs nor what
+reads and carries the terms: UrbanNav states no license, so neither the inputs nor what
 this writes are ever committed (GOALS.md, "Secondary sources").
 
 No rosbag is read. The dataset publishes each piece this needs outside its 34 GB bag: the
@@ -250,7 +250,7 @@ def convert(directory, receiver, out, truth_out):
     header = [
         f"fusion-nav converted `{name}` from {SEGMENT}, source {tag}",
         f"Converted from {SEGMENT} ({RECEIVERS[receiver]}) by tools/urbannav2replay.py",
-        "UrbanNav states no licence: never commit this file or anything drawn from it "
+        "UrbanNav states no license: never commit this file or anything drawn from it "
         "(data/urbannav.txt)",
         f"Course sideslip {COURSE_SIDESLIP:.6f} rad (3 deg; the truth's own sideslip, "
         "1.44 deg RMS above 3 m/s)",

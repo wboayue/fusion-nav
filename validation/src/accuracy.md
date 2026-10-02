@@ -128,7 +128,7 @@ through the hover, which is the case the filter's estimated barometric offset ex
 Attitude is not scored. INSANE builds its attitude truth from the RTK baseline and the same
 magnetometer the filter fuses, and at rest that truth tilts gravity several degrees from
 vertical, more than this filter's own tilt error; `tools/insane2replay.py` has the
-measurements. The licence allows publishing these numbers but not the converted data or plots
+measurements. The license allows publishing these numbers but not the converted data or plots
 of it, and validating a commercial product against INSANE needs an arrangement with Klagenfurt.
 
 ## What this page cannot say

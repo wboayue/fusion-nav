@@ -145,7 +145,7 @@ Under PX4's floor on the receiver's stated accuracy the picture is the same: the
 is off by 253.685 m RMS and the F9P refuses
 0 good fixes.
 
-UrbanNav states no licence, so its data is fetched for measurement and nothing drawn from it,
+UrbanNav states no license, so its data is fetched for measurement and nothing drawn from it,
 no plot and no converted file, is published here: these are scalars about this filter. Using
 the dataset for anything else, such as validating a commercial product, needs the maintainers'
 permission.

@@ -31,7 +31,7 @@ __pycache__/
 # shows up as untracked and waits to be committed by accident.
 .venv
 
-# Reference papers, fetched rather than committed: arXiv grants a licence to
+# Reference papers, fetched rather than committed: arXiv grants a license to
 # distribute on arXiv, not to bundle in an MIT crate. reference/README.md says
 # what belongs here and how to re-fetch it.
 reference/*.pdf

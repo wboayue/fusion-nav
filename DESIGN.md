@@ -1,63 +1,54 @@
 # Design
 
-How `fusion-nav` is built and why. For how to use it see [README.md](README.md); for the
-mathematics see [EQUATIONS.md](EQUATIONS.md); for positioning and decisions already made see
-[GOALS.md](GOALS.md).
+How `fusion-nav` is built and where its numbers come from. The documents, by question:
+[README.md](README.md) is how to use the filter, [GOALS.md](GOALS.md) why it exists, this one how
+it is built, [EQUATIONS.md](EQUATIONS.md) what it computes, and [GLOSSARY.md](GLOSSARY.md) what
+the words mean.
 
 > **Status:** every equation of `EQUATIONS.md` is built except two. Three-axis magnetometer
 > fusion, (31)–(33), is out of scope. (5′)'s in-motion levelling term is measured and reported
 > but not subtracted. Not built: #59.
 
-## Error-State Kalman Filter
-
-`fusion-nav` uses an Error-State Kalman Filter rather than representing the complete navigation
-state directly in the Kalman filter.
-
-The nominal navigation state is
-
-| nominal state       | dimension |
-| ------------------- | --------- |
-| position            | 3         |
-| velocity            | 3         |
-| attitude quaternion | 4         |
-| accelerometer bias  | 3         |
-| gyroscope bias      | 3         |
-| **total**           | **16**    |
-
-The corresponding error state is
-
-| error state        | dimension |
-| ------------------ | --------- |
-| position error     | 3         |
-| velocity error     | 3         |
-| attitude error     | 3         |
-| accelerometer bias | 3         |
-| gyroscope bias     | 3         |
-| **total**          | **15**    |
-
-The filter therefore maintains a `15 × 15` error covariance matrix while orientation is
-represented by a quaternion in the nominal state.
-
-Using a three-dimensional attitude error avoids treating the four quaternion components as
-independent Kalman states and preserves the unit-quaternion constraint naturally.
-
-See [state definitions](EQUATIONS.md#state-definitions).
-
 ## Architecture
 
-The filter is intentionally sensor-independent at its core.
+Two paths carry a started filter. The IMU drives one on every sample. Each measurement drives
+the other, fused against the state *at the time it was taken*. Both end in a typed outcome and
+feed the health the estimate carries. The mathematics sits in the code, not behind an
+abstraction: each step cites its equation, and the
+[equation-to-code mapping](EQUATIONS.md#equation-to-code-mapping) names the function for each.
 
 ```mermaid
-flowchart TD
-    imu["IMU"] --> prop["Propagation"]
-    prop --> core["ESKF core"]
-    core --> gnss["GNSS update"]
-    core --> baro["Baro update"]
-    core --> mag["Mag update"]
+flowchart LR
+    subgraph sample["every IMU sample"]
+        imu["ImuSample"] --> predict["predict<br/>propagate.rs (9)–(22)"]
+        predict --> pout(["Propagation"])
+    end
+    predict --> hist[("History<br/>history.rs")]
+    subgraph meas["every measurement, at its own time"]
+        z["time, z, R"] --> admit["admit<br/>eskf.rs"]
+        admit --> observe["observe at t<br/>observation/* (28)–(36), (23′)"]
+        observe --> gate{"gate<br/>update.rs (37)–(38)"}
+        gate -- "r ≤ 1" --> upd["Joseph update, inject, reset<br/>update.rs (24)–(27), (39)–(41)"]
+        gate -- "r > 1" --> rec["apply_or_recover<br/>eskf.rs"]
+        upd --> rec
+        rec --> fout(["Fusion"])
+    end
+    hist -.-> observe
+    rec -. "commit_state shifts it" .-> hist
+    pout --> health["Diagnostics → Status, Validity<br/>health.rs"]
+    fout --> health
 ```
 
-Sensor drivers and hardware interfaces are outside the scope of the crate. Applications provide
-measurements together with their associated uncertainty.
+Each `fuse_*` refuses what cannot be fused before forming anything: a time outside the history,
+a value that is not finite, a noise that is not positive. It adopts outright the first
+measurement of a quantity the start never established. The gate runs before the gain, so a
+rejection computes nothing it could commit. `apply_or_recover` is the one place every source
+recovers through: it commits an accepted update, records a rejection, or adopts the measurement
+when its source has been locked out past `Config::recovery`. Every correction it commits shifts
+`History` through `Eskf::commit_state`.
+
+Sensor drivers and hardware are outside the crate. The application supplies each measurement
+with its time and its uncertainty.
 
 ### Module map
 
@@ -79,148 +70,181 @@ measurements together with their associated uncertainty.
 | `src/display.rs` | `Fixed`, which prints an `f32` without core's float formatting and so without a panic path |
 | `src/lib.rs` | the crate root: `no_std` and the lint gates, and the prelude, the one list of public types, minus three names too generic to glob-import |
 
-The [equation-to-code mapping](EQUATIONS.md#equation-to-code-mapping) names the function
-that implements each numbered equation.
+## Error-State Kalman Filter
+
+The filter estimates the small error in a nominal state rather than the state itself, so attitude
+can be a quaternion in the nominal state and three angles in the error: four quaternion components
+are never treated as independent Kalman states, and the unit norm holds by construction.
+
+| | position | velocity | attitude | accelerometer bias | gyroscope bias | total |
+| --- | --- | --- | --- | --- | --- | --- |
+| nominal state | 3 | 3 | 4, a quaternion | 3 | 3 | 16 |
+| error state | 3, `δp` | 3, `δv` | 3, `δθ` | 3, `δβa` | 3, `δβg` | 15 |
+
+`ErrorState`'s order is the covariance's. The barometric offset of (30′) sits beside it, never in
+it, so the public 15 × 15 stays the navigation state's:
+
+```text
+          δp     δv     δθ     δβa    δβg          b
+        ┌──────┬──────┬──────┬──────┬──────┐    ┌──────┐
+  rows  │ 0–2  │ 3–5  │ 6–8  │ 9–11 │12–14 │    │ P_xb │  Offset: a column and a
+        └──────┴──────┴──────┴──────┴──────┘    │ P_bb │  variance, propagated
+         Covariance, 15 × 15, 900 bytes in f32  └──────┘  with P, updated in blocks
+```
+
+See [state definitions](EQUATIONS.md#state-definitions).
 
 ## State Propagation
 
-The IMU drives propagation, and it is the only path that runs on every sample: gyroscope to
-attitude, accelerometer through that attitude into the navigation frame, gravity added, the
-result integrated into velocity and position. Equations (12)–(15) have the form.
+The IMU drives propagation, the only path that runs on every sample. The gyroscope moves the
+attitude; the accelerometer is rotated through it into the navigation frame, gravity is added, and
+the result integrates into velocity and position, (12)–(15). The covariance is propagated
+alongside on the linearized error-state dynamics.
+
+What `predict` does with a sample, in the order it decides:
 
 ```mermaid
 flowchart TD
-    gyro["gyroscope"] --> att["attitude"]
-    att --> acc["acceleration"]
-    accel["accelerometer"] --> acc
-    acc --> vel["velocity"]
-    vel --> pos["position"]
+    s["ImuSample"] --> after{"after the last sample?"}
+    after -- no --> inv(["InvalidStep: nothing moves, the clock included"])
+    after -- yes --> adv["clock and health timers advance"]
+    adv --> long{"dt > max_predict_dt?"}
+    long -- yes --> coast{"Config::coast on?"}
+    coast -- yes --> c22["coast (22′), the sample unread"] --> co(["Coasted"])
+    coast -- no --> stl(["StepTooLong"])
+    long -- no --> fin{"sample finite, intervals usable?"}
+    fin -- no --> nf(["NotFinite, InvalidInterval"])
+    fin -- yes --> integ["integrate (9)–(22)"] --> ok(["Propagated"])
 ```
 
-What matters here rather than in the equations is that this is a first-order discretization over
-a short interval, which is why `Config::max_predict_dt` exists: one IMU sample cannot describe a
-long gap, so `predict` never integrates a step beyond the limit from that sample. It coasts it,
-equation (22′): position on the estimated velocity, and `P` grown by `Config::coast`'s acceleration
-and rotation densities, so the covariance prices the assumption. With `Config::coast` off the
-step is refused as `Propagation::StepTooLong`. The health timers advance either way, because the
-time passed whether or not the state moved.
+The step is a first-order discretization, good only over a short interval. One IMU sample
+cannot describe a long gap, hence `Config::max_predict_dt`. A longer step is coasted by (22′):
+position on the estimated velocity, `P` grown by `Config::coast`'s densities, so the covariance
+prices the assumption. The timers advance either way, because the time passed.
 
-A sample carrying a NaN or an infinity is refused the same way, timers included, as
-`Propagation::NotFinite`. It has to be refused at this boundary because nothing downstream can
-report it: a non-finite rate reaches the quaternion through (15), which composes it unchecked,
-and then the covariance, where one NaN stays for the rest of the flight. The variant documents
-what the two production estimators do here, and which of them checks.
-
-The covariance is propagated alongside the nominal state using the linearized error-state
-dynamics.
+`NotFinite` has to be refused at this boundary because nothing downstream can report it. A
+non-finite rate reaches the quaternion through (15), which composes it unchecked, then the
+covariance, where one NaN stays for the rest of the flight. The variant's doc comment says what
+the two production estimators do here, and which of them checks.
 
 See [nominal state propagation](EQUATIONS.md#nominal-state-propagation) and
 [covariance propagation](EQUATIONS.md#covariance-propagation).
 
 ## Measurement Updates
 
-Each source is fused as its own update against its own gate, rather than assembled into one
-combined measurement: a sensor that goes bad takes out the quantity it observes and nothing else,
-and the health that follows is per source for the same reason.
+Each source is its own update against its own gate, never part of one combined measurement. A
+sensor that goes bad takes out the quantity it observes and nothing else. Health is per source
+for the same reason.
 
 See [observation models](EQUATIONS.md#observation-models) for the measurement Jacobians.
 
+### Time and history
+
+A measurement is fused at the `Timestamp` it carries. `observe` forms `y` against `History`'s
+nominal state at that time and carries `H` to today's error through the error dynamics, (23′).
+The correction lands on the current state. So the `Fusion` a call returns is the gate's verdict
+on that measurement, not a promise of one later, as PX4's delayed horizon would make it
+([measurement latency](GOALS.md#measurement-latency)).
+
+`History` holds 32 entries 10 ms apart. Every correction shifts it through `Eskf::commit_state`,
+the one writer of the state outside a propagation or a start. A time older than
+`LATENCY_HORIZON` is refused as `OutOfHorizon`; one slightly ahead of the state is carried forward
+on the estimated velocity.
+
 ### GNSS Position
 
-The filter converts the fix rather than accepting a converted one, because it owns the navigation
-origin: the fix and the estimate are then relative to the same point by construction.
-`fuse_gnss_geodetic` takes latitude and longitude and converts about that origin;
-`fuse_gnss_position` is for a caller whose positions were never geodetic (a local RTK base,
-motion capture) and is right only if the caller's origin is the filter's.
+The filter owns the navigation origin, so it converts the fix itself: fix and estimate are then
+relative to the same point by construction. `fuse_gnss_geodetic` takes latitude and longitude.
+`fuse_gnss_position` is for positions that were never geodetic (a local RTK base, motion
+capture), and is right only if the caller's origin is the filter's.
 
-A fix is fused as two measurements rather than one: (28)'s north–east rows under a `Gate<2>`,
-then its down row under a `Gate<1>`, each with its own `Fusion` in the `GnssFusion` returned and
-its own `SourceHealth`. A receiver's height is the half that wanders and the half another source
-disputes, and one joint test turns every such dispute into lost horizontal aiding: on
-`2c42096b`, with its barometer fused, 3945 of 4616 fixes, every one of them vertical. PX4 runs
-GNSS position and GNSS height as separate aid sources and ArduPilot gates them apart; `Gates`
-carries the citations.
+A fix is two measurements: (28)'s north–east rows under a `Gate<2>`, then its down row under a
+`Gate<1>`. Each has its own `Fusion` in the returned `GnssFusion` and its own `SourceHealth`. A
+receiver's height is the half that wanders and that another source disputes; one joint test
+turns every such dispute into lost horizontal aiding ([measured](#gates)). PX4 runs GNSS
+position and height as separate aid sources and ArduPilot gates them apart; `Gates` carries the
+citations.
 
-The first fix places the origin, under the estimate where there is one, and at the fix itself
-after a start whose window did not show the vehicle at rest, where it is adopted rather than
-fused. See
+The first fix places the origin: under the estimate where there is one, or at the fix itself
+after a start not at rest, where the fix is adopted rather than fused. See
 [geodetic origin](EQUATIONS.md#geodetic-origin).
 
 ### GNSS Velocity
 
-Velocity is the observation that matters most between position fixes: velocity error accumulates
-rapidly from accelerometer and attitude error, and a velocity measurement constrains it directly
-rather than waiting for the position error it would become.
+Velocity matters most between position fixes. Its error grows fast from accelerometer and
+attitude error, and a velocity measurement constrains it directly rather than waiting for the
+position error it would become.
+
+At the antenna, (29′), rotation moves the antenna relative to the IMU. The observation therefore
+reads the angular rate, and through it attitude and gyroscope bias: `H` has entries in `δθ` and
+`δβg`, not only `δv`. PX4 corrects the measurement for the arm instead and leaves `H` alone;
+[the decision](GOALS.md#sensor-offsets-as-per-call-arguments) has the comparison.
 
 ### Barometric Altitude
 
-Barometric altitude is the vertical observation that is available when GNSS is not, and at a
-higher rate when it is.
+The barometer observes height when GNSS does not, and faster when it does.
 
-The barometer reference is captured by a window at rest, or read from the estimate at the first
-altitude after a start that leaves none, and estimated from then on: its error is an offset
-carried beside the 15-state covariance, correlated with height and corrected whenever a barometer
-and a GNSS height disagree, and it walks so that slow drift (weather, ground effect, sensor
-warm-up) can be followed rather than becoming vertical position error. `State` and
+Its reference is set by a window at rest, or read from the estimate at the first altitude after a
+start that sets none. From then on it is estimated: an offset beside the 15-state covariance,
+correlated with height, corrected whenever barometer and GNSS height disagree. It walks, so slow
+drift (weather, ground effect, warm-up) is followed instead of becoming height error. `State` and
 `Covariance` do not carry it. See
 [barometric reference as an estimated offset](GOALS.md#barometric-reference-as-an-estimated-offset)
 and [equation (30′)](EQUATIONS.md#barometric-offset).
 
-### Magnetometer
+### Heading
 
-The magnetometer is the heading source most vehicles carry. Gravity pins roll and pitch and says
-nothing about the rotation about them, so without a heading source yaw follows the gyroscope bias
-wherever it goes. The other two are a dual-antenna GNSS heading and, for a vehicle that points
-where it goes, the course constraint: [heading from GNSS](EQUATIONS.md#heading-from-gnss).
+Gravity pins roll and pitch and says nothing about yaw. Without a heading source, yaw follows the
+gyroscope bias wherever it goes. Three sources supply one, each through the scalar update of (36)
+in `observation/heading.rs` under its own gate:
 
-Fusion is **heading only** by default: the field is reduced to a single scalar heading and fused
-as one measurement, leaving roll and pitch to gravity where they are well determined. A magnetic
-disturbance can then corrupt one state rather than three, and the innovation gate has a
-one-dimensional quantity to act on.
+* a magnetometer, the source most vehicles carry;
+* a dual-antenna GNSS receiver, (35′), a true heading no magnetic field can disturb;
+* the course constraint (35″), for a vehicle that points where it goes. It ties the nose to the
+  *estimated* velocity rather than to a GNSS velocity already fused, so a cross-track error is
+  not counted twice.
 
-Three-axis field fusion, (31)–(33), is documented for completeness and not built. `fusion-nav`
-carries no magnetic-field or magnetometer-bias states, so hard- and soft-iron calibration is the
-application's responsibility; an uncalibrated magnetometer produces a heading bias the filter
-cannot detect.
+See [heading from GNSS](EQUATIONS.md#heading-from-gnss).
 
-What the filter *can* price is the other half of that error. Reducing the field to a heading
-means rotating it by the attitude estimate, so a tilt error tips the field and turns the heading
-it yields by `tan δ` times as much, twice as much as the tilt itself, at the dip the corpus
-carries. The caller hands over a field and never sees that rotation, so the variance it supplies
-cannot describe it; the filter adds it, equation (36′). It goes into `R` rather than `H`: the
-heading becomes less trustworthy without being made to look like an observation of the tilt that
-spoiled it, which is what a scalar carrying 3° of noise must not be allowed to correct.
+#### The magnetometer
+
+Fusion is **heading only**. The field is reduced to one scalar heading, leaving roll and pitch to
+gravity, which determines them well. A magnetic disturbance then corrupts one state rather than
+three, and the gate tests a one-dimensional quantity.
+
+Three-axis field fusion, (31)–(33), is documented and not built. The filter carries no field or
+magnetometer-bias states, so hard- and soft-iron calibration is the application's job. An
+uncalibrated magnetometer gives a heading bias the filter cannot detect.
+
+The filter *can* price the other half of the error. Reducing the field to a heading rotates it by
+the attitude estimate, so a tilt error turns the heading by `tan δ` times as much: twice the tilt,
+at the dip the corpus carries. The caller never sees that rotation, so its variance cannot
+describe it; the filter adds it, (36′). It goes into `R`, not `H`. The heading becomes less
+trusted without looking like an observation of the tilt that spoiled it, which a scalar carrying
+3° of noise must not be allowed to correct.
 
 See [magnetometer, heading only](EQUATIONS.md#magnetometer-heading-only).
 
 ## Innovation Gating
 
-A measurement is checked against the state it is about to correct before it is allowed to correct
-it. The filter forms the innovation and its covariance and compares the normalized innovation
-against a threshold in the observation's degrees of freedom, which is one mechanism covering GNSS
-glitches, barometer transients and magnetic interference.
-
-Rejections are counted and exposed. A filter that silently discards every measurement looks
-identical to one that is working.
-
+Each source has its own gate, a chi-square test in the observation's degrees of freedom. One
+mechanism covers GNSS glitches, barometer transients and magnetic interference. Rejections are
+counted and exposed as typed outcomes, because a filter that silently discards everything looks like one that works.
 See [innovation gating](EQUATIONS.md#innovation-gating).
 
 ### Measurement rejection
 
-Gating is self-sealing: if the filter itself is wrong, correct measurements look inconsistent,
-all are rejected, and the filter dead-reckons while looking confident. So health is tracked per
-source and carried on the estimate, and a source locked out past its timeout is recovered by
-adoption, one switch per source in `Config::recovery`. The user-facing
-side is in [README.md](README.md#health-reporting); the reasoning in
-[rejection handling](GOALS.md#rejection-handling-recover-by-default-opt-out-per-source),
-[per-quantity validity](GOALS.md#per-quantity-validity-not-one-ladder), and
-[gate lockout](EQUATIONS.md#gate-lockout).
+If the filter itself is wrong, correct measurements look inconsistent, all are rejected, and it
+dead-reckons while looking confident: [gate lockout](EQUATIONS.md#gate-lockout). So
+health is per source and carried on the estimate, and recovery is per source too: adoption, one
+switch each in `Config::recovery`. The user-facing side is [README.md](README.md#health-reporting);
+the reasoning is GOALS.md's
+[rejection handling](GOALS.md#rejection-handling-recover-by-default-opt-out-per-source) and
+[per-quantity validity](GOALS.md#per-quantity-validity-not-one-ladder).
 
 ## Embedded Design
 
-`fusion-nav` is intended to be suitable for microcontrollers used in flight-control applications.
-
-The implementation therefore favors:
+`fusion-nav` is intended for the microcontrollers flight controllers run on. The implementation therefore favors:
 
 * fixed-size matrices
 * compile-time dimensions
@@ -232,51 +256,38 @@ The implementation therefore favors:
 * explicit numerical types
 * minimal dependencies
 
-The only dependency is [`nalgebra`](https://crates.io/crates/nalgebra), built `no_std` with its
-`libm` feature, which supplies the fixed-size matrix algebra and the quaternion type. It fixes the
-MSRV at 1.89. It stays behind the API: `nalgebra` is 0.x, so each minor version is a semver
-break, and a public `Vector3` would make its upgrade this crate's. Vectors and the covariance
-cross as arrays, which convert to and from any version's types, and a quaternion as a
-`Quaternion` with named fields, since the libraries disagree on the order of four numbers.
-[`defmt`](https://crates.io/crates/defmt) is the one optional dependency, behind a feature of the
-same name and off by default, for a target that logs through it.
+The only dependency is [`nalgebra`](https://crates.io/crates/nalgebra), `no_std` with its `libm`
+feature, for fixed-size matrices and the quaternion. It fixes the MSRV at 1.89. It stays behind
+the API: `nalgebra` is 0.x, every minor version a semver break, and a public `Vector3` would make
+its upgrade this crate's. Vectors and the covariance cross as arrays, which convert to any
+version's types. A quaternion crosses as a `Quaternion` with named fields, since libraries
+disagree on the order of four numbers. [`defmt`](https://crates.io/crates/defmt) is the one
+optional dependency, behind an off-by-default feature of the same name.
 
-A 15-state filter requires a `15 × 15` covariance matrix containing 225 scalar values, which in
-`f32` is 900 bytes.
-
-The covariance is not the whole cost. A measurement update in Joseph form also needs the
-transition matrix, the `(I − KH)` product, and at least one `15 × 15` temporary, each another
-900 bytes, so the realistic working set is a few kilobytes rather than one. Peak stack usage
-depends on how aggressively temporaries are reused, which is exactly why the intent is to
-**measure and publish** the figure per operation rather than estimate it here: the measured
-figures are [validation/cost.md](validation/cost.md), and what decided each form
-[follows](#measured-cost-by-function).
-
-A few kilobytes is still comfortable on an STM32H7-class flight controller while providing a full
-inertial-navigation state.
-
-`Status` is a payload-free enum and `state()` stays small and `Copy`, so reading it in a control
-loop costs nothing. Timing detail lives in `diagnostics()`, which is not on the hot path.
+The covariance is 900 bytes in `f32`, and a Joseph update needs several temporaries its size. So
+the working set is kilobytes, set by how temporaries are reused. It is measured, not estimated:
+[validation/cost.md](validation/cost.md) publishes it per function, and what decided each form
+[follows](#measured-cost-by-function). `state()` is small and `Copy` and `Status` carries no
+payload, so reading either in a control loop costs nothing. Timing detail lives in
+`diagnostics()`, off the hot path.
 
 ### Measured cost, by function
 
-What the code costs now, its sizes, stack frames and flash on both thumb targets, is
+What the code costs now (sizes, stack frames and flash on both thumb targets) is
 [validation/cost.md](validation/cost.md), rendered from the pins in `data/footprint.txt` and
-checked against them in CI. This section holds what decided each function's form: the cost of
-the form taken against the forms rejected, which are measurements of builds that no longer
-exist, and the figures nothing pins (host timings, operation counts, flash measured by hand). A
-doc comment links here for its decision and keeps the one sentence saying why. Execution time and
-stack high-water on hardware are #41's, and land on the page.
+checked in CI. This section holds what decided each function's form: the form taken against those
+rejected, measured on builds that no longer exist, and figures nothing pins (host timings,
+operation counts, flash measured by hand). A doc comment links here and keeps the one sentence of
+why. Execution time and stack high-water on hardware are #41's, and land on the page.
 
 #### Stack frames
 
-Measured with `-Zemit-stack-sizes` at `opt-level = 3`, by `tools/footprint.sh`, whose header
-says how; `--all` prints every function's. A frame moves by tens of bytes with codegen that
-touches nothing in it (adding `update::<1>` moved `reparameterize`'s share without a line of it
-changing), so where a form was chosen the *difference* against the rejected one is the figure
-that carries the decision.
-Figures are `thumbv6m`'s, with `thumbv7em`'s in parentheses where it was measured too. A pair
-set against each other was measured together, at the commit named where the code has moved since.
+Measured with `-Zemit-stack-sizes` at `opt-level = 3` by `tools/footprint.sh`, whose header says
+how; `--all` prints every function's. A frame moves by tens of bytes with codegen that touches
+nothing in it (adding `update::<1>` moved `reparameterize`'s share without a line of it changing).
+So the figure that carries a decision is the *difference* against the rejected form. Figures are
+`thumbv6m`'s, with `thumbv7em`'s in parentheses where measured too. A pair set against each other
+was measured together, at the commit named where the code has moved since.
 
 | function | against the rejected form |
 | --- | --- |
@@ -300,11 +311,15 @@ rlib's relocations, the deepest path is `fuse_gnss_velocity` into `update::<3>` 
 15 × 15 product, 11408 (11200). `predict` reaches 9064, the arming query (`predicted_validity`
 over `project` over `propagate_covariance`) 8544, and the deepest start 6112, so no path but an
 update moves the crate's peak. That peak is comfortable on the STM32H7 class above and more than
-the whole RAM of an 8 KB Cortex-M0 part; #202 pins it. The block-wise forms that would cut it (of
-(22), where (20)'s identity and zero blocks make most of `F P Fᵀ` known; of a coast, whose `F` is
-a four-term polynomial in `Δt` since `ω = 0` makes the error dynamics nilpotent; a runtime `M` for
-`update` in place of a type parameter) are each written as the equation reads until #41's figures
-say a target needs them.
+the whole RAM of an 8 KB Cortex-M0 part; #202 pins it.
+
+The block-wise forms that would cut it are each written as the equation reads until #41's figures
+say a target needs them:
+
+* (22), where (20)'s identity and zero blocks make most of `F P Fᵀ` known;
+* a coast, whose `F` is a four-term polynomial in `Δt`, since `ω = 0` makes the error dynamics
+  nilpotent;
+* a runtime `M` for `update` in place of a type parameter.
 
 #### Sizes
 
@@ -333,25 +348,26 @@ latitude and longitude), a GNSS velocity 1.2 µs, each one-dimensional update 0.
 
 #### Arithmetic
 
-(22) as written is of order 6750 multiplications and three 900-byte temporaries
-per IMU sample, at up to 400 Hz; a dense `Q` would add 900 bytes and 225 additions to add twelve
-numbers. `project` is ten runs of (22) at the default 1 s horizon, up to 64; a coast is up to 64
-runs landing on one step, 12 for a 1.2 s gap. Each `StaticWindow::push` costs 32 `f64` additions,
-9 multiplications, 2 comparisons, a subtraction and 18 widenings (the barometer's share only on a
-fresh reading), and 27 operations in `f32`: 7 divisions, 6 multiplications, 5 additions,
-4 comparisons, 2 maxima, 2 square roots and a conversion. Each `WindowNoise::BLOCK` closed costs its
-sensor 7 additions, 6 multiplications and a division more. Counted in the `thumbv6m` disassembly,
-less the merge a doubling adds; on a core with no FPU each is a library call, paid only until the
-window commits.
+| operation | cost |
+| --- | --- |
+| (22) as written, per IMU sample (up to 400 Hz) | of order 6750 multiplications and three 900-byte temporaries; a dense `Q` would add 900 bytes and 225 additions to add twelve numbers |
+| `project` | ten runs of (22) at the default 1 s horizon, up to 64 |
+| a coast | up to 64 runs landing on one step; 12 for a 1.2 s gap |
+| `StaticWindow::push`, `f64` | 32 additions, 9 multiplications, 2 comparisons, a subtraction, 18 widenings (the barometer's share only on a fresh reading) |
+| `StaticWindow::push`, `f32` | 27 operations: 7 divisions, 6 multiplications, 5 additions, 4 comparisons, 2 maxima, 2 square roots, a conversion |
+| each `WindowNoise::BLOCK` closed | 7 additions, 6 multiplications and a division more, per sensor |
+
+The window's counts are from the `thumbv6m` disassembly, less the merge a doubling adds. On a
+core with no FPU each is a library call, paid only until the window commits.
 
 ## Defaults and their evidence
 
 A default justified by data carries its deciding figure in its doc comment, in one sentence, and
-links here for the rest: the per-log breakdowns, the tables and the alternatives measured and
-rejected. Where `GOALS.md` records a decision, the evidence for its default sits with the decision
-instead, and the comment links there. Each heading below is the item's name, so a comment's link
-names what it is about. A figure here is a measurement of the corpus and the scenarios as they
-stood when it was taken; where the corpus has grown since, the text says which logs it covered.
+links here for the rest: per-log breakdowns, tables, alternatives measured and rejected. Where
+`GOALS.md` records a decision, the evidence sits with it instead. Each heading is the item's
+name, so a comment's link names its subject. A figure is a measurement of the corpus and
+scenarios as they stood when it was taken; where the corpus has grown since, the text says which
+logs it covered.
 
 ### `ImuNoise`
 
@@ -364,26 +380,34 @@ knock at 4757 s. PX4's own pair gives 2.4°. A ceiling on `σ_ba` at PX4's 0.35 
 clamp on the bias at its 0.4 gives 4.4°, and neither is reached once the walk is converted.
 
 **White noise at ten times PX4's density**, because replay measured the factor being spent.
-Scaling `accel_white` down breaks the one thing each source can say: at 0.3×, `2c42096b`, a real
-airframe vibrating on the ground, reads a tilt peak of 4.6° against 2.5° (EKF2 never leaves
-1.08°), and still 4.5° with PX4's `R` floors applied, so the vibration needs it; `a299e722` ends
-`Degraded`, rejecting 493 velocity solutions against 283, which PX4's floors cure (43, `Healthy`),
-so the receiver's raw `R` needs it. `gnss_latency` does not: with each fix fused at the time it was
-taken, (23′), it reads `false_valid` 0 at 0.3× as at 1×, where fused as current it read 888 at
-0.3×. Scaling `gyro_white` down to 0.7× improves `tilt` and `yaw` on every scenario, but
-`harsh_imu`'s `nees_att` crosses 1 (1.07), and on the corpus `f16771dd` grows a 14.1° tilt at
-t = 51 s where EKF2 reads 2.6°. The simulator's IMU is 58 times quieter than this figure, so the
-scenarios favouring less gyroscope noise are the simulator's preference rather than an
-airframe's.
+`accel_white` at 0.3× breaks the one thing each real source can say, and the simulator does not
+need the factor:
 
-**Against the floor the sensors measure**, `StaticWindow::noise`: on the worst axis of the nine
-real logs whose window is still, less `a299e722`, whose rows each average 2.5 ms while standing for
-20 ms and so read `√8` high before the converter's `# IMU averaging interval` corrects them, gyroscopes read 8.4e-5 to 1.6e-3 rad s⁻¹/√Hz and
-accelerometers 1.5e-3 to 5.6e-2 m s⁻²/√Hz, so the default is 9 to 180 times the one and 6 to 230
-times the other. That is the factor measured from below; a default under the floor would be the
-error. Against PX4's own densities, a tenth of these, the floor comes within reach: `2c42096b`'s
-accelerometer, a grounded airframe with its props spinning, reads 1.6 times PX4's, and
-`f16771dd`'s gyroscope 1.1 times.
+* `2c42096b`, a real airframe vibrating on the ground, reads a tilt peak of 4.6° against 2.5°
+  (EKF2 never leaves 1.08°), still 4.5° under PX4's `R` floors: the vibration needs it.
+* `a299e722` ends `Degraded`, rejecting 493 velocity solutions against 283. PX4's floors cure it
+  (43, `Healthy`): the receiver's raw `R` needs it.
+* `gnss_latency` does not. Fused at the time each fix was taken, (23′), it reads `false_valid` 0
+  at 0.3× as at 1×; fused as current, it read 888 at 0.3×.
+
+`gyro_white` at 0.7× improves `tilt` and `yaw` on every scenario, but `harsh_imu`'s `nees_att`
+crosses 1 (1.07), and `f16771dd` grows a 14.1° tilt at t = 51 s where EKF2 reads 2.6°. The
+simulator's IMU is 58 times quieter than this figure, so the scenarios favouring less gyroscope
+noise state the simulator's preference, not an airframe's.
+
+**Against the floor the sensors measure**, `StaticWindow::noise`, on the worst axis of the nine
+real logs whose window is still:
+
+| sensor | floor | default over floor |
+| --- | --- | --- |
+| gyroscope | 8.4e-5 to 1.6e-3 rad s⁻¹/√Hz | 9 to 180 times |
+| accelerometer | 1.5e-3 to 5.6e-2 m s⁻²/√Hz | 6 to 230 times |
+
+`a299e722` is left out: its rows each average 2.5 ms while standing for 20 ms, so read `√8` high
+until the converter's `# IMU averaging interval` corrects them. This is the factor measured from
+below; a default under the floor would be the error. PX4's own densities, a tenth of the
+defaults, come within reach of it: `2c42096b`'s accelerometer, a grounded airframe with props spinning, reads
+1.6 times PX4's, and `f16771dd`'s gyroscope 1.1 times.
 
 ### `Gates`
 
@@ -397,52 +421,62 @@ equivalent (`γ` = 31.81 at three degrees of freedom, the two-sided tail of 5σ 
 one joint three-axis `Gate<3>` rather than split. The percentile applies to both halves of the
 split unchanged.
 
-The corpus could not tell them apart when it was measured. No log rejected a fix at any of the
-four, because PX4's `eph` and `epv` are far wider than the innovations they come with: the mean
-test ratio at 95 % was 0.0023–0.0449 across the three logs then carrying GNSS and the largest
-0.33, where a consistent `R` would put the mean near 0.38. Those figures move as the filter gains
-aiding, in the direction to expect: every source that tightens `P` tightens `S = H P Hᵀ + R`, so
-the same innovation reads as a larger ratio. `nis_gnss_pos=` on the `summary` line is the maintained form of this claim,
-per log, pinned in `data/manifest.txt`, and stated as a distribution rather than as a distance
-from a threshold that itself moves.
+The corpus could not tell them apart when measured. No log rejected a fix at any of the four:
+PX4's `eph` and `epv` are far wider than the innovations they come with. The mean test ratio at
+95 % was 0.0023–0.0449 across the three logs then carrying GNSS, the largest 0.33, where a
+consistent `R` would put the mean near 0.38. Those figures rise as the filter gains aiding: every
+source that tightens `P` tightens `S = H P Hᵀ + R`, so the same innovation reads as a larger
+ratio. `nis_gnss_pos=` on the `summary` line maintains this claim per log, pinned in
+`data/manifest.txt`, as a distribution rather than a distance from a threshold that itself moves.
 
-The simulator, whose GNSS errors are exactly the Gaussian `R` claims, can, and it prices the
-tight end. On `mission`, 95 % rejects 30 of 915 good fixes and 99 % rejects 4, with horizontal
-RMSE 0.716 m and 0.702 m and vertical 0.796 m and 0.749 m. 99.9 % rejects 1 and 5σ none, and
-both give the same 0.702 m and 0.749 m that 99 % does. So 95 % buys worse accuracy, and one good
-fix in thirty turned away, for protection against outliers that nothing there contains. Between
-99.9 % and 5σ good data says nothing; hostile data (UrbanNav) found no percentile that helps,
-so 99.9 % stands.
+The simulator, whose GNSS errors are exactly the Gaussian `R` claims, prices the tight end. On
+`mission`:
+
+| percentile | good fixes rejected (of 915) | horizontal RMSE, m | vertical RMSE, m |
+| --- | --- | --- | --- |
+| 95 % | 30 | 0.716 | 0.796 |
+| 99 % | 4 | 0.702 | 0.749 |
+| 99.9 % | 1 | 0.702 | 0.749 |
+| 5σ | 0 | 0.702 | 0.749 |
+
+So 95 % buys worse accuracy, and one good fix in thirty turned away, against outliers nothing
+there contains. Between 99.9 % and 5σ good data says nothing; hostile data (UrbanNav) found no
+percentile that helps, so 99.9 % stands.
 
 ### `Coast`
 
-Measured on the two sources with gaps at speed, and set at twice the smallest value either
-needed.
+Set at twice the smallest value either source with gaps at speed needed.
 
-`4b473e91`, a VTOL at 30 m/s with eight logging dropouts of 1.0–3.1 s, is what sets both, since
-in the simulator any value passes. Refused, its gaps cost 12 recoveries, 39 rejected positions and
-28 velocities. Coasted with `rotation` at zero, the first fix after every gap is accepted at any
-`acceleration`, and what follows it is not: the course turns 44° across the 3.1 s gap at 954 s,
-the heading innovation afterwards sits at −0.60 rad under an `S` that did not grow, and the stale
-heading steers velocity off until the gate turns it down (7 recoveries at `acceleration` 1.0).
-With `rotation` at 0.02 or more and `acceleration` at 2.0 no gap causes a rejection or a recovery.
+`4b473e91`, a VTOL at 30 m/s with eight logging dropouts of 1.0–3.1 s, sets both; in the
+simulator any value passes. Refused, its gaps cost 12 recoveries, 39 rejected positions and 28
+velocities. Coasted with `rotation` at zero, the first fix after every gap is accepted at any
+`acceleration`, and what follows is not. The course turns 44° across the 3.1 s gap at 954 s. The
+heading innovation then sits at −0.60 rad under an `S` that did not grow, and the stale heading
+steers velocity off until the gate turns it down (7 recoveries at `acceleration` 1.0).
+
+| `acceleration` | `rotation` needed |
+| --- | --- |
+| 2.0 | 0.02 or more: no gap causes a rejection or a recovery |
+| 1.0 | 0.1 |
+| 0.5 | none suffices: 7 recoveries at any value |
+
 Fixes timestamped inside a gap, ahead of the state until the IMU sample that ends it, are refused
-as `Fusion::OutOfHorizon`, and the log reads `rejected_gnss_pos=0 rejected_gnss_vel=0`. `acceleration` at 1.0 still needs `rotation` at 0.1, and at
-0.5 leaves 7 recoveries at any `rotation`.
+as `Fusion::OutOfHorizon`; the log reads `rejected_gnss_pos=0 rejected_gnss_vel=0`.
 
-`logging_dropout` (1.2 s at 20 m/s in a turn) passes at `acceleration` 0.5 or more whatever the
-rotation, and reads the same across the whole range: `pos_h_max` 23.25 m refused, 2.74 m coasted,
+`logging_dropout` (1.2 s at 20 m/s in a turn) passes at `acceleration` 0.5 or more at any
+`rotation`, and reads the same across the range: `pos_h_max` 23.25 m refused, 2.74 m coasted;
 `false_valid` 1946 refused, 0 coasted.
 
-`replay --derive` asks the same question a field at a time, the other at its default: the
-smallest multiple of each after which no GNSS position or velocity is rejected or adopted for
-10 s past each gap, and prints twice the largest a gap needed. On `4b473e91` six of the eight
-gaps settle with neither field's noise, and the two longest late in the flight need some:
-2.66 s at 772 s half the default `acceleration`, 3.12 s at 954 s all of it and a quarter of the
-`rotation`. So the tool prints 4.0 and 0.05 there, not the default: by its 10 s test the default
-`acceleration` has no margin on its own log, and the default `rotation` twice what it prints.
-`2b2ad123`'s gaps need neither field's noise, and `f16771dd` has no GNSS after its gaps to say;
-both keep the default.
+![logging_dropout's position error against its ±3σ band: the band opens across the gap and closes after it, and the error the gap leaves stays inside it](validation/figures/logging_dropout/error_position.png)
+
+`replay --derive` asks the same question one field at a time, the other at its default. It finds
+the smallest multiple of each after which no GNSS position or velocity is rejected or adopted for
+10 s past each gap, and prints twice the largest a gap needed. On `4b473e91` six of eight gaps
+need neither field's noise. The two longest, late in the flight, need some: 2.66 s at 772 s half
+the default `acceleration`; 3.12 s at 954 s all of it and a quarter of the `rotation`. So the tool
+prints 4.0 and 0.05 there: by its 10 s test the default `acceleration` has no margin on its own
+log, and the default `rotation` is twice what it prints. `2b2ad123`'s gaps need neither field;
+`f16771dd` has no GNSS after its gaps to say. Both keep the default.
 
 ### `Correlation`
 
@@ -459,13 +493,20 @@ between the source's rows. On the `correlated` scenario, seed 1, whose sources a
 | barometer | 1.3 | 0.39 |
 | magnetometer | 3.3 | 0.87 |
 
-The autocorrelation decays faster than the error's at every lag out to twelve, not by a constant
-factor, so a ratio of lags is short too. On 50 seeds of `correlated`, `anees_pos` is 1.09 at the
-defaults, 3.03 at the values read, 1.09 at `max(default, read)` and 0.88 at the scenario's own.
-On INSANE `nees_pos` reads 0.23, 0.21 and 0.23 at the defaults, 0.24, 0.58 and 0.40 at the values
-read, and 0.19, 0.21 and 0.23 at `max(default, read)`. So `--derive` raises a source's `τ` above the
-default where the reading exceeds it and otherwise prints the default; an estimator the filter
-does not bias is #195. The defaults themselves are GOALS.md's, "Where the defaults come from".
+The innovations' autocorrelation decays faster than the error's at every lag out to twelve, and
+not by a constant factor, so a ratio of lags is short too. Position consistency under each
+choice of `τ`:
+
+| `τ` | `correlated`, 50 seeds, `anees_pos` | INSANE, three sequences, `nees_pos` |
+| --- | --- | --- |
+| defaults | 1.09 | 0.23, 0.21, 0.23 |
+| read | 3.03 | 0.24, 0.58, 0.40 |
+| `max(default, read)` | 1.09 | 0.19, 0.21, 0.23 |
+| scenario's own | 0.88 | — |
+
+So `--derive` raises a source's `τ` where the reading exceeds the default, and otherwise prints
+the default. An estimator the filter does not bias is #195. The defaults themselves are GOALS.md's,
+"Where the defaults come from".
 
 ### `baro_offset_walk`
 
@@ -492,22 +533,33 @@ overlaps for half an hour.
 
 ### `max_predict_dt`
 
-`replay --derive` takes the IMU intervals after the first epoch, as `predict` differences them
-in whole microseconds, sorted, as ordinary up to the first step of five times or more. On the
-corpus the widest step among ordinary intervals is 4.9× (`f16771dd`, 4.1 → 20.0 ms, an interval
-inside its dropout cluster at 36.9 s) and the narrowest from ordinary to a dropout 17.0×
-(`f16771dd` again, 20 → 340 ms; `2b2ad123` 18.5×, `4b473e91` 100×); the other ten logs have no
-dropout after the start. It prints the longest ordinary interval with 10 % margin, never below
-the default, which covers every corpus log (longest ordinary after the start: `2c42096b` 90.5 ms,
-`7592c9b2` 64.8, `285ee2e7` 25.2, the rest 22.6 ms or less), and replays the log under it: the
-steps it coasts match the intervals over it on all thirteen. Where the default sits above the
-ordinary tail it says how many dropouts it integrates as one step that a limit at the tail would
-coast: none on the corpus, the smallest dropout being 121.5 ms (`2b2ad123`). The same bound
-limits how far a measurement is carried forward. PX4 (`estimator_interface.cpp:103-108`,
-`ekf.cpp:154-157` at `c4e4ef98e9`) and ArduPilot (`AP_NavEKF3_core.cpp:1053` at `368dc0c428`)
-bound the step at twice a fixed downsampled period of 10 and 12 ms and clamp it rather than
-coast, an absolute ~20 ms; this filter integrates the raw samples, whose ordinary worst runs to
-18 times their median.
+`replay --derive` sorts the IMU intervals after the first epoch, as `predict` differences them in
+whole microseconds. Intervals are ordinary up to the first step of five times or more. On the
+corpus:
+
+| log | longest ordinary interval after the start | step from ordinary to dropout |
+| --- | --- | --- |
+| `2c42096b` | 90.5 ms | no dropout |
+| `7592c9b2` | 64.8 ms | no dropout |
+| `285ee2e7` | 25.2 ms | no dropout |
+| `f16771dd` | 22.6 ms or less | 17.0× (20 → 340 ms) |
+| `2b2ad123` | 22.6 ms or less | 18.5× (the smallest dropout, 121.5 ms) |
+| `4b473e91` | 22.6 ms or less | 100× |
+| the other seven | 22.6 ms or less | no dropout |
+
+The widest step among ordinary intervals is 4.9×, on `f16771dd` (4.1 → 20.0 ms, inside its
+dropout cluster at 36.9 s), so the five-times rule separates the two on every log.
+
+It prints the longest ordinary interval with 10 % margin, never below the default, which covers
+every corpus log. It replays the log under that value: the steps it coasts match the intervals
+over it on all thirteen. Where the default sits above the ordinary tail, it counts the dropouts
+the default integrates as one step that a limit at the tail would coast: none on the corpus. The
+same bound limits how far a measurement is carried forward.
+
+PX4 (`estimator_interface.cpp:103-108`, `ekf.cpp:154-157` at `c4e4ef98e9`) and ArduPilot
+(`AP_NavEKF3_core.cpp:1053` at `368dc0c428`) bound the step at twice a fixed downsampled period
+of 10 and 12 ms and clamp rather than coast, an absolute ~20 ms. This filter integrates the raw
+samples, whose ordinary worst runs to 18 times their median.
 
 ### `Initialization`
 
@@ -526,22 +578,28 @@ correlation. On the corpus it is worth most on `7ce66f0d`, the hand launch level
 measured, 28 recoveries against 69 at 0.1, and aligned at 17.7 s rather than 32.7.
 
 **The gyroscope bias at rest, the window's mean weighed against the prior.** Checked against
-EKF2's bias 10 s after the start, with the Earth's rotation taken out in body axes at the start's attitude: on eight of the
-nine real logs that start at rest and log an EKF2 bias, the window's average agrees to
-3.4 × 10⁻⁴ rad/s RMS per axis, under EKF2's own σ there (3–7 × 10⁻⁴). So the corpus bounds a shift
-between the ground and the air at about that, and cannot resolve the floor beneath it.
-`a299e722`, whose rows each average 2.5 ms of 20, is the ninth: 2.1 × 10⁻³ and −3.0 × 10⁻³ rad/s
-off on x and z, still so at +120 s, an offset in every sample that its blocks' scatter cannot see.
-Against 0.01 rad/s on every start, averaged over 30 seeds: `mission` yaw 0.332° against 0.382°
-and its bias error halved, `flight` tilt 0.620° against 0.823° and horizontal position 1.17 m
-against 1.47, while `harsh_imu`, whose bias walks at nearly twice the filter's rate, gives yaw
-1.027° against 0.953°. Attitude ANEES on 50 seeds moves by under 0.03 on every scenario,
-`harsh_imu` 0.140 against 0.117. On the corpus the unaided tilt holds 10.32 s on `7592c9b2` and
-9.83 s on `f16771dd` against 3.88 and 3.84, and `a299e722` never loses it, for nine more GNSS
-velocity rejections there (324 against 315).
+EKF2's bias 10 s after the start, with the Earth's rotation taken out in body axes at the start's
+attitude. On eight of the nine real logs that start at rest and log an EKF2 bias, the window's
+average agrees to 3.4 × 10⁻⁴ rad/s RMS per axis, under EKF2's own σ there (3–7 × 10⁻⁴). So the
+corpus bounds a shift between ground and air at about that, and cannot resolve the floor beneath.
+The ninth is `a299e722`, whose rows each average 2.5 ms of 20: 2.1 × 10⁻³ and −3.0 × 10⁻³ rad/s
+off on x and z, still so at +120 s, an offset in every sample its blocks' scatter cannot see.
+
+Against a 0.01 rad/s prior on every start:
+
+| measure | window's mean | 0.01 rad/s |
+| --- | --- | --- |
+| `mission` yaw, 30 seeds | 0.332°, bias error halved | 0.382° |
+| `flight` tilt, 30 seeds | 0.620° | 0.823° |
+| `flight` horizontal position, 30 seeds | 1.17 m | 1.47 m |
+| `harsh_imu` yaw, 30 seeds (bias walks at nearly twice the filter's rate) | 1.027° | 0.953° |
+| attitude ANEES, 50 seeds, `harsh_imu` (every scenario within 0.03) | 0.140 | 0.117 |
+| unaided tilt held, `7592c9b2` | 10.32 s | 3.88 s |
+| unaided tilt held, `f16771dd` | 9.83 s | 3.84 s |
+| `a299e722` GNSS velocity rejections (its tilt never lost with the window's mean) | 324 | 315 |
 
 On those windows the mean's variance `R` is, on the worst axis, 1/36 of the 0.01 rad/s prior's
-on `2c42096b`'s 0.8 s window to 1/25000 on `7592c9b2`'s, so `K`, the share of `ω̄` (7) takes,
+on `2c42096b`'s 0.8 s window to 1/25000 on `7592c9b2`'s. So `K`, the share of `ω̄` (7) takes,
 runs from 0.973 to 1.000: below 0.99 on `2c42096b`, `3949f175` and `f16771dd`.
 
 **`sigma_gyro_bias`, 0.01 rad/s, the prior a start in motion keeps.** PX4's 0.1 and ArduPilot's
@@ -563,15 +621,21 @@ small: EKF2's per-log medians on the corpus are 1.2 × 10⁻³ rad/s RMS over th
 
 ### `FLOOR`
 
-The floor of (42′) is PX4's values, and the corpus says they sit below anything an honest source
-drives the filter to: across the thirteen logs of `data/manifest.txt` and every scenario in
-`examples/simulate.rs` but `lever_arm`, the smallest variance any state reaches at an epoch is 1.9e-4 m² of
-position on `89a498ce`, an RTK receiver, 1.7e-6 (rad/s)² of gyroscope bias, the bias walk's steady
-state, reached on six logs, 9.0e-5 rad² of attitude on `gnss_heading`, 7.3e-4 (m s⁻²)² of
-accelerometer bias on `093e806a` and 5.6e-4 (m/s)² of velocity on `cd7e0001`. Two to six decades
-of headroom, so `Diagnostics::floored` reads zero on all thirteen logs, `cd7e0001` included, whose
-receiver reports a 0.43 mm/s velocity after touchdown and is fused raw. Measured as σ² from the
-replay output's six-decimal σ columns.
+The floor of (42′) is PX4's values, and they sit below anything an honest source drives the
+filter to. Across the thirteen logs of `data/manifest.txt` and every scenario in
+`examples/simulate.rs` but `lever_arm`, the smallest variance each state reaches at an epoch:
+
+| state | smallest variance | where |
+| --- | --- | --- |
+| position | 1.9e-4 m² | `89a498ce`, an RTK receiver |
+| gyroscope bias | 1.7e-6 (rad/s)², the bias walk's steady state | six logs |
+| attitude | 9.0e-5 rad² | `gnss_heading` |
+| accelerometer bias | 7.3e-4 (m s⁻²)² | `093e806a` |
+| velocity | 5.6e-4 (m/s)² | `cd7e0001` |
+
+That is two to six decades of headroom, so `Diagnostics::floored` reads zero on all thirteen
+logs. That includes `cd7e0001`, whose receiver reports a 0.43 mm/s velocity after touchdown and
+is fused raw. Measured as σ² from the replay output's six-decimal σ columns.
 
 ### `PROJECTION_STEP`
 
@@ -597,15 +661,15 @@ variance, 5 % in the sigma, where a 5 s horizon at `PROJECTION_STEP` is 6.5 % an
 
 ### `WindowNoise`
 
-**Blocks rather than samples** (`Density`, equation (8″)). Taken on each real log's window, the
-rows the filter started on (`a299e722` aside, its rows averaging 2.5 ms of 20), the lag-one autocorrelation runs from −0.98
-to +0.96 across the axes, and on the worst axis one sample's scatter reads `093e806a`'s
-accelerometer 6.0 times the blocks' figure and `4b473e91`'s 2.9 (vibration aliased near the
-sample rate, which cancels within a block), `89a498ce`'s gyroscope 2.9 times low (filtered or
-rocking noise, which accumulates). Correcting one sample's scatter by its lag-one
-autocorrelation, `(1 + ρ)/(1 − ρ)` as (24′) does for a source, misses the blocks' figure by up to
-3.3× on the same windows (`89a498ce`'s accelerometer) and 6.5× on the simulated `3949f175`, whose
-`ρ` nears one.
+**Blocks rather than samples** (`Density`, equation (8″)). On each real log's window, the rows
+the filter started on (`a299e722` aside, its rows averaging 2.5 ms of 20), the lag-one
+autocorrelation runs from −0.98 to +0.96 across the axes. On the worst axis, one sample's
+scatter reads `093e806a`'s accelerometer 6.0 times the blocks' figure and `4b473e91`'s 2.9:
+vibration aliased near the sample rate, which cancels within a block. It reads `89a498ce`'s
+gyroscope 2.9 times low: filtered or rocking noise, which accumulates. Correcting one sample's
+scatter by `(1 + ρ)/(1 − ρ)`, as (24′) does for a source, still misses the blocks' figure by up to
+3.3× on the same windows (`89a498ce`'s accelerometer), and 6.5× on the simulated `3949f175`,
+whose `ρ` nears one.
 
 **`BLOCK`, 50 ms.** At 25 ms the aliasing is still being read (`093e806a`'s accelerometer
 4.8e-3 m s⁻²/√Hz against 1.7e-3 at 50 ms). Past 50 ms the figure is not settled either, and that
@@ -627,41 +691,24 @@ each of those five.
 
 ### `BLOCKS`
 
-Eight blocks, measured against an exact split (4096 blocks, which no window the replay harness
-builds fills, and which reproduces every scenario and corpus output byte for byte). The halves'
-disagreement, exact against 8 blocks, on the coarse starts: `7ce66f0d` 26.50° against 22.45° of
-tilt and 26.27° against 27.13° of heading, `cd7e0001` 0.29° against 0.50° and 1.27° against 1.70°,
-`moving_start` 0.00° against 0.02° and 12.23° against 11.94°. The outputs barely do, because it reaches only `coarse_sigmas`
-and only where it is the largest bound: at 8 blocks and at 16, one corpus log, `7ce66f0d`, moves
-by one in the last printed digit of three innovation keys, and no scenario moves.
+Eight blocks, measured against an exact split: 4096 blocks, which no window the replay harness
+builds fills, and which reproduces every scenario and corpus output byte for byte. The halves'
+disagreement on the coarse starts, exact against 8 blocks:
 
-## Initial Scope
+| start | tilt, exact | tilt, 8 blocks | heading, exact | heading, 8 blocks |
+| --- | --- | --- | --- | --- |
+| `7ce66f0d` | 26.50° | 22.45° | 26.27° | 27.13° |
+| `cd7e0001` | 0.29° | 0.50° | 1.27° | 1.70° |
+| `moving_start` | 0.00° | 0.02° | 12.23° | 11.94° |
 
-The filter covers:
+The outputs barely move, because the disagreement reaches only `coarse_sigmas`, and only where it
+is the largest bound. At 8 blocks and at 16, one corpus log, `7ce66f0d`, moves by one in the last
+printed digit of three innovation keys, and no scenario moves.
 
-```mermaid
-flowchart TD
-    imu["IMU propagation"] --> eskf["15-state ESKF"]
-    eskf --> upd["GNSS position update<br/>GNSS velocity update<br/>barometric altitude update<br/>heading update: magnetometer,<br/>dual-antenna GNSS, course"]
-    upd --> out["position + velocity + attitude"]
-```
+## Scope
 
-Out of scope, as [GOALS.md](GOALS.md#non-goals) decides and owns:
-
-* wind estimation
-* terrain estimation
-* magnetic-field state estimation
-* magnetometer bias states
-* optical flow
-* visual odometry
-* range finder fusion
-* airspeed fusion
-* multiple simultaneous navigation filters
-* automatic sensor-source switching
-
-Adding one is a change to that decision, not an implementation task. The filter focuses on the
-core navigation problem rather than reproducing every feature of mature autopilot estimators such
-as PX4 EKF2.
+What the filter leaves out, and why, is [GOALS.md](GOALS.md#non-goals)'s to decide: adding one is
+a change to that decision, not an implementation task.
 
 ## Staging the implementation
 
@@ -693,17 +740,6 @@ constant, a `Config::accuracy` threshold equal to the `Initialization` prior it 
 passed by exactly zero margin, and the first real `predict` took it away; `Accuracy`'s doc comment
 records what that read on the corpus. A mission bar and an alignment prior are two numbers with two
 justifications even where they are numerically equal.
-
-## Design Philosophy
-
-The mathematics should be visible in the code rather than hidden behind an abstraction layer, so
-equations in the implementation correspond directly to the numbered equations in the crate's
-documentation. The [equation-to-code mapping](EQUATIONS.md#equation-to-code-mapping) is the
-concrete form of that promise: every numbered equation names the function that implements it,
-and the two that are not built say so.
-
-Positioning, the differentiators this follows from, and the decisions already made are in
-[GOALS.md](GOALS.md).
 
 ## References
 

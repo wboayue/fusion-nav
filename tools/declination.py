@@ -15,7 +15,7 @@
 The table is the model's declination every 10 degrees of latitude and longitude, at sea level, at
 one epoch, in hundredths of a degree. The model is NCEI's coefficient file as `pygeomag` ships it,
 checked against the sha256 below (`reference/README.md` records where NCEI publishes it); the
-WMM is public domain, so the table carries no licence. The lines between the two marker comments
+WMM is public domain, so the table carries no license. The lines between the two marker comments
 in `src/magnetic.rs` are this script's output and nothing else, and a run with no arguments reads
 the model and epoch back from them, so regenerating at the same epoch leaves the file
 byte-identical and `--check` says whether it does.

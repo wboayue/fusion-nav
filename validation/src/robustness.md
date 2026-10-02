@@ -134,7 +134,7 @@ Under PX4's floor on the receiver's stated accuracy the picture is the same: the
 is off by {{score urbannav-m8t/px4 pos_h}} m RMS and the F9P refuses
 {{score urbannav-f9p/px4 rejected_good_gnss_pos}} good fixes.
 
-UrbanNav states no licence, so its data is fetched for measurement and nothing drawn from it,
+UrbanNav states no license, so its data is fetched for measurement and nothing drawn from it,
 no plot and no converted file, is published here: these are scalars about this filter. Using
 the dataset for anything else, such as validating a commercial product, needs the maintainers'
 permission.

@@ -85,12 +85,12 @@ echo "replaying the corpus beside EKF2"
 "$root/data/fetch.sh" --compare >/dev/null || die "data/fetch.sh --compare failed"
 ln -s "$target/compare" "$out/compare"
 
-# Scalars only: UrbanNav states no licence, so its runs place no figure (data/urbannav.txt).
+# Scalars only: UrbanNav states no license, so its runs place no figure (data/urbannav.txt).
 echo "replaying UrbanNav against its truth"
 "$root/data/urbannav.sh" >/dev/null || die "data/urbannav.sh failed"
 ln -s "$target/urbannav" "$out/urbannav"
 
-# Scalars only as well: INSANE's licence forbids selling what derives from it (data/insane.txt).
+# Scalars only as well: INSANE's license forbids selling what derives from it (data/insane.txt).
 echo "replaying INSANE against its truth"
 "$root/data/insane.sh" >/dev/null || die "data/insane.sh failed"
 ln -s "$target/insane" "$out/insane"

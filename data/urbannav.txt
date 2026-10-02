@@ -1,7 +1,7 @@
 # UrbanNav-HK-Medium-Urban-1 (PolyU IPNL, https://github.com/IPNL-POLYU/UrbanNavDataset),
 # the gate benchmark of #60: urban-canyon GNSS with SPAN-CPT truth.
 #
-# terms: UrbanNav states no licence (no LICENSE file; the README's "License" heading holds
+# terms: UrbanNav states no license (no LICENSE file; the README's "License" heading holds
 # terms: contact addresses only, at b9d4b9c0). Nothing is granted, so these files are
 # terms: fetched for local measurement and never committed or redistributed, converted
 # terms: or not. Only measured scalars are published. Ask PolyU IPNL for terms before
