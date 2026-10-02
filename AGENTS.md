@@ -40,8 +40,9 @@ Validation: thirteen PX4 logs (`data/manifest.txt`), the simulator's scenarios
 (`data/scenarios.txt`, and `data/anees.txt` for the covariance's honesty on 50 seeds), agreement
 with EKF2 on every log (`data/ekf2.txt`), UrbanNav for hostile GNSS against truth and INSANE for
 accuracy on a real UAV. `VALIDATION.md` and `validation/*.md` publish them, rendered by
-`tools/validation.sh`. Stack frames, type sizes and flash are pinned (`data/footprint.txt`), and
-replay derives a `Config` from a log (`--derive`).
+`tools/validation.sh`. Stack frames, type sizes and flash are pinned (`data/footprint.txt`) and
+published on `validation/cost.md`, which CI checks against the pins; the whole stack path is not
+pinned yet (#202). Replay derives a `Config` from a log (`--derive`).
 
 Known losses, stated in the published pages:
 
