@@ -70,14 +70,14 @@
 # and 6.10 s. It is one integration nearer to tilt than position and more than
 # doubled the time on every log that carries it, but it did not make any of
 # them read never: a velocity observation constrains tilt only while the
-# vehicle accelerates, and between manoeuvres the gyroscope bias prior grows
+# vehicle accelerates, and between maneuvers the gyroscope bias prior grows
 # the attitude block back through (20)'s -I dt.
 #
 # Magnetic heading (34)-(36) is what finally answers it, and it answers it
 # differently per log rather than for the corpus. Two now read never -- 3949f175
 # from 13.44 s and a299e722 from 58.14 -- because observing yaw stops the
 # gyroscope bias prior growing the attitude block back through (20) between
-# manoeuvres, which is the mechanism every paragraph above ran into. The two
+# maneuvers, which is the mechanism every paragraph above ran into. The two
 # handled logs gain but do not reach it, 1.70 s to 3.84 and 0.82 to 3.87: a
 # magnetometer pins the rotation about gravity and nothing measures gravity
 # itself after the window closes, so what is left of the growth is the tilt's
@@ -152,7 +152,7 @@
 # headings and cd7e0001's one velocity. The four airframe logs add 6194, and
 # their split names their causes -- 093e806a's 1164 positions a receiver
 # claiming 0.37 m, 7ce66f0d's 894 positions, 2160 velocities and 1584 headings
-# an attitude levelled wrong during a hand launch, 285ee2e7's 10 altitudes and
+# an attitude leveled wrong during a hand launch, 285ee2e7's 10 altitudes and
 # 17 of its 18 velocities a tailsitter's transitions, its 49 heights two runs
 # its barometer held the estimate away through (38-43 s, the (24') paragraph
 # below, and 116-121 s into the first transition), and its 29 positions one
@@ -212,11 +212,11 @@
 # its dishonest receiver: the covariance shrinks under an R 0.37 m claims, the
 # gate locks, and every 7 s the filter adopts its way back. a299e722's 2 are
 # the same kind of receiver, its entry says when. 7ce66f0d's 27
-# are an attitude levelled wrong that no position or velocity reset can fix,
+# are an attitude leveled wrong that no position or velocity reset can fix,
 # which it goes on getting wrong between them. 285ee2e7's two are GNSS heights
 # its barometer held away (the (24') paragraph below). 2b2ad123's one, at 1 Hz,
 # was a receiver whose position runs two epochs off its velocity under a
-# centimetre sigma, and at the stream's own rate the gate rides it out (#169,
+# centimeter sigma, and at the stream's own rate the gate rides it out (#169,
 # #194). A recovery
 # on a log whose sources are honest is a finding against the covariance
 # rather than a working filter, which is what a zero here guards. With
@@ -255,7 +255,7 @@
 # taken at initialization rather than at the end of the log for the reason
 # heading= is. They are the only keys here that look at attitude at all, and
 # what they would catch is a sign inverted in the down-positive convention, the
-# levelling dropped out of (6), or a declination that stopped reaching the
+# leveling dropped out of (6), or a declination that stopped reaching the
 # filter. A window carrying no magnetometer has nothing to observe yaw with, so
 # yaw0=0.00 there and heading= says which case it is. Two decimals, rounded
 # before printing so that an angle just below zero cannot print as -0.00 and
@@ -285,7 +285,7 @@
 # re-pinning this key, which is the only one it moves.
 #
 # extent=, speed_max= and tilt_max= say what the vehicle did, so a note's
-# "past a kilometre" or "pitched to the vertical" is pinned rather than
+# "past a kilometer" or "pitched to the vertical" is pinned rather than
 # asserted (#86). Extent is the farthest horizontal distance of any GNSS row
 # from the first, speed the largest horizontal GNSS velocity, both as the
 # receiver reported them, gated or not; none on the two logs with no receiver.
@@ -337,12 +337,12 @@
 # GNSS position reads 0.0180-0.0828 horizontally on the four real logs with no
 # RTK whose position gate stays quiet and 0.0885-0.9283 in height, so S is
 # 3.5-7.5x too wide in sigma horizontally -- and mostly R, since an aided
-# filter's H P H' sits well under a several-metre eph. 89a498ce's RTK receiver
+# filter's H P H' sits well under a several-meter eph. 89a498ce's RTK receiver
 # reads 0.1037, and SITL 3949f175's 0.0039 and 0.0164 are a simulated
 # receiver, not evidence about one. The five whose position gate turns fixes
 # down read 0.45-8.21, and that is no claim about R: 093e806a's receiver is
 # dishonest, a299e722's velocities contradict its positions, 7ce66f0d's was
-# levelled wrong, 285ee2e7's barometer pulls its height away and 2b2ad123's
+# leveled wrong, 285ee2e7's barometer pulls its height away and 2b2ad123's
 # RTK fixes step, and each entry says which. The two halves are gated and reported
 # apart (GnssFusion), so each reads against its own degrees of freedom.
 # 285ee2e7's height, the least conservative at 1.91, and 2c42096b's at 0.93
@@ -445,7 +445,7 @@
 # is being claimed there is the absence of an offset rather than its size.
 #
 # #131 reads tilt and heading on navigation axes rather than body ones -- in
-# Validity, the alignment latch, (36')'s levelling variance, the heading
+# Validity, the alignment latch, (36')'s leveling variance, the heading
 # adoption and (8)'s prior -- and one log moves. f16771dd's nu_mag_yaw goes
 # -0.027303 to -0.025485 and nu_baro_d -0.010923 to -0.010810, every other key
 # inside its band. The heading mean is (36') alone: its tilt variance is the
@@ -473,7 +473,7 @@
 # 1788, median 1.039 -- counted at the epoch row before each fix. nis_gnss_hgt
 # goes 0.3163 to 0.9207 there. 093e806a locks out less, recovered 35 to 29 and
 # rejected_gnss_pos 291 to 278, and 7ce66f0d far less, 294 to 69: its
-# magnetometer, reading a heading levelled wrong, no longer outvotes GNSS, and
+# magnetometer, reading a heading leveled wrong, no longer outvotes GNSS, and
 # is the source rejected instead (rejected_mag 93 to 1419, rejected_gnss_pos
 # 1000 to 221). a299e722 rejects 266 velocities rather than 287. A source that
 # now weighs less hands its axis to whatever is faster beside it: on 285ee2e7
@@ -521,7 +521,7 @@
 # all, and each already names a cause latency does not touch. a299e722, the
 # receiver its own positions contradict, goes 266 -> 396 rejections and 0 -> 2
 # recoveries, its position NIS 0.25 -> 2.43, rising from the first 55 ms.
-# 7ce66f0d, levelled wrong at hand launch, goes 1828 -> 1966 and aligns at
+# 7ce66f0d, leveled wrong at hand launch, goes 1828 -> 1966 and aligns at
 # 38.99 s rather than 17.73, again monotonically with the delay to 110 ms.
 #
 # #194 fuses the receiver stream EKF2 fused, vehicle_gps_position, where the
@@ -542,7 +542,7 @@
 # none. What is left is what the entries name: 2b2ad123's 118 are all inside
 # or just after its six offset episodes (#169), 093e806a's receiver is
 # dishonest by its own epoch (-83 to +119 ms along track), 7ce66f0d is
-# levelled wrong, and 285ee2e7's are its transitions and the runs its
+# leveled wrong, and 285ee2e7's are its transitions and the runs its
 # barometer holds. Config::correlation's
 # GNSS position, GNSS height, barometer and magnetometer defaults were re-read
 # on these streams and raised (GOALS.md), which moves every nis_ and acf1_
@@ -558,7 +558,7 @@
 # and a receiver logging no UTC (time_utc_usec zero on every message), the
 # one log whose fixes the converter dates by their arrival (#194). Its roll0 and
 # pitch0 of 0.01 deg are a simulated ground plane, which makes it the one
-# start here that would notice nothing if (6)'s levelling were dropped --
+# start here that would notice nothing if (6)'s leveling were dropped --
 # the tilt it levels by is zero. 89a498ce is the real baseline. Its
 # EKF2_MAG_DECL of -10.31 deg does not describe the field the simulator
 # generated: read from the log, the median heading difference to EKF2 went
@@ -569,7 +569,7 @@
 b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-4425-b118-7b7187331a98.ulg  https://cdn.logs.px4.io/3949f175-26b4-4425-b118-7b7187331a98.ulg  rate=250 window=500 extent=156.1..159.3 speed_max=5.0..5.2 tilt_max=19.7..20.1 align=static an=none alpha0=window heading=valid roll0=0.01 pitch0=0.01 yaw0=17.51 declination=-10.31 declination_model=-10.23 antenna=0.00,0.00,0.00 resets=0 recovered=0 aligned_at=0.00 attitude_lost=never r_policy=raw rejected=0 rejected_gnss_pos=0 rejected_gnss_hgt=0 rejected_gnss_vel=0 rejected_baro=0 rejected_mag=0 discarded=0 coasted=0 refused=0 invalid=0 floored=0 nis_gnss_pos=0.0006..0.0008 nis_gnss_hgt=0.0499..0.0511 nis_gnss_vel=0.0321..0.0329 nis_baro=0.0095..0.0097 nis_mag=0.2403..0.2453 nis_over95_gnss_pos=0.0000 nis_over95_gnss_hgt=0.0000 nis_over95_gnss_vel=0.0000 nis_over95_baro=0.0000 nis_over95_mag=0.0107..0.0111 nu_gnss_pos_n=-0.014123..-0.013843 nu_gnss_pos_e=-0.005118..-0.005016 nu_gnss_hgt_d=-0.410971..-0.402831 nu_gnss_vel_n=-0.001000..0.001000 nu_gnss_vel_e=0.005526..0.005638 nu_gnss_vel_d=0.015417..0.015729 nu_baro_d=-0.023486..-0.023020 nu_mag_yaw=-0.047105..-0.046171 acf1_gnss_pos=0.9712..0.9910 acf1_gnss_hgt=0.9865..1.0065 acf1_gnss_vel=0.9725..0.9923 acf1_baro=0.5326..0.5434 acf1_mag=0.9801..1.0001 noise_gyro=0.0019909..0.0020313 noise_accel=0.074486..0.075992 noise_baro=0.3370..0.3440 transitions=2 status=Healthy
 
 # 64 s quadrotor, PX4 v1.10.0, EKF2. No GNSS topic; baro and mag only.
-# 11 SD-card dropouts totalling 2796 ms leave four holes in sensor_combined up
+# 11 SD-card dropouts totaling 2796 ms leave four holes in sensor_combined up
 # to 1.304 s, coasted by equation (22') (coasted=4), and the reason
 # Config::max_predict_dt exists. With no GNSS nothing observes velocity or
 # tilt, so what coasting moves is how the barometer and heading corrections
@@ -651,7 +651,7 @@ b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-
 # (24') moved it a sixth time, 287 to 266, with transitions= and status=
 # unmoved, on a receiver whose solutions it weights at about a tenth at 10 Hz.
 # Timed from the last solution offered rather than the last one fused, the same
-# change rejected 70 positions in a manoeuvre at 19-22 s and recovered twice:
+# change rejected 70 positions in a maneuver at 19-22 s and recovered twice:
 # half its solutions rejected, the half accepted each read as the same error.
 #
 # (23') moved it a seventh, 266 to 396, and to that same signature: 70
@@ -694,7 +694,7 @@ b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-
 # rows must not be reported as used. No barometer rows means no reference
 # either, so alpha0=none: the one entry that fuses no barometer at all.
 # It is also the most tilted start in the corpus, roll0=2.94 pitch0=6.56, so
-# it is the entry whose yaw0 would move if the levelling came out of (6):
+# it is the entry whose yaw0 would move if the leveling came out of (6):
 # the dip leans into the horizontal axes in proportion to the tilt, and the
 # other seven start within 3 deg of level where that error is small. Its
 # declination= reads 0.00: an LPE build with no GNSS never looked one up, so
@@ -709,7 +709,7 @@ b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-
 # 6.2 m of the origin on each axis -- a vehicle vibrating in place for two
 # hours, with the outages below suggesting a poor sky view, while its
 # barometer climbs about 12 m from start to end and its GNSS height
-# wanders over a 27 m range. So its expectations pin behaviour -- what the
+# wanders over a 27 m range. So its expectations pin behavior -- what the
 # filter does with two height sources that disagree -- and none of its
 # figures is a flight-accuracy result or a number to tune toward.
 # What nothing else in the corpus covers:
@@ -767,7 +767,7 @@ b28c9a63d23fcb7349236067c553a3342780cea859183bab6f030df2073df324  3949f175-26b4-
 # vehicle_imu logged. It climbs to 100 m, flies 4.07 km out (extent=), sets
 # down at the far end around t=680 s, and flies back. What nothing else here
 # covers:
-#   - A real flight past a kilometre, so the tangent-plane curvature between
+#   - A real flight past a kilometer, so the tangent-plane curvature between
 #     GNSS and barometric height #124 needs is d^2/2R = 1.30 m at the far end
 #     rather than 158 m's 2 mm on a simulation.
 #   - An RTK receiver: fix_type 6 on every message, eph 0.01 m. Its GNSS keys
@@ -876,7 +876,7 @@ b7c7c97eefc3bb421ceae6e50cac8bd5a4851b3f6f98dc2c5a7b91bb326930c9  eb799954-4743-
 #     out eight times for 1.0-3.1 s (coasted=8, the logger's, not the sensor's).
 #     With Config::coast off the filter refuses a step that long (StepTooLong),
 #     so for the gap it neither moves the state nor grows its covariance, and on
-#     a vehicle doing 30 m/s the state it keeps is tens of metres stale. Against EKF2,
+#     a vehicle doing 30 m/s the state it keeps is tens of meters stale. Against EKF2,
 #     it holds until the 1.18 s dropout at 275.4 s and is 36.6 m off (east) by
 #     300 s while sigma_pos_e has grown only to 7.0 m, so 879 of the 882
 #     positions after are turned down. PX4's R floors turn down the same 879,
@@ -923,7 +923,7 @@ b7c7c97eefc3bb421ceae6e50cac8bd5a4851b3f6f98dc2c5a7b91bb326930c9  eb799954-4743-
 #     and the attitude that sends them away again is untouched. Under (24') it
 #     is 69 (33 positions, 34 velocities, one height, one heading), with 221
 #     positions, 233 velocities and 1419 of 1943 headings rejected: the
-#     magnetometer, read through the wrong levelling, no longer outvotes the
+#     magnetometer, read through the wrong leveling, no longer outvotes the
 #     receiver, and it is the heading the gate turns down. At #149's 0.2 m/s^2
 #     accelerometer-bias prior it is 28 (13 positions, 14 velocities, one
 #     heading), with 90 positions, 109 velocities and 1545 headings rejected,
@@ -943,14 +943,14 @@ b7c7c97eefc3bb421ceae6e50cac8bd5a4851b3f6f98dc2c5a7b91bb326930c9  eb799954-4743-
 #     parameter.
 # Source: PX4 Flight Review (CC BY 4.0).
 # transitions= 153 to 191 (#56): GNSS position rejected for more than 5 s
-# at a stretch while the hand launch's levelling error is worked off (16.75,
+# at a stretch while the hand launch's leveling error is worked off (16.75,
 # 24.75, 31.76, 39.75 s ...) now reads DeadReckoning. The barometer and
 # magnetometer, still accepted, had held it at Aligning.
 0f8d95d8988dd05b5a274f73ba6d9d5ada8badc75933aea222d85908d09b1bcb  7ce66f0d-17a3-46ca-8894-8c3a039934f7.ulg  https://cdn.logs.px4.io/7ce66f0d-17a3-46ca-8894-8c3a039934f7.ulg  rate=200 window=400 extent=596.6..608.8 speed_max=32.2..33.0 tilt_max=94.2..96.2 align=coarse an=measured alpha0=estimate heading=invalid roll0=-1.19 pitch0=22.60 yaw0=-58.79 declination=-4.25 declination_model=-4.15 antenna=0.00,0.00,0.00 resets=31 recovered=27 aligned_at=31.53 attitude_lost=31.56 r_policy=raw rejected=4877 rejected_gnss_pos=894 rejected_gnss_hgt=129 rejected_gnss_vel=2161 rejected_baro=109 rejected_mag=1584 discarded=3 coasted=0 refused=0 invalid=0 floored=0 nis_gnss_pos=6.4113..6.5409 nis_gnss_hgt=0.7860..0.8020 nis_gnss_vel=7.0095..7.1513 nis_baro=1.1113..1.1339 nis_mag=29.3564..29.9496 nis_over95_gnss_pos=0.0469..0.0479 nis_over95_gnss_hgt=0.0362..0.0370 nis_over95_gnss_vel=0.2592..0.2646 nis_over95_baro=0.0483..0.0493 nis_over95_mag=0.8915..0.9097 nu_gnss_pos_n=-1.109758..-1.087782 nu_gnss_pos_e=-0.644060..-0.631306 nu_gnss_hgt_d=-0.077585..-0.076047 nu_gnss_vel_n=-0.236696..-0.232008 nu_gnss_vel_e=-0.171683..-0.168283 nu_gnss_vel_d=-0.078475..-0.076921 nu_baro_d=-0.183036..-0.179410 nu_mag_yaw=-1.525130..-1.494928 acf1_gnss_pos=0.9803..1.0003 acf1_gnss_hgt=0.9876..1.0076 acf1_gnss_vel=0.8775..0.8953 acf1_baro=0.5043..0.5145 acf1_mag=0.6969..0.7111 noise_gyro=none noise_accel=none noise_baro=none transitions=355 status=Degraded
 
 # 1438 s fixed-wing (SYS_AUTOSTART 2100) on CUAV_X25_EVO, PX4 v1.16.1, EKF2,
 # static start, 1.14 km out at up to 24 m/s. What nothing else here covers:
-#   - A fixed-wing flight past a kilometre, with a static window before the
+#   - A fixed-wing flight past a kilometer, with a static window before the
 #     launch: #53's course over ground has a vehicle that does not crab, and
 #     #124's curvature is 0.10 m at the far end.
 #   - A receiver dishonest at speed. It reports eph 0.30-0.51 m and sigma_v
@@ -1024,7 +1024,7 @@ b7c7c97eefc3bb421ceae6e50cac8bd5a4851b3f6f98dc2c5a7b91bb326930c9  eb799954-4743-
 #     time's jitter. So this is the log #181's detector should fire on, at
 #     the rate it would run.
 #   - A second lockout on real data that coasting removes, on a slow vehicle
-#     under a centimetre R. Ten IMU gaps past max_predict_dt, 0.12-2.37 s
+#     under a centimeter R. Ten IMU gaps past max_predict_dt, 0.12-2.37 s
 #     (coasted=10); with Config::coast and Config::recovery off and every fix
 #     fused as white, 1106 positions are turned down, 1087 of them from the
 #     0.66 s gap at 257.7 s to the end of the log, which ends Degraded.

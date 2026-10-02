@@ -8,7 +8,7 @@
 # The gate benchmark of #60: the one source with hostile GNSS *and* truth, so the one place a
 # rejection is scored as right or wrong (`bad_`, `rejected_bad_`, `rejected_good_` and the
 # recovery split on the `score` line; examples/replay/main.rs owns what each means). Two receivers
-# on one drive: the M8T, which claims a few metres while hundreds out, and the F9P, honest
+# on one drive: the M8T, which claims a few meters while hundreds out, and the F9P, honest
 # to its own accuracy, which is the test of rejecting good fixes at road speed.
 #
 # Local, like `data/fetch.sh --check`, and never CI: UrbanNav states no license, so its files

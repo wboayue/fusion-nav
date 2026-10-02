@@ -24,7 +24,7 @@
 #                              included in the crate's rustdoc (`src/lib.rs`), where a
 #                              relative link to a sibling document is served by nothing.
 #                              Resolved repo-root-relative, past whatever ref it pins, and
-#                              recognised by the `repository` URL in `Cargo.toml` so the
+#                              recognized by the `repository` URL in `Cargo.toml` so the
 #                              address lives in one place.
 #
 # A document that rustdoc includes is held to that third form: a relative sibling link in it
@@ -436,7 +436,7 @@ EOF
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 blob_prefix=$(blob_prefix_from_cargo "$repo_root/Cargo.toml")
 
-# Refused rather than degraded: with no prefix to recognise, every absolute link into this
+# Refused rather than degraded: with no prefix to recognize, every absolute link into this
 # repository reads as an external URL and is skipped, which is the whole README checking
 # nothing and saying it resolved 50 links.
 if [ -z "$blob_prefix" ]; then

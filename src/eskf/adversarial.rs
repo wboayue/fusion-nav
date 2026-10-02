@@ -408,7 +408,7 @@ fn still(i: usize, baro: bool, mag: bool) -> StaticSample {
 }
 
 fn geodetic(offset: [f32; 3]) -> Geodetic {
-    // A metre is about 9e-6° of latitude here; the offset is in metres, or hostile.
+    // A meter is about 9e-6° of latitude here; the offset is in meters, or hostile.
     let degree = 9.0e-6;
     Geodetic::from_degrees(
         SITE.0 + f64::from(offset[0]) * degree,

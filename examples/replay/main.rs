@@ -143,7 +143,7 @@
 //! that sample, walk included. They are the only keys that fail when a bias estimate walks
 //! away from the bias in the IMU, which is a failure the position keys absorb for a long
 //! time: an accelerometer bias enters position through two integrations, so a filter can
-//! hold metre accuracy against fixes while its `β̂ₐ` is wrong by most of the bias. The
+//! hold meter accuracy against fixes while its `β̂ₐ` is wrong by most of the bias. The
 //! simulator injects a fixed `[0.043, −0.062, 0.027]` m s⁻² that `ImuNoise::default` does
 //! not know about, so a `ba` at that magnitude is a filter estimating nothing, and the
 //! distance below it is what the aiding bought.
@@ -173,7 +173,7 @@
 //! barometer, and the three heading sources. Attitude is observed directly in `yaw` alone:
 //! (34)–(36) constrain the rotation about gravity and nothing else, so `tilt` is
 //! corrected only through the correlations (20) builds, and a heading is priced for the tilt
-//! it was levelled by through (36′).
+//! it was leveled by through (36′).
 //!
 //! `nees_*` is a ratio of two quantities that both move: the error, and a `P` that (22) grows
 //! and (27) shrinks. On these scenarios it approaches 1 from below, because
@@ -763,7 +763,7 @@ impl Series {
 
     /// Mean `ν`, in the observation's own units. `None` where the source gated nothing.
     ///
-    /// Zero for a well-modelled source. A standing offset is what a declination error, an
+    /// Zero for a well-modeled source. A standing offset is what a declination error, an
     /// uncorrected lever arm and measurement latency each leave behind, and none of them
     /// moves the NIS mean nearly as legibly.
     fn nu_mean(&self) -> Option<f64> {
@@ -944,7 +944,7 @@ fn measured(value: Option<f64>, places: usize) -> String {
 /// What the vehicle did, for the `summary` line: how far it went, how fast, how far over.
 ///
 /// These say what a log *is* — AGENTS.md, "Know what a log is before reading its figures as
-/// accuracy" — so a manifest note's claim that a log flies past a kilometre or pitches to
+/// accuracy" — so a manifest note's claim that a log flies past a kilometer or pitches to
 /// the vertical is pinned rather than asserted. Extent and speed are the receiver's own rows
 /// as the log gives them, gated or not and before initialization too, because they describe
 /// the flight rather than the filter; a glitch the gate refuses still counts. Tilt is the
@@ -1781,7 +1781,7 @@ impl Replay {
 
     /// What the static window measured, `StaticWindow::noise` of the window the filter started
     /// on: `noise_gyro=` and `noise_accel=` the worst axis's white-noise density, rad s⁻¹/√Hz
-    /// and m s⁻²/√Hz, and `noise_baro=` the barometer readings' σ in metres.
+    /// and m s⁻²/√Hz, and `noise_baro=` the barometer readings' σ in meters.
     ///
     /// Floors, not the noise to configure (`WindowNoise`), and pinned to say how far below
     /// `ImuNoise::default()` each airframe's still sensors sit. The simulator's scenarios
@@ -1937,7 +1937,7 @@ impl Replay {
     ///
     /// `roll0`, `pitch0` and `yaw0` are the only keys on that line that look at attitude,
     /// so they are what would notice a sign inverted in the down-positive convention, the
-    /// levelling dropped out of (6), or a declination that stopped reaching the filter.
+    /// leveling dropped out of (6), or a declination that stopped reaching the filter.
     ///
     /// Rounded here rather than by the format string so that an angle rounding to zero
     /// from below prints `0.00` and not `-0.00`: the same angle either way, and the
@@ -2093,7 +2093,7 @@ impl Replay {
                         match inertial_accel {
                             Some(accel) => format!(
                                 "GNSS puts the vehicle's own acceleration at {:.3} m/s^2 \
-                                 ({:.2}, {:.2}, {:.2} NED), which in-motion levelling would \
+                                 ({:.2}, {:.2}, {:.2} NED), which in-motion leveling would \
                                  subtract",
                                 Vector3::from(accel.to_array()).norm(),
                                 accel.x(),
@@ -2110,7 +2110,7 @@ impl Replay {
                     }
                     Some(Alignment::Seeded) => "seeded".to_string(),
                     // Unreachable while this harness only ever calls `initialize`, and
-                    // labelled rather than assumed away: `summary` says `align=none` here.
+                    // labeled rather than assumed away: `summary` says `align=none` here.
                     None => "no alignment recorded".to_string(),
                 };
                 let interval = self.interval.unwrap_or(f64::NAN);
@@ -2227,7 +2227,7 @@ impl Replay {
              degraded_s={:.2} dead_reckoning_s={:.2} transitions={} status={:?}",
             self.interval.map_or(0.0, |interval| 1.0 / interval),
             self.window_samples,
-            // What the vehicle did, so a note's "past a kilometre" is a pin. See `Excursion`.
+            // What the vehicle did, so a note's "past a kilometer" is a pin. See `Excursion`.
             self.excursion.keys(),
             match self.alignment {
                 Some(Alignment::Static) => "static",
@@ -2241,7 +2241,7 @@ impl Replay {
             // was static" and "the window had no GNSS in it", which is why it is pinned
             // rather than derived: on the logs that start in motion, `cd7e0001` and `7ce66f0d`, it is the only
             // key that would notice the velocity disappearing out of the window, and
-            // in-motion levelling has nothing to correct with when it does.
+            // in-motion leveling has nothing to correct with when it does.
             if self.inertial_accel().is_some() {
                 "measured"
             } else {
@@ -2280,7 +2280,7 @@ impl Replay {
                     || "none".to_string(),
                     |d| format!("{:.2}", d.as_radians().to_degrees())
                 ),
-            // The lever arm every GNSS fix was fused with, forward, right, down in metres: a
+            // The lever arm every GNSS fix was fused with, forward, right, down in meters: a
             // header that stopped reaching the filter reads `0.00,0.00,0.00` here and moves
             // nothing else a reader would think to check.
             {
@@ -2616,7 +2616,7 @@ fn declination_of(text: &str) -> Radians {
 }
 
 /// The antenna offset a leading `# GNSS antenna <forward> <right> <down> m` line names: where
-/// the receiver's antenna sits relative to the IMU in body axes, metres, which every GNSS
+/// the receiver's antenna sits relative to the IMU in body axes, meters, which every GNSS
 /// `fuse_*` takes as `antenna`. `tools/ulog2replay.py` writes the one the log's EKF2 applied
 /// (`SENS_GPS0_OFF*` less `EKF2_IMU_POS*`), and `examples/simulate.rs` the one its fixes were
 /// generated at. `None` for a file with none, replayed at zero.
@@ -2668,7 +2668,7 @@ fn scaled_by_averaging(mut noise: WindowNoise, averaging: [f32; 2], dt: Seconds)
 }
 
 /// The site a leading `# Navigation origin <lat> <lon> <height>` line names, degrees and
-/// metres: the geodetic point the file's NED positions are relative to. `None` for a file
+/// meters: the geodetic point the file's NED positions are relative to. `None` for a file
 /// with no fix (`none`) or none of the line, which is a simulator's, whose positions were
 /// never geodetic.
 fn origin_of(text: &str) -> Option<Geodetic> {
@@ -2820,7 +2820,7 @@ impl Truth {
         {
             // A row left behind unscored between two epochs, within half a period of either,
             // had an epoch to be scored at. One in a gap in the log did not, nor one before
-            // the first epoch scored, nor the neighbour of a row an epoch sits on.
+            // the first epoch scored, nor the neighbor of a row an epoch sits on.
             let passed = self.rows[self.cursor].t;
             let claimed = self.claimed.is_some_and(|(index, _)| index == self.cursor);
             let reachable = self.previous.is_some_and(|previous| {
@@ -3343,7 +3343,7 @@ fn seconds_in(transitions: &[(f64, Status)], end: f64, status: Status) -> f64 {
 /// fuses at, so `--antenna zero` judges at the IMU as it fuses there. The truth's own σ is left out: SPAN-CPT reports
 /// at most 0.40 m on this segment, 3 % of the smallest variance a receiver claims.
 ///
-/// `far` is the answer to "wrong by metres" in the shape the filter states it:
+/// `far` is the answer to "wrong by meters" in the shape the filter states it:
 /// [`Accuracy::position`] per axis, the bar `Validity` reads, so an accepted fix that is
 /// `far` is one that could move a valid estimate out of its own claim.
 ///
@@ -4397,7 +4397,7 @@ mod tests {
 
     #[test]
     fn the_heading_key_carries_the_declination_the_filter_was_configured_with() {
-        // The fixture's field, levelled, is 0.095 rad east of its own north, and the
+        // The fixture's field, leveled, is 0.095 rad east of its own north, and the
         // harness configures −0.06 rad of declination: −8.88° of true heading. A
         // declination that stopped reaching the filter would read −5.45° here.
         let log = Log::new().mag(0.0).run(0.0, 100, DT, STILL);
@@ -4874,7 +4874,7 @@ mod tests {
 
     #[test]
     fn a_fix_the_gate_turns_down_is_counted_as_rejected() {
-        // A kilometre off a still start whose position σ is metres. The consistent fix
+        // A kilometer off a still start whose position σ is meters. The consistent fix
         // beside it is what shows the count is the gate's and not every fix's.
         let log = still_start()
             .gnss_pos(2.0, 1.0, 2.0, -3.0)
@@ -4960,7 +4960,7 @@ mod tests {
 
     #[test]
     fn a_rejection_is_attributed_to_the_source_that_earned_it() {
-        // The same kilometre-off fix as above, so the total is 1 and exactly one source
+        // The same kilometer-off fix as above, so the total is 1 and exactly one source
         // may claim it. Asserting the other three are zero is the half that matters: a
         // fragment built off the wrong list would still total correctly while naming the
         // source beside the right one. Survives zipping `SOURCES` against a `sources()`
@@ -5132,7 +5132,7 @@ mod tests {
         assert_eq!(clean.consistency.rows(GNSS_POS), 1);
         assert_eq!(with_outlier.consistency.rows(GNSS_POS), 2);
 
-        // A kilometre off a metre-scale `S`, so it lands far above the 95 % bound and drags
+        // A kilometer off a meter-scale `S`, so it lands far above the 95 % bound and drags
         // the mean with it. Both keys move; neither would if the row were dropped.
         let nis = |replay: &Replay| {
             key(&replay.summary(), "nis_gnss_pos")
@@ -5659,7 +5659,7 @@ mod tests {
         assert_eq!(score.rms(score.accel_bias), 5.0, "the block's norm");
         assert_eq!(score.rms(score.gyro_bias), 0.0, "a block of its own");
         // And through the serialized line, where the two are positional arguments among
-        // fifteen: a key inserted in the wrong place reads its neighbour's value, and the
+        // fifteen: a key inserted in the wrong place reads its neighbor's value, and the
         // accumulators above cannot see that.
         let line = score.line();
         assert_eq!(key(&line, "ba"), "5.00000");
@@ -5724,7 +5724,7 @@ mod tests {
 
     #[test]
     fn nees_reads_the_correlations_that_in3s_cannot() {
-        // The two consistency keys are not the same test twice. One metre of error on north
+        // The two consistency keys are not the same test twice. One meter of error on north
         // and east each, against a covariance whose two position axes are 1 m and almost
         // perfectly correlated: every axis is inside 1 sigma, so `in3s` is content, while
         // the joint test sees an error the correlation says should not happen.
@@ -5835,8 +5835,8 @@ mod tests {
 
     #[test]
     fn a_fix_is_judged_at_the_antenna_on_the_truth_attitude() {
-        // Heading east, an antenna a metre forward sits a metre east of the IMU. A fix there
-        // is exact; the same fix read on the IMU, or on a north-facing antenna, is a metre
+        // Heading east, an antenna a meter forward sits a meter east of the IMU. A fix there
+        // is exact; the same fix read on the IMU, or on a north-facing antenna, is a meter
         // out against a 0.1 m sigma, ε = 100 past γ = 13.8.
         let scoring = heading_truth(1.0, core::f32::consts::FRAC_PI_2);
         let tight = [0.01, 0.01, 0.01];
@@ -5988,7 +5988,7 @@ mod tests {
     #[test]
     fn a_fix_between_truth_rows_is_judged_on_the_two_interpolated() {
         // Rows 0.25 s apart, north 0 → 4 m and heading 0 → 90°. A fix a quarter of the way,
-        // at 1.0625 s, sits on truth 1 m north heading 22.5°, where a metre-forward antenna
+        // at 1.0625 s, sits on truth 1 m north heading 22.5°, where a meter-forward antenna
         // is 0.924 m north and 0.383 m east: a fix at 1.924 m north is exactly there. Not
         // halfway, so a fraction taken from the wrong end reads 3 m, not 1. The error is the
         // horizontal distance and the height apart.
@@ -6022,7 +6022,7 @@ mod tests {
         // 3 m north and 4 m east of it is 5 m off: the distance, not either axis.
         let [off, _] = judge(1.0625, [4.923_880, 4.382_683, 0.5]).expect("the same instant");
         assert!((off.error - 5.0).abs() < 1e-3, "{}", off.error);
-        // A row at the fix's own time is read as written, not blended with its neighbour.
+        // A row at the fix's own time is read as written, not blended with its neighbor.
         let [at_row, _] = judge(1.25, [4.0, 1.0, 0.0]).expect("a row at 1.25 s");
         assert!(at_row.error < 1e-6, "{}", at_row.error);
     }
@@ -6031,7 +6031,7 @@ mod tests {
     fn a_fix_across_a_gap_in_the_truth_is_not_judged_and_one_on_a_row_is() {
         // Rows 0.35 s apart, past `TRUTH_SPAN`: a gap, not a dropped row, and what the
         // vehicle did inside it is not the line between its ends. A fix on a row is judged
-        // however far its neighbour is, rounding included, which is all of UrbanNav's 1 Hz
+        // however far its neighbor is, rounding included, which is all of UrbanNav's 1 Hz
         // truth.
         let scoring = TruthLog::new().still(1.0, 2, 0.35).scoring();
         let judged = |t: f64| {
@@ -6205,7 +6205,7 @@ mod tests {
 
     #[test]
     fn false_valid_counts_a_claim_only_where_the_filter_made_one() {
-        // Ten metres of horizontal position error against a 5 m bar. Claimed, it is a false
+        // Ten meters of horizontal position error against a 5 m bar. Claimed, it is a false
         // valid; unclaimed, the filter said so itself and there is nothing to report.
         let truth = truth_offset(10.0, 0.0, 0.0);
         let covariance = Covariance::from_sigmas([0.5; STATES]);

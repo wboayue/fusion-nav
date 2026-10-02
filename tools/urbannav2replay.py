@@ -8,7 +8,7 @@
     uv run tools/urbannav2replay.py data/urbannav --receiver m8t -o out.csv --truth out.truth.csv
 
 UrbanNav is the gate benchmark of #60: a car in Hong Kong's urban canyons, receivers that
-are wrong by metres to hundreds of metres for tens of seconds while claiming a few, and a
+are wrong by meters to hundreds of meters for tens of seconds while claiming a few, and a
 SPAN-CPT solution to say they were wrong. `data/urbannav.txt` pins the three files this
 reads and carries the terms: UrbanNav states no license, so neither the inputs nor what
 this writes are ever committed (GOALS.md, "Secondary sources").
@@ -29,7 +29,7 @@ What each source is, and what this does to it:
 * **GNSS**, one u-blox receiver's `$PUBX,00`, the one sentence carrying its own accuracy:
   `hAcc` and `vAcc` as sigma, squared into the variance columns, and a height above the
   ellipsoid, the datum the truth's `H-Ell` is on. 3D fixes only (`G3`, `D3`): a `NF` row
-  still carries a position, hundreds of metres out, which the receiver itself disowns.
+  still carries a position, hundreds of meters out, which the receiver itself disowns.
   Velocity is speed and course over ground and `vVel` (positive down); u-blox publishes no
   speed accuracy in NMEA, so its variance is a constant, `VELOCITY_SIGMA`.
 * **Truth**, SPAN-CPT post-processed in Inertial Explorer at 1 Hz. Its point is the SPAN's,
@@ -74,7 +74,7 @@ RECEIVERS = {
     "f9p": f"{SEGMENT}.ublox.f9p.nmea",
 }
 
-# Where the antenna sits from the Xsens, forward, right, down, in metres: `ANTENNA_T_IMU`
+# Where the antenna sits from the Xsens, forward, right, down, in meters: `ANTENNA_T_IMU`
 # (0, 0.86, -0.31) on the dataset's right, forward, up axes.
 ANTENNA_FRD = (0.86, 0.0, 0.31)
 

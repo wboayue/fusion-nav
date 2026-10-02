@@ -192,7 +192,7 @@ fn interpolate(table: &[[i16; 37]; 19], latitude: f32, longitude: f32) -> Option
     let (south_row, north_row) = (table.get(row)?, table.get(row + 1)?);
     let corner = |line: &[i16; 37], at: usize| line.get(at).map(|&v| f32::from(v));
     let sw = corner(south_row, column)?;
-    // Each corner within half a turn of the south-west one. Near the magnetic poles neighbouring
+    // Each corner within half a turn of the south-west one. Near the magnetic poles neighboring
     // cells sit either side of ±180°, and averaging 179° with −179° gives 0° rather than 180°.
     let near_sw = |value: f32| {
         let (turn, step) = (360.0 / SCALE, value - sw);
@@ -270,7 +270,7 @@ mod tests {
         assert!((degrees_at(90.0, 180.0) - cell(18, 36)).abs() < 1e-4);
     }
 
-    /// On the Antarctic coast, where neighbouring cells sit either side of ±180°: the model
+    /// On the Antarctic coast, where neighboring cells sit either side of ±180°: the model
     /// reads −173.3° at (−65°, 135°), and averaging the corners without unwrapping them gives
     /// +8.6°; unwrapped it reads −171.4°. The grid is coarse there, so the bound is the
     /// interpolation error's.

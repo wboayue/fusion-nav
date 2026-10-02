@@ -479,7 +479,7 @@ impl WindowNoise {
 ///
 /// One value rather than a function per quantity, because the state and its covariance
 /// have to describe the *same* average. [`nominal_state`] levels from `force` and
-/// [`attitude_sigmas`] bounds how well it levelled; two readings of the window would be two
+/// [`attitude_sigmas`] bounds how well it leveled; two readings of the window would be two
 /// definitions of `f̄`, free to drift apart while each still looked right on its own.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Measured {
@@ -651,7 +651,7 @@ impl Measured {
 ///
 /// The split lands within half a block of the middle, and at least `BLOCKS / 2` blocks are
 /// full, so the halves are within `n / BLOCKS` samples of equal: 37.5 % to 62.5 % of the
-/// window at worst. A steady turn is still charged exactly: the halves' centres sit half the
+/// window at worst. A steady turn is still charged exactly: the halves' centers sit half the
 /// window apart wherever the split falls.
 ///
 /// Eight is measured against an exact split: the halves' disagreement moves by about 4° on the
@@ -781,14 +781,14 @@ impl BlockSums {
 }
 
 /// The first and last GNSS velocity in the window, for `ā_n` of equation (5′), the term
-/// in-motion levelling subtracts from the averaged specific force.
+/// in-motion leveling subtracts from the averaged specific force.
 ///
 /// Endpoints only; the velocities in between are not differenced at all. The mean of a
 /// derivative *is* its endpoint difference over the span, and the mean is what is wanted,
 /// because (5) levels the averaged specific force and the term to subtract is therefore
 /// the averaged acceleration. Differencing consecutive samples and averaging those gives
 /// the same number with the intermediate noise added back — which matters here, since
-/// this is the noisiest part of in-motion levelling: a receiver's velocity error divided
+/// this is the noisiest part of in-motion leveling: a receiver's velocity error divided
 /// by a span, and a 1 Hz receiver over a 2 s window divides it by very little.
 ///
 /// The span is the time the samples after the first velocity's, up to the last's,
@@ -843,7 +843,7 @@ impl Velocities {
 ///
 /// About zero rather than about the first increment, unlike [`BaroReadings`]: the loss is at
 /// most `J ε γ² T / N²` of the scatter, under 10⁻⁷ in `f64` even at a datasheet
-/// accelerometer's 7 × 10⁻⁴ m s⁻²/√Hz, where the barometer's metres above sea level cost
+/// accelerometer's 7 × 10⁻⁴ m s⁻²/√Hz, where the barometer's meters above sea level cost
 /// 5 × 10⁻⁴. A constant in the rate, the bias, gravity, the Earth's rotation, cancels in the
 /// scatter.
 ///
@@ -966,7 +966,7 @@ impl Density {
 /// averages down more slowly than this says.
 ///
 /// Summed about the first reading, in `f64`. The textbook one-pass form, `Σa² − (Σa)²/n`,
-/// differences two squares of metres above mean sea level down to a scatter of centimetres,
+/// differences two squares of meters above mean sea level down to a scatter of centimeters,
 /// and at 10 km over 400 readings 3 cm apart it is 5 × 10⁻⁴ out
 /// (`the_barometer_scatter_is_the_two_pass_one_at_any_altitude`); about the first reading
 /// the squares are of the scatter itself. Welford's running mean avoids the same loss at a
@@ -1413,10 +1413,10 @@ pub(crate) fn level_from_accel(specific_force: Acceleration<Body>) -> (Radians, 
     (Radians::from_radians(roll), Radians::from_radians(pitch))
 }
 
-/// True heading from the averaged magnetic field, levelled by (5)'s roll and pitch.
+/// True heading from the averaged magnetic field, leveled by (5)'s roll and pitch.
 /// Equation (6).
 ///
-/// The levelling is what makes this a heading rather than a projection. `R₀` is (7)'s
+/// The leveling is what makes this a heading rather than a projection. `R₀` is (7)'s
 /// attitude with the yaw left out, so `m̃` sits in a frame differing from NED by the yaw
 /// alone. Reading `atan2(m_y, m_x)` off the body field instead is correct only for a
 /// vehicle already level and wrong by about `tan(dip)` times the tilt everywhere else:
@@ -1493,18 +1493,18 @@ fn angle_between(first: Vector3<f32>, second: Vector3<f32>) -> f32 {
 /// off the window's own field rather than configured.
 ///
 /// (6) levels `m̄` and takes the `atan2` of what is left horizontal, so an error in the
-/// tilt it levelled by tips the field and turns that horizontal part. The leak is the
+/// tilt it leveled by tips the field and turns that horizontal part. The leak is the
 /// ratio of the field's vertical component to its horizontal one, which is `tan(dip)`:
 /// 1.96 at the 1.107 rad of dip [`heading_from_mag`] cites, and 1.22 on the window
 /// `2c42096b` starts from. Both components are taken about `down`, the direction (5)
-/// levelled to, so no Euler angles enter and the ratio does not depend on the frame they
+/// leveled to, so no Euler angles enter and the ratio does not depend on the frame they
 /// would be read in.
 ///
 /// `None` where the horizontal part is zero: a field pointing straight down observes no
 /// heading at any tilt, so there is no error to scale rather than an infinite one.
 ///
 /// Shared with [`observation::mag`](crate::observation::mag), which needs the same `tan δ`
-/// for the levelling variance of (36′), and the direction the field lies in as well: only
+/// for the leveling variance of (36′), and the direction the field lies in as well: only
 /// tilt about that horizontal direction leaks. The ratio is between the field and a
 /// direction, so it is the same number in any frame the two are expressed in together:
 /// the window passes the body-frame gravity direction, and the update passes the
@@ -1564,7 +1564,7 @@ pub(crate) fn attitude_sigmas(
 /// the worst sample in the window was. The two differed by two orders of magnitude on the
 /// moving window `2c42096b` offered at `PATIENCE` (#77): its peak `|f| − γ` was 5.46 m/s²
 /// (31.9°) on a vehicle vibrating in place, while the mean vector sat 0.06 m/s² (0.33°)
-/// off gravity and levelled to roll 0.42° and pitch −0.89°, under a degree off plumb.
+/// off gravity and leveled to roll 0.42° and pitch −0.89°, under a degree off plumb.
 /// Vibration averages out; a peak does not know that.
 ///
 /// A prior that wide is not free. [`Status::Aligning`](crate::Status::Aligning) outranks
@@ -1605,11 +1605,11 @@ fn coarse_sigmas(
     gyro_bias: AngularRate<Body>,
     gravity: f32,
 ) -> (Radians, Radians) {
-    // Small-angle, as (5) reads it: an average that is not gravity leans the levelled
+    // Small-angle, as (5) reads it: an average that is not gravity leans the leveled
     // vertical by the fraction of `γ` it is out by.
     let from_force = (measured.force.vector().norm() - gravity).abs() / gravity;
 
-    // What the gyroscope says the vehicle did, split about the vertical (5) levelled to:
+    // What the gyroscope says the vehicle did, split about the vertical (5) leveled to:
     // rotation across gravity moves that vector and spoils the tilt, rotation about it
     // leaves the vector alone and spoils the heading of (6) instead.
     let net = (measured.rate.vector() - gyro_bias.vector()) * measured.span.as_secs();
@@ -1681,7 +1681,7 @@ fn coarse_sigmas(
 /// independent share from reaching zero. At the defaults the bias's share, 0.0204 rad, is
 /// over `sigma_tilt`'s 0.02, so without it `P₀` would claim every tilt error is the bias and
 /// be singular across the two tilt directions: once velocity fusion knew the bias, nothing
-/// would be left for the vibration or noise the average levelled through. A window of one
+/// would be left for the vibration or noise the average leveled through. A window of one
 /// measures no scatter, and keeps the whole of `σ_tilt²` independent instead.
 ///
 /// Writing the blocks after construction costs a copy of `P`, on a chain that stays well under
@@ -2016,7 +2016,7 @@ pub(crate) mod tests {
             let across = |v: Vector3<f32>| v - down * v.dot(&down);
             assert!(
                 (across(error) - across(predicted)).norm() < 2e-4,
-                "roll {roll} pitch {pitch}: levelled {:?}, predicted {:?}",
+                "roll {roll} pitch {pitch}: leveled {:?}, predicted {:?}",
                 across(error),
                 across(predicted)
             );
@@ -2261,7 +2261,7 @@ pub(crate) mod tests {
 
     #[test]
     fn heading_survives_the_tilt_it_is_levelled_by() {
-        // The test that fails if the levelling is dropped: a field synthesised for a
+        // The test that fails if the leveling is dropped: a field synthesized for a
         // known yaw at a tilt that is not zero must still give that yaw back.
         const DECLINATION: f32 = -0.06;
         for (roll, pitch) in TILTS {
@@ -2282,7 +2282,7 @@ pub(crate) mod tests {
 
     #[test]
     fn an_unlevelled_heading_is_wrong_by_the_dip() {
-        // What the levelling is worth, and why a zero-tilt test proves nothing: at 10°
+        // What the leveling is worth, and why a zero-tilt test proves nothing: at 10°
         // of roll the raw body field gives a heading 19° from the true one, because the
         // dip leans into the horizontal axes. `tan(1.107)` is 1.96.
         let roll = 10.0f32.to_radians();
@@ -2801,7 +2801,7 @@ pub(crate) mod tests {
 
     #[test]
     fn the_barometer_scatter_is_the_two_pass_one_at_any_altitude() {
-        // Centimetres of scatter at 10 km, on 101 levels, each reading different from the one
+        // Centimeters of scatter at 10 km, on 101 levels, each reading different from the one
         // before.
         let window: std::vec::Vec<_> = (0..400)
             .map(|i| StaticSample {

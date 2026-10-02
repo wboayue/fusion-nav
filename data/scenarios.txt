@@ -109,7 +109,7 @@
 # the error, and 3.7 m of drift arriving as 2 m of RMSE because the filter splits the difference
 # with GNSS height. `nees_pos` goes 1.06 to 257.27 and `in3s` 1.0000 to 0.9389. The filter has no
 # state that can tell a drifting reference from a climb, so it does not widen its covariance by
-# so much as a sigma while being metres wrong: the error grows 25x and the uncertainty does not
+# so much as a sigma while being meters wrong: the error grows 25x and the uncertainty does not
 # move. That is the figure GOALS.md's decision was recorded without, and the one to quote when
 # revisiting it. Velocity roughly halved both error families on every
 # well-behaved scenario -- `mission` `pos_h` 0.702 m to 0.240 and `vel` 0.647 to 0.190 -- and
@@ -126,7 +126,7 @@
 # `ba` and `bg` are the bias error itself, and they are the only keys here that fail when a
 # bias estimate walks away from the bias in the IMU. The position keys absorb that for a long
 # time: an accelerometer bias reaches position through two integrations, so a filter can hold
-# metre accuracy against fixes while its beta-hat is wrong by most of the bias. The simulator
+# meter accuracy against fixes while its beta-hat is wrong by most of the bias. The simulator
 # injects a fixed [0.043, -0.062, 0.027] m/s^2 and [0.0021, -0.0034, 0.0012] rad/s that
 # `ImuNoise::default` does not know about, norms of 0.0801 and 0.00417, so those norms are
 # what a filter estimating nothing reads and the distance below them is what the aiding bought.
@@ -143,7 +143,7 @@
 #
 # `moving_start` is where the coarse start's overconfidence went. Before a measurement could
 # correct anything, its position and velocity priors were `Initialization`'s 1 m and 0.1 m/s
-# against a truth kilometres away, and it read `nees_pos=10.30` and `nees_vel=10.59`. The first
+# against a truth kilometers away, and it read `nees_pos=10.30` and `nees_vel=10.59`. The first
 # fix and the first velocity solution are each adopted (`Fusion::Reset`, once per quantity),
 # and what is fused after them brings the pair to 1.06 and 0.45. Its `tilt` halved with
 # everything else, 3.497 deg to 1.752: a coarse start's attitude prior paid down by an
@@ -223,14 +223,14 @@ flight           8  pos_h<=1.556 pos_v<=0.351 vel<=0.433 pos_h_max<=3.605  tilt<
 # `data/anees.txt` asserts it; #52 owns the cause.
 #
 # What (36') is worth is measured on `moving_start`, and it is the difference between a stage
-# that ships and one that does not. Pricing the levelling error into `R` took that line from
+# that ships and one that does not. Pricing the leveling error into `R` took that line from
 # `tilt` 2.653 deg to 1.665, `yaw` 3.777 to 0.917, `nees_att` 1.634 to 0.226, and 840
 # falsely-valid attitude quantity-epochs to zero. Without it the filter reads a heading through
 # a tilt it is unsure of, prices the result at the magnetometer's own noise, and believes the
 # answer -- which on a coarse start is a filter claiming an attitude it does not have.
 #
 # The adoption is priced by (36') as well, and that is where the term is worth the most: the
-# first heading is levelled by the worst tilt the filter ever holds. On `moving_start` the
+# first heading is leveled by the worst tilt the filter ever holds. On `moving_start` the
 # adopted yaw variance is 0.582 rather than the magnetometer's own 0.01 -- sigma 0.76 rad
 # against an `Accuracy::heading` of 0.5236 -- so the heading is established and reported
 # invalid, rather than established and believed. That, with the (41) the adoption now applies

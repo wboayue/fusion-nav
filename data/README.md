@@ -279,7 +279,7 @@ and a fix's `t_meas_s` also takes off how much later than usual it arrived after
 `timestamp - time_utc_usec` less the running median over 51 messages, the median being the usual
 latency the delay parameter stands for. The arrival time jitters by tens of milliseconds behind
 the epoch (`89a498ce` -17 to +30 ms, p5 to p95), which at 10 m/s is 0.27 m along track, beyond a
-centimetre receiver's σ, so dated by arrival `89a498ce` rejects 884 fixes and dated by its epoch
+centimeter receiver's σ, so dated by arrival `89a498ce` rejects 884 fixes and dated by its epoch
 none. A fix that arrived more promptly than the delay assumes is taken as current, never
 as taken after it was logged: 284 of `093e806a`'s, whose 5 Hz epochs slip against the sensors
 module's steady 201 ms publication, so a fix usually waits up to an epoch to be published and now
@@ -581,7 +581,7 @@ new entry's ranges are derived rather than typed.
 The keys are `rate=` and `window=` (the IMU rate and the samples it takes to cover
 `min_duration`), `extent=`, `speed_max=` and `tilt_max=` (what the vehicle did: the farthest
 horizontal GNSS row from the first and the fastest horizontal GNSS velocity, as reported, and the
-filter's own largest tilt from the vertical — what a manifest note's "past a kilometre" is pinned
+filter's own largest tilt from the vertical — what a manifest note's "past a kilometer" is pinned
 by), `align=`, `an=` and `alpha0=` (what initialization achieved — `static`, `short` for a still
 window that never reached `min_duration`, or `coarse` for a moving one — whether a moving
 window measured the vehicle's own acceleration from GNSS velocity — `ā_n` of equation (5′), which
@@ -592,7 +592,7 @@ the harness configured, in degrees, read from the log's `# Magnetic declination`
 zero where it has none), `declination_model=` (the crate's own magnetic model at the log's
 `# Navigation origin`, which differs from `declination=`, wherever that line says PX4's table was
 read at the first fix, only by the two tables' models and epochs; `none` without an origin), `antenna=` (the
-lever arm every GNSS fix was fused with, forward, right, down in metres), `resets=` (adoptions, per source, so a GNSS fix adopted whole counts in both its halves),
+lever arm every GNSS fix was fused with, forward, right, down in meters), `resets=` (adoptions, per source, so a GNSS fix adopted whole counts in both its halves),
 `aligned_at=` (seconds from the end of the window to the first epoch `Eskf::is_aligned` read true,
 or `never`), `attitude_lost=` (seconds to the first epoch at or after it where `Validity::attitude`
 read false against `Config::accuracy` — the mission's bar, where `aligned_at=` reads the fixed
@@ -613,7 +613,7 @@ that is the claim — the floor sits far below anything the filter reaches, so a
 covariance is being driven toward zero by something upstream and the floor is masking it), and
 `epochs=`, then `noise_gyro=`, `noise_accel=` and `noise_baro=` (what `StaticWindow::noise` made of
 the window the filter started on: the worst axis's white-noise density in rad s⁻¹/√Hz and
-m s⁻²/√Hz, and the barometer readings' σ in metres, or `none` for a window that moved or held too
+m s⁻²/√Hz, and the barometer readings' σ in meters, or `none` for a window that moved or held too
 few readings; floors under the noise to configure, not the noise itself), `transitions=` and
 `status=`, followed by four families of consistency statistic, one
 set per source: `nis_` (mean normalized innovation squared per degree of freedom, 1 when `S`
@@ -666,7 +666,7 @@ for three measured reasons:
   velocities, 70 positions), `2b2ad123` (118 positions) and `cd7e0001` (one velocity) are the only
   non-zero GNSS counts across the nine multirotor and SITL logs, and under their own floors they
   read 38, 0 and 0. `2b2ad123`'s show what that erases. Its receiver's position runs one or two
-  epochs off its own velocity for seconds at a time, under its centimetre σ, in six episodes, and
+  epochs off its own velocity for seconds at a time, under its centimeter σ, in six episodes, and
   every one of the 118 is inside an episode or the 6 s after it: an offset fix, or the receiver's
   return after the state followed one. The floors fuse all of them (its manifest entry has the
   figures, at the 6.1 Hz EKF2 fused and each fix dated by its epoch). So raw `R` pays
@@ -775,7 +775,7 @@ records what the first run said.
 ## UrbanNav
 
 The gate benchmark: a car in Hong Kong's urban canyons, where receivers are wrong by
-metres to hundreds of metres for tens of seconds while claiming a few, with SPAN-CPT truth to
+meters to hundreds of meters for tens of seconds while claiming a few, with SPAN-CPT truth to
 say so. It is the one source that can score a rejection as right or wrong, and it is a ground
 vehicle with no barometer and no magnetometer, so it scores GNSS position gating and nothing
 else: heading comes from the course, and height from GNSS alone.

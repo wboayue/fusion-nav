@@ -47,7 +47,7 @@ Each scenario exists to test one thing no other scenario covers:
 | `logging_dropout` | 2 | 0.324 | 2.684 | 0.148 | 0.140 | 0.405 | 0.474 |
 | `flight` | 8 | 1.540 | 3.569 | 0.347 | 0.428 | 0.480 | 7.978 |
 
-Columns: `pos_h` is horizontal position error and `pos_v` height error, in metres. `pos_h_max`
+Columns: `pos_h` is horizontal position error and `pos_v` height error, in meters. `pos_h_max`
 is the worst horizontal error at any moment. `vel` is velocity error in m/s. `tilt` is the
 error in roll and pitch together, and `yaw` the error in heading, both in degrees. All are RMS
 over the whole flight except `pos_h_max`. `seed` names the simulated flight, so anyone can
@@ -83,7 +83,7 @@ for. Against `mission`:
 ## The baseline, over time
 
 How to read these figures: the orange line is the error, true value minus estimate, at every
-moment. The grey band is ±3σ, three standard deviations of the uncertainty the filter reported
+moment. The gray band is ±3σ, three standard deviations of the uncertainty the filter reported
 at that moment. While the line stays inside the band, the filter's error is one it admitted to.
 
 ![error_position for mission](figures/mission/error_position.png)
@@ -121,7 +121,7 @@ no bias in a real receiver, no gaps in a real log. The
 [INSANE dataset](https://www.aau.at/en/smart-systems-technologies/control-of-networked-systems/datasets/insane-dataset/)
 (University of Klagenfurt; Brommer et al., IROS 2022,
 [arXiv:2210.09114](https://arxiv.org/abs/2210.09114)) flew a 3 kg quadcopter carrying two RTK
-receivers 1.2 m apart, which place it to centimetres while their corrections hold. Three of its flights are replayed
+receivers 1.2 m apart, which place it to centimeters while their corrections hold. Three of its flights are replayed
 here on the autopilot's own sensors, the ones a flight controller fuses: its IMU, its ordinary
 GNSS receiver, its barometer and its magnetometer. The RTK receivers are only the truth.
 
@@ -132,7 +132,7 @@ GNSS receiver, its barometer and its magnetometer. The RTK receivers are only th
 | Desert, a long hover | 2.747 | 2.817 | 1.550 | 5.572 | 0.456 | 0.2267 | 0.0567 |
 
 Horizontal error here is mostly the receiver's, and the table sets the two side by side: the
-fixes' own error against the truth at each fix's time. An ordinary receiver is off by a metre
+fixes' own error against the truth at each fix's time. An ordinary receiver is off by a meter
 or more for tens of seconds at a time, and no filter can remove an error its only position
 source shares. What the filter owes is to know it, and it does: position NEES under 1 means
 the reported uncertainty covers the error, conservatively (the
@@ -145,8 +145,8 @@ themselves are, where fused that way it would match them. Velocity is more conse
 still, because the dataset's GNSS velocity is horizontal only and states no accuracy, so none
 is fused and velocity is observed only through the fixes.
 Height is where the filter does better than its receiver, because it has a second height
-source: the fixes' height errs by metres, and the barometer holds the estimate where they
-wander. The barometers depart from the truth by metres too, during the airfield flight's climb and slowly
+source: the fixes' height errs by meters, and the barometer holds the estimate where they
+wander. The barometers depart from the truth by meters too, during the airfield flight's climb and slowly
 through the hover, which is the case the filter's estimated barometric offset exists for.
 
 Attitude is not scored. INSANE builds its attitude truth from the RTK baseline and the same

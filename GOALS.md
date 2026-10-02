@@ -156,7 +156,7 @@ simulation, and no hardware required in CI.
 
 Gate decisions are reported as a normalized test ratio rather than a raw normalized innovation
 squared. PX4 logs a ratio of the same name on the same scale, `r > 1` rejected, so replaying a
-flight log puts rejection behaviour beside EKF2's. The two group components differently; the
+flight log puts rejection behavior beside EKF2's. The two group components differently; the
 glossary's [innovation test ratio](GLOSSARY.md#coming-from-px4-or-ardupilot) says how.
 
 Two gates answer different questions. `data/manifest.txt` pins what real logs do, which is
@@ -184,7 +184,7 @@ that the numbers could have been derived.
 **The boundary matters more than the principle.** Derived is not adaptive. A value is measured at
 a defined moment, reported to the caller, and overridable, never silently retuned in flight.
 Runtime self-tuning would contradict differentiator 1, since a filter that changes its own
-covariance growth has no worst-case timing or behaviour to publish. It would also contradict
+covariance growth has no worst-case timing or behavior to publish. It would also contradict
 [rejection handling](#rejection-handling-recover-by-default-opt-out-per-source), where what the
 filter corrects on its own is fixed in advance and switched per source by the caller. So there
 are two channels: what the static window can honestly measure, reported by `StaticWindow::noise`
@@ -258,7 +258,7 @@ Inside that scope, one question is open.
 
 ## Open design questions
 
-Alignment is open in two options: in-motion levelling, option 4 (#59), and an EKF-GSF yaw
+Alignment is open in two options: in-motion leveling, option 4 (#59), and an EKF-GSF yaw
 estimator, option 6 (#165). The rest are built, and the decisions they rest on are settled.
 
 ### Alignment beyond the static window
@@ -289,7 +289,7 @@ The options, in the order they are worth doing:
 | 1. seeded initialization | built, `Eskf::initialize_from` |
 | 2. coarse alignment, `Status::Aligning` | built |
 | 3. gate policy while aligning | built: heading adopted, tilt left to the ordinary gate |
-| 4. in-motion levelling, (5′) | inputs carried, subtraction unbuilt (#59) |
+| 4. in-motion leveling, (5′) | inputs carried, subtraction unbuilt (#59) |
 | 5. yaw from course over ground | built, `Eskf::fuse_course` |
 | 6. an EKF-GSF yaw estimator | not built (#165); the open case is a multirotor with neither a magnetometer nor a second antenna |
 
@@ -329,7 +329,7 @@ The options, in the order they are worth doing:
    **Tilt can be left to the ordinary gate, which is what the data says.** The corpus answers
    half of it (`data/manifest.txt` carries the counts). The gate turns down two headings on
    `eb799954`, two consecutive samples 1.1 rad out. It turns down 1584 on `7ce66f0d`, a hand
-   launch levelled 12° wrong whose heading was never established, where the levelling fails and
+   launch leveled 12° wrong whose heading was never established, where the leveling fails and
    not the gate. The tailsitter `285ee2e7` fuses every heading through 125° of tilt, so nothing is
    locked out at any tilt those vehicles reach. The simulator answers the other half, because only
    it starts badly on purpose: `moving_start` begins at 14.6° of pitch with a coarse attitude, has
@@ -338,7 +338,7 @@ The options, in the order they are worth doing:
    aligning, and no widened gate.
 
    What that needed was an honest `R`, not a gate change. Leaving tilt to the ordinary gate is
-   safe *because* a heading levelled by an uncertain attitude is priced for that uncertainty,
+   safe *because* a heading leveled by an uncertain attitude is priced for that uncertainty,
    equation (36′); without the term the same scenario read 2.653° of tilt and claimed an attitude
    it does not have on 840 quantity-epochs. The lesson reaches past the magnetometer: a derived
    measurement whose derivation reads the state must carry the state's uncertainty, or the gate
@@ -346,7 +346,7 @@ The options, in the order they are worth doing:
 4. **In-motion leveling.** Differentiate GNSS velocity for navigation-frame acceleration,
    subtract it from measured specific force, and recover gravity's direction while moving.
    It removes the stillness requirement for tilt outright, with no new states, and is noisy under
-   aggressive manoeuvring. The inputs are carried: the window takes GNSS velocity,
+   aggressive maneuvering. The inputs are carried: the window takes GNSS velocity,
    `StaticSample::velocity`, and a moving window measures `ā_n` and reports it on
    `Coarse::NotStationary`. The attitude (5)–(7) commit is what rotates `ā_n` into body axes;
    (5′)'s subtraction is #59's.
@@ -520,7 +520,7 @@ single scalar, rather than the three-axis field. Roll and pitch stay with gravit
 well determined and where a field anomaly cannot reach them. A magnetometer disturbance can then
 corrupt one state instead of three, and innovation gating has a one-dimensional quantity to gate.
 
-Not measured: three-axis fusion is documented for completeness, labelled as the liability it is,
+Not measured: three-axis fusion is documented for completeness, labeled as the liability it is,
 and not built. See [magnetometer, heading only](EQUATIONS.md#magnetometer-heading-only).
 
 **Costs:** hard- and soft-iron calibration is the application's responsibility, and a badly
@@ -558,7 +558,7 @@ start that carries the seed. It covers every start that leaves no reference, and
 
 **Measured against** a constant reference first. `baro_drift` is the baseline flown with the
 reference walking 0.02 m/s, 3.7 m over 185 s. Held constant, `pos_v` reads 2.053 m against
-`mission`'s 0.083, `nees_pos` 257.52 and `in3s` 0.9389: metres out, reporting the uncertainty of a
+`mission`'s 0.083, `nees_pos` 257.52 and `in3s` 0.9389: meters out, reporting the uncertainty of a
 perfect sensor. Estimated, it reads 0.284 m, 1.19 and 0.9999. `static`, with no drift configured
 at all, reads `nees_pos` 1.02 estimated against 2.04 constant, and 1.92 with `b` estimated at
 `q_b = 0`: what that line needs is the walk, not the estimate.
@@ -672,9 +672,9 @@ Under (24′) it reads 1.45 and 0.23, with `pos_v` 1.142 m against 2.350, yaw 2.
 and no falsely valid epoch against 320. The position residual is the slower sources. A sensor's
 own `τ` read offline does not remove it, because read through the filter's innovations it falls
 short of the sensor's ([DESIGN.md](DESIGN.md#correlation)); an estimator the filter does not bias
-is #195. `moving_start`'s four headings share one levelling error, which fails ANEES fused as
+is #195. `moving_start`'s four headings share one leveling error, which fails ANEES fused as
 white; (24′) removes it. On `2c42096b`, σ_pos_n is under `eph` at 1788 fixes of 4614, median ratio
-1.039 against 0.726. On `7ce66f0d`, the magnetometer that keeps pushing a wrongly levelled heading
+1.039 against 0.726. On `7ce66f0d`, the magnetometer that keeps pushing a wrongly leveled heading
 stops outvoting GNSS: `recovered=` 69 against 294 white, the magnetometer rejected instead. On
 `093e806a`, 29 against 35.
 
@@ -692,7 +692,7 @@ What it did not buy: (24′) passes `harsh_imu` and `gnss_latency` on attitude b
 covariance, not by shrinking the error. `harsh_imu`'s tilt is 1.12° against 1.19° white while its
 `nees_att` is 0.21 against 0.76. The causes are elsewhere. `gnss_latency`'s is the latency, which
 [(23′)](#measurement-latency) removes. `harsh_imu`'s is the start: an accelerometer bias at 1.86σ
-of the prior, levelled in as tilt that a `P₀` without the correlation calls independent of the
+of the prior, leveled in as tilt that a `P₀` without the correlation calls independent of the
 bias. Equation (8)'s tilt–bias correlation, at PX4's and ArduPilot's 0.2 m/s², removes it: 0
 epochs over the bound fused as white, against 2281 without it, and tilt 0.83° against 1.12°.
 
@@ -753,7 +753,7 @@ On the corpus, fixes are dated by each log's own `EKF2_GPS_DELAY`, 110 ms. Swept
 `4b473e91`'s velocity NIS reads 0.209, 0.081, 0.040 and 0.100 at 0, 55, 110 and 165 ms, and
 `093e806a` rejects 273 fixes rather than 294 and recovers 26 times rather than 29. Two logs prefer
 no delay, and both carry a cause latency does not touch: `a299e722`, whose velocity its own
-positions contradict, 266 rejections to 396; `7ce66f0d`, levelled wrong at hand launch, 1828 to
+positions contradict, 266 rejections to 396; `7ce66f0d`, leveled wrong at hand launch, 1828 to
 1966 and aligned at 39.0 s rather than 17.7. `data/manifest.txt` has each.
 
 PX4's delayed horizon was rejected on its shape. It runs the whole filter `τ_max` behind and
@@ -769,7 +769,7 @@ with it. The stack high-water mark stays in `update::<3>`.
 
 ### Local gravity configured, derived offline
 
-γ varies by about 0.5 % between the equator and the poles and falls roughly 3 µm s⁻² per metre of
+γ varies by about 0.5 % between the equator and the poles and falls roughly 3 µm s⁻² per meter of
 altitude. At the equator the WGS-84 standard 9.80665 overstates it by about 0.03 m s⁻², which
 enters (11) as a systematic vertical specific-force error rather than as noise. The accelerometer
 bias state absorbs a constant offset, so in practice the bias estimate is wrong by the gravity
@@ -795,7 +795,7 @@ the extreme.
 
 **Costs:** a vehicle flying far from 45° latitude whose integrator never derives a `Config`
 carries that small error, and it shows up in the accelerometer bias estimate rather than anywhere
-labelled gravity.
+labeled gravity.
 
 ### Magnetic declination from a table, read where the origin is placed
 
@@ -847,7 +847,7 @@ lookup is up to 150° off, and within 60° of the equator up to 10°, at 56° S,
 **Costs:** what PX4 does that this does not. PX4 re-reads the table every 10 s at the current
 position and takes a change over 1° (`EKF/aid_sources/magnetometer/mag_control.cpp:90-113`,
 `:641-652` at `c4e4ef98`). Here the value is read at the origin, which a flight inside the tangent
-plane's range barely leaves; a vehicle that travels hundreds of kilometres calls
+plane's range barely leaves; a vehicle that travels hundreds of kilometers calls
 `set_magnetic_declination` as it goes. And the table costs 2.6 KB of flash, so it sits behind the
 `magnetic-model` feature, on by default.
 
@@ -903,7 +903,7 @@ because each could be argued back:
   25 m stale under a 7.6 m σ, and 881 of the next 1154 fixes turned down until the log ends. With
   recovery it reads 31 and ends `Healthy`. Coasting the gap by equation (22′) removes the lockout
   itself: no recovery, and no fix after any of its eight gaps turned down.
-- **Truth scores it.** UrbanNav's M8T is wrong by tens to hundreds of metres for a minute at a
+- **Truth scores it.** UrbanNav's M8T is wrong by tens to hundreds of meters for a minute at a
   time while claiming 5 to 25, and 338 of its 517 fixes fail their own `R` against SPAN-CPT. With
   recovery the filter reads 254 m horizontal RMSE, and 12 of its 16 position recoveries end a
   lockout of good fixes; with `Recovery::OFF` it rejects 418 of 517 fixes and reads 408 m

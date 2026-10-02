@@ -286,7 +286,7 @@ def compare(ours, ekf2, rejected, placed, height_reference):
     EKF2's, as the reference header names it. A value of None is a hole: a
     quantity this log cannot supply, printed as `none` rather than dropped.
 
-    Angles are degrees, positions metres, velocities m/s, biases rad/s and
+    Angles are degrees, positions meters, velocities m/s, biases rad/s and
     m/s^2, rejection times seconds. Each family is its own function, so a caller
     wanting one -- scoring a rejection as correct needs only the last two --
     calls that one.

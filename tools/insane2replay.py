@@ -50,7 +50,7 @@ What each stream is, and what this does to it:
 * **GNSS**, `px4_gps.csv`: the dataset's own east, north, up about its reference, the
   frame the truth is on (within 5 cm of `geodesy.geodetic_to_ned`), with the receiver's own
   variances. Fixes and truth are both moved to the first RTK2 fix, 0.6 m from where the IMU
-  starts: a static start puts the filter at zero, and the desert's reference is a kilometre
+  starts: a static start puts the filter at zero, and the desert's reference is a kilometer
   away. Its velocity is not written: it is horizontal only, `v_z` reads 0 on every row, and
   it carries no accuracy. Dated `EKF2_GPS_DELAY`'s default before logging, since no
   parameter came with it. Against corrected truth, with each sequence's mean bias removed,
@@ -68,7 +68,7 @@ What each stream is, and what this does to it:
   script's own `sph2cart(pi/2 + dec)`, where the filter's table reads 4.6 deg east, so
   data/insane.sh replays under `--declination model`, that table.
 * **Truth**, at RTK2's epochs: the pose interpolated from the 80 Hz truth, and velocity the
-  mean of the two receivers' Doppler, which is the vehicle centre's (the baseline's
+  mean of the two receivers' Doppler, which is the vehicle center's (the baseline's
   midpoint) and needs no attitude, moved to the IMU through `imu_velocity`'s 6 cm arm. The
   constructed velocity agrees with the differentiated truth position to a median 4 to 8
   cm/s. No bias is known.
@@ -80,7 +80,7 @@ The three sequences, each covering what the others do not (the screen of all twe
 sequences is in #9):
 
 * `outdoor_1`, the Klagenfurt model airfield, the only other site: 52 s still, a 24 m climb,
-  a receiver high by metres (`data/insane-pins.txt`), and a barometer that departs from truth by up to 2.8 m
+  a receiver high by meters (`data/insane-pins.txt`), and a barometer that departs from truth by up to 2.8 m
   during the climb and returns (5 s means; 0.35 m start to end).
 * `mars_1`, Negev desert: the receiver claiming the smallest error (sigma 0.77 m
   horizontally) and furthest outside it (`rms_gnss_pos` and `bad_gnss_pos` in
@@ -180,7 +180,7 @@ def truth_lag(imu, truth):
 
     For each lag, one-second windows of the truth's own body rotation against the
     gyroscope's over the same window moved by the lag. Truth's samples are 1 to 2 deg
-    noisy, so a rate from neighbouring rows is noise; a second of rotation is not.
+    noisy, so a rate from neighboring rows is noise; a second of rotation is not.
     """
     times = [row[0] for row in imu]
     integrated = gyro_attitudes(imu)
@@ -245,9 +245,9 @@ def rtk_velocity(rows, times, t, limit_ns=300_000_000):
 
 
 def imu_velocity(centre, world_body, omega, arm):
-    """The IMU's velocity from the vehicle centre's: `v + R (w x r)`, `r` centre to IMU.
+    """The IMU's velocity from the vehicle center's: `v + R (w x r)`, `r` center to IMU.
 
-    The centre is the RTK baseline's midpoint, so its velocity is the two receivers' mean
+    The center is the RTK baseline's midpoint, so its velocity is the two receivers' mean
     and needs no attitude; only this 6 cm arm does, which keeps the truth's tilt error
     (17 deg at rest on `outdoor_1`) out of the velocity.
     """
@@ -272,7 +272,7 @@ def convert(directory, sequence, out, truth_out):
     prefix = f"{sequence}_sensors"
     with zipfile.ZipFile(calibration_path) as archive:
         sensors = archive.read("insane_sensor_calib_preprocessed/sensor_calibration.yaml")
-    # From the vehicle centre, the baseline's midpoint, to the IMU (`R_vc_pximu` is identity).
+    # From the vehicle center, the baseline's midpoint, to the IMU (`R_vc_pximu` is identity).
     arm = tuple(yaml_numbers(sensors.decode(), "p_vc_pximu"))
 
     with zipfile.ZipFile(zip_path) as archive:
@@ -286,8 +286,8 @@ def convert(directory, sequence, out, truth_out):
         rtk2 = read_csv(archive, f"{prefix}/ground_truth/rtk_gps2_data_revised.csv")
 
     lag, mismatch, at_zero = truth_lag(imu, truth)
-    # The replay's origin is the first RTK2 fix, within a metre of where the IMU starts,
-    # since a static start puts the filter at zero: the desert's reference is a kilometre
+    # The replay's origin is the first RTK2 fix, within a meter of where the IMU starts,
+    # since a static start puts the filter at zero: the desert's reference is a kilometer
     # from its flights.
     origin = rtk2[0][1:4]
     shift = geodetic_to_ned(*origin, lat0, lon0, h0)
@@ -419,7 +419,7 @@ def convert_fixture(motion):
     check("truth position", [float(c) for c in row[1:4]], [0.2, 0.1, -0.3], 1e-4)
     fix = next(line.split(",") for line in out if ",gnss_pos," in line)
     check("fix position", [float(c) for c in fix[2:5]], [2.0, 1.0, -3.0], 1e-4)
-    # East at 1 m/s and at 3: the centre moves east at 2.
+    # East at 1 m/s and at 3: the center moves east at 2.
     check("truth velocity", [float(c) for c in row[4:7]], [0.0, 2.0, 0.0], 1e-9)
     mag = next(line.split(",") for line in out if ",mag," in line)
     check("mag axes, gauss", [float(c) for c in mag[2:5]], [0.1, -0.2, -0.3], 1e-9)
@@ -473,8 +473,8 @@ def self_test():
     expect("matrix", yaml_numbers(calibration, "R_pxmag_pximu"),
            [0.99, 0.03, 4e-2, -0.03, 0.99, -5e-3, -4e-2, 3.2e-3, 0.99])
 
-    # A centre 1 m ahead of the IMU on a vehicle yawing left at 1 rad/s moves 1 m/s to the
-    # left (north, facing east) though the IMU is still: v + R (w x r), `r` from the centre
+    # A center 1 m ahead of the IMU on a vehicle yawing left at 1 rad/s moves 1 m/s to the
+    # left (north, facing east) though the IMU is still: v + R (w x r), `r` from the center
     # back to the IMU, takes it back to zero.
     expect("lever", imu_velocity((0.0, 1.0, 0.0), east, (0.0, 0.0, 1.0), (-1.0, 0.0, 0.0)),
            (0.0, 0.0, 0.0), 1e-12)

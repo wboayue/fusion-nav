@@ -241,7 +241,7 @@ mod tests {
     /// Each Jacobian block against a central difference of `h`, perturbing the body-frame
     /// attitude error the way (2) defines it and the gyroscope bias the way (9) subtracts it.
     /// A sign error in either the `[r]×` or the transpose would fail here and nowhere else:
-    /// every corpus antenna is centimetres, where the term is below the noise.
+    /// every corpus antenna is centimeters, where the term is below the noise.
     #[test]
     fn the_lever_arm_jacobians_match_a_numerical_derivative() {
         let state = tilted();

@@ -673,7 +673,7 @@ def gap_threshold(times, multiple=agreement.HOLD):
     Relative to the source's own cadence rather than an absolute number of
     seconds, which means different things at 1 Hz and at 10 Hz. At a fixed 2 s
     the 2 h log shaded 1219 intervals -- true, its receiver really does miss
-    that many fixes, and useless, because the plot became grey.
+    that many fixes, and useless, because the plot became gray.
     """
     intervals = [b - a for a, b in zip(times, times[1:]) if b > a]
     if not intervals:
@@ -848,7 +848,7 @@ def positive(series):
 def sigma_figure(epochs, reference, gaps, backdrop):
     """One panel per state group, ours solid and EKF2's dashed.
 
-    Split by group rather than shared, because a position sigma in metres and a
+    Split by group rather than shared, because a position sigma in meters and a
     gyro-bias sigma in rad/s on one log axis is 27 traces across six decades and
     legible as none of them.
     """
@@ -867,7 +867,7 @@ def sigma_figure(epochs, reference, gaps, backdrop):
                 if series is not None:
                     plot.plot(series[0], series[1] * scale, linewidth=0.8,
                               label=sigma, alpha=0.9)
-            # EKF2's own, dashed and unlabelled so the legend stays ours. These
+            # EKF2's own, dashed and unlabeled so the legend stays ours. These
             # are what exercise the layout-keyed covariance map: the bias
             # states sit at one index in both eras, and only these move.
             drawn = False
@@ -1603,7 +1603,7 @@ def build_report(args):
             "at its own. Every track here is sampled at a uniform stride, so "
             "each point is a position that was actually held &mdash; the "
             "min/max envelope the time series use pairs two columns from "
-            "different epochs and draws a path nobody travelled.",
+            "different epochs and draws a path nobody traveled.",
             width=7.5, height=7.0)
 
     shading = ("Background shading is <code>Status</code>: amber Aligning, "
@@ -1704,7 +1704,7 @@ def build_report(args):
         "frame-invariant <code>sigma_att_total</code> is drawn. A sigma EKF2 "
         "reports as exactly zero is absent rather than floored: that is a state "
         "it is not estimating, not one it knows perfectly."
-        + (f" Grey bands are the {len(outages)} GNSS outages longer than "
+        + (f" Gray bands are the {len(outages)} GNSS outages longer than "
            f"{floor:.1f} s &mdash; five times this receiver's median fix "
            "interval, so an outage is judged against its own cadence rather than "
            "a fixed number of seconds &mdash; where the position and velocity "
@@ -1722,7 +1722,7 @@ def build_report(args):
             "&nu;<sub>i</sub>&nbsp;/&nbsp;&radic;S<sub>ii</sub>. Red verticals are "
             "gate rejections. Note this is <em>not</em> what the <code>nu_*</code> "
             "summary keys report: those average raw &nu; in the observation's own "
-            "units, metres or radians, so the printed value and this cloud are "
+            "units, meters or radians, so the printed value and this cloud are "
             "different quantities and will not match.",
             height=2.0 + 1.5 * innovation_axes(entry))
 

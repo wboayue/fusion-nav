@@ -67,7 +67,7 @@ Replayed `px4`:
 | `2b2ad123/px4` | 0.08885 | 0.09281 | 0.8674 | 0.04467 | 0.3631 | 1.234 | 0.000 | 0.000 |
 
 Columns, each a difference between EKF2 and this filter:
-- `pos_n_rms`, `pos_e_rms` and `pos_d_rms`: position north, east and down, in metres RMS, with
+- `pos_n_rms`, `pos_e_rms` and `pos_d_rms`: position north, east and down, in meters RMS, with
   EKF2's position converted into this filter's frame.
 - `vel_n_rms`: velocity north, in m/s RMS.
 - `tilt_diff_rms`: tilt, in degrees RMS.
@@ -102,7 +102,7 @@ with the one where this filter clearly does worse.
 A quadrotor mission with an RTK receiver, flying 4069.8 m out at up to
 10.3 m/s. The two agree closely on everything: position to
 0.08330 m RMS north and 0.02933 m east,
-both following the same centimetre fixes.
+both following the same centimeter fixes.
 
 Comparing positions needs the two filters in one frame. PX4 measures its local north and east on
 a sphere, while this filter uses the exact tangent plane of the WGS 84 ellipsoid, and the two
@@ -111,7 +111,7 @@ filter's frame before any figure here is computed.
 
 ![track for 89a498ce/raw](figures/89a498ce-raw/track.png)
 
-Estimate, EKF2's own solution where the log carries one, and the raw GNSS fixes the filter was offered. EKF2's track is in this filter's frame, reprojected from PX4's by the converter, where the reference header says so; two corpus logs report no origin, and there it stays at its own. Every track here is sampled at a uniform stride, so each point is a position that was actually held &mdash; the min/max envelope the time series use pairs two columns from different epochs and draws a path nobody travelled.
+Estimate, EKF2's own solution where the log carries one, and the raw GNSS fixes the filter was offered. EKF2's track is in this filter's frame, reprojected from PX4's by the converter, where the reference header says so; two corpus logs report no origin, and there it stays at its own. Every track here is sampled at a uniform stride, so each point is a position that was actually held &mdash; the min/max envelope the time series use pairs two columns from different epochs and draws a path nobody traveled.
 
 ![states_position_ned for 89a498ce/raw](figures/89a498ce-raw/states_position_ned.png)
 
@@ -120,7 +120,7 @@ Position NED, with the filter's own +/-3 sigma band. Background shading is <code
 ## A receiver that overstates its accuracy: `093e806a`
 
 A fixed-wing aircraft flying 1137.1 m out at up to
-24.1 m/s. Its receiver claims sub-metre accuracy, but its own
+24.1 m/s. Its receiver claims sub-meter accuracy, but its own
 velocities contradict its positions. How long each filter spent refusing its positions:
 
 - this filter, trusting the receiver fully (`raw`): 275.4 s;
@@ -144,9 +144,9 @@ Gate test ratios, this filter against EKF2's aggregate ones. Both publish <code>
 ## A receiver that jumps: `2b2ad123`
 
 A quadrotor with a second RTK receiver, flying 5130.2 m out at up to
-10.6 m/s. The receiver reports centimetre accuracy on every fix,
+10.6 m/s. The receiver reports centimeter accuracy on every fix,
 yet its position now and then runs one or two tenths of a second off its own velocity, for
-seconds at a time: at 10 m/s, a metre or two along the track and nothing across it, before it
+seconds at a time: at 10 m/s, a meter or two along the track and nothing across it, before it
 comes back. Trusting the receiver fully, this filter refuses
 118 fixes, and every one is such a fix or the receiver's
 return from one. Some refuse the offset fix itself, and those refusals can be seen to be right:
@@ -164,7 +164,7 @@ Gate test ratios, this filter against EKF2's aggregate ones. Both publish <code>
 ## Two ideas of height: `2c42096b`
 
 Not a flight: a vehicle vibrating on the ground for two hours with poor GNSS reception, moving
-at most 6.3 m. Its numbers show behaviour, not accuracy. EKF2 was
+at most 6.3 m. Its numbers show behavior, not accuracy. EKF2 was
 set to take its height from the barometer (its log records the height reference as
 `baro`). This filter uses the barometer and GNSS
 height together, and trusts GNSS for slow changes. The barometer drifts over the two hours, so
@@ -187,7 +187,7 @@ together through the cruise (0.2589 m RMS east).
 
 ![track for 4b473e91/raw](figures/4b473e91-raw/track.png)
 
-Estimate, EKF2's own solution where the log carries one, and the raw GNSS fixes the filter was offered. EKF2's track is in this filter's frame, reprojected from PX4's by the converter, where the reference header says so; two corpus logs report no origin, and there it stays at its own. Every track here is sampled at a uniform stride, so each point is a position that was actually held &mdash; the min/max envelope the time series use pairs two columns from different epochs and draws a path nobody travelled.
+Estimate, EKF2's own solution where the log carries one, and the raw GNSS fixes the filter was offered. EKF2's track is in this filter's frame, reprojected from PX4's by the converter, where the reference header says so; two corpus logs report no origin, and there it stays at its own. Every track here is sampled at a uniform stride, so each point is a position that was actually held &mdash; the min/max envelope the time series use pairs two columns from different epochs and draws a path nobody traveled.
 
 ## Past the vertical: `285ee2e7`
 
@@ -215,7 +215,7 @@ other, but the filter reports `Degraded` for most of the flight and ends there
 0.000 s.
 
 This is a loss with a known cause. Starting while moving needs the vehicle's own acceleration
-taken out of that first average, which is equation (5′), in-motion levelling, and #59.
+taken out of that first average, which is equation (5′), in-motion leveling, and #59.
 
 ![states_position_ned for 7ce66f0d/raw](figures/7ce66f0d-raw/states_position_ned.png)
 

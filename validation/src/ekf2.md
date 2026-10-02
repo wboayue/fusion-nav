@@ -38,7 +38,7 @@ Replayed `px4`:
 {{table agreement @corpus/px4 pos_n_rms,pos_e_rms,pos_d_rms,vel_n_rms,tilt_diff_rms,heading_diff_med,rej_s_gnss_pos,rej_s_gnss_pos_ekf2}}
 
 Columns, each a difference between EKF2 and this filter:
-- `pos_n_rms`, `pos_e_rms` and `pos_d_rms`: position north, east and down, in metres RMS, with
+- `pos_n_rms`, `pos_e_rms` and `pos_d_rms`: position north, east and down, in meters RMS, with
   EKF2's position converted into this filter's frame.
 - `vel_n_rms`: velocity north, in m/s RMS.
 - `tilt_diff_rms`: tilt, in degrees RMS.
@@ -73,7 +73,7 @@ with the one where this filter clearly does worse.
 A quadrotor mission with an RTK receiver, flying {{summary 89a498ce/raw extent}} m out at up to
 {{summary 89a498ce/raw speed_max}} m/s. The two agree closely on everything: position to
 {{agreement 89a498ce/raw pos_n_rms}} m RMS north and {{agreement 89a498ce/raw pos_e_rms}} m east,
-both following the same centimetre fixes.
+both following the same centimeter fixes.
 
 Comparing positions needs the two filters in one frame. PX4 measures its local north and east on
 a sphere, while this filter uses the exact tangent plane of the WGS 84 ellipsoid, and the two
@@ -87,7 +87,7 @@ filter's frame before any figure here is computed.
 ## A receiver that overstates its accuracy: `093e806a`
 
 A fixed-wing aircraft flying {{summary 093e806a/raw extent}} m out at up to
-{{summary 093e806a/raw speed_max}} m/s. Its receiver claims sub-metre accuracy, but its own
+{{summary 093e806a/raw speed_max}} m/s. Its receiver claims sub-meter accuracy, but its own
 velocities contradict its positions. How long each filter spent refusing its positions:
 
 - this filter, trusting the receiver fully (`raw`): {{agreement 093e806a/raw rej_s_gnss_pos}} s;
@@ -107,9 +107,9 @@ consistent with these figures and not shown by them.
 ## A receiver that jumps: `2b2ad123`
 
 A quadrotor with a second RTK receiver, flying {{summary 2b2ad123/raw extent}} m out at up to
-{{summary 2b2ad123/raw speed_max}} m/s. The receiver reports centimetre accuracy on every fix,
+{{summary 2b2ad123/raw speed_max}} m/s. The receiver reports centimeter accuracy on every fix,
 yet its position now and then runs one or two tenths of a second off its own velocity, for
-seconds at a time: at 10 m/s, a metre or two along the track and nothing across it, before it
+seconds at a time: at 10 m/s, a meter or two along the track and nothing across it, before it
 comes back. Trusting the receiver fully, this filter refuses
 {{summary 2b2ad123/raw rejected_gnss_pos}} fixes, and every one is such a fix or the receiver's
 return from one. Some refuse the offset fix itself, and those refusals can be seen to be right:
@@ -125,7 +125,7 @@ whole flight the two filters agree to
 ## Two ideas of height: `2c42096b`
 
 Not a flight: a vehicle vibrating on the ground for two hours with poor GNSS reception, moving
-at most {{summary 2c42096b/raw extent}} m. Its numbers show behaviour, not accuracy. EKF2 was
+at most {{summary 2c42096b/raw extent}} m. Its numbers show behavior, not accuracy. EKF2 was
 set to take its height from the barometer (its log records the height reference as
 `{{agreement 2c42096b/raw height_reference_ekf2}}`). This filter uses the barometer and GNSS
 height together, and trusts GNSS for slow changes. The barometer drifts over the two hours, so
@@ -170,6 +170,6 @@ other, but the filter reports `Degraded` for most of the flight and ends there
 {{agreement 7ce66f0d/raw rej_s_gnss_pos_ekf2}} s.
 
 This is a loss with a known cause. Starting while moving needs the vehicle's own acceleration
-taken out of that first average, which is equation (5′), in-motion levelling, and #59.
+taken out of that first average, which is equation (5′), in-motion leveling, and #59.
 
 {{figure 7ce66f0d/raw states_position_ned}}

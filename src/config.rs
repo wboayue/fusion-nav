@@ -375,7 +375,7 @@ pub struct Correlation {
     /// Barometric altitude. The reference's drift is (30′)'s, not this: this is the noise
     /// about it.
     pub baro_altitude: Option<Seconds>,
-    /// Magnetic heading, with the levelling variance of (36′) it carries.
+    /// Magnetic heading, with the leveling variance of (36′) it carries.
     pub mag_heading: Option<Seconds>,
     /// Dual-antenna GNSS heading.
     pub gnss_heading: Option<Seconds>,
@@ -547,7 +547,7 @@ pub struct Coast {
 
 impl Default for Coast {
     /// Measured on the two sources with gaps at speed, and set at twice the smallest value
-    /// either needed. Both are properties of an airframe's manoeuvres, so a vehicle more
+    /// either needed. Both are properties of an airframe's maneuvers, so a vehicle more
     /// agile than these is the reason to raise them.
     ///
     /// `rotation` is the corpus's finding rather than the simulator's: `4b473e91`'s course turns
@@ -588,7 +588,7 @@ pub struct Initialization {
     pub sigma_velocity: MetersPerSecond,
     /// Initial roll and pitch standard deviation. Gravity determines these well.
     ///
-    /// The whole tilt uncertainty of a levelled start, including the share an accelerometer
+    /// The whole tilt uncertainty of a leveled start, including the share an accelerometer
     /// bias explains: that share, `σ_βa / γ`, is carried as the tilt's correlation with the
     /// bias rather than added to it, and where it exceeds this figure it is the prior, with
     /// the window's own scatter across gravity added as the share the bias does not explain

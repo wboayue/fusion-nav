@@ -257,7 +257,7 @@ self_test() {
 
     # A value holding a glob character, checked from a directory where it matches files.
     # Both loops split on an unquoted expansion, so without `set -f` both sides expand --
-    # and two matches is what makes that visible rather than self-cancelling: the line keeps
+    # and two matches is what makes that visible rather than self-canceling: the line keeps
     # the first match while the expectations become two pairs, the second of which nothing
     # on the line satisfies. No `score` key can hold a glob character today, which is why
     # the guard needs a fixture rather than a reader's memory.

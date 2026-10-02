@@ -5,7 +5,7 @@ This file provides guidance to coding agents working with code in this repositor
 ## Status
 
 **`EQUATIONS.md` (1)–(44) is built**, except (31)–(33), the three-axis magnetometer, which is
-out of scope, and (5′)'s subtraction, in-motion levelling (#59). Those two carry the `**Stub.**`
+out of scope, and (5′)'s subtraction, in-motion leveling (#59). Those two carry the `**Stub.**`
 marker and nothing else does. Every source the crate publishes is fused: GNSS position, GNSS
 height (gated apart from horizontal), GNSS velocity, dual-antenna heading, course over ground,
 barometric altitude and magnetic heading. What remains is measurement and publication: #47, the
@@ -383,7 +383,7 @@ added that way, and each now guards a decision that would otherwise rot into a c
 caught the coarse log's 35575 barometer rows going from fused to `NoReference`, which no other key
 noticed, and now says where each log's reference came from — `window`, `estimate` or `none`; `heading=` is the validity verdict on the initialization window, which catches a yaw
 reported valid that no magnetometer ever observed — taken at the end of the log it would only
-restate `transitions=`). `floored=` is the odd one: it pins behaviour that must
+restate `transitions=`). `floored=` is the odd one: it pins behavior that must
 **not** happen, a count of variances raised to the floor of (42′) that reads zero on every log, and
 nothing else on the line would notice if it started — a floored variance only makes the estimate
 more conservative, so it moves neither `rejected=` nor `transitions=`. A key whose interesting
@@ -489,7 +489,7 @@ Commit the test before mutating, and restore with `git checkout HEAD -- <file>`:
 uncommitted file wipes the test along with the mutation, and every later mutation then "passes"
 a test that no longer exists — which is how #122's first mutation pass reported three survivors.
 
-A fixture can fail to bite through symmetry as well as through a cancelling bug. The simulator's
+A fixture can fail to bite through symmetry as well as through a canceling bug. The simulator's
 IMU axes are identical, so a harness reporting the best axis where the worst was asked for passed
 every scenario bound (#178); an asymmetric unit fixture, the worst axis in the middle, is what
 kills it. And a kill that rests on an exact floating-point tie, `0.025 × 2 == 0.05` in `f32`, is
@@ -502,7 +502,7 @@ mutation-tested, `fetch.sh --check` green on all five logs and CI green on nine 
 its figures were wrong — a track built by pairing two columns decimated independently, so 3217 of
 3994 buckets drew a position the vehicle never held; a gap detector fed decimated timestamps,
 shading 6700 s of a 7127 s log as outage; a caption reporting a count filled in during a draw that
-had not happened, since a caption is an argument; and an attitude σ panel labelled in degrees
+had not happened, since a caption is an argument; and an attitude σ panel labeled in degrees
 while plotting radians. None of it errored. A wrong plot renders, sizes and times exactly like a
 right one, so **the only detector is opening it** — one figure per section, on a log that
 exercises that section, before the work is called done.
@@ -516,7 +516,7 @@ number printed beside it:
 - **A frame is a projection, not only an origin.** One origin shift aligned EKF2 at its origin and
   nowhere else: PX4's local x/y are on a sphere, ours on the ellipsoid's tangent plane, and the
   0.2 % scale between them read as EKF2 sitting 3.6 m north of its own RTK fixes on `89a498ce`,
-  published as open for a release. EKF2's own innovations (millimetres) said it sat on its fixes;
+  published as open for a release. EKF2's own innovations (millimeters) said it sat on its fixes;
   checking them first would have named the cause. Before calling another estimator's disagreement
   with its own sensor a finding, read that estimator's innovations for the sensor.
 - **An axis sized to the widest band hides the error.** `gnss_outage`'s ±250 m band drew a 10 m
@@ -571,7 +571,7 @@ count the effect elsewhere, and run the same removal on rows that should not mat
 
 **A log's timestamp is when the message arrived, not when it was true.** At 1 Hz a filter
 predicts a second across tens of milliseconds of delivery jitter; at 5–10 Hz the same jitter
-reads as along-track position error a centimetre receiver cannot absorb, and #194 first read it
+reads as along-track position error a centimeter receiver cannot absorb, and #194 first read it
 as RTK receivers rejected by the hundred. Before a rate change is read as the sensor, date the
 measurement by the source's own clock where it logs one (`time_utc_usec`), and check that the
 dating is never later than the log's own.
@@ -643,7 +643,7 @@ rewrite, a manifest note and three issue comments before review caught it. Name 
 end, RMS, mean — whenever two numbers are put next to each other.
 
 **Know what a log is before reading its figures as accuracy.** `2c42096b` is a grounded,
-vibrating vehicle under a poor sky view for two hours, not a flight. Its numbers pin *behaviour*
+vibrating vehicle under a poor sky view for two hours, not a flight. Its numbers pin *behavior*
 (what the filter does when two height sources disagree), and tuning toward them would be fitting
 a bench test. Check peak speed and extent from the CSV before a log's figures argue for a change,
 and say what the log is in its manifest note, as that entry now does. Check first whether it is
@@ -724,7 +724,7 @@ ArduPilot `AP_NavEKF3_core.cpp` (`InitialiseFilterBootstrap`). Baro reference: P
 `EKF/aid_sources/gnss/gps_control.cpp`, ArduPilot `AP_NavEKF3_PosVelFusion.cpp`. Status models:
 PX4 `filter_control_status_u` in `common.h` plus `msg/versioned/VehicleLocalPosition.msg`,
 ArduPilot `libraries/AP_NavEKF/AP_Nav_Common.h`. Read the firmware default, not the library's:
-`EKF2.cpp` binds every `EKF2_*` parameter over `EKF/common.h`'s initialisers, so PX4's barometer
+`EKF2.cpp` binds every `EKF2_*` parameter over `EKF/common.h`'s initializers, so PX4's barometer
 noise is the 3.5 m of `params_barometer.yaml`, not `common.h`'s 2.0, and its default height
 reference is GNSS.
 
@@ -753,7 +753,7 @@ the declination table, and CI builds and tests without it too.
   `fuse_*`, `state`, `reset_*_to`. `initialize_from` is stage 1
   of GOALS.md's "Alignment beyond the static window": the static window stays the preferred path,
   a moving or short window starts coarse under `Status::Aligning`, yaw from course is
-  `fuse_course` (#53), and in-motion levelling (5′, #59) is the option still unbuilt — read that
+  `fuse_course` (#53), and in-motion leveling (5′, #59) is the option still unbuilt — read that
   section before touching initialization.
 - `src/init.rs` — initialization's types (`StaticSample`, `StaticWindow`, `Alignment`, `Coarse`,
   `InitError`) and pure functions (`level_from_accel`, `heading_from_mag`, `nominal_state`,
@@ -782,7 +782,7 @@ the declination table, and CI builds and tests without it too.
   "Measured cost, by function".
 - `src/observation/` — one module per sensor, each forming `y`, `H` and diagonal `R_m` and
   nothing else. `gnss.rs` holds (28) and (29) at the antenna, (28′) and (29′), `baro.rs` holds (30), `mag.rs` holds (34), (35)
-  and the levelling variance (36′), and `heading.rs` holds (36), which every heading source
+  and the leveling variance (36′), and `heading.rs` holds (36), which every heading source
   shares, with (35′) and (35″); (31)–(33), the three-axis magnetometer, are deliberately unbuilt.
 - `src/math.rs` — the primitives the equations share: `skew`, `exp_quat`, `wrap_pi`,
   `enforce_symmetry` (42). Pure, stateless, and unit-tested against their definitions. All four
@@ -849,7 +849,7 @@ the declination table, and CI builds and tests without it too.
   single-dependency claims in four documents, and puts the simulator one `use` away from sharing
   the filter's rotations, which is the property its numbers rest on. See #16 and #17.
   Tests in an example do run under `cargo test --all-targets`, so none of this is about coverage.
-  Their `main`s do not: `basic` and `degradation` compile in CI and never run, so a behaviour
+  Their `main`s do not: `basic` and `degradation` compile in CI and never run, so a behavior
   change that breaks them shows only when they are run and their output diffed against main's.
   #122's held-reading rule turned every `degradation` altitude into `NoReference` with every
   test green.
@@ -947,7 +947,7 @@ the declination table, and CI builds and tests without it too.
   The heading adoption is the one that steps **attitude**, by up to half a circle, so it
   reparameterizes the surviving attitude rows by (41) with the exact `R(q̂⁺)ᵀR(q̂)` rather than the
   small-angle Jacobian an update takes, and it carries the `R` of (36′) rather than the caller's
-  σ_ψ² — a heading levelled by a coarse tilt is not worth the magnetometer's own variance. A
+  σ_ψ² — a heading leveled by a coarse tilt is not worth the magnetometer's own variance. A
   heading recovery takes the same path. The barometric reference is the same
   shape without the step: a start that leaves none reads it from the estimate at the first
   altitude once position is established, which moves no state.
