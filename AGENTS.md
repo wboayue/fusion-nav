@@ -771,8 +771,9 @@ the declination table, and CI builds and tests without it too.
   `A` of (16)–(19) that (23′) carries `H` through.
 - `src/history.rs` — the recent past of the nominal state for (23′): 32 entries 10 ms apart,
   interpolated, carried forward on velocity and the last sample's rate for a time ahead of the
-  present, and shifted by every correction in navigation axes through `Eskf::commit_state`, the
-  one writer of the state outside a propagation or a start. `Eskf::observe` and `Eskf::past` are
+  present, and shifted by every correction in navigation axes through `Estimate::commit`.
+  `Estimate` (`src/eskf/estimate.rs`) holds the state and the history behind private fields, so
+  its three writers are the only ones the compiler allows. `Eskf::observe` and `Eskf::past` are
   its only readers, and it costs 1.5 KB of `Eskf`.
 - `src/update.rs` — the update every observation shares: (23)–(27) in Joseph form, the gate of
   (37)–(38), the injection and reset of (39)–(41). Generic over `dim(z)` and free of `Eskf`, so it

@@ -34,7 +34,7 @@ flowchart LR
         rec --> fout(["Fusion"])
     end
     hist -.-> observe
-    rec -. "commit_state shifts it" .-> hist
+    rec -. "Estimate::commit shifts it" .-> hist
     pout --> health["Diagnostics → Status, Validity<br/>health.rs"]
     fout --> health
 ```
@@ -45,7 +45,7 @@ measurement of a quantity the start never established. The gate runs before the 
 rejection computes nothing it could commit. `apply_or_recover` is the one place every source
 recovers through: it commits an accepted update, records a rejection, or adopts the measurement
 when its source has been locked out past `Config::recovery`. Every correction it commits shifts
-`History` through `Eskf::commit_state`.
+`History` through `Estimate::commit`.
 
 Sensor drivers and hardware are outside the crate. The application supplies each measurement
 with its time and its uncertainty.
@@ -146,10 +146,11 @@ The correction lands on the current state. So the `Fusion` a call returns is the
 on that measurement, not a promise of one later, as PX4's delayed horizon would make it
 ([measurement latency](GOALS.md#measurement-latency)).
 
-`History` holds 32 entries 10 ms apart. Every correction shifts it through `Eskf::commit_state`,
-the one writer of the state outside a propagation or a start. A time older than
-`LATENCY_HORIZON` is refused as `OutOfHorizon`; one slightly ahead of the state is carried forward
-on the estimated velocity.
+`History` holds 32 entries 10 ms apart. Every correction shifts it through `Estimate::commit`.
+`Estimate` holds the state and its history behind private fields, so its three writers (`commit`,
+`step` for a propagation, `restart` for a start) are the only ones the compiler allows. A time
+older than `LATENCY_HORIZON` is refused as `OutOfHorizon`; one slightly ahead of the state is
+carried forward on the estimated velocity.
 
 ### GNSS Position
 

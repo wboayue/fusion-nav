@@ -4,7 +4,6 @@ use crate::config::{ALIGNED_HEADING, ALIGNED_TILT, Config, ConfigError, Gate, LA
 use crate::frames::{Body, Ned};
 use crate::geodetic::{Geodetic, LocalOrigin};
 use crate::health::{Diagnostics, Fusion, GnssFusion, Propagation, SourceHealth, Status, Validity};
-use crate::history::History;
 use crate::init::{
     self, Alignment, Coarse, GyroBias, InitError, Measured, StaticSample, StaticWindow,
 };
@@ -21,6 +20,9 @@ use crate::units::{
 };
 use crate::update::{self, Observation, Update, update};
 use nalgebra::Vector3;
+
+mod estimate;
+use estimate::Estimate;
 
 /// A 15-state error-state Kalman filter.
 ///
@@ -130,7 +132,7 @@ use nalgebra::Vector3;
 #[derive(Clone, Debug)]
 pub struct Eskf {
     config: Config,
-    state: State,
+    estimate: Estimate,
     covariance: Covariance,
     diagnostics: Diagnostics,
     baro_reference: Option<Altitude>,
@@ -153,8 +155,6 @@ pub struct Eskf {
     /// `ω` of equation (9) from the last step integrated from a sample; see
     /// [`angular_rate`](Self::angular_rate).
     angular_rate: Option<AngularRate<Body>>,
-    /// The recent past of the state, for a measurement's age; see [`History`].
-    history: History,
     /// The earliest time a measurement can be placed at: the start, or the epoch when the start
     /// was shown at rest and its state also describes the time before it. See
     /// [`admit`](Self::admit).
@@ -222,7 +222,7 @@ impl Eskf {
     fn with(config: Config) -> Self {
         Self {
             config,
-            state: State::default(),
+            estimate: Estimate::default(),
             covariance: Covariance::zero(),
             diagnostics: Diagnostics::default(),
             baro_reference: None,
@@ -232,7 +232,6 @@ impl Eskf {
             declination_set: false,
             magnetic_north: false,
             angular_rate: None,
-            history: History::default(),
             earliest: Timestamp::ZERO,
             unestablished: Unestablished::default(),
             aligned: false,
@@ -599,15 +598,15 @@ impl Eskf {
             return false;
         };
         if let Some(old) = self.origin {
-            let position = new.to_ned(old.to_geodetic(self.state.position));
+            let position = new.to_ned(old.to_geodetic(self.estimate.state().position));
             // An origin further from the vehicle than `f32` reaches, such as a height of
             // 1e38 m, which `LocalOrigin::new` has no reason to refuse on its own.
             if !position.is_finite() {
                 return false;
             }
-            self.commit_state(State {
+            self.estimate.commit(State {
                 position,
-                ..self.state
+                ..*self.estimate.state()
             });
         }
         self.place_origin(new);
@@ -667,11 +666,12 @@ impl Eskf {
     fn learn_declination(&mut self, (declination, turn): (Radians, f32)) {
         self.declination = declination;
         if turn != 0.0 {
-            let mut turned = exp_quat(Vector3::z() * turn) * self.state.attitude.quaternion();
+            let mut turned =
+                exp_quat(Vector3::z() * turn) * self.estimate.state().attitude.quaternion();
             turned.renormalize();
-            self.commit_state(State {
+            self.estimate.commit(State {
                 attitude: Attitude::from_quaternion(turned),
-                ..self.state
+                ..*self.estimate.state()
             });
         }
     }
@@ -737,7 +737,7 @@ impl Eskf {
             return None;
         }
         self.origin
-            .map(|origin| origin.to_geodetic(self.state.position))
+            .map(|origin| origin.to_geodetic(self.estimate.state().position))
     }
 
     /// Propagate the nominal state and covariance across one IMU sample. Equations (9)–(22).
@@ -806,7 +806,7 @@ impl Eskf {
             };
             // The sample is not read, so a non-finite one does not stop a coast.
             let coasted = propagate::coast(
-                self.state,
+                *self.estimate.state(),
                 self.covariance,
                 self.offset,
                 dt,
@@ -832,7 +832,13 @@ impl Eskf {
             let interval = imu.longest_interval();
             return self.refuse_step(Propagation::InvalidInterval { interval });
         }
-        let propagated = propagate(self.state, self.covariance, self.offset, imu, &self.config);
+        let propagated = propagate(
+            *self.estimate.state(),
+            self.covariance,
+            self.offset,
+            imu,
+            &self.config,
+        );
         self.commit_step(propagated, Propagation::Propagated)
     }
 
@@ -849,25 +855,12 @@ impl Eskf {
         if !propagated.is_finite() {
             return self.refuse_step(Propagation::StateNotFinite);
         }
-        self.state = propagated.state;
-        self.history.record(self.time, &self.state);
+        self.estimate.step(self.time, propagated.state);
         self.angular_rate = propagated.omega;
         self.commit_covariance(propagated.covariance, propagated.offset);
         self.note_alignment();
         self.diagnostics.propagation.record(outcome);
         outcome
-    }
-
-    /// Store a corrected state, and correct the [`History`] by the same change.
-    ///
-    /// Every write of the state other than a propagation or a fresh start comes through here:
-    /// an update, an adoption, a heading reset, a new origin. The past is only consistent with
-    /// the present if each correction reaches both, and a writer that skipped it would leave
-    /// the next old measurement to correct the same error a second time, which no test of the
-    /// present state can see.
-    fn commit_state(&mut self, state: State) {
-        self.history.shift(&self.state, &state);
-        self.state = state;
     }
 
     /// Store a covariance, applying the diagonal floor of equation (42′) and counting what it
@@ -938,7 +931,7 @@ impl Eskf {
                 ratio,
                 innovation,
             } => {
-                self.commit_state(state);
+                self.estimate.commit(state);
                 self.commit_covariance(covariance, offset);
                 // (30′): `b` is the error in `α₀`, so its estimate comes off it.
                 if let Some(reference) = self.baro_reference {
@@ -1105,7 +1098,7 @@ impl Eskf {
                         self.config.correlation.gnss_position,
                     ));
                 let outcome = update(
-                    &self.state,
+                    self.estimate.state(),
                     &self.covariance,
                     &self.offset,
                     &observation,
@@ -1136,7 +1129,7 @@ impl Eskf {
                         self.config.correlation.gnss_height,
                     ));
                 let outcome = update(
-                    &self.state,
+                    self.estimate.state(),
                     &self.covariance,
                     &self.offset,
                     &observation,
@@ -1196,7 +1189,7 @@ impl Eskf {
         let omega = self
             .angular_rate
             .unwrap_or_else(|| AngularRate::body(0.0, 0.0, 0.0));
-        let (past, placed) = self.history.at(time, self.time, &self.state, omega);
+        let (past, placed) = self.estimate.at(time, self.time, omega);
         (past, self.time.since(placed))
     }
 
@@ -1221,7 +1214,10 @@ impl Eskf {
         build: impl FnOnce(&State, AngularRate<Body>) -> Observation<M>,
     ) -> Observation<M> {
         if time == self.time {
-            return build(&self.state, self.mean_rate(&self.state, 0.0));
+            return build(
+                self.estimate.state(),
+                self.mean_rate(self.estimate.state(), 0.0),
+            );
         }
         let (past, age) = self.past(time);
         let tau = age.as_secs();
@@ -1229,12 +1225,12 @@ impl Eskf {
         if tau == 0.0 {
             return build(&past, omega);
         }
-        let now = self.state.attitude.quaternion();
+        let now = self.estimate.state().attitude.quaternion();
         // Mean rates over the age, rather than the last sample's: one sample's specific force
         // carries the airframe's vibration, which the velocities either side of it average out.
-        let a_n = (self.state.velocity.vector() - past.velocity.vector()) / tau;
+        let a_n = (self.estimate.state().velocity.vector() - past.velocity.vector()) / tau;
         let a_b = now.inverse() * (a_n - propagate::gravity_vector(self.config.gravity));
-        let a = propagate::error_dynamics(&self.state, omega.vector(), a_b);
+        let a = propagate::error_dynamics(self.estimate.state(), omega.vector(), a_b);
         build(&past, omega).delayed(age, &a)
     }
 
@@ -1248,7 +1244,10 @@ impl Eskf {
         if tau == 0.0 {
             return self.angular_rate.unwrap_or_default();
         }
-        let (now, then) = (self.state.attitude.quaternion(), past.attitude.quaternion());
+        let (now, then) = (
+            self.estimate.state().attitude.quaternion(),
+            past.attitude.quaternion(),
+        );
         AngularRate::from_vector((then.inverse() * now).scaled_axis() / tau)
     }
 
@@ -1268,7 +1267,7 @@ impl Eskf {
     ) -> Option<Position<Ned>> {
         let (past, _) = self.past(time);
         let arm = past.attitude.quaternion() * antenna.vector();
-        let moved = self.state.position.vector() - past.position.vector();
+        let moved = self.estimate.state().position.vector() - past.position.vector();
         let carried = Position::from_vector(taken.vector() - arm + moved);
         carried.is_finite().then_some(carried)
     }
@@ -1285,7 +1284,7 @@ impl Eskf {
         let (past, age) = self.past(time);
         let omega = self.mean_rate(&past, age.as_secs());
         let turning = past.attitude.quaternion() * omega.vector().cross(&antenna.vector());
-        let moved = self.state.velocity.vector() - past.velocity.vector();
+        let moved = self.estimate.state().velocity.vector() - past.velocity.vector();
         let carried = Velocity::from_vector(taken.vector() - turning + moved);
         carried.is_finite().then_some(carried)
     }
@@ -1390,7 +1389,7 @@ impl Eskf {
             self.learn_declination(learned);
         }
         self.origin = Some(origin);
-        let placed = self.reset_position_to(self.state.position, noise);
+        let placed = self.reset_position_to(self.estimate.state().position, noise);
         debug_assert!(
             placed,
             "the estimate and the fix's noise are both already checked"
@@ -1463,7 +1462,7 @@ impl Eskf {
                 self.config.correlation.gnss_velocity,
             ));
         let outcome = update(
-            &self.state,
+            self.estimate.state(),
             &self.covariance,
             &self.offset,
             &observation,
@@ -1565,7 +1564,7 @@ impl Eskf {
                 self.config.correlation.baro_altitude,
             ));
         let outcome = update(
-            &self.state,
+            self.estimate.state(),
             &self.covariance,
             &self.offset,
             &observation,
@@ -1854,7 +1853,7 @@ impl Eskf {
             return Fusion::Reset;
         }
         let outcome = update(
-            &self.state,
+            self.estimate.state(),
             &self.covariance,
             &self.offset,
             &observation,
@@ -1907,7 +1906,7 @@ impl Eskf {
         // through the error dynamics: a course's gains a tilt component from its velocity block,
         // `∇χᵀR[a_b]× τ`, about 0.06 at 18 m/s and 110 ms, and stops being the unit vector
         // `reset_attitude_direction` needs.
-        let down = self.state.attitude.quaternion().inverse() * Vector3::z();
+        let down = self.estimate.state().attitude.quaternion().inverse() * Vector3::z();
         let (y, variance) = (observation.y[0], observation.r_m[0] + spread);
         if !(y.is_finite() && variance.is_finite()) {
             return false;
@@ -1958,12 +1957,18 @@ impl Eskf {
     /// roll-error/gyro-bias-x correlation is read afterwards as roll-error/gyro-bias-y and
     /// the next velocity update pushes the correction into the wrong axis.
     fn reset_heading_by(&mut self, y: f32, variance: f32, down: Vector3<f32>) {
-        let before = self.state.attitude.quaternion().to_rotation_matrix();
-        let mut corrected = exp_quat(Vector3::z() * y) * self.state.attitude.quaternion();
+        let before = self
+            .estimate
+            .state()
+            .attitude
+            .quaternion()
+            .to_rotation_matrix();
+        let mut corrected =
+            exp_quat(Vector3::z() * y) * self.estimate.state().attitude.quaternion();
         corrected.renormalize();
-        self.commit_state(State {
+        self.estimate.commit(State {
             attitude: Attitude::from_quaternion(corrected),
-            ..self.state
+            ..*self.estimate.state()
         });
 
         let g_theta = corrected.to_rotation_matrix().inverse() * before;
@@ -1984,10 +1989,10 @@ impl Eskf {
     /// cost is two rotations of the attitude block, one each for tilt and heading, six other
     /// covariance entries and six source timers, compared.
     pub fn state(&self) -> State {
-        // `self.state.status` and `.validity` are inert; the stored estimate never
+        // `self.estimate.state().status` and `.validity` are inert; the stored estimate never
         // carries meaningful ones, and every read overwrites them.
         let validity = self.validity();
-        let mut state = self.state;
+        let mut state = *self.estimate.state();
         state.status = self.derive_status();
         state.validity = validity;
         state
@@ -2071,7 +2076,7 @@ impl Eskf {
     /// heading only while the vehicle is level; see [`AttitudeVariance`]. All zero before
     /// the filter is initialized, which is the covariance it then holds.
     pub fn attitude_variance(&self) -> AttitudeVariance {
-        AttitudeVariance::of(&self.state.attitude, &self.covariance)
+        AttitudeVariance::of(&self.estimate.state().attitude, &self.covariance)
     }
 
     /// Whether the attitude has **ever** met [`ALIGNED_TILT`] and [`ALIGNED_HEADING`] since
@@ -2163,7 +2168,7 @@ impl Eskf {
     /// tilt only while the vehicle is level.
     fn tilt_within(&self, p: &Covariance, bar: Radians) -> bool {
         let sigma = bar.as_radians();
-        let variance = AttitudeVariance::of(&self.state.attitude, p);
+        let variance = AttitudeVariance::of(&self.estimate.state().attitude, p);
         variance.tilt_north <= sigma * sigma && variance.tilt_east <= sigma * sigma
     }
 
@@ -2174,7 +2179,7 @@ impl Eskf {
     fn heading_within(&self, p: &Covariance, bar: Radians) -> bool {
         let sigma = bar.as_radians();
         !self.unestablished.heading
-            && AttitudeVariance::of(&self.state.attitude, p).heading <= sigma * sigma
+            && AttitudeVariance::of(&self.estimate.state().attitude, p).heading <= sigma * sigma
     }
 
     /// Which parts of the estimate the filter expects to be good **if the vehicle left
@@ -2215,7 +2220,7 @@ impl Eskf {
             return Validity::NONE;
         }
         let horizon = project(
-            &self.state,
+            self.estimate.state(),
             self.covariance,
             self.config.accuracy.horizon,
             &self.config,
@@ -2324,7 +2329,7 @@ impl Eskf {
         axes: [ErrorState; N],
     ) {
         let (z, r) = (position.vector(), noise.variance());
-        let mut adopted = self.state.position.vector();
+        let mut adopted = self.estimate.state().position.vector();
         let mut variances = [0.0; N];
         for (axis, variance) in axes.iter().zip(&mut variances) {
             // `get` rather than indexing: an out-of-range index is a panic, and every axis
@@ -2337,9 +2342,9 @@ impl Eskf {
                 *variance = *r;
             }
         }
-        self.commit_state(State {
+        self.estimate.commit(State {
             position: Position::ned(adopted[0], adopted[1], adopted[2]),
-            ..self.state
+            ..*self.estimate.state()
         });
         self.reset_block(axes, variances);
     }
@@ -2364,9 +2369,9 @@ impl Eskf {
     // Out of line for the reason `adopt_position` is.
     #[inline(never)]
     fn adopt_velocity(&mut self, velocity: Velocity<Ned>, noise: VelocityNoise<Ned>) {
-        self.commit_state(State {
+        self.estimate.commit(State {
             velocity,
-            ..self.state
+            ..*self.estimate.state()
         });
         self.reset_block(
             [
@@ -2505,7 +2510,7 @@ impl Eskf {
         time: Timestamp,
         at_rest: bool,
     ) {
-        self.state = state;
+        self.estimate.restart(time, state);
         // Diagnostics first: `commit_covariance` counts into them, and a start sitting on the
         // floor is a fact about this filter's life rather than the last one's.
         self.diagnostics = Diagnostics::default();
@@ -2515,8 +2520,6 @@ impl Eskf {
         self.angular_rate = None;
         self.initialized = true;
         self.time = time;
-        self.history.clear();
-        self.history.record(time, &self.state);
         self.earliest = if at_rest { Timestamp::ZERO } else { time };
         // A fresh start is unaligned until its own covariance says otherwise, which
         // `note_alignment` reads at the end of each entry point.
@@ -2875,7 +2878,7 @@ mod tests {
             DT,
         );
         assert!(filter.initialize_coarse(tilted).is_ok());
-        let (state, declination) = (filter.state, filter.magnetic_declination());
+        let (state, declination) = (*filter.estimate.state(), filter.magnetic_declination());
 
         let outcome = filter.fuse_gnss_position(filter.now(), Position::zero(), noise, arm);
         assert_eq!(outcome, GnssFusion::both(Fusion::NotFinite));
@@ -2883,7 +2886,7 @@ mod tests {
         let outcome = filter.fuse_gnss_geodetic(filter.now(), fix, noise, arm);
         assert_eq!(outcome, GnssFusion::both(Fusion::NotFinite));
 
-        assert_eq!(filter.state, state);
+        assert_eq!(*filter.estimate.state(), state);
         assert_eq!(filter.origin(), None);
         assert_eq!(filter.magnetic_declination(), declination);
         assert!(filter.unestablished.position);
@@ -2917,11 +2920,14 @@ mod tests {
             DT,
         );
         assert!(filter.initialize_coarse(spinning).is_ok());
-        let (state, covariance) = (filter.state, *filter.covariance());
+        let (state, covariance) = (*filter.estimate.state(), *filter.covariance());
         let field = MagField::body(0.22, 0.0, 0.44);
         let outcome = filter.fuse_mag_heading(filter.now(), field, HeadingNoise::from_sigma(0.02));
         assert_eq!(outcome, Fusion::NotFinite);
-        assert_eq!((filter.state, *filter.covariance()), (state, covariance));
+        assert_eq!(
+            (*filter.estimate.state(), *filter.covariance()),
+            (state, covariance)
+        );
         assert!(filter.unestablished.heading);
     }
 
@@ -6854,7 +6860,7 @@ mod tests {
         let field = measured(truth, 0.0);
         let noise = HeadingNoise::from_sigma(0.05);
         let adopted = mag::heading_observation(
-            &filter.state,
+            filter.estimate.state(),
             &filter.covariance,
             field,
             filter.declination,
@@ -7366,7 +7372,8 @@ mod tests {
         // About 0.2 m/s across 14.1 m/s of track, once the velocity fix has been fused, on top
         // of 0.05 rad of sideslip.
         let mut filter = cruising(Velocity::ned(10.0, 10.0, 0.0));
-        let course = heading::course_variance(&filter.state, &filter.covariance).expect("moving");
+        let course =
+            heading::course_variance(filter.estimate.state(), &filter.covariance).expect("moving");
         assert!(course > 1e-5 && course < 0.09 / 200.0, "{course}");
         let sideslip = HeadingNoise::from_sigma(0.05);
         assert!(filter.fuse_course(filter.now(), sideslip).is_reset());
