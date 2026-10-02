@@ -407,7 +407,8 @@ def self_test():
     # them: it is there for the message.
     refused("two regions", lambda: region(text + text))
     refused("no region", lambda: region("nothing"))
-    refused("a short row", lambda: table_of(generated.replace("        0, 1, 2,", "        1, 2,", 1)))
+    short = generated.replace("        0, 1, 2,", "        1, 2,", 1)
+    refused("a short row", lambda: table_of(short))
 
     # Wrapping: no line past 100 columns, a full line before the break, no comma on the last.
     values = list(range(-20000, -19963))
@@ -498,7 +499,8 @@ def main(argv):
     parser.add_argument("--model", help="with --epoch: the coefficient file, e.g. WMM_2025")
     parser.add_argument("--epoch", help="with --model: the decimal year to evaluate it at")
     parser.add_argument("--at", type=float, help="with --drift: the year for now_max")
-    parser.add_argument("logs", nargs="*", help="with --drift: converted logs, for the default sets")
+    parser.add_argument("logs", nargs="*",
+                        help="with --drift: converted logs, in place of the default sets")
     args = parser.parse_args(argv)
     if (args.model is None) != (args.epoch is None):
         parser.error("--model and --epoch go together")
