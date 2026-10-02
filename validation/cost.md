@@ -67,12 +67,17 @@ Each entry point's own frame, in bytes, and the frames beneath it that set its d
 | beneath every `fuse_*`: the update of (23)–(27), three measurements | 8088 | 7960 |
 | two measurements | 7400 | 7320 |
 | one measurement | 6368 | 6216 |
-| beneath `predict`: the covariance step of (22) | 2832 | 2760 |
-| a coast across a gap, (22′) | 2152 | 2144 |
+| beside the update: the observation formed at the measurement's time, (23′) | 1464 | 1440 |
+| beside the update: committing or adopting its result | 1120 | 1064 |
+| beneath `predict`: one sample, (9)–(22) | 1088 | 1096 |
+| beneath that: the covariance step of (22) | 2832 | 2760 |
+| beneath `predict`, across a gap: the coast of (22′) | 2152 | 2144 |
+| beneath `predicted_validity`: the covariance carried over the horizon | 1952 | 1936 |
+| beneath `initialize`: the initial covariance | 1120 | 1080 |
 
 The deepest path is `fuse_gnss_velocity` calling the three-measurement update: the sum of those
-two frames is the stack an integrator plans for. Propagation, a coast, the arming query and
-every start sum to less, which DESIGN.md's stack table works through path by path.
+two frames is the stack an integrator plans for. Summed along their own paths, propagation, a
+coast, the arming query and every start come to less; DESIGN.md names the paths.
 
 ## Flash
 

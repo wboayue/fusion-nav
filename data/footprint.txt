@@ -7,7 +7,8 @@
 # `rodata.` the flash of `panic-check`'s ELF at each opt-level, `text_<crate>.` what that crate
 # kept out of line. `tools/footprint.py` says what each key means and leaves out; a `frame.` of
 # a generic function is its largest instance, so a chain summed from these keys is a bound.
-# DESIGN.md, "Measured cost, by function", quotes them and says which forms they decided.
+# validation/cost.md shows them, rendered by `tools/validation.py --only cost.md`, which CI
+# checks; DESIGN.md, "Measured cost, by function", says which forms they decided.
 #
 # Exact, on the nightly the script pins, so any move fails, growth or shrinkage: a figure that
 # moves is a diff to explain, and DESIGN.md's quotes move with it. `tools/footprint.sh --pin`

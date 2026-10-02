@@ -147,4 +147,7 @@ for target in "${THUMB_TARGETS[@]}"; do
         failed=1
     fi
 done
+# validation/cost.md shows these pins, and CI checks it against them.
+[ "$failed" = 1 ] && echo "after re-pinning: python3 tools/validation.py render validation/src target/validation . --only cost.md" >&2
+[ "$mode" = pin ] && echo "then: python3 tools/validation.py render validation/src target/validation . --only cost.md" >&2
 exit $failed

@@ -88,7 +88,9 @@ Publish measured worst-case execution time (cycle counts) and stack high-water m
 `predict` and per measurement update, on a real STM32H7-class target.
 
 No Rust navigation crate does this, so there is no way to tell from the outside whether one fits
-in a 400 Hz control loop. PX4 and ArduPilot instrument their timing, with `perf_counter` and
+in a 400 Hz control loop. [validation/cost.md](validation/cost.md) is where the figures are
+published: memory, stack and flash today, measured on the build; cycles and a painted stack are
+#41's. PX4 and ArduPilot instrument their timing, with `perf_counter` and
 scheduler task budgets respectively, but neither publishes per-function worst-case figures you
 can design against before adopting.
 
