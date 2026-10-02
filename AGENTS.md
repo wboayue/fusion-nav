@@ -664,7 +664,7 @@ The rule reaches past *computing* a number, and the extension is the one that ha
 A statistic that **audits a filter claim** must falsify it in the shape the filter states it, not
 merely read its verdict. `false_valid` took `Validity` off the filter exactly as intended and then
 tested the 2-D norm of the horizontal error, while `Eskf::validity` states the claim per axis
-(`within(PositionNorth) && within(PositionEast)`, `src/eskf.rs:1170-1171`) — a bar √2 tighter than
+(`within(PositionNorth) && within(PositionEast)`, `src/eskf.rs:2145-2146`) — a bar √2 tighter than
 the one the filter asserted, diverging from it precisely as the estimate approaches it, which is
 the only regime where such a count says anything. Reading the verdict and re-deriving the geometry
 is still two implementations of one claim. It applies to every scoring statistic still to land:
