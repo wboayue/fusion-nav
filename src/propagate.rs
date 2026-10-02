@@ -528,13 +528,14 @@ fn process_noise(noise: &ImuNoise, imu: Corrected) -> [f32; STATES] {
 /// Written as (22) reads, which is the most expensive thing the filter does: three 15 × 15
 /// temporaries per IMU sample, at up to 400 Hz. (20) is sparse enough (two identity blocks, two
 /// zero rows) that a block-wise form would cut them, at the cost of the one equation a reader of
-/// this crate is most likely to have come for. What it costs is [measured]. The block-wise form:
-/// not built, #41, until hardware figures ask for it.
+/// this crate is most likely to have come for. Its stack frame is [published], and its
+/// arithmetic [counted]. The block-wise form: not built, #41, until hardware figures ask for it.
 ///
 /// `Q` arrives as a diagonal and is added as one, which keeps those temporaries to three
 /// rather than four.
 ///
-/// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function
+/// [published]: https://github.com/wboayue/fusion-nav/blob/main/validation/cost.md#stack
+/// [counted]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#arithmetic
 fn propagate_covariance(p: Covariance, f: &Transition, q: [f32; STATES]) -> Covariance {
     let mut next = f * p.as_matrix() * f.transpose();
 

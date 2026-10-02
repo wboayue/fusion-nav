@@ -162,8 +162,9 @@ const TABLE: [[i16; 37]; 19] = [
 /// table is taken at sea level: the field's direction changes by well under the grid's own
 /// interpolation error across any altitude a vehicle flies at.
 pub(crate) fn declination_at(site: Geodetic) -> Option<Radians> {
-    // In f32: in f64 the lookup links four times the `.text` in software doubles (DESIGN.md,
-    // "Measured cost, by function"), and the answer is returned in f32 anyway.
+    // In f32: in f64 the lookup linked four times the `.text` in software doubles when the two
+    // were measured together (DESIGN.md, "Measured cost, by function"), and the answer is
+    // returned in f32 anyway.
     let (latitude, longitude) = (site.latitude_deg() as f32, site.longitude_deg() as f32);
     if !latitude.is_finite() || !longitude.is_finite() {
         return None;

@@ -65,11 +65,13 @@ Each entry point's own frame, in bytes, and the frames beneath it that set its d
 | `initialize_coarse` | {{footprint thumbv6m-none-eabi frame.eskf.Eskf.initialize_coarse}} | {{footprint thumbv7em-none-eabihf frame.eskf.Eskf.initialize_coarse}} |
 | `initialize_from` | {{footprint thumbv6m-none-eabi frame.eskf.Eskf.initialize_from}} | {{footprint thumbv7em-none-eabihf frame.eskf.Eskf.initialize_from}} |
 | beneath the three heading entry points: the heading update they share | {{footprint thumbv6m-none-eabi frame.eskf.Eskf.fuse_heading}} | {{footprint thumbv7em-none-eabihf frame.eskf.Eskf.fuse_heading}} |
-| beneath every `fuse_*` (a geodetic fix through `fuse_gnss_position`, a heading through the row above): the update of (23)–(27), three measurements | {{footprint thumbv6m-none-eabi frame.update.update.3}} | {{footprint thumbv7em-none-eabihf frame.update.update.3}} |
-| two measurements | {{footprint thumbv6m-none-eabi frame.update.update.2}} | {{footprint thumbv7em-none-eabihf frame.update.update.2}} |
-| one measurement | {{footprint thumbv6m-none-eabi frame.update.update.1}} | {{footprint thumbv7em-none-eabihf frame.update.update.1}} |
+| beneath `fuse_gnss_velocity`: the update of (23)–(27), three measurements | {{footprint thumbv6m-none-eabi frame.update.update.3}} | {{footprint thumbv7em-none-eabihf frame.update.update.3}} |
+| beneath `fuse_gnss_position` (and so a geodetic fix): two, the horizontal pair | {{footprint thumbv6m-none-eabi frame.update.update.2}} | {{footprint thumbv7em-none-eabihf frame.update.update.2}} |
+| beneath `fuse_gnss_position`'s height, `fuse_baro_altitude` and the heading update: one | {{footprint thumbv6m-none-eabi frame.update.update.1}} | {{footprint thumbv7em-none-eabihf frame.update.update.1}} |
 | beside the update: the observation formed at the measurement's time, (23′) | {{footprint thumbv6m-none-eabi frame.eskf.Eskf.observe.3}} | {{footprint thumbv7em-none-eabihf frame.eskf.Eskf.observe.3}} |
-| beside the update: committing or adopting its result | {{footprint thumbv6m-none-eabi frame.eskf.Eskf.apply_or_recover}} | {{footprint thumbv7em-none-eabihf frame.eskf.Eskf.apply_or_recover}} |
+| beside the update: committing its result, or handing it to an adoption | {{footprint thumbv6m-none-eabi frame.eskf.Eskf.apply_or_recover}} | {{footprint thumbv7em-none-eabihf frame.eskf.Eskf.apply_or_recover}} |
+| beside the update: adopting a position, from `fuse_gnss_position` | {{footprint thumbv6m-none-eabi frame.eskf.Eskf.adopt_position.3}} | {{footprint thumbv7em-none-eabihf frame.eskf.Eskf.adopt_position.3}} |
+| beside the update: adopting a velocity, from `fuse_gnss_velocity` | {{footprint thumbv6m-none-eabi frame.eskf.Eskf.adopt_velocity}} | {{footprint thumbv7em-none-eabihf frame.eskf.Eskf.adopt_velocity}} |
 | beneath the update: the attitude reset of (41) | {{footprint thumbv6m-none-eabi frame.update.reparameterize}} | {{footprint thumbv7em-none-eabihf frame.update.reparameterize}} |
 | beneath the update: the injection of (39)–(40) | {{footprint thumbv6m-none-eabi frame.update.inject}} | {{footprint thumbv7em-none-eabihf frame.update.inject}} |
 | beneath `predict`: one sample, (9)–(22) | {{footprint thumbv6m-none-eabi frame.propagate.propagate}} | {{footprint thumbv7em-none-eabihf frame.propagate.propagate}} |
@@ -77,15 +79,14 @@ Each entry point's own frame, in bytes, and the frames beneath it that set its d
 | beneath that and the reset of (41): symmetry, (42) | {{footprint thumbv6m-none-eabi frame.math.enforce_symmetry.15}} | {{footprint thumbv7em-none-eabihf frame.math.enforce_symmetry.15}} |
 | beneath `predict`, across a gap: the coast of (22′) | {{footprint thumbv6m-none-eabi frame.propagate.coast}} | {{footprint thumbv7em-none-eabihf frame.propagate.coast}} |
 | beneath `predicted_validity`: the covariance carried over the horizon | {{footprint thumbv6m-none-eabi frame.propagate.project}} | {{footprint thumbv7em-none-eabihf frame.propagate.project}} |
-| beneath every start: the initial covariance | {{footprint thumbv6m-none-eabi frame.init.initial_covariance}} | {{footprint thumbv7em-none-eabihf frame.init.initial_covariance}} |
+| beneath `initialize` and `initialize_coarse`: the initial covariance | {{footprint thumbv6m-none-eabi frame.init.initial_covariance}} | {{footprint thumbv7em-none-eabihf frame.init.initial_covariance}} |
 
 The deepest path is `fuse_gnss_velocity` calling the three-measurement update, and below the
-update the calls it makes out of line: the reset and its symmetry pass, the injection, and
-`nalgebra`'s matrix products and factorization, whose frames are not measured. So the sum of
-the rows on that path leaves those last frames out of the stack an integrator plans for. One
-figure for the whole path, walked call by call, is #202. Propagation, a coast, the arming query
-and every start come to less than the update's path on the frames measured; DESIGN.md names
-their paths.
+update the calls it makes out of line, the deepest of them `nalgebra`'s 15 × 15 matrix product.
+The compiler measures `nalgebra`'s frames, but `tools/footprint.sh` keys only this crate's, so
+the rows above leave the deepest frame on that path out of the stack an integrator plans for.
+One pinned figure for the whole path, walked call by call, is #202; until then DESIGN.md quotes
+the walk, and why no other path is deeper.
 
 ## Flash
 

@@ -271,19 +271,21 @@ stack high-water on hardware are #41's, and land on the page.
 #### Stack frames
 
 Measured with `-Zemit-stack-sizes` at `opt-level = 3`, by `tools/footprint.sh`, whose header
-says how; `--all` prints every function's. A frame moves by tens of bytes with codegen that touches nothing in it (adding
-`update::<1>` moved `reparameterize`'s share without a line of it changing), so where a form was
-chosen the *difference* against the rejected one is the figure that carries the decision.
-Figures in parentheses are `thumbv7em`'s where they differ.
+says how; `--all` prints every function's. A frame moves by tens of bytes with codegen that
+touches nothing in it (adding `update::<1>` moved `reparameterize`'s share without a line of it
+changing), so where a form was chosen the *difference* against the rejected one is the figure
+that carries the decision.
+Figures are `thumbv6m`'s, with `thumbv7em`'s in parentheses where it was measured too. A pair
+set against each other was measured together, at the commit named where the code has moved since.
 
 | function | against the rejected form |
 | --- | --- |
 | `update::<3>` | the offset of (30′) in blocks costs 968 over the fifteen-state update; the augmented 16 × 16 written out cost 4168 more (a 1024-byte matrix per 900-byte temporary, plus a copy in and out); (24′)'s second Cholesky factor costs 272 (64) |
 | `update::<1>` | the second factor costs 320 (64) |
 | `reparameterize` (in `update`) | the full `G P Gᵀ` cost 864 more of `update`'s frame |
-| `fuse_gnss_velocity` → `update::<3>` | the crate's deepest path; `apply_or_recover` inlined adds 968 to `fuse_gnss_velocity`'s frame, and out of line it sits beside `update` rather than above it |
-| `Eskf::observe::<3>` | `Observation::delayed` 752 and `error_dynamics` 400 beneath it; inlined into `fuse_gnss_velocity` it put the high-water mark at 10800 against 9520, measured together |
-| `Eskf::fuse_heading` | one frame for every heading source, its largest instance the magnetometer's; read by hand, the course's path through it peaked at 7848 against 7624 with `fuse_mag_heading` doing the work in a frame of its own |
+| `fuse_gnss_velocity` → `update::<3>` | the crate's deepest path; `apply_or_recover` out of line sits beside `update` rather than above it. Inlined, it cost `fuse_gnss_velocity`'s frame 984 (2384 against 1400, a434a30); walked through the call graph at 05d994c, it costs `fuse_gnss_position`'s 1024 and moves the peak to a geodetic fix, 12272 against 11408 |
+| `Eskf::observe::<3>` | `Observation::delayed` 752 and `error_dynamics` 400 beneath it; inlined into `fuse_gnss_velocity` it put the high-water mark at 10800 against 9520 (a434a30), and walked at 05d994c at 11760 against 11408 |
+| `Eskf::fuse_heading` | one frame for every heading source, its largest instance the magnetometer's; read by hand, the course's path through it peaked at 7872 against 7624 with `fuse_mag_heading` doing the work in a frame of its own (eaf3b81) |
 | `Eskf::adopt_position`, `adopt_velocity` | inlined, +976 on `fuse_gnss_position` and +952 on `fuse_gnss_velocity`; out of line they follow `update` rather than stacking on it |
 | `propagate_covariance` | the largest frame propagation reaches. Inlined into its one caller, the same three temporaries sit in `predict` |
 | `project` | through `coast` the arming query's chain measured 9 KB, over `update::<3>` |
@@ -293,15 +295,16 @@ Figures in parentheses are `thumbv7em`'s where they differ.
 | `History::clear` | rebuilding the ring put a 1552-byte temporary in `Eskf::apply_alignment` |
 | `StaticWindow::halve` | a copy of the blocks is 512 bytes |
 
-Summed from the frames `tools/footprint.sh --all` prints, every start, the arming query
-(`predicted_validity` over `project` over `propagate_covariance`) and a coast (`predict` over
-`coast` over `propagate_covariance`) stay under `fuse_gnss_velocity` into `update::<3>`, so no
-path but an update moves the crate's peak. That peak is comfortable on the STM32H7 class above and
-more than the whole RAM of an 8 KB Cortex-M0 part; its figure, through the calls `update` makes as
-well, is #202's to pin. The block-wise forms that would cut it (of (22), where (20)'s identity and zero blocks make most of
-`F P Fᵀ` known; of a coast, whose `F` is a four-term polynomial in `Δt` since `ω = 0` makes the
-error dynamics nilpotent; a runtime `M` for `update` in place of a type parameter) are each written
-as the equation reads until #41's figures say a target needs them.
+Walked through the call graph at 05d994c, frames from `-Zemit-stack-sizes` and edges from the
+rlib's relocations, the deepest path is `fuse_gnss_velocity` into `update::<3>` into `nalgebra`'s
+15 × 15 product, 11408 (11200). `predict` reaches 9064, the arming query (`predicted_validity`
+over `project` over `propagate_covariance`) 8544, and the deepest start 6112, so no path but an
+update moves the crate's peak. That peak is comfortable on the STM32H7 class above and more than
+the whole RAM of an 8 KB Cortex-M0 part; #202 pins it. The block-wise forms that would cut it (of
+(22), where (20)'s identity and zero blocks make most of `F P Fᵀ` known; of a coast, whose `F` is
+a four-term polynomial in `Δt` since `ω = 0` makes the error dynamics nilpotent; a runtime `M` for
+`update` in place of a type parameter) are each written as the equation reads until #41's figures
+say a target needs them.
 
 #### Sizes
 
@@ -312,10 +315,11 @@ where a buffered 2 s window at 400 Hz is 800 `StaticSample`s of 80 bytes, 64 KB.
 #### Flash
 
 A measurement dimension is what costs flash, not a source: `update::<1>`, which the barometer
-needs, costs 4.1 %, and the magnetic heading of (34)–(36), sharing it, 1204 bytes, 2.4 %.
-Measured by hand, and not pinned: the `magnetic-model` table is 1408 bytes of `.rodata` and its lookup 1204 of `.text` (1704 on
-`thumbv7em`), about 2.6 KB, at `opt-level = "s"`; the same lookup in `f64` linked 4496 bytes of
-`.text` in software doubles.
+needs, cost 4.1 % of `.text` when it landed (b0bf1d5), and the magnetic heading of (34)–(36),
+sharing it, 1204 bytes, 2.4 % (8799bd6). Measured by hand, and not pinned: the `magnetic-model`
+table is 1408 bytes of `.rodata` and its lookup 1204 of `.text` (1704), about 2.6 KB, at
+`opt-level = "s"`. The same lookup in `f64` linked 4496 bytes of `.text` in software doubles,
+against 1096 for the `f32` one measured with it (14a668b).
 
 #### Host timings
 

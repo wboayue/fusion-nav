@@ -10,8 +10,9 @@
 # Three figures per target, each one an integrator plans around (validation/cost.md): a type's
 # size, from `-Zprint-type-sizes`; a function's stack frame, from `-Zemit-stack-sizes` at
 # `opt-level = 3` in the library's own release profile; and the flash of `panic-check`'s ELF,
-# which links the whole public API under fat LTO, at each level `panic-check/profile.sh` names. `tools/footprint.py` reads them into keys, and its docstring
-# says what each key means and what it leaves out.
+# which links the whole public API under fat LTO, at each level `panic-check/profile.sh` names.
+# `tools/footprint.py` reads them into keys, and its docstring says what each key means and what it
+# leaves out.
 #
 # Sizes are the target's: on a 64-bit host `usize` is wider, and `Eskf` reads 64 bytes larger
 # than any integrator's.
@@ -147,7 +148,7 @@ for target in "${THUMB_TARGETS[@]}"; do
     fi
 done
 # A re-pin moves validation/cost.md, which renders from these pins.
-if [ "$failed" = 1 ] || [ "$mode" = pin ]; then
+if [ "$failed" = 1 ]; then
     echo "after re-pinning, render validation/cost.md: validation/README.md, \"The cost page\"" >&2
 fi
 exit $failed

@@ -967,9 +967,9 @@ impl Eskf {
     /// commits nothing and the measurement is refused as [`Fusion::NotFinite`]: a finite fix
     /// carried to now by (28′) can still overflow, a lever arm of `f32::MAX` rotated.
     ///
-    /// Out of line for the reason [`observe`](Self::observe) is: inlined, the `Update` it takes sat
-    /// in each `fuse_*` frame beneath `update::<3>`, and `fuse_gnss_velocity` into `update::<3>` is
-    /// the crate's high-water mark ([measured]).
+    /// Out of line for the reason [`observe`](Self::observe) is: inlined, the `Update` it takes sits
+    /// in each `fuse_*` frame above the update, and a geodetic fix's path then becomes the crate's
+    /// high-water mark ([measured]).
     ///
     /// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function
     #[inline(never)]
@@ -1209,7 +1209,7 @@ impl Eskf {
     /// at the mean rates over the age, which the same history gives.
     ///
     /// Out of line, so that it sits beside `update` rather than beneath it: inlined into
-    /// `fuse_gnss_velocity`, it raised the crate's high-water mark by its own frame ([measured]).
+    /// `fuse_gnss_velocity`, it raises the crate's high-water mark ([measured]).
     ///
     /// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function
     #[inline(never)]

@@ -66,11 +66,13 @@ Each entry point's own frame, in bytes, and the frames beneath it that set its d
 | `initialize_coarse` | 3576 | 3552 |
 | `initialize_from` | 1928 | 1856 |
 | beneath the three heading entry points: the heading update they share | 1232 | 1240 |
-| beneath every `fuse_*` (a geodetic fix through `fuse_gnss_position`, a heading through the row above): the update of (23)–(27), three measurements | 8088 | 7960 |
-| two measurements | 7400 | 7320 |
-| one measurement | 6368 | 6216 |
+| beneath `fuse_gnss_velocity`: the update of (23)–(27), three measurements | 8088 | 7960 |
+| beneath `fuse_gnss_position` (and so a geodetic fix): two, the horizontal pair | 7400 | 7320 |
+| beneath `fuse_gnss_position`'s height, `fuse_baro_altitude` and the heading update: one | 6368 | 6216 |
 | beside the update: the observation formed at the measurement's time, (23′) | 1464 | 1440 |
-| beside the update: committing or adopting its result | 1120 | 1064 |
+| beside the update: committing its result, or handing it to an adoption | 1120 | 1064 |
+| beside the update: adopting a position, from `fuse_gnss_position` | 1984 | 1992 |
+| beside the update: adopting a velocity, from `fuse_gnss_velocity` | 1904 | 1896 |
 | beneath the update: the attitude reset of (41) | 456 | 448 |
 | beneath the update: the injection of (39)–(40) | 168 | 88 |
 | beneath `predict`: one sample, (9)–(22) | 1088 | 1096 |
@@ -78,15 +80,14 @@ Each entry point's own frame, in bytes, and the frames beneath it that set its d
 | beneath that and the reset of (41): symmetry, (42) | 128 | 8 |
 | beneath `predict`, across a gap: the coast of (22′) | 2152 | 2144 |
 | beneath `predicted_validity`: the covariance carried over the horizon | 1952 | 1936 |
-| beneath every start: the initial covariance | 1120 | 1080 |
+| beneath `initialize` and `initialize_coarse`: the initial covariance | 1120 | 1080 |
 
 The deepest path is `fuse_gnss_velocity` calling the three-measurement update, and below the
-update the calls it makes out of line: the reset and its symmetry pass, the injection, and
-`nalgebra`'s matrix products and factorization, whose frames are not measured. So the sum of
-the rows on that path leaves those last frames out of the stack an integrator plans for. One
-figure for the whole path, walked call by call, is #202. Propagation, a coast, the arming query
-and every start come to less than the update's path on the frames measured; DESIGN.md names
-their paths.
+update the calls it makes out of line, the deepest of them `nalgebra`'s 15 × 15 matrix product.
+The compiler measures `nalgebra`'s frames, but `tools/footprint.sh` keys only this crate's, so
+the rows above leave the deepest frame on that path out of the stack an integrator plans for.
+One pinned figure for the whole path, walked call by call, is #202; until then DESIGN.md quotes
+the walk, and why no other path is deeper.
 
 ## Flash
 

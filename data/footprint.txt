@@ -15,8 +15,9 @@
 # values. Moving the nightly is a re-pin of its own.
 #
 # Pinned: the types an integrator allocates and those `Eskf` is made of; each update, the frames
-# that stack on it and the two it calls out of line; each `fuse_*`; propagation and the arming
-# query; the starts. `--all` lists every function measured.
+# that stack on it and two of this crate's functions it calls out of line (`nalgebra`'s, the
+# deepest, are measured and not keyed: #202); each `fuse_*`; propagation and the arming query;
+# the starts. `--all` lists every function of this crate measured.
 
 
 thumbv6m-none-eabi size.eskf.Eskf=3776 size.state.State=72 size.state.Covariance=900 size.state.Offset=64 size.history.History=1544 size.health.Diagnostics=768 size.config.Config=244 size.init.StaticWindow=944 size.init.StaticSample=80 size.eskf.Startup=1088

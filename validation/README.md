@@ -36,8 +36,8 @@ $ python3 tools/validation.py render validation/src target/validation . --only c
 $ python3 tools/validation.py check validation/src target/validation . --only cost.md
 ```
 
-CI's footprint job runs the check, so a re-pin that leaves the page behind fails there.
-`tools/footprint.sh` prints the render command when a pin moves.
+CI's `check` job runs it, beside the other stdlib self-tests, so a re-pin that leaves the page
+behind fails there. `tools/footprint.sh` points here when a pin moves.
 
 ## Size
 
