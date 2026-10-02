@@ -1,63 +1,51 @@
 # Design
 
-How `fusion-nav` is built and why. For how to use it see [README.md](README.md); for the
-mathematics see [EQUATIONS.md](EQUATIONS.md); for positioning and decisions already made see
-[GOALS.md](GOALS.md).
+How `fusion-nav` is built and where its numbers come from. The documents, by question:
+[README.md](README.md) is how to use the filter, [GOALS.md](GOALS.md) why it exists, this one how
+it is built, [EQUATIONS.md](EQUATIONS.md) what it computes, and [GLOSSARY.md](GLOSSARY.md) what
+the words mean.
 
 > **Status:** every equation of `EQUATIONS.md` is built except two. Three-axis magnetometer
 > fusion, (31)–(33), is out of scope. (5′)'s in-motion levelling term is measured and reported
 > but not subtracted. Not built: #59.
 
-## Error-State Kalman Filter
-
-`fusion-nav` uses an Error-State Kalman Filter rather than representing the complete navigation
-state directly in the Kalman filter.
-
-The nominal navigation state is
-
-| nominal state       | dimension |
-| ------------------- | --------- |
-| position            | 3         |
-| velocity            | 3         |
-| attitude quaternion | 4         |
-| accelerometer bias  | 3         |
-| gyroscope bias      | 3         |
-| **total**           | **16**    |
-
-The corresponding error state is
-
-| error state        | dimension |
-| ------------------ | --------- |
-| position error     | 3         |
-| velocity error     | 3         |
-| attitude error     | 3         |
-| accelerometer bias | 3         |
-| gyroscope bias     | 3         |
-| **total**          | **15**    |
-
-The filter therefore maintains a `15 × 15` error covariance matrix while orientation is
-represented by a quaternion in the nominal state.
-
-Using a three-dimensional attitude error avoids treating the four quaternion components as
-independent Kalman states and preserves the unit-quaternion constraint naturally.
-
-See [state definitions](EQUATIONS.md#state-definitions).
-
 ## Architecture
 
-The filter is intentionally sensor-independent at its core.
+Two paths, and every public call is on one of them. The IMU drives the first on every sample; each
+measurement drives the second, fused against the state *at the time it was taken*. Both end in a
+typed outcome, and both feed the health the estimate carries. The mathematics is visible in the
+code rather than behind an abstraction: each step cites its equation, and the
+[equation-to-code mapping](EQUATIONS.md#equation-to-code-mapping) names the function that
+implements every one.
 
 ```mermaid
-flowchart TD
-    imu["IMU"] --> prop["Propagation"]
-    prop --> core["ESKF core"]
-    core --> gnss["GNSS update"]
-    core --> baro["Baro update"]
-    core --> mag["Mag update"]
+flowchart LR
+    subgraph sample["every IMU sample"]
+        imu["ImuSample"] --> predict["predict<br/>propagate.rs (9)–(22)"]
+        predict --> pout(["Propagation"])
+    end
+    predict --> hist[("History<br/>history.rs")]
+    subgraph meas["every measurement, at its own time"]
+        z["time, z, R"] --> admit["admit<br/>eskf.rs"]
+        admit --> observe["observe at t<br/>observation/* (28)–(36), (23′)"]
+        observe --> gate{"gate<br/>update.rs (37)–(38)"}
+        gate -- "r ≤ 1" --> upd["Joseph update, inject, reset<br/>update.rs (24)–(27), (39)–(41)"]
+        gate -- "r > 1" --> rec["apply_or_recover<br/>eskf.rs"]
+        upd --> rec
+        rec --> fout(["Fusion"])
+    end
+    hist -.-> observe
+    pout --> health["Diagnostics → Status, Validity<br/>health.rs"]
+    fout --> health
 ```
 
-Sensor drivers and hardware interfaces are outside the scope of the crate. Applications provide
-measurements together with their associated uncertainty.
+Each `fuse_*` refuses what cannot be fused (a time outside the history, a value that is not
+finite, a noise that is not positive) before anything is formed, and adopts outright the first
+measurement of a quantity the start never established. The gate runs before the gain, so a
+rejection computes nothing it could commit. `apply_or_recover` commits an accepted update, records
+a rejection, and adopts the measurement instead when its source has been locked out past
+`Config::recovery`: the one place every source recovers through. Sensor drivers and hardware interfaces are outside the crate; an application
+provides each measurement with its time and its uncertainty.
 
 ### Module map
 
@@ -79,8 +67,29 @@ measurements together with their associated uncertainty.
 | `src/display.rs` | `Fixed`, which prints an `f32` without core's float formatting and so without a panic path |
 | `src/lib.rs` | the crate root: `no_std` and the lint gates, and the prelude, the one list of public types, minus three names too generic to glob-import |
 
-The [equation-to-code mapping](EQUATIONS.md#equation-to-code-mapping) names the function
-that implements each numbered equation.
+## Error-State Kalman Filter
+
+The filter estimates the small error in a nominal state rather than the state itself, so attitude
+can be a quaternion in the nominal state and three angles in the error: four quaternion components
+are never treated as independent Kalman states, and the unit norm holds by construction.
+
+| | position | velocity | attitude | accelerometer bias | gyroscope bias | total |
+| --- | --- | --- | --- | --- | --- | --- |
+| nominal state | 3 | 3 | 4, a quaternion | 3 | 3 | 16 |
+| error state | 3, `δp` | 3, `δv` | 3, `δθ` | 3, `δβa` | 3, `δβg` | 15 |
+
+`ErrorState`'s order is the covariance's. The barometric offset of (30′) sits beside it, never in
+it, so the public 15 × 15 stays the navigation state's:
+
+```text
+          δp     δv     δθ     δβa    δβg          b
+        ┌──────┬──────┬──────┬──────┬──────┐    ┌──────┐
+  rows  │ 0–2  │ 3–5  │ 6–8  │ 9–11 │12–14 │    │ P_xb │  Offset: a column and a
+        └──────┴──────┴──────┴──────┴──────┘    │ P_bb │  variance, appended for
+         Covariance, 15 × 15, 900 bytes in f32  └──────┘  an update and nowhere else
+```
+
+See [state definitions](EQUATIONS.md#state-definitions).
 
 ## State Propagation
 
@@ -88,13 +97,20 @@ The IMU drives propagation, and it is the only path that runs on every sample: g
 attitude, accelerometer through that attitude into the navigation frame, gravity added, the
 result integrated into velocity and position. Equations (12)–(15) have the form.
 
+What `predict` does with a sample, in the order it decides:
+
 ```mermaid
 flowchart TD
-    gyro["gyroscope"] --> att["attitude"]
-    att --> acc["acceleration"]
-    accel["accelerometer"] --> acc
-    acc --> vel["velocity"]
-    vel --> pos["position"]
+    s["ImuSample"] --> after{"after the last sample?"}
+    after -- no --> inv(["InvalidStep: nothing moves, the clock included"])
+    after -- yes --> adv["clock and health timers advance"]
+    adv --> long{"dt > max_predict_dt?"}
+    long -- yes --> coast{"Config::coast on?"}
+    coast -- yes --> c22["coast (22′), the sample unread"] --> co(["Coasted"])
+    coast -- no --> stl(["StepTooLong"])
+    long -- no --> fin{"sample finite, intervals usable?"}
+    fin -- no --> nf(["NotFinite, InvalidInterval"])
+    fin -- yes --> integ["integrate (9)–(22)"] --> ok(["Propagated"])
 ```
 
 What matters here rather than in the equations is that this is a first-order discretization over
@@ -125,6 +141,18 @@ and the health that follows is per source for the same reason.
 
 See [observation models](EQUATIONS.md#observation-models) for the measurement Jacobians.
 
+### Time and history
+
+Every measurement carries the `Timestamp` it was taken at, and the filter fuses it there:
+`observe` forms `y` against `History`'s nominal state at that time and carries `H` to today's
+error through the error dynamics, equation (23′), and the correction lands on the current state.
+So the `Fusion` a call returns is the gate's verdict on that measurement, not a promise to deliver
+one later, which is what PX4's delayed horizon would make it
+([measurement latency](GOALS.md#measurement-latency)). `History` holds 32 entries 10 ms apart and
+is shifted by every correction, through `Eskf::commit_state`, the one writer of the state outside a
+propagation or a start. A time older than `LATENCY_HORIZON` is refused as `OutOfHorizon`; one
+slightly ahead of the state is carried forward on the estimated velocity.
+
 ### GNSS Position
 
 The filter converts the fix rather than accepting a converted one, because it owns the navigation
@@ -136,8 +164,8 @@ motion capture) and is right only if the caller's origin is the filter's.
 A fix is fused as two measurements rather than one: (28)'s north–east rows under a `Gate<2>`,
 then its down row under a `Gate<1>`, each with its own `Fusion` in the `GnssFusion` returned and
 its own `SourceHealth`. A receiver's height is the half that wanders and the half another source
-disputes, and one joint test turns every such dispute into lost horizontal aiding: on
-`2c42096b`, with its barometer fused, 3945 of 4616 fixes, every one of them vertical. PX4 runs
+disputes, and one joint test turns every such dispute into lost horizontal aiding
+([measured](#gates)). PX4 runs
 GNSS position and GNSS height as separate aid sources and ArduPilot gates them apart; `Gates`
 carries the citations.
 
@@ -151,6 +179,11 @@ fused. See
 Velocity is the observation that matters most between position fixes: velocity error accumulates
 rapidly from accelerometer and attitude error, and a velocity measurement constrains it directly
 rather than waiting for the position error it would become.
+
+At the antenna, (29′), a rotating vehicle moves the antenna relative to the IMU, so the
+observation reads the angular rate, and through it the attitude and the gyroscope bias: `H` has
+entries in `δθ` and `δβg`, not only `δv`. PX4 corrects the measurement for the arm instead and
+leaves `H` alone; [the decision](GOALS.md#sensor-offsets-as-per-call-arguments) has the comparison.
 
 ### Barometric Altitude
 
@@ -166,14 +199,19 @@ warm-up) can be followed rather than becoming vertical position error. `State` a
 [barometric reference as an estimated offset](GOALS.md#barometric-reference-as-an-estimated-offset)
 and [equation (30′)](EQUATIONS.md#barometric-offset).
 
-### Magnetometer
+### Heading
 
-The magnetometer is the heading source most vehicles carry. Gravity pins roll and pitch and says
-nothing about the rotation about them, so without a heading source yaw follows the gyroscope bias
-wherever it goes. The other two are a dual-antenna GNSS heading and, for a vehicle that points
-where it goes, the course constraint: [heading from GNSS](EQUATIONS.md#heading-from-gnss).
+Gravity pins roll and pitch and says nothing about the rotation about them, so without a heading
+source yaw follows the gyroscope bias wherever it goes. Three sources supply one, all through the
+same scalar update of (36) in `observation/heading.rs` and one gate per source: a magnetometer,
+the source most vehicles carry; a dual-antenna GNSS receiver, (35′), a true heading no magnetic
+field can disturb; and, for a vehicle that points where it goes, the course constraint (35″), which
+ties the nose to the *estimated* velocity rather than to a GNSS velocity already fused, so a
+cross-track error is not counted twice. See [heading from GNSS](EQUATIONS.md#heading-from-gnss).
 
-Fusion is **heading only** by default: the field is reduced to a single scalar heading and fused
+#### The magnetometer
+
+Fusion is **heading only**: the field is reduced to a single scalar heading and fused
 as one measurement, leaving roll and pitch to gravity where they are well determined. A magnetic
 disturbance can then corrupt one state rather than three, and the innovation gate has a
 one-dimensional quantity to act on.
@@ -207,8 +245,9 @@ See [innovation gating](EQUATIONS.md#innovation-gating).
 
 ### Measurement rejection
 
-Gating is self-sealing: if the filter itself is wrong, correct measurements look inconsistent,
-all are rejected, and the filter dead-reckons while looking confident. So health is tracked per
+Gating creates its own failure, **gate lockout**: if the filter itself is wrong, correct
+measurements look inconsistent, all are rejected, and the filter dead-reckons while looking
+confident. So health is tracked per
 source and carried on the estimate, and a source locked out past its timeout is recovered by
 adoption, one switch per source in `Config::recovery`. The user-facing
 side is in [README.md](README.md#health-reporting); the reasoning in
@@ -241,22 +280,12 @@ cross as arrays, which convert to and from any version's types, and a quaternion
 [`defmt`](https://crates.io/crates/defmt) is the one optional dependency, behind a feature of the
 same name and off by default, for a target that logs through it.
 
-A 15-state filter requires a `15 × 15` covariance matrix containing 225 scalar values, which in
-`f32` is 900 bytes.
-
-The covariance is not the whole cost. A measurement update in Joseph form also needs the
-transition matrix, the `(I − KH)` product, and at least one `15 × 15` temporary, each another
-900 bytes, so the realistic working set is a few kilobytes rather than one. Peak stack usage
-depends on how aggressively temporaries are reused, which is exactly why the intent is to
-**measure and publish** the figure per operation rather than estimate it here: the measured
-figures are [validation/cost.md](validation/cost.md), and what decided each form
-[follows](#measured-cost-by-function).
-
-A few kilobytes is still comfortable on an STM32H7-class flight controller while providing a full
-inertial-navigation state.
-
-`Status` is a payload-free enum and `state()` stays small and `Copy`, so reading it in a control
-loop costs nothing. Timing detail lives in `diagnostics()`, which is not on the hot path.
+The covariance is 900 bytes in `f32`, and an update in Joseph form needs several temporaries
+its size, so the working set is kilobytes and depends on how the temporaries are reused. It is
+measured rather than estimated: [validation/cost.md](validation/cost.md) publishes it per
+function, and what decided each form [follows](#measured-cost-by-function). `state()` stays small
+and `Copy` and `Status` carries no payload, so reading either in a control loop costs nothing;
+timing detail lives in `diagnostics()`, off the hot path.
 
 ### Measured cost, by function
 
@@ -433,6 +462,8 @@ as `Fusion::OutOfHorizon`, and the log reads `rejected_gnss_pos=0 rejected_gnss_
 `logging_dropout` (1.2 s at 20 m/s in a turn) passes at `acceleration` 0.5 or more whatever the
 rotation, and reads the same across the whole range: `pos_h_max` 23.25 m refused, 2.74 m coasted,
 `false_valid` 1946 refused, 0 coasted.
+
+![logging_dropout's position error against its ±3σ band: the band opens across the gap and closes after it, and the error the gap leaves stays inside it](validation/figures/logging_dropout/error_position.png)
 
 `replay --derive` asks the same question a field at a time, the other at its default: the
 smallest multiple of each after which no GNSS position or velocity is rejected or adopted for
@@ -635,33 +666,10 @@ tilt and 26.27° against 27.13° of heading, `cd7e0001` 0.29° against 0.50° an
 and only where it is the largest bound: at 8 blocks and at 16, one corpus log, `7ce66f0d`, moves
 by one in the last printed digit of three innovation keys, and no scenario moves.
 
-## Initial Scope
+## Scope
 
-The filter covers:
-
-```mermaid
-flowchart TD
-    imu["IMU propagation"] --> eskf["15-state ESKF"]
-    eskf --> upd["GNSS position update<br/>GNSS velocity update<br/>barometric altitude update<br/>heading update: magnetometer,<br/>dual-antenna GNSS, course"]
-    upd --> out["position + velocity + attitude"]
-```
-
-Out of scope, as [GOALS.md](GOALS.md#non-goals) decides and owns:
-
-* wind estimation
-* terrain estimation
-* magnetic-field state estimation
-* magnetometer bias states
-* optical flow
-* visual odometry
-* range finder fusion
-* airspeed fusion
-* multiple simultaneous navigation filters
-* automatic sensor-source switching
-
-Adding one is a change to that decision, not an implementation task. The filter focuses on the
-core navigation problem rather than reproducing every feature of mature autopilot estimators such
-as PX4 EKF2.
+What the filter leaves out, and why, is [GOALS.md](GOALS.md#non-goals)'s to decide: adding one is
+a change to that decision, not an implementation task.
 
 ## Staging the implementation
 
@@ -693,17 +701,6 @@ constant, a `Config::accuracy` threshold equal to the `Initialization` prior it 
 passed by exactly zero margin, and the first real `predict` took it away; `Accuracy`'s doc comment
 records what that read on the corpus. A mission bar and an alignment prior are two numbers with two
 justifications even where they are numerically equal.
-
-## Design Philosophy
-
-The mathematics should be visible in the code rather than hidden behind an abstraction layer, so
-equations in the implementation correspond directly to the numbered equations in the crate's
-documentation. The [equation-to-code mapping](EQUATIONS.md#equation-to-code-mapping) is the
-concrete form of that promise: every numbered equation names the function that implements it,
-and the two that are not built say so.
-
-Positioning, the differentiators this follows from, and the decisions already made are in
-[GOALS.md](GOALS.md).
 
 ## References
 
