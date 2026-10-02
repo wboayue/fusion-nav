@@ -88,7 +88,7 @@ mod tests {
 
     #[test]
     fn a_filter_already_at_that_height_has_nothing_to_correct() {
-        // The same metre of climb, with the estimate already reporting it. Distinguishes
+        // The same meter of climb, with the estimate already reporting it. Distinguishes
         // `z − p̂_D` from `z` alone, which the two tests above cannot: both hold p̂_D = 0.
         let state = State {
             position: Position::ned(20.0, -5.0, -1.0),

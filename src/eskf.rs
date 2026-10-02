@@ -145,7 +145,7 @@ pub struct Eskf {
     /// filter reads at each origin then never overrides.
     declination_set: bool,
     /// Whether the heading held is referred to true north through the declination alone:
-    /// levelled from a window's magnetometer by (6) or adopted from `fuse_mag_heading`, with
+    /// leveled from a window's magnetometer by (6) or adopted from `fuse_mag_heading`, with
     /// no true heading (a seed, a GNSS heading, a course) accepted since. While it is, a
     /// declination the filter learns turns the heading with it; see
     /// [`place_origin`](Self::place_origin).
@@ -194,7 +194,7 @@ struct Startup {
     time: Timestamp,
     /// Whether the start showed the vehicle at rest.
     settled: bool,
-    /// Whether (6) levelled the heading from a magnetometer, so it is referred to north
+    /// Whether (6) leveled the heading from a magnetometer, so it is referred to north
     /// through the declination alone.
     magnetic_north: bool,
     /// The barometric reference the start sets: `None` keeps the one held, `Some(None)`
@@ -592,7 +592,7 @@ impl Eskf {
     ///
     /// Returns `false`, changing nothing, for an origin with a coordinate that is not a
     /// number or a latitude beyond ±90°, or one so far from the held position that it cannot
-    /// be written in `f32` metres from the new origin.
+    /// be written in `f32` meters from the new origin.
     #[must_use = "a refused origin leaves the filter to place its own on the first fix"]
     pub fn set_origin(&mut self, origin: Geodetic) -> bool {
         let Some(new) = LocalOrigin::new(origin) else {
@@ -626,7 +626,7 @@ impl Eskf {
     /// `c4e4ef98`).
     ///
     /// A heading referred to north through the declination alone is turned by the change,
-    /// about navigation down, since the heading (6) levelled or a magnetometer set was the
+    /// about navigation down, since the heading (6) leveled or a magnetometer set was the
     /// magnetic heading plus the old value and is that plus the new one. A static start is
     /// the usual case: it levels before any fix names the site, and the first fix arrives a
     /// declination later. Left alone, that is a standing innovation of the whole change on
@@ -634,7 +634,7 @@ impl Eskf {
     /// magnetometer and turns away until [`Config::recovery`](crate::Config::recovery)
     /// adopts one. The covariance is kept as it was: the turn composes on the left, so the
     /// body-frame error `δθ` of (2) is the same error before and after it, and the tilt a
-    /// window levelled against its accelerometer bias by (8) keeps that correlation in the
+    /// window leveled against its accelerometer bias by (8) keeps that correlation in the
     /// body axes it was built in. A heading any true source has vouched for is not turned,
     /// and the change arrives as an innovation, as a caller's does. GNSS position and velocity
     /// do not count as one, though they correct heading through the correlations while the
@@ -1679,7 +1679,7 @@ impl Eskf {
     /// lie along body x: a receiver whose antennas are mounted otherwise has the mounting
     /// angle subtracted by the caller first, as PX4 and ArduPilot each do from a parameter.
     /// True rather than magnetic, so no [declination](Self::set_magnetic_declination) applies,
-    /// and nothing is levelled with the estimated attitude, so the (36′) a magnetic heading
+    /// and nothing is leveled with the estimated attitude, so the (36′) a magnetic heading
     /// carries has no counterpart; see `observation/heading.rs` for the model and why its
     /// Jacobian is (36) rather than the exact one PX4 differentiates.
     ///
@@ -1892,14 +1892,14 @@ impl Eskf {
     }
 
     /// Adopt a heading: [`reset_heading_by`](Self::reset_heading_by) with the `y` and `R`
-    /// an ordinary update would read. (36′) is what makes that worth saying: the levelling
+    /// an ordinary update would read. (36′) is what makes that worth saying: the leveling
     /// error is priced on the path where the tilt it comes from is worst.
     ///
     /// `spread` is added to `R`: see [`fuse_heading`](Self::fuse_heading).
     ///
     /// Returns whether it adopted: a variance or an innovation that is not finite commits
     /// nothing. Both are finite products of a finite covariance, and can still overflow: the
-    /// levelling variance of (36′) squares a tilt σ a coarse start charged a 1e20 rad/s
+    /// leveling variance of (36′) squares a tilt σ a coarse start charged a 1e20 rad/s
     /// gyroscope reading to.
     fn adopt_heading(&mut self, observation: &Observation<1>, spread: f32) -> bool {
         // Navigation down in body axes, `R(q̂)ᵀe₃`, of the present state: the axis the
@@ -1933,12 +1933,12 @@ impl Eskf {
     /// `variance` is the `R` the source's update would read, plus what the heading inherits
     /// that `R` does not carry: for the course, the uncertainty of the velocity it was taken
     /// along ([`fuse_heading`](Self::fuse_heading)'s `spread`). For a magnetic heading it is
-    /// `R` from (36′) rather than the caller's `σ_ψ²` alone. The levelling
+    /// `R` from (36′) rather than the caller's `σ_ψ²` alone. The leveling
     /// of (34) is done with the estimated attitude on this path too — on a coarse start,
     /// with the worst tilt the filter ever holds — so an adoption that stored the
     /// magnetometer's own number would report a heading good to
     /// [`Accuracy::heading`](crate::Accuracy::heading) while carrying the window's
-    /// levelling error times `tan δ`. That is the falsely-valid attitude (36′) exists to
+    /// leveling error times `tan δ`. That is the falsely-valid attitude (36′) exists to
     /// remove, and the adoption is where it is largest.
     ///
     /// The correlations go with it, which is what fusing against an infinitely uncertain
@@ -1998,7 +1998,7 @@ impl Eskf {
     ///
     /// For moving the estimate to a point other than the IMU. The GNSS `fuse_*` take their
     /// antenna's offset and refer the fix to the IMU themselves, (28′) and (29′); the estimate
-    /// they correct stays the IMU's, and a point at `r` in body axes (the centre of mass a
+    /// they correct stays the IMU's, and a point at `r` in body axes (the center of mass a
     /// controller wants, a payload, a sensor this crate does not fuse) is at the IMU's position
     /// plus `R r` and moves at its velocity plus `R (ω × r)`. PX4 reports its estimate at the
     /// IMU the same way, and corrects each aiding source with this bias-corrected rate
@@ -2024,7 +2024,7 @@ impl Eskf {
     /// # filter.initialize(&window)?;
     /// # let imu = ImuSample::from_rates(at(801), AngularRate::body(0.0, 0.0, 0.5), gravity, dt);
     /// # assert!(filter.predict(imu).is_propagated());
-    /// // The centre of mass, 0.2 m behind the IMU: measured on the airframe.
+    /// // The center of mass, 0.2 m behind the IMU: measured on the airframe.
     /// let r = Vector3::from(Position::body(-0.2, 0.0, 0.0).to_array());
     ///
     /// // None before the first step and across a gap, where no sample says how fast the
@@ -2480,7 +2480,7 @@ impl Eskf {
             startup.time,
             startup.settled,
         );
-        // (6) levelled the heading from the window's field with the declination it held.
+        // (6) leveled the heading from the window's field with the declination it held.
         self.magnetic_north = startup.magnetic_north;
         if startup.settled {
             self.origin = None;
@@ -2844,8 +2844,8 @@ mod tests {
         let _ = filter
             .initialize_over(&window_with_mag(), Seconds::from_secs(0.25))
             .expect("a still window");
-        // Three metres out, so (44) must place an origin that puts a fix 3.4e38 m up three
-        // metres away, which no `f64` resolves.
+        // Three meters out, so (44) must place an origin that puts a fix 3.4e38 m up three
+        // meters away, which no `f64` resolves.
         let noise = PositionNoise::horizontal_vertical(1.0, 1.0);
         assert!(filter.reset_position_to(Position::ned(3.0, 0.0, 0.0), noise));
         let (attitude, declination) = (filter.state().attitude, filter.magnetic_declination());
@@ -3876,7 +3876,7 @@ mod tests {
         );
 
         // So the barometer alone says nothing about absolute height: h = p_D + b has no
-        // covariance with p_D, and a second reading two metres higher moves α₀, not the
+        // covariance with p_D, and a second reading two meters higher moves α₀, not the
         // estimate. Only GNSS height, disagreeing with both, can.
         assert!(
             filter
@@ -3949,7 +3949,7 @@ mod tests {
             .initialize_over(&window_at(100.0), Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
 
-        // Two metres above the reference the window fixed, on a sensor claiming 0.5 m.
+        // Two meters above the reference the window fixed, on a sensor claiming 0.5 m.
         assert!(
             filter
                 .fuse_baro_altitude(
@@ -3981,7 +3981,7 @@ mod tests {
             .expect("a 2 s window of stillness");
         let before = filter.state().position;
 
-        // A hundred metres of climb the instant the window closed, on a 0.5 m sensor: the
+        // A hundred meters of climb the instant the window closed, on a 0.5 m sensor: the
         // shape of a pressure transient, and what `Gates::baro_altitude` is there for.
         let outcome = filter.fuse_baro_altitude(
             filter.now(),
@@ -4849,7 +4849,7 @@ mod tests {
         let (roll, pitch, yaw) = filter.state().attitude.euler_angles();
         assert!(
             (roll - 0.25).abs() < 1e-5 && (pitch + 0.1).abs() < 1e-5,
-            "levelled to ({roll}, {pitch})"
+            "leveled to ({roll}, {pitch})"
         );
         assert_eq!(yaw, 0.0, "no magnetometer observed the rotation about it");
     }
@@ -5041,7 +5041,7 @@ mod tests {
         let (roll, pitch, _) = filter.state().attitude.euler_angles();
         assert!(
             roll.abs() < 1e-6 && (pitch - 0.35).abs() < 1e-5,
-            "levelled to ({roll}, {pitch})"
+            "leveled to ({roll}, {pitch})"
         );
     }
 
@@ -5147,7 +5147,7 @@ mod tests {
         let (state, covariance) = (filter.state(), *filter.covariance());
         let timer = filter.diagnostics().gnss_position.time_since_accepted;
 
-        // A kilometre out in both halves, so neither changes anything.
+        // A kilometer out in both halves, so neither changes anything.
         let both = filter.fuse_gnss_position(
             filter.now(),
             Position::ned(1000.0, 0.0, 1000.0),
@@ -5467,7 +5467,7 @@ mod tests {
 
     #[test]
     fn the_adopted_yaw_is_the_heading_the_field_reports() {
-        // The window levelled with no magnetometer, so yaw starts at zero against a
+        // The window leveled with no magnetometer, so yaw starts at zero against a
         // field that says 1.1 rad. A gradual correction would leave it somewhere between
         // the two; an adoption puts it at the measurement.
         let mut filter = initialized();
@@ -5651,7 +5651,7 @@ mod tests {
         // The other side of the adoption: once established, a heading is fused rather
         // than taken. The distance it moves is (25)'s gain with (36′) in both `P` and
         // `R`, and the whole sum is checkable by hand — the window's tilt prior is
-        // `sigma_tilt` = 0.02 and the dip is 2.0, so the levelling is worth
+        // `sigma_tilt` = 0.02 and the dip is 2.0, so the leveling is worth
         // 2.0² · 0.02² = 0.0016 on every heading here. The adoption left yaw at
         // 0.05² + 0.0016 = 0.0041, the second field arrives with σ = 0.02, so
         // `R` = 0.02² + 0.0016 = 0.0020 and `K = 0.0041 / (0.0041 + 0.0020)` = 0.672:
@@ -5729,15 +5729,15 @@ mod tests {
         // the heading. 0.582 rather than the measurement's own 0.01 — σ = 0.76 rad,
         // outside `Accuracy::heading`. Storing the magnetometer's number alone is what
         // makes the filter claim an attitude it does not have, on the one path where the
-        // tilt doing the levelling is worst.
+        // tilt doing the leveling is worst.
         let yaw_variance = filter.covariance().variance(ErrorState::AttitudeZ);
         assert!(
             (yaw_variance - 0.582).abs() < 1e-2,
-            "expected the levelling priced in, got {yaw_variance}"
+            "expected the leveling priced in, got {yaw_variance}"
         );
         assert!(
             !filter.validity().heading,
-            "a heading levelled by this tilt is not good to Accuracy::heading"
+            "a heading leveled by this tilt is not good to Accuracy::heading"
         );
         assert!(!filter.validity().tilt, "the tilt is still the window's");
 
@@ -6028,7 +6028,7 @@ mod tests {
         let _ = filter
             .initialize_over(&window_with_mag(), Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
-        assert_eq!(yaw_of(&filter), 0.0, "levelled at declination zero");
+        assert_eq!(yaw_of(&filter), 0.0, "leveled at declination zero");
         let covariance = *filter.covariance();
         let model = east_of_moscow()
             .magnetic_declination()
@@ -6097,7 +6097,7 @@ mod tests {
     #[cfg(feature = "magnetic-model")]
     #[test]
     fn a_true_heading_fused_over_a_magnetic_one_stops_the_turn() {
-        // Heading levelled from the window's magnetometer, then a dual-antenna heading
+        // Heading leveled from the window's magnetometer, then a dual-antenna heading
         // accepted over it: the estimate is no longer the magnetometer's alone.
         let mut filter = Eskf::default();
         let _ = filter
@@ -6183,7 +6183,7 @@ mod tests {
         assert!(fused.height.test_ratio().is_some_and(|ratio| ratio < 1e-9));
         assert!(near(filter.state().position, before));
 
-        // The same fix read as the IMU's is a metre east of the estimate.
+        // The same fix read as the IMU's is a meter east of the estimate.
         let mut unarmed = nose_east();
         let fused = unarmed.fuse_gnss_position(unarmed.now(), at_antenna, noise, Position::zero());
         assert!(
@@ -6246,7 +6246,7 @@ mod tests {
     #[cfg(feature = "magnetic-model")]
     #[test]
     fn the_origin_goes_under_the_antenna_the_turned_heading_puts() {
-        // A magnetometer-levelled heading turned 14.0° by the first fix: the arm has to be
+        // A magnetometer-leveled heading turned 14.0° by the first fix: the arm has to be
         // read after the turn, or the origin sits 0.24 m from where the estimate puts the
         // antenna.
         let mut filter = Eskf::default();
@@ -6896,7 +6896,7 @@ mod tests {
         }
     }
 
-    /// A kilometre north of a vehicle that has not moved.
+    /// A kilometer north of a vehicle that has not moved.
     fn far() -> Position<Ned> {
         Position::ned(1000.0, 0.0, 0.0)
     }
@@ -6920,7 +6920,7 @@ mod tests {
         });
         hold(&mut filter, 0.1, 10, |_| {});
 
-        // Half a metre down: inside the height gate, and where an adoption of all three axes
+        // Half a meter down: inside the height gate, and where an adoption of all three axes
         // would put the estimate exactly.
         let fix = Position::ned(1000.0, 0.0, 0.5);
         let outcome = filter.fuse_gnss_position(filter.now(), fix, one_metre(), Position::zero());
@@ -7041,7 +7041,7 @@ mod tests {
             .initialize_over(&[still(); 8], Seconds::from_secs(0.25))
             .expect("a 2 s window of stillness");
         // Twice the timeout, and short of where dead reckoning alone grows `P` enough to
-        // take a kilometre back in, which is about 30 s at rest.
+        // take a kilometer back in, which is about 30 s at rest.
         hold(&mut filter, 15.0, 100, |filter| {
             let outcome =
                 filter.fuse_gnss_position(filter.now(), far(), one_metre(), Position::zero());

@@ -130,7 +130,7 @@ subscript.
 ### Gravity
 
 $`g = [0, 0, \gamma]^\mathsf{T}`$ with $`\gamma`$ the local gravity magnitude, entering the
-propagation of (11) and the levelling of (5)–(8). It is `Config::gravity`, the WGS-84 standard
+propagation of (11) and the leveling of (5)–(8). It is `Config::gravity`, the WGS-84 standard
 value 9.80665 m s⁻² unless configured, and constant for a filter's life. A site's value comes
 offline from `Geodetic::normal_gravity` (NGA.STND.0036 (4-1) and (4-3)), which `replay --derive`
 prints from a log, for the reasons in
@@ -188,10 +188,10 @@ Roll and pitch follow from the accelerometer. With $`f = a_m`$ averaged over the
 ```
 
 The signs follow from the down-positive convention: a level, stationary accelerometer reads
-$`f = [0, 0, -\gamma]^\mathsf{T}`$. (5′), [after (8′)](#levelling-a-window-taken-in-motion), says
-how a moving window would be levelled; its subtraction is not built, #59.
+$`f = [0, 0, -\gamma]^\mathsf{T}`$. (5′), [after (8′)](#leveling-a-window-taken-in-motion), says
+how a moving window would be leveled; its subtraction is not built, #59.
 
-Yaw follows from the magnetometer, levelled by the roll and pitch just computed. With
+Yaw follows from the magnetometer, leveled by the roll and pitch just computed. With
 $`R_0 = R_y(\theta_0) R_x(\phi_0)`$ and $`m_b`$ the averaged magnetometer reading:
 
 **(6)**
@@ -291,8 +291,8 @@ part of $`\sigma_{\text{tilt},0}`$ rather than added to it; where it is the larg
 prior. What is left once the bias is known, the Schur complement across tilt, is the second term,
 and $`\lambda`$ keeps it from zero. At the defaults the bias's share exceeds
 $`\sigma_{\text{tilt},0}`$, so without $`\lambda`$ the prior would call every level error the
-bias and leave none for the vibration or noise the average levelled through. A seeded start
-commits the caller's covariance instead, having levelled nothing. What the correlation and the
+bias and leave none for the vibration or noise the average leveled through. A seeded start
+commits the caller's covariance instead, having leveled nothing. What the correlation and the
 `max` were each measured against is `init::initial_covariance`'s.
 
 Tilt and yaw are uncertainties about navigation axes: rotation about north and east, and about
@@ -328,7 +328,7 @@ from what a still vehicle reads, not how far the worst sample strayed:
 ```
 
 with $`T`$ the window's span, $`\hat d = -\bar f / \lVert \bar f \rVert`$ the direction (5)
-levelled to, and subscripts 1 and 2 the same averages over the first and second **half** of the
+leveled to, and subscripts 1 and 2 the same averages over the first and second **half** of the
 window. $`\psi_i`$ is the heading (6) yields from that half alone, so the declination cancels.
 The rotation charged is what (7) did *not* take, $`\bar\omega_r = \bar\omega - \hat\beta_{g,0}`$:
 a window at rest commits the whole average as gyroscope bias, and the same quantity cannot be both
@@ -359,7 +359,7 @@ observed the window, where its field has no horizontal part, or where the bound 
 more spread than a circle holds. The dip $`\delta`$ is read off the same averaged field (6) takes
 its heading from, and is the rate at which a tilt error turns that heading.
 
-### Levelling a window taken in motion
+### Leveling a window taken in motion
 
 (5) reads $`f`$ as gravity alone only while the vehicle is still; an accelerating vehicle breaks
 that. Equation (11) read backwards says by how much, $`R^\mathsf{T}(a_n - g) = f`$, so the vector
@@ -374,7 +374,7 @@ to level is the averaged specific force with the vehicle's own acceleration take
 
 with $`v_n`$ the GNSS velocity at the first and the last sample of the window carrying one. At
 rest $`\bar a_n = 0`$ and (5′) is (5). Applying (5) to $`\bar f'`$ rather than to $`\bar f`$ is
-the whole of in-motion levelling
+the whole of in-motion leveling
 ([GOALS.md, alignment option 4](GOALS.md#alignment-beyond-the-static-window)).
 
 Two properties keep it a *coarse* alignment, and neither improves with care:
@@ -502,7 +502,7 @@ $`\Delta t = \Delta t_\theta`$:
 > integrates without bound. Implementations must evaluate (13) before (14), or compute both from
 > a saved copy of $`\hat{v}`$.
 
-Biases are modelled as random walks and are unchanged by propagation. The quaternion is
+Biases are modeled as random walks and are unchanged by propagation. The quaternion is
 renormalized after (15).
 
 ## Error-state dynamics
@@ -762,7 +762,7 @@ r = \frac{\epsilon}{\gamma}
 
 so that $`r > 1`$ means rejected whatever the observation's degrees of freedom. One number is
 then comparable across GNSS position, barometric altitude and magnetic heading. It is on the
-scale of the innovation test ratios PX4 logs, so a replay puts rejection behaviour beside EKF2's.
+scale of the innovation test ratios PX4 logs, so a replay puts rejection behavior beside EKF2's.
 The two group components differently, PX4's per axis; the glossary's
 [innovation test ratio](GLOSSARY.md#coming-from-px4-or-ardupilot) says how.
 
@@ -771,7 +771,7 @@ This single mechanism covers GNSS glitches, barometer transients, and magnetic i
 ### Gate lockout
 
 Gating creates its own failure, **gate lockout**. If the **filter** is wrong rather than the
-measurement (a poor initialization, an unmodelled bias, a divergence), correct measurements are
+measurement (a poor initialization, an unmodeled bias, a divergence), correct measurements are
 inconsistent with the state. Every one is rejected, and the filter locks itself out of the very
 data that would correct it. It then dead-reckons on the IMU alone, still reporting a solution
 whose covariance says it is confident.
@@ -785,7 +785,7 @@ state estimate. It also takes the route out: a source rejected for longer than `
 allows has its next measurement [adopted](#adoption) rather than discarded. The adoption sets the
 covariance block to the measurement's `R`, which undoes the overconfidence that locked the gate
 rather than only moving the state. Each source has its own switch. `Recovery`'s doc comment owns
-the timeouts and the PX4 behaviour they follow; the decision is
+the timeouts and the PX4 behavior they follow; the decision is
 [rejection handling](GOALS.md#rejection-handling-recover-by-default-opt-out-per-source).
 
 The design obligation is that a recovery cannot be missed either: it is `Fusion::Reset` on the
@@ -893,7 +893,7 @@ C_e^n = \begin{bmatrix}
 `f32`, 1 mm at 10 km. The inverse is $`r^e = r^e_0 + (C_e^n)^\mathsf{T} p`$ followed by ECEF to
 geodetic. Its latitude is the fixed point of
 $`\varphi = \operatorname{atan2}(z + e^2 N(\varphi)\sin\varphi,\ p_{xy})`$; each pass shrinks
-the error by about $`e^2`$, so five passes from the geocentric latitude reach below a micrometre.
+the error by about $`e^2`$, so five passes from the geocentric latitude reach below a micrometer.
 Height is $`h = p_{xy}\cos\varphi + z\sin\varphi - a\sqrt{1 - e^2\sin^2\varphi}`$, which
 stays finite at the poles.
 
@@ -1027,14 +1027,14 @@ The barometer measures height, and the navigation frame is a plane. Written as a
 treats $`-p_D`$ as height. That is off by the plane's rise above the surface, $`d^2 / 2R`$ at a
 horizontal distance $`d`$ from the origin: 1 cm at 357 m, growing with its square
 ([geodetic origin](#geodetic-origin)). GNSS positions converted by (43) carry that rise and the
-barometer does not, so beyond a few kilometres the two disagree about height by exactly that
+barometer does not, so beyond a few kilometers the two disagree about height by exactly that
 amount. Removing it means writing $`h(x)`$ as minus the height of $`\hat{p}`$ above $`h_0`$, by
 the inverse of (43), which is $`p_D - (p_N^2 + p_E^2) / 2R`$ to second order. Both sides are then
 heights, and $`H`$ is unchanged to first order.
 
 `altitude_observation` does not write it. The corpus reaches the term: `2b2ad123` flies 5.13 km
 from its origin, a rise of 2.07 m, and `89a498ce` 4.07 km, 1.30 m, both on RTK receivers whose
-height is reported to centimetres. But the simulator generates its reading from $`-p_D`$ on a
+height is reported to centimeters. But the simulator generates its reading from $`-p_D`$ on a
 flat plane, and `circuit()` reaches 144 m, worth 1.6 mm, so no scenario could score the
 correction. Not built: #124.
 
@@ -1128,7 +1128,7 @@ error is not significant, and the approximation avoids a singularity at 90° pit
 Note that (35) wraps the angle **before** it is used, so the innovation is always in
 $`(-\pi, \pi]`$ and a heading near ±180° does not produce a spurious 2π innovation.
 
-### What the levelling costs
+### What the leveling costs
 
 $`R_m`$ is not $`\sigma_\psi^2`$ alone. Perturb (35) exactly, writing
 $`\varphi = R(\hat q)\,\delta\theta`$ for the navigation-frame error and
@@ -1139,7 +1139,7 @@ $`h^2 = \tilde m_{n,N}^2 + \tilde m_{n,E}^2`$:
 y = \varphi_D - \frac{\tilde m_{n,D}}{h^2}\bigl( \varphi_N\, \tilde m_{n,N} + \varphi_E\, \tilde m_{n,E} \bigr)
 ```
 
-(36) keeps the first term and drops the second, the **levelling error**. (34) rotates the
+(36) keeps the first term and drops the second, the **leveling error**. (34) rotates the
 measurement by the *estimated* attitude, so a tilt error tips the field and turns its horizontal
 part by $`\tan\delta`$ times as much. It is the same leak (8′) charges a coarse window's heading
 prior for. At the 1.107 rad of dip the corpus carries it is a factor of 2.0, twice the
@@ -1192,7 +1192,7 @@ inside the attitude bound on every scenario, their ANEES within a few percent.
 | `7ce66f0d` recoveries, under (24′) | 63 | | 69 | |
 | `flight` `pos_h` | | | 2.503 m | 2.499 m |
 
-Under (24′) what is left favours the eigenvalue on yaw by about 0.006° on the white scenarios, and
+Under (24′) what is left favors the eigenvalue on yaw by about 0.006° on the white scenarios, and
 the field axis on a coarse start. `static`, whose tilt block is isotropic, reads the same under
 every form. The eigenvalue is kept as the bound, not for a margin. It is never below either
 diagonal and is the same on any basis of the plane. A $`\sigma`$ too large only slows the
@@ -1219,7 +1219,7 @@ magnitude better:
 observes the tilt that made it so. That is `R` inflation with no cross-covariance. It is enough
 here because the error it prices does not persist: velocity fusion keeps correcting the tilt
 between headings. An error shared unchanged across readings needs the cross-covariance as well,
-which is (30′). On `moving_start`, whose coarse start is where an unpriced levelling error is
+which is (30′). On `moving_start`, whose coarse start is where an unpriced leveling error is
 largest, measured with every source fused white, before (24′):
 
 | `moving_start` | (36) alone | (36′) |
@@ -1232,7 +1232,7 @@ largest, measured with every source fused white, before (24′):
 **The adoption.** $`R_m`$ prices the adoption as well as the update. The first heading a filter
 with no established yaw receives is taken outright rather than gated: a yaw error of a radian is
 not a small-angle quantity, and no variance expresses it. The variance it carries away is this
-$`R_m`$, not $`\sigma_\psi^2`$. It is levelled by (34) like any other, on the worst tilt the
+$`R_m`$, not $`\sigma_\psi^2`$. It is leveled by (34) like any other, on the worst tilt the
 filter ever holds. An adoption storing the magnetometer's own number would be precisely the
 falsely valid attitude (36′) exists to remove, reintroduced where the error is largest. On
 `moving_start` the adopted variance is 0.582 rather than 0.01: $`\sigma`$ = 0.76 rad, outside
@@ -1240,7 +1240,7 @@ falsely valid attitude (36′) exists to remove, reintroduced where the error is
 
 ### Heading from GNSS
 
-Two heading sources arrive as an angle rather than a field, so nothing is levelled with the
+Two heading sources arrive as an angle rather than a field, so nothing is leveled with the
 estimated attitude and (36′) has no counterpart in either. Both read the heading of the forward
 axis, body $`x`$ in navigation axes, $`f = R(\hat{q})\,e_1`$:
 
@@ -1265,7 +1265,7 @@ y = \mathrm{wrap}\big(\psi_m - \hat{\psi}\big), \qquad H \text{ from (36)}, \qqu
 
 PX4 differentiates the antenna baseline's heading exactly, so its $`H`$ carries tilt. (36) is kept
 here for the reason the magnetometer keeps it:
-[what the levelling costs](#what-the-levelling-costs).
+[what the leveling costs](#what-the-leveling-costs).
 
 The **course constraint** reads no sensor. It states that the vehicle points along its velocity
 to within a sideslip $`\beta`$, $`h(x) = \psi - \chi`$ measured as zero, with the course taken
@@ -1432,7 +1432,7 @@ Each implementing function cites its equation numbers in a doc comment.
 | (5)–(8) | static initialization | `init.rs` | `StaticWindow::push` and `measured`, `level_from_accel`, `heading_from_mag`, `nominal_state`, `classify`, `attitude_sigmas`, `Measured::gyro_bias`, `initial_covariance`, with `state.rs`'s `AttitudeVariance::in_body` and `Covariance::set_attitude_accel_bias_block` |
 | (8′) | what a coarse window supports | `init.rs` | `coarse_sigmas`, `window_drift`, `heading_sensitivity`; `tan δ` shared with (36′) |
 | (8″) | white noise a still window measures | `init.rs` | `Density`, `BaroReadings::noise`, and `Density::mean_variance` for the bias of (7)–(8); reported by `StaticWindow::noise` as `WindowNoise` |
-| (5′) `ā_n` | in-motion levelling | `init.rs` | `Velocities::inertial_acceleration`; the correction itself: not built, #59 |
+| (5′) `ā_n` | in-motion leveling | `init.rs` | `Velocities::inertial_acceleration`; the correction itself: not built, #59 |
 | (30) `α₀` | barometric reference and its variance | `init.rs` | `BaroReadings::reference`, through `StaticWindow::alpha0` |
 | (9)–(11) | bias correction, gravity | `propagate.rs` | `ImuSample`, `corrected_imu` |
 | (12)–(15) | nominal propagation | `propagate.rs` | `propagate_nominal` |
@@ -1452,7 +1452,7 @@ Each implementing function cites its equation numbers in a doc comment.
 | (30′) | barometric offset | `state.rs`, `update.rs`, `propagate.rs` | `Offset`; `update`'s blocks; `propagate_offset`; `Eskf::establish_reference` |
 | (31)–(33) | magnetometer, three-axis | — | unbuilt and [out of scope](GOALS.md#magnetometer-without-magnetic-field-states); no `field_jacobian` exists |
 | (34)–(36) | magnetometer, heading only | `observation/mag.rs`, `observation/heading.rs` | `heading_innovation`, `heading_observation`; `heading_jacobian` in `heading.rs`, shared by every heading source |
-| (36′) | levelling variance | `observation/mag.rs` | `levelling_variance`, with `tan δ` and `f̂_b` from `init.rs`'s `heading_sensitivity` |
+| (36′) | leveling variance | `observation/mag.rs` | `levelling_variance`, with `tan δ` and `f̂_b` from `init.rs`'s `heading_sensitivity` |
 | (35′) | dual-antenna GNSS heading | `observation/heading.rs` | `gnss_observation`, `has_heading`; committed by `Eskf::fuse_gnss_heading` |
 | (35″) | course constraint | `observation/heading.rs` | `course_observation`, `course_variance`; committed by `Eskf::fuse_course` |
 | (37) `γ` | gate thresholds | `config.rs` | `Gate::at`, `Gate::new`, `Gates::at` |

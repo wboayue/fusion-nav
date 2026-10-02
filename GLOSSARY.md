@@ -37,10 +37,10 @@ the difference is the kind that costs a day.
   writes the order down rather than assuming one. The constructors that name frame and direction,
   and what a wrong one costs, are in [seeding an attitude](README.md#seeding-an-attitude).
 * **Specific force**: what an accelerometer measures, acceleration minus gravity, in body axes.
-  A stationary level vehicle reads `[0, 0, −γ]`, not zero, which is what makes levelling from
+  A stationary level vehicle reads `[0, 0, −γ]`, not zero, which is what makes leveling from
   the accelerometer possible. See [initialization](EQUATIONS.md#initialization).
-* **Levelling**, **alignment**: recovering the initial attitude before the filter can run.
-  Levelling is the tilt half, from gravity; alignment is the whole job, including heading.
+* **Leveling**, **alignment**: recovering the initial attitude before the filter can run.
+  Leveling is the tilt half, from gravity; alignment is the whole job, including heading.
   A **static** (quasi-stationary) window gives the good answer, a **coarse** one the usable
   answer with the uncertainty to match. See
   [alignment beyond the static window](GOALS.md#alignment-beyond-the-static-window).
@@ -61,7 +61,7 @@ the difference is the kind that costs a day.
   direction of the line between them, a true heading independent of any magnetic field.
   Equation (35′).
 * **Geodetic coordinates**, **ECEF**, **local tangent plane**: latitude/longitude/height on the
-  WGS-84 ellipsoid; an earth-centred Cartesian frame; and the flat NED frame this filter works
+  WGS-84 ellipsoid; an earth-centered Cartesian frame; and the flat NED frame this filter works
   in, pinned to a geodetic **origin**. Converting between them is
   [equations (43)–(44)](EQUATIONS.md#geodetic-origin); the flat approximation's cost is in the
   README's limitations.
@@ -72,7 +72,7 @@ the difference is the kind that costs a day.
   to carry position, velocity and attitude forward with no outside reference. It is exact for an
   instant and hopeless over a minute, because every error integrates: an attitude error tips
   gravity into the horizontal channel and integrates twice. On the simulator's `gnss_outage`, 20 s
-  without GNSS costs metres ([VALIDATION.md](VALIDATION.md)). The term is not the status:
+  without GNSS costs meters ([VALIDATION.md](VALIDATION.md)). The term is not the status:
   `Status::DeadReckoning` means no *horizontal* aiding, so a filter fusing only a barometer and a
   magnetometer reports it while still corrected in height and heading.
 * **Kalman filter**: the recursive estimator underneath all of this. It carries a state estimate and
@@ -144,7 +144,7 @@ the difference is the kind that costs a day.
   [equation (42′)](EQUATIONS.md#numerical-conditioning), which bounds a variance in `P` from below
   to keep it a covariance.
 * **Consider state**: a quantity carried in the covariance whose uncertainty is priced but which
-  is never corrected. Measured and rejected for the barometric reference in favour of an
+  is never corrected. Measured and rejected for the barometric reference in favor of an
   estimated one, [the decision](GOALS.md#barometric-reference-as-an-estimated-offset).
 * **Joseph form**: the algebraically equivalent but numerically stabler way of writing the
   covariance update, [equation (27)](EQUATIONS.md#measurement-update). It costs more arithmetic
@@ -177,7 +177,7 @@ the difference is the kind that costs a day.
 * **Kalman gain**, `K`: how much of a measurement's disagreement to believe, set by the ratio of
   the filter's uncertainty to the total. Confident filter, ignored measurement; uncertain filter,
   adopted measurement.
-* **Mahalanobis distance**: distance measured in σ rather than in metres, `yᵀ S⁻¹ y` under the
+* **Mahalanobis distance**: distance measured in σ rather than in meters, `yᵀ S⁻¹ y` under the
   square root. It is what makes "is 3 m a lot?" answerable: it depends on `S`.
 * **NIS**, normalized innovation squared: that distance squared, `ε = yᵀ S⁻¹ y`,
   [equation (37)](EQUATIONS.md#innovation-gating). Under the hypothesis that the filter and the
@@ -257,7 +257,7 @@ the difference is the kind that costs a day.
   `examples/simulate.rs` generates with truth beside them. The manifest pins each fetched log by
   checksum *and* by the output replaying it must produce. A scenario is one generated flight, and
   exists only if it covers something no other one does.
-* **RTK**, **SITL**: real-time kinematic GNSS, centimetre fixes from carrier phase against a base
+* **RTK**, **SITL**: real-time kinematic GNSS, centimeter fixes from carrier phase against a base
   station; and software in the loop, a PX4 build flying a simulated vehicle. A SITL log in the
   corpus is synthetic data without the simulator's truth.
 

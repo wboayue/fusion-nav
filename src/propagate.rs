@@ -1009,7 +1009,7 @@ mod tests {
         }
     }
 
-    /// Manoeuvring hard enough that `[a_b]ₓ` and `[ω]ₓ` are both far from zero.
+    /// Maneuvering hard enough that `[a_b]ₓ` and `[ω]ₓ` are both far from zero.
     fn manoeuvring() -> ImuSample {
         ImuSample::reading(
             AngularRate::body(0.15, -0.23, 0.31),
@@ -1089,7 +1089,7 @@ mod tests {
 
     /// `A` is written out beside `F` rather than derived from it, so the two are held together
     /// here: `F = I + A Δt` to first order, at the rates the same corrected sample carries. At
-    /// 1 ms the second-order remainder is `|ω|² Δt² / 2`, under 1e-7 at this manoeuvre, so a
+    /// 1 ms the second-order remainder is `|ω|² Δt² / 2`, under 1e-7 at this maneuver, so a
     /// block of `A` placed or signed differently from `F`'s, each at least `Δt`, cannot pass.
     #[test]
     fn the_error_dynamics_are_the_transition_matrix_per_unit_time() {

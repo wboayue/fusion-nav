@@ -1,4 +1,4 @@
-//! Magnetometer observation models. Equations (34)–(36), and the levelling variance
+//! Magnetometer observation models. Equations (34)–(36), and the leveling variance
 //! (36′) that the heading's own noise does not cover.
 
 use nalgebra::{ComplexField, RealField, SVector, Vector3};
@@ -46,7 +46,7 @@ pub(crate) fn heading_innovation(
 }
 
 /// A magnetic heading as the update reads it: `y` from (35), `H` from (36), and the
-/// caller's variance widened by the levelling of (36′).
+/// caller's variance widened by the leveling of (36′).
 ///
 /// One degree of freedom, because the three-axis field is reduced to a single scalar before the
 /// update sees it. That is the decision `GOALS.md` records under [magnetometer without
@@ -60,7 +60,7 @@ pub(crate) fn heading_innovation(
 /// only as good as that attitude: a tilt error tips the field and turns its horizontal
 /// part by `tan δ` times as much, the same leak equation (8′) charges a coarse window's
 /// heading prior for. `noise` cannot carry it, because the caller hands over a field and
-/// never sees the rotation applied to it — the filter performs the levelling and holds
+/// never sees the rotation applied to it — the filter performs the leveling and holds
 /// the tilt covariance, so the filter is the only layer that can price it.
 ///
 /// (36′) adds it to `R` rather than to `H`. The exact Jacobian of (35) carries the term too, and
@@ -70,7 +70,7 @@ pub(crate) fn heading_innovation(
 /// its own noise suggests without claiming it observes the tilt that made it so. That is `R`
 /// inflation with no cross-covariance, and it suffices because velocity fusion keeps correcting the
 /// tilt it prices; an error shared unchanged across readings needs the cross-covariance too, which
-/// is (30′). `EQUATIONS.md`, [What the levelling costs], has what the term is worth on a coarse
+/// is (30′). `EQUATIONS.md`, [What the leveling costs], has what the term is worth on a coarse
 /// start.
 ///
 /// `R(q̂)` is formed twice, once for (35) and once for (36). Sharing it would thread a
@@ -79,7 +79,7 @@ pub(crate) fn heading_innovation(
 /// `AGENTS.md`'s rule, and a measurement is what would reopen it.
 ///
 /// [magnetometer without magnetic-field states]: https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#magnetometer-without-magnetic-field-states
-/// [What the levelling costs]: https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#what-the-levelling-costs
+/// [What the leveling costs]: https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#what-the-leveling-costs
 pub(crate) fn heading_observation(
     state: &State,
     covariance: &Covariance,
@@ -103,7 +103,7 @@ pub(crate) fn heading_observation(
     }
 }
 
-/// `tan²δ · σ_tilt²`, the variance (34)'s levelling adds to a heading. Equation (36′).
+/// `tan²δ · σ_tilt²`, the variance (34)'s leveling adds to a heading. Equation (36′).
 ///
 /// `tan δ` is [`init::heading_sensitivity`](crate::init::heading_sensitivity), the same
 /// ratio (8′) uses, read off this field rather than configured. It is an angle between a
@@ -205,7 +205,7 @@ pub(crate) mod tests {
     fn a_yaw_error_at_non_zero_tilt_is_recovered() {
         // Zero tilt would pass with (34) omitted: `atan2` on the body field is the same
         // number there. The 0.3 rad of roll and -0.2 of pitch are what make this a test
-        // of the rotation rather than of the arctangent, since at this dip an unlevelled
+        // of the rotation rather than of the arctangent, since at this dip an unleveled
         // projection is wrong by about tan(1.107) = 1.96 times the tilt.
         let truth = attitude_of(0.3, -0.2, 1.1);
         let estimate = attitude_of(0.3, -0.2, 1.1 + 0.15);
@@ -365,7 +365,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_filter_certain_of_its_tilt_adds_nothing_to_the_callers_variance() {
-        // (36′) prices the levelling, and a levelling done with a known attitude costs
+        // (36′) prices the leveling, and a leveling done with a known attitude costs
         // nothing. The boundary that says the term is a function of `P` rather than a
         // blanket inflation of `R`.
         let attitude = attitude_of(0.1, 0.1, 0.5);
@@ -540,7 +540,7 @@ pub(crate) mod tests {
     fn on_its_tail_the_levelling_reads_tilt_and_not_heading() {
         // Pitched 90° nose-up, body x is navigation up: the body x and y variances (36′)
         // once read are heading's and one tilt's. How uncertain heading is has nothing to
-        // do with how badly the field was levelled.
+        // do with how badly the field was leveled.
         let attitude = attitude_of(0.0, core::f32::consts::FRAC_PI_2, 0.3);
         let field = measured(attitude, 0.0);
         let down = down_of(attitude);
@@ -557,13 +557,10 @@ pub(crate) mod tests {
             levelling_variance(&Covariance::from_matrix(p), field, down)
         };
         let (tight, loose) = (levelling(1e-4), levelling(0.5));
-        assert!(
-            tight > 0.0,
-            "a dipping field has a levelling error to price"
-        );
+        assert!(tight > 0.0, "a dipping field has a leveling error to price");
         assert!(
             (tight - loose).abs() < 1e-6 * tight.max(1e-9) + 1e-9,
-            "heading's variance leaked into the levelling: {tight} against {loose}"
+            "heading's variance leaked into the leveling: {tight} against {loose}"
         );
     }
 }

@@ -916,9 +916,9 @@ impl PositionNoise<Ned> {
     ///
     /// Also how a two-dimensional fix is expressed: give the vertical axis a σ large
     /// enough that its Kalman gain is negligible against the height uncertainty the
-    /// filter already holds, and say in the calling code which it is. A kilometre is
+    /// filter already holds, and say in the calling code which it is. A kilometer is
     /// comfortably that for any vehicle this filter runs on, and is a number a reader
-    /// recognises as deliberate where `1e6` reads as arbitrary.
+    /// recognizes as deliberate where `1e6` reads as arbitrary.
     ///
     /// Unbounded on purpose, which is the whole difference from [`clamped`](Self::clamped):
     /// a σ standing for an axis the receiver did not measure is a sentinel, not an
@@ -936,7 +936,7 @@ impl PositionNoise<Ned> {
     /// first if it came from the receiver.
     ///
     /// A receiver's accuracy estimate is its view of its own geometry and residuals, and
-    /// under multipath it stays small while the fix is metres wrong, so both production
+    /// under multipath it stays small while the fix is meters wrong, so both production
     /// estimators bound it rather than trusting it, each axis by its own rule:
     ///
     /// ```
@@ -975,7 +975,7 @@ impl PositionNoise<Ned> {
     /// identical line at `:807`, which is the synthetic-zero-velocity case opened at `:789`;
     /// vertical at `:1402`.
     ///
-    /// Keeping the bounds here rather than in [`Config`](crate::Config) keeps them travelling
+    /// Keeping the bounds here rather than in [`Config`](crate::Config) keeps them traveling
     /// with the measurement they describe, which is the same reason `R` is a per-call
     /// argument at all.
     ///

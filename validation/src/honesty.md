@@ -1,6 +1,6 @@
 # Honesty of the reported uncertainty
 
-**When the filter says "I'm within a metre", is it?** Yes, with room to spare, on every
+**When the filter says "I'm within a meter", is it?** Yes, with room to spare, on every
 simulated scenario except `correlated`. On the baseline flight, the fraction of checks where the
 true value sat inside the filter's ±3σ band was {{score mission in3s}}, where 1 is every check.
 In `correlated` the filter claims more accuracy than it has, because sensor errors persist longer

@@ -11,7 +11,7 @@
 # what separates it from `data/fetch.sh --check`.
 #
 # Debug, where fetch.sh --check uses --release. The corpus includes a two-hour log at 1.4M
-# epochs and pays for the optimised build many times over; the nine scenarios here are 4 s to
+# epochs and pays for the optimized build many times over; the nine scenarios here are 4 s to
 # generate and about 1 s each to replay, against roughly a minute to build the crate again
 # under a second profile. The `score` lines are identical either way -- Rust contracts no
 # FMAs and opt-level does not change float semantics, which is the same property the

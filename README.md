@@ -9,7 +9,7 @@ flight controllers, UAVs, and other embedded navigation.
 ![The simulator's gnss_outage flight: position error against truth stays inside the filter's own 3-sigma band, which widens while GNSS is lost and closes at the first fix](https://raw.githubusercontent.com/wboayue/fusion-nav/main/validation/figures/gnss_outage/error_position.png)
 
 *A simulated flight that loses GNSS for 20 s. The line is the position error against truth, the
-grey band the filter's own ±3σ, the shading its health, `Status` (see
+gray band the filter's own ±3σ, the shading its health, `Status` (see
 [Health reporting](#health-reporting)): yellow `Degraded`, red `DeadReckoning`. The band widens
 as the error grows, and the first fix puts the error back inside a band that then narrows.
 [VALIDATION.md](https://github.com/wboayue/fusion-nav/blob/main/VALIDATION.md) has the rest,
@@ -105,7 +105,7 @@ use fusion_nav::prelude::*;
 # let arrived = Timestamp::from_micros(12_500_000);
 
 let mut filter = Eskf::default();
-// Where the GNSS antenna sits relative to the IMU, forward, right, down in metres: the fix
+// Where the GNSS antenna sits relative to the IMU, forward, right, down in meters: the fix
 // is the antenna's, and the filter refers it to the IMU with its own attitude and rate.
 let antenna = Position::body(0.05, 0.0, -0.12);
 
@@ -223,7 +223,7 @@ Each `StaticSample` is an `ImuSample` plus an optional magnetometer reading, bar
 and GNSS velocity. From the window the filter takes:
 
 * **roll and pitch** from the averaged accelerometer.
-* **heading** from the magnetometer, levelled by roll and pitch. Without one, heading is
+* **heading** from the magnetometer, leveled by roll and pitch. Without one, heading is
   unobserved: `validity.heading` is false and `Status` is `Aligning` until a first heading is
   accepted (adopted, see below).
 * **gyroscope bias** from the averaged gyroscope, but only from a window taken at rest, which is
@@ -266,7 +266,7 @@ altitude.
 `StaticSample::velocity` is what a moving window has that a still one does not need. Two GNSS
 velocities in the window give `ā_n`, the vehicle's own acceleration: the part of the specific
 force that is not gravity. `Coarse::NotStationary` reports it beside the motion it measured.
-Levelling with it, equation (5′), is not built: a coarse start bounds tilt by how far its
+Leveling with it, equation (5′), is not built: a coarse start bounds tilt by how far its
 *averaged* specific force is from gravity, and a real `ā_n` is part of what puts it there.
 
 A **seed** is checked where a window is not, because it crosses a boundary the filter does not
@@ -395,13 +395,13 @@ fix. Build it the way the source reports it: `PositionNoise::horizontal_vertical
 * **Bound a receiver's figures first.** `PositionNoise::clamped` and `VelocityNoise::clamped` take
   a `SigmaBounds` per axis, and their documentation writes PX4's and ArduPilot's rules as one call
   each; neither production autopilot fuses a receiver's figures raw. Both floor them, against a
-  receiver whose accuracy stays small under multipath while the fix is metres wrong. ArduPilot
+  receiver whose accuracy stays small under multipath while the fix is meters wrong. ArduPilot
   also caps, and PX4 caps horizontal position only while GNSS is its sole horizontal aid.
 * **An axis not measured at all** (a two-dimensional fix, a solution with no vertical velocity)
   takes `horizontal_vertical` instead, which leaves that axis' σ alone where `clamped` would cap
   it back into a measurement.
 * **The magnetometer must already be calibrated** for hard and soft iron. `noise` is on the
-  heading rather than the field, and the filter widens it by the tilt it levelled with, equation
+  heading rather than the field, and the filter widens it by the tilt it leveled with, equation
   (36′), but nothing in it can find a hard-iron offset.
 * **A dual-antenna heading** is bounded like a fix: `HeadingNoise::clamped`, with PX4's or
   ArduPilot's floor.
@@ -658,7 +658,7 @@ A tuned EKF2 or EKF3 does not carry across by renaming. Most of what those estim
 parameters is here either a per-call argument, because it describes one measurement, or derived,
 because the filter can find it. Read from source at PX4-Autopilot `c4e4ef98` and ardupilot
 `368dc0c4`; PX4's firmware defaults are the ones in its `params_*.yaml`, which override the
-initialisers in `EKF/common.h`.
+initializers in `EKF/common.h`.
 
 What is not a rename:
 
@@ -687,7 +687,7 @@ What is not a rename:
   `LATENCY_HORIZON`, 0.3 s against `EKF2_DELAY_MAX`'s 200 ms, a measurement is `OutOfHorizon`.
 * **The antenna offset is an argument.** `antenna` on each GNSS `fuse_*` is `SENS_GPS0_OFF*`
   (`EKF2_GPS_POS_*` before the rename) less `EKF2_IMU_POS*`, or `GPS1_POS_*` less `INS_POS1_*`.
-  The estimate is the IMU's; neither PX4's output at the centre of gravity nor its output predictor
+  The estimate is the IMU's; neither PX4's output at the center of gravity nor its output predictor
   (`EKF2_TAU_VEL`, `EK3_TAU_OUTPUT`) has a counterpart, and `angular_rate()` moves the estimate to
   any other point. A dual-antenna heading's mounting angle, `EKF2_GPS_YAW_OFF` or the baseline
   `GPS1_MB_OFS_*`, stays the caller's subtraction: it is a constant angle, where an arm needs the
@@ -740,7 +740,7 @@ What is left out:
   (`EKF2_MAG_CHECK`), and bad vertical-accelerometer detection (PX4's `bad_acc_vertical`,
   ArduPilot's `badIMUdata`), reported through `Diagnostics`.
 * **Declined until a log shows need:** a barometer ground-effect dead zone (`EKF2_GND_EFF_DZ`,
-  `EK3_GND_EFF_DZ`) and inhibiting accelerometer-bias learning under hard manoeuvres
+  `EK3_GND_EFF_DZ`) and inhibiting accelerometer-bias learning under hard maneuvers
   (`EKF2_ABL_ACCLIM`). Each is a threshold on the airframe, a knob data could settle.
 
 ## Limitations
@@ -769,7 +769,7 @@ issue that removes them, where one is open.
   yaw estimator, the general answer, is unbuilt. See
   [alignment beyond the static window](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#alignment-beyond-the-static-window).
 * **In-motion alignment is coarse.** A moving start runs and reports `Aligning`, but full
-  alignment of a bare vehicle in motion is not built: levelling with the vehicle's own
+  alignment of a bare vehicle in motion is not built: leveling with the vehicle's own
   acceleration, equation (5′), is
   [#59](https://github.com/wboayue/fusion-nav/issues/59). `initialize_from` covers a held
   estimate. See
@@ -786,7 +786,7 @@ issue that removes them, where one is open.
 * **An IMU gap is coasted on an assumption.** Across a step longer than `Config::max_predict_dt`
   the filter assumes the vehicle neither accelerated nor turned, and prices what it may have done
   with `Config::coast`'s two densities, set from one VTOL log's gaps at 30 m/s. A vehicle that
-  manoeuvres harder than that inside a gap can still be turned down by the gate afterwards,
+  maneuvers harder than that inside a gap can still be turned down by the gate afterwards,
   until `Config::recovery` adopts a fix. `cargo run --example replay -- --derive <log>` prints
   the densities a vehicle's own logged gaps need, among the rest of a `Config` derived from the
   log ([deriving a `Config`](https://github.com/wboayue/fusion-nav/blob/main/data/README.md#deriving-a-config)).

@@ -179,7 +179,7 @@ def px4_reproject(x, y, lat0, lon0):
     (`project` at `src/lib/geo/geo.cpp:67-88` at c4e4ef98, and still how
     `EstimatorInterface::getPosition` forms x/y since the state became lat/lon,
     `estimator_interface.cpp:613-625`); this is `reproject` (`geo.cpp:90-111`),
-    term for term. Reading EKF2's x/y as tangent-plane metres instead is wrong
+    term for term. Reading EKF2's x/y as tangent-plane meters instead is wrong
     by the sphere's scale against the ellipsoid's, about 0.2 % of the distance
     from its origin at mid-latitudes: 3.7 m north on `89a498ce`, which flies
     4.07 km out. The one place in this repository that cites these lines.
@@ -394,7 +394,7 @@ def lateness(t, utc):
     A receiver's `time_utc_usec` is when the fix was valid; the message's `timestamp` is when
     the log saw it, which jitters by tens of milliseconds behind it (`89a498ce` -17 to +30 ms,
     p5 to p95) and, for a fix republished unchanged, by a whole epoch. A 1 Hz filter predicts
-    across that; at 5 to 10 Hz a centimetre receiver is rejected for it, 0.27 m along track at
+    across that; at 5 to 10 Hz a centimeter receiver is rejected for it, 0.27 m along track at
     10 m/s and 3 mm across. Each message's `timestamp - utc` less its running median over
     `LATENESS_WINDOW` messages is that jitter, the median being the usual latency the log's
     `EKF2_GPS_DELAY` already stands for, so the delay keeps its meaning and only the spread
@@ -455,7 +455,7 @@ def convert_gnss(ulog, stream, rows, used, heading_variance=DEFAULT_GNSS_HEADING
     geodetic = fields_for(dataset, filled) or fields_for(dataset, GNSS_GEODETIC)
     if geodetic is None:
         raise ConversionError(
-            f"`{dataset.name}` has no recognised geodetic fields; looked for "
+            f"`{dataset.name}` has no recognized geodetic fields; looked for "
             + " and ".join("/".join(c[0]) for c in GNSS_GEODETIC)
         )
     (lat_f, lon_f, alt_f), angle_scale, alt_scale = geodetic
@@ -1065,7 +1065,7 @@ def write_reference(ulog, out, t0, imu_dt, source_name, origin):
     """EKF2's own solution and innovation ratios, for a side-by-side diff.
 
     `origin` is the replay input's navigation origin, the first 3D fix as
-    (lat, lon, height, MSL height) in degrees and metres, or None when the log
+    (lat, lon, height, MSL height) in degrees and meters, or None when the log
     has no fix.
     """
     local = pick(ulog, ["vehicle_local_position"])
@@ -1431,7 +1431,7 @@ def origin_note(origin):
     reads to look its own magnetic model up at the site (`declination_model=`) and, under
     `--declination model`, hands the filter as its origin.
 
-    `origin` is the first 3D fix as (lat, lon, height, MSL height), degrees and metres; the
+    `origin` is the first 3D fix as (lat, lon, height, MSL height), degrees and meters; the
     height is on the datum the fixes were converted on. A log with no fix writes the line
     anyway, as `none`, so its absence says the file predates it.
     """
@@ -1440,7 +1440,7 @@ def origin_note(origin):
     return f"Navigation origin {origin[0]:.9f} {origin[1]:.9f} {origin[2]:.3f} (lat deg, lon deg, height m; the first 3D fix)"
 
 
-# Where the antenna and the IMU sit on the airframe, body FRD metres, under each name PX4
+# Where the antenna and the IMU sit on the airframe, body FRD meters, under each name PX4
 # has given them. EKF2 subtracts the second from the first and applies the difference to
 # every fix (`pos_offset_body = gnss_sample.pos_body - _params.imu_pos_body`,
 # EKF/aid_sources/gnss/gps_control.cpp:313 at c4e4ef98). The antenna's parameters were
@@ -2034,7 +2034,7 @@ def self_test():
            [1.0, 2.0, 3.0])
     # PX4's x at the equator is arc on a 6371 km sphere, so 0.001 deg of latitude
     # is 6371e3 pi/180e3 = 111.195 m of x, where the ellipsoid's tangent plane puts
-    # the same point 110.575 m north. Reading x as tangent-plane metres is the
+    # the same point 110.575 m north. Reading x as tangent-plane meters is the
     # 0.62 m gap; a swapped x/y lands the point east.
     arc = PX4_EARTH_RADIUS * math.radians(0.001)
     expect("reproject north", tuple(round(v, 12) for v in px4_reproject(arc, 0.0, 0.0, 0.0)),
@@ -2076,7 +2076,7 @@ def self_test():
            "EKF2 position in replay frame: n e d")
     rows = []
     reference_local(local, rows, (0.0, 0.0, 30.0, None))
-    # Centimetres: unshifted, the point sits 23 m lower, a quarter-millimetre of arc.
+    # Centimeters: unshifted, the point sits 23 m lower, a quarter-millimeter of arc.
     expect("no MSL height", [None if rows[0][2][k] is None else round(rows[0][2][k], 2)
                              for k in ("pos_n", "pos_e", "pos_d")], [110.57, 0.0, None])
     expect("no MSL height note", position_note(local, (0.0, 0.0, 30.0, None)),
@@ -2100,7 +2100,7 @@ def self_test():
     expect("no replay origin", origin_offset_note((0.0, 0.0, 0.0), None).split(" (")[0],
            "EKF2 origin in replay frame: none")
     # One bit per sample beside a pair, so each share names its bit: an off-by-one
-    # position moves a share to its neighbour.
+    # position moves a share to its neighbor.
     status = Fixture("estimator_status",
                      control_mode_flags=[1 << 2 | 1 << 9, 1 << 4, 1 << 5 | 1 << 11, 1 << 9])
     expect("aiding shares", ekf2_aiding_note(status, {"EKF2_HGT_REF": 1}),

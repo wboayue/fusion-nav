@@ -50,7 +50,7 @@ pub(crate) const EARTH_RATE: RadiansPerSecond = RadiansPerSecond::from_rad_per_s
 /// receivers compute (u-blox `height`, PX4 `altitude_ellipsoid_m`). Height above mean
 /// sea level works if used consistently, but it misplaces the ellipsoid by the local geoid
 /// undulation — up to 100 m — and so scales horizontal distance by up to 1.6 × 10⁻⁵:
-/// 1.6 cm per kilometre from the origin.
+/// 1.6 cm per kilometer from the origin.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Geodetic {
     latitude: f64,
@@ -82,7 +82,7 @@ impl Geodetic {
     /// degrees, height in millimeters.
     ///
     /// ArduPilot's `Location` shares the latitude and longitude but not the height, which is
-    /// centimetres (`int32_t alt; // in cm`, `libraries/AP_Common/Location.h:17` at `368dc0c4`):
+    /// centimeters (`int32_t alt; // in cm`, `libraries/AP_Common/Location.h:17` at `368dc0c4`):
     /// passed here unconverted it is ten times too low. Multiply it by ten first.
     pub fn from_degrees_e7(latitude: i32, longitude: i32, height_mm: i32) -> Self {
         Self::from_degrees(
@@ -167,7 +167,7 @@ impl Geodetic {
 /// origin's north, east and down. Every step is closed-form geometry on the WGS84
 /// ellipsoid, so there is no range at which the conversion starts to lose accuracy; the
 /// only rounding is the final narrowing to `f32`, 1 mm at 10 km. The inverse is exact to
-/// micrometres too — see [`to_geodetic`](Self::to_geodetic).
+/// micrometers too — see [`to_geodetic`](Self::to_geodetic).
 ///
 /// What *does* change with range is not the conversion but the frame: a plane leaves a
 /// curved Earth. At a horizontal distance `d` the plane sits `d²/2R` above the surface
@@ -305,7 +305,7 @@ fn ecef(point: Geodetic) -> Vector3<f64> {
 /// Longitude is direct. Latitude is the fixed point of
 /// `φ = atan2(z + e² N(φ) sin φ, p)`, where `p` is the distance from the polar axis;
 /// each pass shrinks the error by about `e²`, 1/150, so five passes from the geocentric
-/// latitude take the worst case to below a micrometre on the ground. A fixed count rather
+/// latitude take the worst case to below a micrometer on the ground. A fixed count rather
 /// than a tolerance, so the cost is the same every call.
 ///
 /// Height uses the form that stays finite at the poles, rather than `p / cos φ − N`.
@@ -348,11 +348,11 @@ mod tests {
         assert_eq!(at(-90.0, 0.0), at(90.0, 0.0));
         // 45°: standard gravity, 9.80665, is a sea-level value near this latitude, not of it.
         assert!((at(45.0, 0.0) - 9.806_2).abs() < 1e-4, "{}", at(45.0, 0.0));
-        // The free-air gradient, 3.086 mGal m⁻¹, over the first kilometre.
+        // The free-air gradient, 3.086 mGal m⁻¹, over the first kilometer.
         let lapse = at(45.0, 0.0) - at(45.0, 1000.0);
         assert!((lapse - 3.086e-3).abs() < 1e-5, "{lapse}");
         // (4-3)'s second-order term, `3h²/a²`, bends the lapse: over 20 km the fall is short of
-        // twenty times the first kilometre's by γ · 3 (h₂₀² − 20 h₁²)/a², 2.75e-4 m s⁻².
+        // twenty times the first kilometer's by γ · 3 (h₂₀² − 20 h₁²)/a², 2.75e-4 m s⁻².
         let bend = 20.0 * lapse - (at(45.0, 0.0) - at(45.0, 20_000.0));
         assert!((bend - 2.75e-4).abs() < 0.3e-4, "{bend}");
         assert!(at(f64::NAN, 0.0).is_nan());

@@ -25,7 +25,7 @@
 # fixes claiming a median 0.8 to 3.9 m of horizontal sigma.
 #
 # outdoor_1: Klagenfurt's model airfield, 52 s still, a 24 m climb, a receiver high by
-# metres, and a barometer that departs from truth by up to 2.8 m during the climb and returns
+# meters, and a barometer that departs from truth by up to 2.8 m during the climb and returns
 # (5 s means).
 # mars_1: the receiver claiming the smallest error.
 # mars_19: 280 s of truth over a hover; a barometer drifting 1.8 m from truth, start to end

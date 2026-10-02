@@ -46,7 +46,7 @@ def write_replay(out, header, rows, t0, unit, delays=None):
 def write_truth(out, header, rows):
     """Write truth rows, each `(t_s, position_ned, velocity_ned, (roll, pitch, yaw))`.
 
-    Radians, metres, seconds on the replay's own clock. The bias columns are left blank:
+    Radians, meters, seconds on the replay's own clock. The bias columns are left blank:
     a real vehicle's reference knows its trajectory and no bias of the IMU being scored,
     and `examples/replay/main.rs` then reports `none` rather than scoring against a zero.
     """

@@ -178,7 +178,7 @@ pub enum Fusion {
     /// Fusing either would hand the gate an angle drawn from noise.
     ///
     /// Not the magnetometer's: (34) levels the field rather than reading the heading of body
-    /// x, and (36′) prices the levelling at any tilt, so a magnetic heading is fused through
+    /// x, and (36′) prices the leveling at any tilt, so a magnetic heading is fused through
     /// 125° of tilt on `285ee2e7`.
     Unobservable,
     /// A number in the measurement or its noise is NaN or infinite. The measurement was

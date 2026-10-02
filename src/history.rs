@@ -15,7 +15,7 @@ const CAPACITY: usize = 32;
 
 /// The least time between two entries, in microseconds: 10 ms. An IMU faster than 100 Hz is
 /// recorded every few samples, and the interpolation between them costs little: a 5 m/s²
-/// manoeuvre departs from a straight line by `a Δt² / 8`, 60 µm at 10 ms.
+/// maneuver departs from a straight line by `a Δt² / 8`, 60 µm at 10 ms.
 ///
 /// Compared in integer microseconds, because `f32` puts 0.3 s / 30 a hair above the 10 000 µs
 /// a 400 Hz IMU's fourth sample reaches, and the spacing would come out at 12.5 ms instead.

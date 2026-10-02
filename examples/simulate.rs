@@ -35,7 +35,7 @@
 //! Two files per scenario:
 //!
 //! - `<scenario>.csv` — the replay format `examples/replay/main.rs` documents, one row per
-//!   measurement, sorted by time. Positions are NED metres, so the log needs no origin and agrees
+//!   measurement, sorted by time. Positions are NED meters, so the log needs no origin and agrees
 //!   with truth by construction.
 //! - `<scenario>.truth.csv` — `t_s,pos_n,pos_e,pos_d,vel_n,vel_e,vel_d,roll,pitch,yaw,`
 //!   `ba_x,ba_y,ba_z,bg_x,bg_y,bg_z` at the IMU rate: the state a perfect filter would report at
@@ -95,7 +95,7 @@ fn gravity() -> f64 {
 }
 
 /// Where every scenario flies, latitude and longitude in degrees and ellipsoidal height in
-/// metres: east of Champaign, Illinois, chosen as the point where WMM2025 at 2026.0 gives the
+/// meters: east of Champaign, Illinois, chosen as the point where WMM2025 at 2026.0 gives the
 /// [`DECLINATION`] the scenarios fly, so the site and the declination agree. It needed
 /// choosing: `moving_start`'s `yaw` reads 1.71° rather than 1.46° with the
 /// field turned 7° east (at Zurich, PX4's SITL home), since the tilt that levels a first
@@ -478,7 +478,7 @@ struct ImuErrors {
 /// `ImuNoise::default()`'s white noise is ten times PX4's density, far above datasheet
 /// deliberately — its `Q` absorbs vibration, scale-factor error, timing jitter and the coning a
 /// first-order propagation drops. None of that is in this simulator, so matching those numbers here would be
-/// simulating PX4's modelling allowance rather than an IMU. The consequence for scoring is worth
+/// simulating PX4's modeling allowance rather than an IMU. The consequence for scoring is worth
 /// stating plainly: against this table the filter's white noise is two orders of magnitude
 /// conservative and its bias walks one, so every scenario should come out *under*-confident,
 /// and a consistency statistic that does not is a finding rather than a pass. [`HARSH_IMU`]
@@ -940,7 +940,7 @@ struct Scenario {
     /// corpus logs to. Printed into both files, since a CSV found on its own should say what it
     /// is for, and to the console, so the list lives in exactly one place.
     covers: &'static str,
-    /// Sequential; SplitMix64 is a mixer, so neighbouring seeds give unrelated streams.
+    /// Sequential; SplitMix64 is a mixer, so neighboring seeds give unrelated streams.
     seed: u64,
     duration: f64,
     imu_rate: f64,
@@ -1032,7 +1032,7 @@ fn circuit() -> Trajectory {
 /// three seconds twice a cycle and hand the harness a static window after all.
 ///
 /// The bank is what the turn requires — atan(v²/r / g) = atan(4.8/g) = 0.455 rad — so the attitude
-/// and the acceleration describe the same manoeuvre even though neither is derived from the other.
+/// and the acceleration describe the same maneuver even though neither is derived from the other.
 fn banked_turn() -> Trajectory {
     Trajectory {
         hold: 0.0,

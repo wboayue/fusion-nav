@@ -135,7 +135,7 @@ for target in "${THUMB_TARGETS[@]}"; do
         all) echo "$target $line"; continue ;;
         pin) pin "$target" "$line"; continue ;;
     esac
-    # Every line of the file labelled with this target, joined: one line per kind of figure
+    # Every line of the file labeled with this target, joined: one line per kind of figure
     # keeps the file readable and the comparison whole.
     expect=$(awk -v t="$target" '$1 == t { $1 = ""; print }' "$expectations" | tr '\n' ' ')
     [ -n "${expect// /}" ] || die "nothing pinned for $target in $expectations"

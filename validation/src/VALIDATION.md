@@ -14,7 +14,7 @@ disagree is shown with its cause, or marked as not yet explained.
 - **Error** is the true value minus the filter's estimate. **RMS** is its root mean square over
   a flight: a typical size, where the **max** is the single worst moment.
 - **The band.** Besides its estimate, the filter reports how uncertain it is (its covariance).
-  The figures draw that as a grey band of three standard deviations (±3σ) either side of zero.
+  The figures draw that as a gray band of three standard deviations (±3σ) either side of zero.
   An error inside the band is one the filter admitted to; an error outside it is one the filter
   did not see coming.
 - **Pessimistic** means the band is wider than the errors need, and **overconfident** means it
@@ -38,7 +38,7 @@ error, and the reported uncertainty covers it.
 
 {{figure mission error_position}}
 
-## [Honesty](validation/honesty.md): when it says "within a metre", is it?
+## [Honesty](validation/honesty.md): when it says "within a meter", is it?
 
 Tested over {{anees mission runs}} flights of each simulated scenario. The filter is pessimistic
 everywhere except where sensor errors persist longer than it assumes (#195).

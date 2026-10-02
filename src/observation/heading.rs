@@ -2,7 +2,7 @@
 //! angle rather than a field: a dual-antenna GNSS heading and the course constraint.
 //! Equations (36), (35′) and (35″).
 //!
-//! A magnetic heading forms its own innovation, (34)–(35), and prices its levelling, (36′);
+//! A magnetic heading forms its own innovation, (34)–(35), and prices its leveling, (36′);
 //! see `mag.rs`. What it shares with these is (36), the row that reads yaw out of the error
 //! state.
 
@@ -74,7 +74,7 @@ fn forward_heading(state: &State) -> f32 {
 
 /// A dual-antenna GNSS heading as the update reads it. Equation (35′).
 ///
-/// `y = wrap(ψ_m − ψ̂)`, `H` from (36), and `R` the caller's alone. Nothing here is levelled
+/// `y = wrap(ψ_m − ψ̂)`, `H` from (36), and `R` the caller's alone. Nothing here is leveled
 /// with the estimated attitude, so the (36′) a magnetic heading carries has no counterpart:
 /// the receiver measures the baseline's direction in the navigation frame directly.
 ///

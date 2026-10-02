@@ -13,7 +13,7 @@ while claiming to be right: [GNSS in a city](#gnss-in-a-city).
 ## How to read these figures
 
 Each scenario is the baseline `mission` circuit with one fault added. The orange line is the
-error, true value minus estimate; the grey band is ±3σ of the uncertainty the filter reported.
+error, true value minus estimate; the gray band is ±3σ of the uncertainty the filter reported.
 While the line stays inside the band, the filter knew how wrong it might be. The background
 shows the filter's `Status`, its one-word summary of its own health: yellow for `Degraded`,
 amber while it is still aligning at the start, red for `DeadReckoning`. The whole-flight numbers
@@ -108,7 +108,7 @@ on its IMU for {{summary urbannav-f9p/raw dead_reckoning_s}} s, reaching
 (position NEES {{score urbannav-f9p/raw nees_pos}} over the drive, where near 1 is honest).
 
 **The hostile receiver.** A single-frequency u-blox M8T reports an accuracy of 5 to 25 m while
-it is tens to hundreds of metres out, for a minute at a time.
+it is tens to hundreds of meters out, for a minute at a time.
 {{score urbannav-m8t/raw bad_gnss_pos}} of its {{score urbannav-m8t/raw offered_gnss_pos}}
 fixes are bad, and **the filter does not survive it**. It refuses only
 {{score urbannav-m8t/raw rejected_bad_gnss_pos}} of the bad fixes and, having followed the

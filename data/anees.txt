@@ -50,11 +50,11 @@
 #                    #195. #117.
 #
 # Three lines (24') rewrote from failing to passing, each on attitude, and only one of them for
-# its cause. `moving_start` (#150) was four magnetometer headings sharing one levelling tilt error
+# its cause. `moving_start` (#150) was four magnetometer headings sharing one leveling tilt error
 # in the 0.2 s after the heading adoption, priced by (36') as though independent: peak_att 1.80,
 # now 0.89, which is the failure itself removed. `harsh_imu` (#149) passed by a wider covariance
 # rather than a smaller error, and #149 then removed the cause: an accelerometer bias fixed at
-# 1.86 of a 0.1 m/s^2 prior on y, levelled in as tilt that a diagonal P0 called independent of
+# 1.86 of a 0.1 m/s^2 prior on y, leveled in as tilt that a diagonal P0 called independent of
 # the bias. The prior is now 0.2, PX4's and ArduPilot's, and (8) correlates the two. Fused as
 # white, where (24') cannot cover it: any_att=2281 and peak_att 2.22 before, 214 and 1.75 at the
 # wider prior alone, 0 and 1.54 with the correlation too. At the defaults peak_att 0.60 to 0.59

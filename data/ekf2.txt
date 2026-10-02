@@ -64,7 +64,7 @@
 # to 0.091 on cd7e0001; horizontal position follows, cd7e0001 px4 pos_n_rms
 # 1.53 to 0.87 m, 4b473e91 pos_e_rms 2.70 to 1.82, 3949f175 0.34 to 0.10.
 # 093e806a's raw rejections fall 278.8 s to 268.7 and its velocity's 16.1 to
-# 4.0, EKF2 rejecting no velocity. Two logs move away. 7ce66f0d, levelled
+# 4.0, EKF2 rejecting no velocity. Two logs move away. 7ce66f0d, leveled
 # wrong, px4 pos_n_rms 16.7 to 19.8 m with more lockout recoveries
 # (data/manifest.txt). a299e722 under raw R, 1.67 to 15.6 m east: its velocity
 # solutions, rejected almost continuously from 9 s, starve the position until

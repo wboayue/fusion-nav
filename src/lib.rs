@@ -64,7 +64,7 @@ pub use units::Quaternion;
 /// let broken = ImuSample::from_rates(at(802), spinning, gravity, dt);
 /// assert_eq!(filter.predict(broken), Propagation::NotFinite);
 ///
-/// // Two metres above the reference the window fixed. An altitude far from what the
+/// // Two meters above the reference the window fixed. An altitude far from what the
 /// // filter expects is `Fusion::Rejected` instead — the gate of (37) runs on every
 /// // measurement, and a 52 m step from a vehicle that has not moved does not pass it.
 /// let outcome = filter.fuse_baro_altitude(

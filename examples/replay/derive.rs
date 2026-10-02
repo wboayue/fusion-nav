@@ -128,7 +128,7 @@ struct Intervals {
     p999: f64,
     /// The longest interval below the first [`DROPOUT_STEP`].
     ordinary: f64,
-    /// The widest step between neighbouring sorted intervals among the ordinary ones, and the
+    /// The widest step between neighboring sorted intervals among the ordinary ones, and the
     /// step from the longest ordinary one to the shortest dropout, where there is one: the two
     /// figures [`DROPOUT_STEP`] sits between.
     widest_step: f64,

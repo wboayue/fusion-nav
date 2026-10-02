@@ -6,7 +6,7 @@ it is built, [EQUATIONS.md](EQUATIONS.md) what it computes, and [GLOSSARY.md](GL
 the words mean.
 
 > **Status:** every equation of `EQUATIONS.md` is built except two. Three-axis magnetometer
-> fusion, (31)–(33), is out of scope. (5′)'s in-motion levelling term is measured and reported
+> fusion, (31)–(33), is out of scope. (5′)'s in-motion leveling term is measured and reported
 > but not subtracted. Not built: #59.
 
 ## Architecture
@@ -392,7 +392,7 @@ need the factor:
 
 `gyro_white` at 0.7× improves `tilt` and `yaw` on every scenario, but `harsh_imu`'s `nees_att`
 crosses 1 (1.07), and `f16771dd` grows a 14.1° tilt at t = 51 s where EKF2 reads 2.6°. The
-simulator's IMU is 58 times quieter than this figure, so the scenarios favouring less gyroscope
+simulator's IMU is 58 times quieter than this figure, so the scenarios favoring less gyroscope
 noise state the simulator's preference, not an airframe's.
 
 **Against the floor the sensors measure**, `StaticWindow::noise`, on the worst axis of the nine
@@ -574,7 +574,7 @@ the five aligned statically, and the fifth, peak deviation 6.2 m s⁻², stayed 
 **`sigma_accel_bias`, 0.2 m/s².** At 0.1 the `harsh_imu` scenario's 0.186 m/s² sat at 1.86σ, and
 its attitude was overconfident on 50 seeds wherever (24′) did not inflate the covariance past it:
 2281 epochs over the family-wise bound at `Correlation::WHITE`, none at 0.2 with the
-correlation. On the corpus it is worth most on `7ce66f0d`, the hand launch levelled 12° wrong: when
+correlation. On the corpus it is worth most on `7ce66f0d`, the hand launch leveled 12° wrong: when
 measured, 28 recoveries against 69 at 0.1, and aligned at 17.7 s rather than 32.7.
 
 **The gyroscope bias at rest, the window's mean weighed against the prior.** Checked against
@@ -724,8 +724,8 @@ baseline everything later is compared against. Nominal propagation (9)–(15) mo
 in both directions, and separated `harsh_imu` from `mission`, neither of which a reading of the
 diff would have shown.
 
-**A key is pinned before the behaviour it counts exists.** `data/manifest.txt` matches the
-`summary` line and nothing else, so a behaviour with no key on that line lands entirely unpinned.
+**A key is pinned before the behavior it counts exists.** `data/manifest.txt` matches the
+`summary` line and nothing else, so a behavior with no key on that line lands entirely unpinned.
 A key whose value is trivially constant still fixes the baseline its first real value is read
 against, so a statistic is defined before there are values to put in it. `rejected=` read zero on
 every log while each `fuse_*` was a stub, and the first velocity fusion's 284 of one log's 609
