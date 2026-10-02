@@ -33,8 +33,8 @@ What the filter does, and where each decision's evidence lives:
 - **Health.** `Status` times each source against its own measured period; `DeadReckoning` reads
   horizontal GNSS alone. `Validity` and `predicted_validity` answer per quantity.
 - **Boundary.** No public item names an `nalgebra` type. `Eskf::new` validates `Config`, a refused
-  call commits nothing, and `src/eskf/adversarial.rs` holds both. Declination comes from PX4's WMM
-  table (`magnetic-model`) unless the caller sets one.
+  call commits nothing, and `src/eskf/adversarial.rs` holds both. Declination comes from a WMM2025
+  table `tools/declination.py` generates (`magnetic-model`) unless the caller sets one.
 
 Validation: thirteen PX4 logs (`data/manifest.txt`), the simulator's scenarios
 (`data/scenarios.txt`, and `data/anees.txt` for the covariance's honesty on 50 seeds), agreement
@@ -214,6 +214,12 @@ cargo clippy --all-targets --no-deps   # CI runs with RUSTFLAGS=-D warnings
 cargo build --lib --target thumbv7em-none-eabihf   # also thumbv6m-none-eabi; both gate CI
 panic-check/run.sh                # no reachable panic, both thumb targets; needs llvm-tools
 tools/check-anchors.sh            # every `.md#anchor` resolves; --self-test runs its fixtures
+uv run tools/declination.py       # regenerate src/magnetic.rs's table at the model and epoch it names
+uv run tools/declination.py --model WMM_2025 --epoch 2027.5   # at another; a new model needs its sha pinned
+uv run tools/declination.py --check   # the committed table is what it generates
+uv run tools/declination.py --drift [--at <year>] [log.csv ...]   # stale? corpus, INSANE and the ±60° grid
+uv run tools/declination.py --px4 ~/projects/PX4-Autopilot   # rebuild PX4's table, check the converter's copy
+python3 tools/declination.py --self-test   # its fixtures; CI
 cargo +1.89 build --lib           # MSRV
 
 tools/footprint.sh                # type sizes, stack frames, flash on both thumb targets vs data/footprint.txt; CI
@@ -777,8 +783,18 @@ the declination table, and CI builds and tests without it too.
 - `src/geodetic.rs` — `Geodetic` (f64 lat/lon/height) and `LocalOrigin`, the tangent plane of
   equations (43)–(44), exact via ECEF (fixed-iteration inverse, no data-dependent loops). The filter owns the origin: `fuse_gnss_geodetic` places it on the first
   fix (under the estimate of the antenna, or at the fix after a coarse start), a static start clears it.
-- `src/magnetic.rs` — PX4's WMM declination table and its lookup, behind the `magnetic-model`
-  feature; `Eskf::place_origin` reads it at every origin placement.
+- `src/magnetic.rs` — the WMM declination table and its bilinear lookup, behind the
+  `magnetic-model` feature; `Eskf::place_origin` reads it at every origin placement. The table
+  is generated, between marker comments, by `tools/declination.py`; never hand-edit it.
+  **It ages, so expect to regenerate it periodically**, about once per model: the grid within
+  60° of the equator drifts past GOALS.md's 1° near 2029.0, and NCEI replaces the model every
+  five years (WMM2030 is expected in December 2029). Run `--check` and `--drift` before each
+  release and regenerate on GOALS.md's rule ("Magnetic declination from a table"). A regeneration
+  moves `declination_model=` in `data/manifest.txt` and the INSANE pins, which replay under
+  `--declination model`, and nothing else: re-pin both (`--drift` refuses until the manifest
+  agrees with its lookup) and re-render the pages. The lookup exists twice, `declination_at` and
+  the script's `lookup`, and `rust_max=` is what ties them. The converter's copy in
+  `tools/ulog2replay.py` is PX4's table, not this one, and follows PX4.
 - `src/config.rs` — tuning. Each default's doc comment says where its number came from (a cited
   PX4/ArduPilot source, a replay measurement, or **placeholder**, as `Accuracy`'s are). Preserve
   that habit: a default justified by data says so, in a sentence, and `DESIGN.md`, "Defaults and
