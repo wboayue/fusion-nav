@@ -196,6 +196,7 @@ reads and commits.
 | ----- | ------------ | ----- |
 | `α₀`, barometric reference | mean of the window's barometer samples or, for a start that leaves none, the first altitude read against the estimate; then estimated as the offset of (30′) | `initialize` or the first `fuse_baro_altitude` seeds it and the filter refines it |
 | accelerometer and gyroscope white noise, as a floor | the scatter of the increments over 50 ms blocks of a still window; a still airframe's samples are not white, so one sample's scatter misreads the density, 6× high to 3× low on the corpus | `StaticWindow::noise`, reported and never applied |
+| `β̂_g,0` and its `σ_βg,0`, the gyroscope bias a still start takes | the window's mean rate weighed against `sigma_gyro_bias` by the variance of that mean, `N̂²/T` from the same blocks, plus the Earth's rotation, (7)–(8) | `initialize`, at the start only; the floor above is still never applied as noise |
 | barometer measurement noise, as a floor | the variance of a still window's distinct readings; fused as `R` it pushes `nis_baro` past 1 on five of six real logs | `StaticWindow::noise`, reported and never applied |
 | `max_predict_dt` | the IMU intervals up to the first fivefold step in their sorted tail, with 10 % margin, never below the default | offline, `--derive`; the default covers every corpus log |
 | `coast`, what a gap may hide | per field, twice the largest multiple of the default after which GNSS settles past each of a log's gaps | offline, `--derive`; the default is one VTOL log's figure |
@@ -834,11 +835,11 @@ could be argued back:
   itself: no recovery, and no fix after any of its eight gaps turned down.
 - **Truth scores it.** UrbanNav's M8T is wrong by tens to hundreds of metres for a minute
   at a time while claiming 5 to 25, and 338 of its 517 fixes fail their own `R` against SPAN-CPT.
-  With recovery the filter reads 258 m horizontal RMSE, and 12 of its 16 position recoveries end
-  a lockout of good fixes; with `Recovery::OFF` it rejects 499 of 517 fixes and reads 70 km
+  With recovery the filter reads 254 m horizontal RMSE, and 12 of its 16 position recoveries end
+  a lockout of good fixes; with `Recovery::OFF` it rejects 418 of 517 fixes and reads 408 m
   (`data/urbannav-pins.txt` pins both). Neither is a working filter, and the gate is not what
   could make one: setting `Config::gates` to every percentile from P99 to P99999 lands between
-  257 and 266 m with recovery on. A receiver whose error persists is followed a
+  236 and 257 m with recovery on. A receiver whose error persists is followed a
   fix at a time until the right fixes are the ones that disagree, which no threshold on one
   innovation can see.
 - **Report-and-stop handed every integrator the same loop.** The filter holds the timers, the
