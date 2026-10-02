@@ -387,7 +387,7 @@ measurement. The magnetometer must already be calibrated for hard and soft iron:
 the heading rather than on the field, and the filter widens it by the tilt it levelled with,
 equation (36′), but nothing in it can find a hard-iron offset. A dual-antenna heading is bounded
 the same way as a fix, `HeadingNoise::clamped` with PX4's or ArduPilot's floor. Heading is true once the
-declination is known. The filter reads it from PX4's World Magnetic Model table wherever it places
+declination is known. The filter reads it from a World Magnetic Model table wherever it places
 its origin, at the first geodetic fix, and turns a heading only the magnetometer has referred to
 north by the difference (the `magnetic-model` feature, on by default, about 2.5 KB of flash).
 `set_magnetic_declination` overrides it for good, and `Geodetic::magnetic_declination` is the
@@ -649,7 +649,7 @@ What is not a rename:
   `GPS1_MB_OFS_*`, stays the caller's subtraction: it is a constant angle, where an arm needs the
   filter's attitude and rate.
 * **Declination is looked up.** `EKF2_DECL_TYPE` bit 0 and `COMPASS_AUTODEC` are the filter's
-  default: PX4's table, read where the origin is placed. `EKF2_MAG_DECL` (degrees) and
+  default: a WMM table, read where the origin is placed. `EKF2_MAG_DECL` (degrees) and
   `COMPASS_DEC` (radians) are `set_magnetic_declination`, which the table never overrides. PX4
   re-reads its table every 10 s as the vehicle moves; this, like ArduPilot, reads it once.
 * **Height has one absolute.** GNSS height is the reference and the barometer's offset is

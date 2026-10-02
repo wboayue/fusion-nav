@@ -75,7 +75,7 @@ measurements together with their associated uncertainty.
 | `src/config.rs` | tuning; each default's doc comment says where its number came from or that it is a placeholder, and [Defaults and their evidence](#defaults-and-their-evidence) holds the measurements |
 | `src/units.rs`, `src/frames.rs` | typed quantities and the sealed `Ned` / `Enu` / `Body` frame markers |
 | `src/geodetic.rs` | `Geodetic` and `LocalOrigin`: the navigation origin the filter holds and the tangent plane about it, equations (43)–(44) |
-| `src/magnetic.rs` | PX4's WMM declination table and its lookup, behind the `magnetic-model` feature |
+| `src/magnetic.rs` | The WMM declination table `tools/declination.py` generates, and its lookup, behind the `magnetic-model` feature |
 | `src/display.rs` | `Fixed`, which prints an `f32` without core's float formatting and so without a panic path |
 | `src/lib.rs` | the crate root: `no_std` and the lint gates, and the prelude, the one list of public types, minus three names too generic to glob-import |
 
@@ -332,7 +332,7 @@ functions under LTO and counted there.
 
 A measurement dimension is what costs flash, not a source: `update::<1>`, which the barometer
 needs, costs 4.1 %, and the magnetic heading of (34)–(36), sharing it, 1204 bytes, 2.4 %.
-Measured by hand, and not pinned: the `magnetic-model` table is 1408 bytes of `.rodata` and its lookup 1096 of `.text` (1520 on
+Measured by hand, and not pinned: the `magnetic-model` table is 1408 bytes of `.rodata` and its lookup 1004 of `.text` (1488 on
 `thumbv7em`), about 2.5 KB, at `opt-level = "s"`; the same lookup in `f64` linked 4496 bytes of
 `.text` in software doubles.
 

@@ -690,7 +690,7 @@ impl Eskf {
     /// east-positive, the angle that turns a magnetic heading into a true one.
     ///
     /// Optional where the `magnetic-model` feature is on, as it is by default: the filter
-    /// reads the declination from PX4's World Magnetic Model table wherever it places its
+    /// reads the declination from a World Magnetic Model table wherever it places its
     /// [`origin`](Self::origin), and turns a heading only the magnetometer has referred to
     /// north along with it (see [`Geodetic::magnetic_declination`]). A value set here is the
     /// caller's and the model never overrides it; that is the call for a site the table

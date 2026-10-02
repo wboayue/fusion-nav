@@ -35,3 +35,4 @@ __pycache__/
 # distribute on arXiv, not to bundle in an MIT crate. reference/README.md says
 # what belongs here and how to re-fetch it.
 reference/*.pdf
+reference/*.zip

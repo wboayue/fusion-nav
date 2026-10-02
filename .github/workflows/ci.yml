@@ -35,6 +35,9 @@ jobs:
       # checked by `cargo test --doc`, through the `include_str!` in `src/lib.rs`.
       - run: tools/check-anchors.sh --self-test
       - run: tools/check-anchors.sh
+      # The declination generator's fixtures, stdlib only: generating needs `pygeomag` and is
+      # local, but a broken reader or lookup would misreport `--drift` with nothing to notice.
+      - run: python3 tools/declination.py --self-test
 
   test:
     name: test
