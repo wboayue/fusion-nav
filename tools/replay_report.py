@@ -736,11 +736,11 @@ def state_figure(group, epochs, reference, truth, backdrop):
                 plot.fill_between(t, y - spread, y + spread, color="#1b1b1b",
                                   alpha=0.12, linewidth=0, label="+/-3 sigma")
             plot.plot(t, y, "-", color="#1b1b1b", linewidth=0.9, label="fusion-nav")
-            for other, colour, label in ((reference, "#3a7ca5", "EKF2"),
+            for other, color, label in ((reference, "#3a7ca5", "EKF2"),
                                          (truth, "#c05a2f", "truth")):
                 series = (other or {}).get(column)
                 if series is not None:
-                    plot.plot(series[0], series[1], "-", color=colour,
+                    plot.plot(series[0], series[1], "-", color=color,
                               linewidth=0.9, alpha=0.85, label=label)
             plot.set_ylabel(f"{column} ({unit})", fontsize=8)
             plot.grid(alpha=0.25)
@@ -768,12 +768,12 @@ def attitude_figure(ours, reference, truth, backdrop, resets):
         for plot, name in zip(axes, ("tilt", "heading")):
             backdrop.draw(plot)
             style = ("-", {"linewidth": 0.9}) if name == "tilt" else (".", {"markersize": 1.2})
-            for series, colour, label in ((ours, "#1b1b1b", "fusion-nav"),
+            for series, color, label in ((ours, "#1b1b1b", "fusion-nav"),
                                           (reference, "#3a7ca5", "EKF2"),
                                           (truth, "#c05a2f", "truth")):
                 trace = (series or {}).get(name)
                 if trace is not None and len(trace[0]):
-                    plot.plot(trace[0], np.degrees(trace[1]), style[0], color=colour,
+                    plot.plot(trace[0], np.degrees(trace[1]), style[0], color=color,
                               alpha=0.85, label=label, **style[1])
             for when in resets:
                 plot.axvline(when, color="#3a7ca5", linestyle=":", linewidth=1.0)

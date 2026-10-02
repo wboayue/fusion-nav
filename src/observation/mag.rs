@@ -92,8 +92,7 @@ pub(crate) fn heading_observation(
     let down = h
         .fixed_view::<1, 3>(0, ErrorState::AttitudeX.index())
         .transpose();
-    let r_m =
-        SVector::<f32, 1>::new(noise.variance() + levelling_variance(covariance, field, down));
+    let r_m = SVector::<f32, 1>::new(noise.variance() + leveling_variance(covariance, field, down));
     Observation {
         y: SVector::<f32, 1>::new(heading_innovation(state, field, declination)),
         h,
@@ -131,7 +130,7 @@ pub(crate) fn heading_observation(
 /// Zero where the field is horizontal — nothing to tip — and zero where
 /// [`heading_sensitivity`](crate::init::heading_sensitivity) refuses a field with no
 /// horizontal part at all, which observes no heading for the tilt to spoil.
-fn levelling_variance(covariance: &Covariance, field: MagField<Body>, down: Vector3<f32>) -> f32 {
+fn leveling_variance(covariance: &Covariance, field: MagField<Body>, down: Vector3<f32>) -> f32 {
     let Some(sensitivity) = init::heading_sensitivity(field, down) else {
         return 0.0;
     };
@@ -283,7 +282,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_innovation_is_the_levelled_heading_less_the_estimated_yaw() {
+    fn the_innovation_is_the_leveled_heading_less_the_estimated_yaw() {
         // (35) and (6) are one computation: `R(q̂) = Rz(ψ̂) R₀`, so this innovation is
         // `wrap(ψ_mag − ψ̂)` exactly. Pinned because the two are written separately — a
         // declination sign or a wrap convention that drifts in one shows up here.
@@ -293,7 +292,7 @@ pub(crate) mod tests {
         let declination = Radians::from_radians(-0.06);
 
         let (roll, pitch, yaw) = estimate.euler_angles();
-        let levelled = heading_from_mag(
+        let leveled = heading_from_mag(
             field,
             Radians::from_radians(roll),
             Radians::from_radians(pitch),
@@ -302,9 +301,9 @@ pub(crate) mod tests {
 
         let innovation = heading_innovation(&state_at(estimate), field, declination);
         assert!(
-            (innovation - wrap_pi(levelled.as_radians() - yaw)).abs() < 1e-5,
+            (innovation - wrap_pi(leveled.as_radians() - yaw)).abs() < 1e-5,
             "(35) gave {innovation}, (6) less the estimated yaw gave {}",
-            wrap_pi(levelled.as_radians() - yaw)
+            wrap_pi(leveled.as_radians() - yaw)
         );
     }
 
@@ -381,7 +380,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_levelling_variance_is_the_dip_squared_times_the_tilt_variance() {
+    fn the_leveling_variance_is_the_dip_squared_times_the_tilt_variance() {
         // (36′) at the dip the corpus carries: tan(1.107) = 2.0, so a tilt σ of 0.02 rad
         // is worth 0.04 of heading and four times the tilt's own variance. That factor
         // is why the term is not negligible against a magnetometer's own noise.
@@ -402,7 +401,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_horizontal_field_has_no_levelling_error_to_price() {
+    fn a_horizontal_field_has_no_leveling_error_to_price() {
         // Dip zero: the field lies in the horizontal plane, so tipping it about a
         // horizontal axis turns its horizontal part by nothing to first order. (36′) is
         // free exactly where the geometry says it should be, which a constant inflation
@@ -478,7 +477,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_levelling_variance_prices_the_worst_horizontal_axis() {
+    fn the_leveling_variance_prices_the_worst_horizontal_axis() {
         // The largest eigenvalue of the north/east block, found here by rotating `P` onto
         // navigation axes and decomposing it — the long way round the code does not take.
         // The field lies 1.1 rad from the axis tilt is least certain about, so pricing the
@@ -512,23 +511,23 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_levelling_variance_does_not_depend_on_where_the_vehicle_points() {
+    fn the_leveling_variance_does_not_depend_on_where_the_vehicle_points() {
         // One vehicle, one covariance, one field in body axes, turned about down through
         // five yaws spanning the circle with the field turning with it: nothing the magnetometer or the
         // filter holds has changed, only the heading of both. The larger of the north and
         // east diagonals fails this, since turning an anisotropic tilt block through yaw
         // moves variance between them — the axis choice that moved `f16771dd`'s
         // `nu_mag_yaw` with nothing about the log changing.
-        let levelling = |yaw: f32| {
+        let leveling = |yaw: f32| {
             let attitude = attitude_of(0.3, -0.4, yaw);
             let covariance = anisotropic(&attitude_of(0.3, -0.4, 0.0));
             // The same body-frame block at every yaw: `anisotropic` rotated onto yaw zero.
             let field = measured(attitude, yaw + 1.7);
-            levelling_variance(&covariance, field, down_of(attitude))
+            leveling_variance(&covariance, field, down_of(attitude))
         };
-        let at_zero = levelling(0.0);
+        let at_zero = leveling(0.0);
         for yaw in [0.5, 1.3, 2.9, -2.2, -0.7] {
-            let turned = levelling(yaw);
+            let turned = leveling(yaw);
             assert!(
                 (turned - at_zero).abs() < 1e-5 * at_zero,
                 "at yaw {yaw} the price is {turned} against {at_zero}"
@@ -537,14 +536,14 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn on_its_tail_the_levelling_reads_tilt_and_not_heading() {
+    fn on_its_tail_the_leveling_reads_tilt_and_not_heading() {
         // Pitched 90° nose-up, body x is navigation up: the body x and y variances (36′)
         // once read are heading's and one tilt's. How uncertain heading is has nothing to
         // do with how badly the field was leveled.
         let attitude = attitude_of(0.0, core::f32::consts::FRAC_PI_2, 0.3);
         let field = measured(attitude, 0.0);
         let down = down_of(attitude);
-        let levelling = |heading: f32| {
+        let leveling = |heading: f32| {
             let block = AttitudeVariance {
                 tilt_north: 1e-3,
                 tilt_east: 1e-3,
@@ -554,9 +553,9 @@ pub(crate) mod tests {
             let mut p = crate::state::CovarianceMatrix::identity();
             let theta = ErrorState::AttitudeX.index();
             p.fixed_view_mut::<3, 3>(theta, theta).copy_from(&block);
-            levelling_variance(&Covariance::from_matrix(p), field, down)
+            leveling_variance(&Covariance::from_matrix(p), field, down)
         };
-        let (tight, loose) = (levelling(1e-4), levelling(0.5));
+        let (tight, loose) = (leveling(1e-4), leveling(0.5));
         assert!(tight > 0.0, "a dipping field has a leveling error to price");
         assert!(
             (tight - loose).abs() < 1e-6 * tight.max(1e-9) + 1e-9,
