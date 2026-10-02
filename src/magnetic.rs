@@ -178,11 +178,17 @@ pub(crate) fn declination_at(site: Geodetic) -> Option<Radians> {
     if longitude < -180.0 {
         longitude += 360.0;
     }
-    let longitude = longitude.clamp(-180.0, 180.0);
+    interpolate(&TABLE, latitude, longitude.clamp(-180.0, 180.0))
+}
 
-    let (row, north) = cell(latitude + 90.0, TABLE.len());
-    let (column, east) = cell(longitude + 180.0, TABLE[0].len());
-    let (south_row, north_row) = (TABLE.get(row)?, TABLE.get(row + 1)?);
+/// Bilinear interpolation in `table` at a latitude in ±90° and a longitude in ±180°, each
+/// corner taken within half a turn of the south-west one, and the answer wrapped into ±180°.
+/// A function of the table so the tests can hand it cells either side of the turn, which the
+/// generated one holds only near the magnetic poles.
+fn interpolate(table: &[[i16; 37]; 19], latitude: f32, longitude: f32) -> Option<Radians> {
+    let (row, north) = cell(latitude + 90.0, table.len());
+    let (column, east) = cell(longitude + 180.0, table[0].len());
+    let (south_row, north_row) = (table.get(row)?, table.get(row + 1)?);
     let corner = |line: &[i16; 37], at: usize| line.get(at).map(|&v| f32::from(v));
     let sw = corner(south_row, column)?;
     // Each corner within half a turn of the south-west one. Near the magnetic poles neighbouring
@@ -273,6 +279,28 @@ mod tests {
         let off = (got - -173.3 + 180.0).rem_euclid(360.0) - 180.0;
         assert!(off.abs() < 2.5, "{got} against -173.3");
         assert!(got.abs() <= 180.0);
+    }
+
+    /// Cells either side of the turn, on a table holding nothing else: halfway between 179°
+    /// and −179° is 180°, whichever of the two is the south-west corner, and an answer past
+    /// 180° comes back wrapped. A one-sided unwrap fails one direction; no final wrap, the last.
+    #[test]
+    fn interpolation_crosses_the_turn_in_either_direction_and_wraps() {
+        let across = |sw: i16, rest: i16, latitude: f32, longitude: f32| {
+            let mut table = [[0; 37]; 19];
+            table[0][0] = sw;
+            (table[0][1], table[1][0], table[1][1]) = (rest, rest, rest);
+            interpolate(&table, latitude, longitude)
+                .map(|d| d.as_radians().to_degrees())
+                .unwrap_or(f32::NAN)
+        };
+        for (sw, rest) in [(17_900, -17_900), (-17_900, 17_900)] {
+            let got = across(sw, rest, -90.0, -175.0);
+            assert!((got.abs() - 180.0).abs() < 1e-3, "{sw} to {rest}: {got}");
+        }
+        // 179° to −178° at three quarters of the way east: 181.25°, which is −178.75°.
+        let got = across(17_900, -17_800, -90.0, -172.5);
+        assert!((got - -178.75).abs() < 1e-3, "{got}");
     }
 
     #[test]
