@@ -1432,12 +1432,12 @@ pub(crate) fn heading_from_mag(
     declination: Radians,
 ) -> Radians {
     // R₀ = R_y(θ₀) R_x(φ₀), which is the ZYX composition of (7) with its yaw set to zero.
-    let levelled =
+    let leveled =
         Rotation3::from_euler_angles(roll.as_radians(), pitch.as_radians(), 0.0) * field.vector();
     // Wrapped because `D_m − atan2(·)` reaches π + |D_m|, and (7) is read back as Euler
     // angles that a test compares against a heading in range.
     Radians::from_radians(wrap_pi(
-        declination.as_radians() - RealField::atan2(levelled.y, levelled.x),
+        declination.as_radians() - RealField::atan2(leveled.y, leveled.x),
     ))
 }
 
@@ -2228,7 +2228,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn levelling_recovers_the_tilt_gravity_was_rotated_by() {
+    fn leveling_recovers_the_tilt_gravity_was_rotated_by() {
         for (roll, pitch) in TILTS {
             // A yaw the answer must not depend on: gravity says nothing about rotation
             // about itself, so `Rz(ψ)ᵀ` leaves the specific force where it was.
@@ -2260,7 +2260,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn heading_survives_the_tilt_it_is_levelled_by() {
+    fn heading_survives_the_tilt_it_is_leveled_by() {
         // The test that fails if the leveling is dropped: a field synthesized for a
         // known yaw at a tilt that is not zero must still give that yaw back.
         const DECLINATION: f32 = -0.06;
@@ -2281,26 +2281,26 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn an_unlevelled_heading_is_wrong_by_the_dip() {
+    fn an_unleveled_heading_is_wrong_by_the_dip() {
         // What the leveling is worth, and why a zero-tilt test proves nothing: at 10°
         // of roll the raw body field gives a heading 19° from the true one, because the
         // dip leans into the horizontal axes. `tan(1.107)` is 1.96.
         let roll = 10.0f32.to_radians();
         let field = field_at(roll, 0.0, 0.0, 0.0).vector();
-        let unlevelled = RealField::atan2(field.y, field.x);
+        let unleveled = RealField::atan2(field.y, field.x);
         assert!(
-            (unlevelled.to_degrees().abs() - 19.1).abs() < 0.1,
+            (unleveled.to_degrees().abs() - 19.1).abs() < 0.1,
             "expected about 19 deg of error, got {}",
-            unlevelled.to_degrees()
+            unleveled.to_degrees()
         );
 
-        let levelled = heading_from_mag(
+        let leveled = heading_from_mag(
             MagField::from_vector(field),
             Radians::from_radians(roll),
             Radians::ZERO,
             Radians::ZERO,
         );
-        assert!(levelled.as_radians().abs() < 1e-6, "{levelled:?}");
+        assert!(leveled.as_radians().abs() < 1e-6, "{leveled:?}");
     }
 
     #[test]
@@ -2591,7 +2591,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_window_charges_its_heading_the_tilt_it_levelled_by() {
+    fn a_window_charges_its_heading_the_tilt_it_leveled_by() {
         // The dip couples them: (6) levels the field by the tilt of (5), so a tilt this
         // window cannot vouch for is a heading error scaled by `tan(dip)`. Steady
         // unexplained specific force rather than a turn, so that the halves agree and the

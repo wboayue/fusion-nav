@@ -244,7 +244,7 @@ def rtk_velocity(rows, times, t, limit_ns=300_000_000):
     return tuple(x + f * (y - x) for x, y in zip(a[4:7], b[4:7]))
 
 
-def imu_velocity(centre, world_body, omega, arm):
+def imu_velocity(center, world_body, omega, arm):
     """The IMU's velocity from the vehicle center's: `v + R (w x r)`, `r` center to IMU.
 
     The center is the RTK baseline's midpoint, so its velocity is the two receivers' mean
@@ -252,7 +252,7 @@ def imu_velocity(centre, world_body, omega, arm):
     (17 deg at rest on `outdoor_1`) out of the velocity.
     """
     lever = rotate(world_body, cross(omega, arm))
-    return tuple(v + dv for v, dv in zip(centre, lever))
+    return tuple(v + dv for v, dv in zip(center, lever))
 
 
 def site_reference(archive, sequence):
@@ -341,8 +341,8 @@ def convert(directory, sequence, out, truth_out):
             continue
         position, q = pose
         world_body = quaternion_matrix(*q)  # east-north-up from forward-left-up
-        centre = tuple((a + b) / 2 for a, b in zip(v1, v2))
-        velocity = imu_velocity(centre, world_body, omega, arm)
+        center = tuple((a + b) / 2 for a, b in zip(v1, v2))
+        velocity = imu_velocity(center, world_body, omega, arm)
         attitude = euler(matmul(matmul(ENU_TO_NED, world_body), FLU_TO_FRD))
         truth_rows.append(((t + lag - t0) * 1e-9, ned(position),
                            rotate(ENU_TO_NED, velocity), attitude))

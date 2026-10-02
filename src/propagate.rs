@@ -1010,7 +1010,7 @@ mod tests {
     }
 
     /// Maneuvering hard enough that `[a_b]ₓ` and `[ω]ₓ` are both far from zero.
-    fn manoeuvring() -> ImuSample {
+    fn maneuvering() -> ImuSample {
         ImuSample::reading(
             AngularRate::body(0.15, -0.23, 0.31),
             Acceleration::body(0.8, -1.3, -9.2),
@@ -1071,7 +1071,7 @@ mod tests {
     /// rate read over the sum is the rates' interval-weighted mean.
     #[test]
     fn two_samples_accumulate_into_one_over_both_intervals() {
-        let first = manoeuvring().timed(Timestamp::from_micros(2_500), Seconds::from_secs(0.0025));
+        let first = maneuvering().timed(Timestamp::from_micros(2_500), Seconds::from_secs(0.0025));
         let second = ImuSample::reading(
             AngularRate::body(0.0, 0.0, 1.0),
             Acceleration::body(0.0, 0.0, -9.8),
@@ -1095,7 +1095,7 @@ mod tests {
     fn the_error_dynamics_are_the_transition_matrix_per_unit_time() {
         let dt = Seconds::from_secs(0.001);
         let state = tilted_and_moving();
-        let imu = corrected_imu(manoeuvring().timed(Timestamp::ZERO, dt), &state);
+        let imu = corrected_imu(maneuvering().timed(Timestamp::ZERO, dt), &state);
         let omega = imu.omega().vector();
         let a_b = imu.delta_velocity.vector() / dt.as_secs();
 
@@ -1118,7 +1118,7 @@ mod tests {
         const DELTA: f32 = 1.0e-3;
         const TOLERANCE: f32 = 2.0e-3;
         let dt = Seconds::from_secs(0.01);
-        let (state, imu) = (tilted_and_moving(), manoeuvring());
+        let (state, imu) = (tilted_and_moving(), maneuvering());
 
         let f = transition_matrix(
             &state,
@@ -1241,7 +1241,7 @@ mod tests {
                 state,
                 covariance,
                 Offset::default(),
-                manoeuvring().timed(Timestamp::ZERO, dt),
+                maneuvering().timed(Timestamp::ZERO, dt),
                 &under(noise, 0.0),
             );
             (state, covariance) = (step.state, step.covariance);
@@ -1389,7 +1389,7 @@ mod tests {
             tilted_and_moving(),
             enormous,
             Offset::default(),
-            manoeuvring().timed(Timestamp::ZERO, Seconds::from_secs(0.005)),
+            maneuvering().timed(Timestamp::ZERO, Seconds::from_secs(0.005)),
             &under(ImuNoise::default(), 0.0),
         );
 

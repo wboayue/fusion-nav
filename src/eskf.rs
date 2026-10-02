@@ -4835,7 +4835,7 @@ mod tests {
     }
 
     #[test]
-    fn a_static_window_commits_the_attitude_it_levelled() {
+    fn a_static_window_commits_the_attitude_it_leveled() {
         // Equations (5)–(7) are `init`'s to test; this is that the filter starts at the
         // attitude they computed rather than level.
         let mut filter = Eskf::default();
@@ -5032,7 +5032,7 @@ mod tests {
     }
 
     #[test]
-    fn one_sample_is_levelled_like_a_window_of_one() {
+    fn one_sample_is_leveled_like_a_window_of_one() {
         let mut filter = Eskf::default();
         let _ = filter
             .initialize_coarse(still().imu.with_accel(gravity_at(0.0, 0.35, 0.0)))

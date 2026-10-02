@@ -1452,7 +1452,7 @@ Each implementing function cites its equation numbers in a doc comment.
 | (30′) | barometric offset | `state.rs`, `update.rs`, `propagate.rs` | `Offset`; `update`'s blocks; `propagate_offset`; `Eskf::establish_reference` |
 | (31)–(33) | magnetometer, three-axis | — | unbuilt and [out of scope](GOALS.md#magnetometer-without-magnetic-field-states); no `field_jacobian` exists |
 | (34)–(36) | magnetometer, heading only | `observation/mag.rs`, `observation/heading.rs` | `heading_innovation`, `heading_observation`; `heading_jacobian` in `heading.rs`, shared by every heading source |
-| (36′) | leveling variance | `observation/mag.rs` | `levelling_variance`, with `tan δ` and `f̂_b` from `init.rs`'s `heading_sensitivity` |
+| (36′) | leveling variance | `observation/mag.rs` | `leveling_variance`, with `tan δ` and `f̂_b` from `init.rs`'s `heading_sensitivity` |
 | (35′) | dual-antenna GNSS heading | `observation/heading.rs` | `gnss_observation`, `has_heading`; committed by `Eskf::fuse_gnss_heading` |
 | (35″) | course constraint | `observation/heading.rs` | `course_observation`, `course_variance`; committed by `Eskf::fuse_course` |
 | (37) `γ` | gate thresholds | `config.rs` | `Gate::at`, `Gate::new`, `Gates::at` |

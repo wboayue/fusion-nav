@@ -414,8 +414,8 @@ def lateness(t, utc):
     lag = [int(t[k]) - int(utc[k]) for k in valid]
     half = LATENESS_WINDOW // 2
     for i, k in enumerate(valid):
-        centre = min(max(i, half), len(valid) - 1 - half)
-        window = sorted(lag[centre - half:centre + half + 1])
+        center = min(max(i, half), len(valid) - 1 - half)
+        window = sorted(lag[center - half:center + half + 1])
         late[k] = lag[i] - window[half] if abs(lag[i] - window[half]) <= LATENESS_CAP else 0
     return late
 
