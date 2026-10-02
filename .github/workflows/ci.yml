@@ -35,6 +35,11 @@ jobs:
       # checked by `cargo test --doc`, through the `include_str!` in `src/lib.rs`.
       - run: tools/check-anchors.sh --self-test
       - run: tools/check-anchors.sh
+      # The page renderer's fixtures, stdlib only, and the one page that needs no replay:
+      # validation/cost.md shows data/footprint.txt's pins, so a re-pin left off it fails here
+      # rather than behind the footprint job's nightly build (validation/README.md).
+      - run: python3 tools/validation.py --self-test
+      - run: python3 tools/validation.py check validation/src target/validation . --only cost.md
       # The declination generator's fixtures, stdlib only: generating needs `pygeomag` and is
       # local, but a broken lookup, log reader or drift maximum would misreport `--drift` with
       # nothing else to notice.

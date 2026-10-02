@@ -4,6 +4,7 @@
     tools/validation.py draw <src> <runs> <root>      draw every figure a page places, in parallel
     tools/validation.py render <src> <runs> <root>    write the pages; print each path written
     tools/validation.py check <src> <runs> <root>     fail if the committed pages or figures differ
+    ... render|check <src> <runs> <root> --only <page>    one template, its text alone
     tools/validation.py --self-test                   run the fixtures
 
 A page under `validation/src/` is Markdown with placeholders, and every number and figure on
@@ -18,6 +19,8 @@ run that produced it:
     {{score urbannav-m8t/raw bad_gnss_pos}}   an UrbanNav run's, per receiver and R policy
     {{score insane-mars_1/raw pos_h}}  an INSANE run's, per sequence and R policy
     {{seed mission}}                   the seed data/scenarios.txt pins for that scenario
+    {{footprint thumbv6m-none-eabi size.eskf.Eskf}}   a figure data/footprint.txt pins for it
+    {{footprint toolchain}}            the nightly tools/footprint.sh measures with
     {{count scenarios}}                how many runs a list names (lists below)
     {{table score mission,static pos_h,pos_v}}   one row per run, one column per key
     {{figure mission error_position}}  a figure tools/replay_report.py drew, with its caption
@@ -33,6 +36,11 @@ covers every run, it names a list rather than spelling the runs out, so a scenar
 to the gates reaches the page without an edit here: `@scenarios` is data/scenarios.txt,
 `@anees` data/anees.txt, and `@corpus/raw` or `@corpus/px4` every data/manifest.txt log under
 that policy, each in its file's order.
+
+A `footprint` placeholder reads the repository, not a run: data/footprint.txt is what CI's
+footprint job measures and asserts exactly, so a page placing only those needs no replay, and
+`--only` renders or checks it alone (validation/README.md, "The cost page"). `--only` compares
+the page's text and nothing else; orphaned pages and figures are the whole run's to find.
 
 A placeholder naming a run, key or figure that does not exist is refused rather than rendered
 empty, and so is a `{{` left in the page because it was malformed: a missing key is how a
@@ -103,7 +111,9 @@ class Runs:
     its stdout, `<runs>/anees/<name>.{anees,csv}` its ensemble, `<runs>/compare/` what
     data/fetch.sh --compare wrote, `<runs>/<dataset>/<name>.<policy>.out` what
     data/urbannav.sh or data/insane.sh did (`TRUTH_DATASETS`), `<runs>/figures/<run>/<slug>.{png,md}` a figure and its
-    caption, and `<runs>/commit` the build.
+    caption, and `<runs>/commit` the build. Two files are the repository's rather than a run's:
+    data/footprint.txt's pins and the nightly tools/footprint.sh measures them on, its
+    `TOOLCHAIN=`, which is all a `footprint` placeholder reads.
     """
 
     def __init__(self, runs, root):
@@ -120,6 +130,17 @@ class Runs:
                 for words in first_fields(self.root / "data/manifest.txt")]
         for policy in ("raw", "px4"):
             self.lists[f"@corpus/{policy}"] = [f"{log[:8]}/{policy}" for log in logs]
+        self.footprint = {}
+        footprint = self.root / "data/footprint.txt"
+        if footprint.exists():
+            for words in first_fields(footprint):
+                self.footprint.setdefault(words[0], {}).update(pairs(" ".join(words[1:])))
+        script = self.root / "tools/footprint.sh"
+        self.toolchain = None
+        if script.exists():
+            for line in script.read_text().splitlines():
+                if line.startswith("TOOLCHAIN="):
+                    self.toolchain = line.split("=", 1)[1].strip()
         self.agreement = {}
         agreement = self.runs / "compare/agreement.txt"
         if agreement.exists():
@@ -206,6 +227,17 @@ def expand(kind, args, runs, page):
         if args[0] not in runs.seeds:
             raise ValueError(f"no seed for `{args[0]}` in data/scenarios.txt")
         return runs.seeds[args[0]]
+    if kind == "footprint" and args == ["toolchain"]:
+        if runs.toolchain is None:
+            raise ValueError("tools/footprint.sh pins no `TOOLCHAIN=`")
+        return runs.toolchain
+    if kind == "footprint" and len(args) == 2:
+        target, key = args
+        if target not in runs.footprint:
+            raise ValueError(f"data/footprint.txt pins nothing for `{target}`")
+        if key not in runs.footprint[target]:
+            raise ValueError(f"data/footprint.txt pins no `{key}` for `{target}`")
+        return runs.footprint[target][key]
     if kind == "count" and len(args) == 1:
         return str(len(runs.names(args[0])))
     if kind == "table" and len(args) == 3:
@@ -260,10 +292,21 @@ def render(text, runs, page):
             + body)
 
 
-def render_all(src, runs):
-    """`{published path: text}` for every template under `src`."""
+def templates(src, only=None):
+    """The templates under `src`, or the one `only` names, refused if there is none."""
+    pages = sorted(Path(src).glob("*.md"))
+    if only is None:
+        return pages
+    pages = [p for p in pages if p.name == only]
+    if not pages:
+        raise ValueError(f"no template `{only}` under {src}")
+    return pages
+
+
+def render_all(src, runs, only=None):
+    """`{published path: text}` for every template under `src`, or the one `only` names."""
     return {published(p): render(p.read_text(), runs, str(published(p)))
-            for p in sorted(Path(src).glob("*.md"))}
+            for p in templates(src, only)}
 
 
 def draw(src, runs, jobs):
@@ -293,15 +336,16 @@ def without_stamp(text):
     return [line for line in text.splitlines() if not line.startswith(STAMP)]
 
 
-def check(src, runs, root):
+def check(src, runs, root, only=None):
     """Every difference between what is committed and what this build renders, as messages.
 
     Text is compared, the stamp aside; figures are checked present and nothing more, since
     matplotlib's PNG bytes are not stable across builds. Orphans count too: a page no template
-    produces, or a figure no page places, is stale evidence that reads as current.
+    produces, or a figure no page places, is stale evidence that reads as current. With `only`,
+    that page's text alone.
     """
     root, problems = Path(root), []
-    pages = render_all(src, runs)
+    pages = render_all(src, runs, only)
     for path, text in pages.items():
         committed = root / path
         if not committed.exists():
@@ -312,6 +356,8 @@ def check(src, runs, root):
                                          lineterm=""))
         if diff:
             problems.append("\n".join(diff))
+    if only is not None:
+        return problems
     written = {Path(p) for p in pages}
     for page in sorted([Path("VALIDATION.md")] + [p.relative_to(root)
                        for p in (root / "validation").glob("*.md")]):
@@ -334,12 +380,13 @@ def self_test():
         if got != want:
             failures.append(f"{name}: got {got!r}, want {want!r}")
 
-    def refused(name, action):
+    def refused(name, action, because=None):
         try:
             action()
             failures.append(f"{name}: accepted")
-        except ValueError:
-            pass
+        except ValueError as e:
+            if because is not None and because not in str(e):
+                failures.append(f"{name}: refused for another reason: {e}")
 
     with tempfile.TemporaryDirectory() as tmp:
         root, out = Path(tmp) / "repo", Path(tmp) / "runs"
@@ -366,6 +413,16 @@ def self_test():
         (out / "figures/mission").mkdir(parents=True)
         (out / "figures/mission/error_position.md").write_text("Position error.\n")
         (out / "commit").write_text("abc1234\n")
+        (root / "data/footprint.txt").write_text(
+            "# header\nthumbv6m-none-eabi size.eskf.Eskf=3776 text.3=167578\n"
+            "thumbv6m-none-eabi frame.update.update.3=8088\n"
+            "thumbv7em-none-eabihf size.eskf.Eskf=3784\n")
+        (root / "tools").mkdir()
+        # Read as bash would: the last assignment wins, a comment naming the variable is not one,
+        # and trailing blanks are not part of the name.
+        (root / "tools/footprint.sh").write_text(
+            "set -e\nTOOLCHAIN=nightly-2026-01-01\nTOOLCHAIN=nightly-2026-08-06  \n"
+            "# a re-pin follows any TOOLCHAIN=change\n")
         runs = Runs(out, root)
 
         def rendered(text, page="validation/accuracy.md"):
@@ -383,6 +440,13 @@ def self_test():
         # A sequence name carrying an underscore, and a dataset other than the first.
         expect("insane score", rendered("{{score insane-mars_1/raw pos_h}}"), "1.929")
         expect("seed", rendered("{{seed mission}}"), "2")
+        expect("footprint", rendered("{{footprint thumbv6m-none-eabi size.eskf.Eskf}}"), "3776")
+        # A target's figures span lines, and each target reads its own: the two `Eskf` differ.
+        expect("footprint, a target's second line",
+               rendered("{{footprint thumbv6m-none-eabi frame.update.update.3}}"), "8088")
+        expect("footprint, the other target",
+               rendered("{{footprint thumbv7em-none-eabihf size.eskf.Eskf}}"), "3784")
+        expect("toolchain", rendered("{{footprint toolchain}}"), "nightly-2026-08-06")
         expect("count of a list", rendered("{{count @scenarios}}"), "2")
         expect("count of the corpus", rendered("{{count @corpus/raw}}"), "1")
         expect("table", rendered("{{table score mission pos_h}}"),
@@ -422,9 +486,18 @@ def self_test():
             ("a capital", "{{Score mission pos_h}}"),
             ("a missing brace", "{{score mission pos_h}"),
             ("a kind with a dash", "{{ score-x mission }}"),
+            ("a key the target lacks", "{{footprint thumbv7em-none-eabihf text.3}}"),
+            ("a target not pinned", "{{footprint thumbv8m size.eskf.Eskf}}"),
         ]:
             refused(name, lambda text=text: render(text, runs, "validation/accuracy.md"))
         refused("drawing no scenario", lambda: runs.draw_command("hover", ["a"]))
+        # A footprint takes a target and a key, or `toolchain`; any other count is no placeholder,
+        # rather than a split that happens to fail.
+        for name, text in [("a footprint key with no target", "{{footprint size.eskf.Eskf}}"),
+                           ("a footprint with a third word",
+                            "{{footprint thumbv6m-none-eabi text.3 extra}}")]:
+            refused(name, lambda text=text: render(text, runs, "validation/cost.md"),
+                    because="is not a placeholder this renders")
 
         # Committed state against what renders: a page that differs past its stamp, an orphaned
         # page, a figure placed and missing, and one committed and placed nowhere.
@@ -450,6 +523,36 @@ def self_test():
             "validation/figures/mission/error_position.png: placed on a page, not committed",
             "validation/old.md: committed, but no template produces it"])
 
+        # One page alone: its text is compared and the orphans above are not, and a page with no
+        # template is refused rather than checked as nothing. Runs from an empty directory, as CI
+        # has, still read the repository.
+        (src / "cost.md").write_text("{{footprint thumbv6m-none-eabi text.3}}\n")
+        bare = Runs(Path(tmp) / "none", root)
+        (root / "validation/cost.md").write_text(render_all(src, bare, "cost.md")[
+            Path("validation/cost.md")])
+        expect("one page, current", check(src, bare, root, "cost.md"), [])
+        # The command line CI runs: `--only` after the three paths, and an exit only on a problem.
+        import contextlib, io
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                main(["check", str(src), str(Path(tmp) / "none"), str(root), "--only", "cost.md"])
+        except SystemExit as e:
+            failures.append(f"check --only from the command line: exited {e.code!r}")
+        (root / "validation/cost.md").write_text(
+            (root / "validation/cost.md").read_text().replace("167578", "167579"))
+        expect("one page, stale", len(check(src, bare, root, "cost.md")), 1)
+        refused("one page with no template", lambda: render_all(src, bare, "speed.md"))
+        # A name is the template's whole name: `cost.md` is not `unit-cost.md`, which would
+        # otherwise be checked too, or alone.
+        (src / "unit-cost.md").write_text("{{footprint thumbv6m-none-eabi text.3}}\n")
+        expect("one page among similar names", list(render_all(src, bare, "cost.md")),
+               [Path("validation/cost.md")])
+        (src / "unit-cost.md").unlink()
+        # A script with no `TOOLCHAIN=` names no compiler, and a blank is not one.
+        (root / "tools/footprint.sh").write_text("set -e\n")
+        refused("no toolchain pinned", lambda: render(
+            "{{footprint toolchain}}", Runs(Path(tmp) / "none", root), "validation/cost.md"))
+
         # Two logs sharing the prefix a page names: refused rather than read from whichever
         # sorts first, for a summary and for an agreement line alike.
         (out / "compare/89a498ce-ffff").mkdir()
@@ -470,6 +573,9 @@ def main(argv):
     if argv == ["--self-test"]:
         self_test()
         return
+    only = None
+    if len(argv) == 6 and argv[4] == "--only" and argv[0] in ("render", "check"):
+        only, argv = argv[5], argv[:4]
     if len(argv) != 4 or argv[0] not in ("draw", "render", "check"):
         sys.exit(__doc__.split("\n\n")[1])
     command, src, runs_dir, root = argv[0], Path(argv[1]), argv[2], Path(argv[3])
@@ -478,14 +584,14 @@ def main(argv):
         if command == "draw":
             draw(src, runs, os.cpu_count() or 4)
         elif command == "check":
-            problems = check(src, runs, root)
+            problems = check(src, runs, root, only)
             for problem in problems:
                 print(problem, file=sys.stderr)
             if problems:
                 sys.exit("validation: the committed pages are not what this build renders")
             print("validation: pages current")
         else:
-            for path, text in render_all(src, runs).items():
+            for path, text in render_all(src, runs, only).items():
                 (root / path).parent.mkdir(parents=True, exist_ok=True)
                 (root / path).write_text(text)
                 print(path)

@@ -26,6 +26,19 @@ a release (#47).
 `--check` compares text, not PNGs, because matplotlib's output is not byte-stable across
 builds. It checks that every placed figure exists.
 
+## The cost page
+
+`cost.md` is the exception to "local, never CI". Its numbers are `{{footprint}}` placeholders
+on `data/footprint.txt`'s pins and need no replay, so it renders and checks alone:
+
+```console
+$ python3 tools/validation.py render validation/src target/validation . --only cost.md
+$ python3 tools/validation.py check validation/src target/validation . --only cost.md
+```
+
+CI's `check` job runs it, beside the other stdlib self-tests, so a re-pin that leaves the page
+behind fails there. `tools/footprint.sh` points here when a pin moves.
+
 ## Size
 
 The committed figures have a budget, which `tools/validation.sh` enforces and states. The

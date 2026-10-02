@@ -23,7 +23,7 @@ disagree is shown with its cause, or marked as not yet explained.
 - **EKF2** is PX4's own estimator. It is not the truth; on real flights nothing is, so the
   [EKF2 page](validation/ekf2.md) measures agreement, never accuracy.
 
-Four questions, a page each, because each needs different evidence
+Four questions about the estimate, a page each, because each needs different evidence
 ([GOALS.md, three questions, three kinds of source](GOALS.md#three-questions-three-kinds-of-source)).
 
 ## [Accuracy](validation/accuracy.md): how close is it, when the truth is known?
@@ -63,6 +63,12 @@ On the log with the most precise receiver (RTK), position agrees to
 whose attitude this filter gets wrong at startup, a known gap (#59).
 
 {{figure 89a498ce/raw track}}
+
+## [Cost](validation/cost.md): what does it take on a microcontroller?
+
+Not a question about the estimate, and answered from the build rather than from a flight: the
+memory, stack and flash the filter needs on a Cortex-M0 and on a Cortex-M4 or M7, per entry
+point. It allocates nothing. Execution time on a real board is not measured yet (#41).
 
 ## Where the numbers come from
 

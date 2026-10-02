@@ -7,12 +7,12 @@
 #   tools/footprint.sh --all           print every key measured, to choose what to pin
 #   tools/footprint.sh --install       install the pinned nightly, its llvm-tools and targets
 #
-# Three figures per target, each one an integrator plans around (DESIGN.md, "Measured cost, by
-# function"): a type's size, from `-Zprint-type-sizes`; a function's stack frame, from
-# `-Zemit-stack-sizes` at `opt-level = 3` in the library's own release profile; and the flash of
-# `panic-check`'s ELF, which links the whole public API under fat LTO, at each level
-# `panic-check/profile.sh` names. `tools/footprint.py` reads them into keys, and its docstring
-# says what each key means and what it leaves out.
+# Three figures per target, each one an integrator plans around (validation/cost.md): a type's
+# size, from `-Zprint-type-sizes`; a function's stack frame, from `-Zemit-stack-sizes` at
+# `opt-level = 3` in the library's own release profile; and the flash of `panic-check`'s ELF,
+# which links the whole public API under fat LTO, at each level `panic-check/profile.sh` names.
+# `tools/footprint.py` reads them into keys, and its docstring says what each key means and what it
+# leaves out.
 #
 # Sizes are the target's: on a 64-bit host `usize` is wider, and `Eskf` reads 64 bytes larger
 # than any integrator's.
@@ -23,8 +23,8 @@
 #
 # Pins are exact, which is why the nightly is pinned: a frame moves by tens of bytes between
 # nightlies with no line of the crate changed. Moving `TOOLCHAIN` is a re-pin, and its diff
-# is what the new compiler did. A figure that shrinks fails too, so DESIGN.md's table cannot
-# fall behind the code it measures.
+# is what the new compiler did. A figure that shrinks fails too, so validation/cost.md, which
+# renders from the pins, cannot fall behind the code it measures.
 
 set -euo pipefail
 
@@ -147,4 +147,8 @@ for target in "${THUMB_TARGETS[@]}"; do
         failed=1
     fi
 done
+# A re-pin moves validation/cost.md, which renders from these pins.
+if [ "$failed" = 1 ]; then
+    echo "after re-pinning, render validation/cost.md: validation/README.md, \"The cost page\"" >&2
+fi
 exit $failed

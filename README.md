@@ -389,7 +389,7 @@ equation (36′), but nothing in it can find a hard-iron offset. A dual-antenna 
 the same way as a fix, `HeadingNoise::clamped` with PX4's or ArduPilot's floor. Heading is true once the
 declination is known. The filter reads it from a World Magnetic Model table wherever it places
 its origin, at the first geodetic fix, and turns a heading only the magnetometer has referred to
-north by the difference (the `magnetic-model` feature, on by default, about 2.5 KB of flash).
+north by the difference (the `magnetic-model` feature, on by default, about 2.6 KB of flash).
 `set_magnetic_declination` overrides it for good, and `Geodetic::magnetic_declination` is the
 same lookup for a caller that knows its site before the first fix.
 
@@ -606,7 +606,9 @@ format. That covers what this crate prints and nothing the caller does: a `{}` o
 `f32` in application code, including the derived `Debug` of any type here, brings the path back.
 `defmt` sends floats as raw bytes and formats them on the host, so it never takes the path.
 
-The crate is also `#![forbid(unsafe_code)]`, `no_std`, and allocation-free.
+The crate is also `#![forbid(unsafe_code)]`, `no_std`, and allocation-free. What it costs a
+target, memory, stack and flash per entry point, is
+[validation/cost.md](https://github.com/wboayue/fusion-nav/blob/main/validation/cost.md).
 
 ## Coming from PX4 or ArduPilot
 

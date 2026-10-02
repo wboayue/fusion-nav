@@ -248,8 +248,9 @@ The covariance is not the whole cost. A measurement update in Joseph form also n
 transition matrix, the `(I − KH)` product, and at least one `15 × 15` temporary, each another
 900 bytes, so the realistic working set is a few kilobytes rather than one. Peak stack usage
 depends on how aggressively temporaries are reused, which is exactly why the intent is to
-**measure and publish** the figure per operation rather than estimate it here; the
-[measured figures](#measured-cost-by-function) follow.
+**measure and publish** the figure per operation rather than estimate it here: the measured
+figures are [validation/cost.md](validation/cost.md), and what decided each form
+[follows](#measured-cost-by-function).
 
 A few kilobytes is still comfortable on an STM32H7-class flight controller while providing a full
 inertial-navigation state.
@@ -259,82 +260,66 @@ loop costs nothing. Timing detail lives in `diagnostics()`, which is not on the 
 
 ### Measured cost, by function
 
-Every figure a doc comment would otherwise carry about stack, flash or arithmetic lives here, keyed
-by the function it measures; the comment keeps the one sentence saying why its form was chosen.
-These are host-side measurements; stack high-water and execution time on hardware are not
-measured yet (#41), and belong in this section. The current sizes, frames and flash below (the tables'
-measured columns, and the figures the prose gives for present code) are pinned exactly in
-`data/footprint.txt`, which `tools/footprint.sh` measures in CI on a pinned nightly, so one that
-moves fails a build rather than going stale. Sums of them are not pinned, and the "against the
-rejected form" column and the costs of forms not taken are measurements of builds that no longer
-exist: what decided the form, not what the code costs now.
+What the code costs now, its sizes, stack frames and flash on both thumb targets, is
+[validation/cost.md](validation/cost.md), rendered from the pins in `data/footprint.txt` and
+checked against them in CI. This section holds what decided each function's form: the cost of
+the form taken against the forms rejected, which are measurements of builds that no longer
+exist, and the figures nothing pins (host timings, operation counts, flash measured by hand). A
+doc comment links here for its decision and keeps the one sentence saying why. Execution time and
+stack high-water on hardware are #41's, and land on the page.
 
 #### Stack frames
 
 Measured with `-Zemit-stack-sizes` at `opt-level = 3`, by `tools/footprint.sh`, whose header
-says how; `--all` prints every function's. A frame moves by tens of bytes with codegen that touches nothing in it (adding
-`update::<1>` moved `reparameterize`'s share without a line of it changing), so where a form was
-chosen the *difference* against the rejected one is the figure that carries the decision.
+says how; `--all` prints every function's. A frame moves by tens of bytes with codegen that
+touches nothing in it (adding `update::<1>` moved `reparameterize`'s share without a line of it
+changing), so where a form was chosen the *difference* against the rejected one is the figure
+that carries the decision.
+Figures are `thumbv6m`'s, with `thumbv7em`'s in parentheses where it was measured too. A pair
+set against each other was measured together, at the commit named where the code has moved since.
 
-| function | `thumbv6m` | `thumbv7em` | against the rejected form |
-| --- | --- | --- | --- |
-| `update::<3>` | 8088 | 7960 | the offset of (30′) in blocks costs 968 over the fifteen-state update; the augmented 16 × 16 written out cost 4168 more (a 1024-byte matrix per 900-byte temporary, plus a copy in and out); (24′)'s second Cholesky factor costs 272 (64 on `thumbv7em`) |
-| `update::<1>` | 6368 | 6216 | the second factor costs 320 (64) |
-| `reparameterize` (in `update`) | | | the full `G P Gᵀ` cost 864 more of `update`'s frame |
-| `fuse_gnss_velocity` → `update::<3>` | 9504 | | the crate's high-water mark; `fuse_gnss_velocity` is 1416 with `apply_or_recover` out of line, 2384 inlined |
-| `Eskf::observe::<3>` | 1464 | | `Observation::delayed` 752 and `error_dynamics` 400 beneath it; inlined into `fuse_gnss_velocity` it put the high-water mark at 10800 |
-| `Eskf::fuse_heading` | 1232 over `update::<1>` | 1240 | its largest instance, the magnetometer's; the course's is 1224, read by hand and not pinned, so with `fuse_course`'s 256 above it 7848 at the peak, against 7624 with `fuse_mag_heading` doing the work in its own 1240-byte frame |
-| `Eskf::adopt_position`, `adopt_velocity` | | | inlined, +976 on `fuse_gnss_position` and +952 on `fuse_gnss_velocity`; out of line they follow `update` rather than stacking on it |
-| `propagate_covariance` | 2832 | 2760 | the largest frame propagation reaches; with `predict` (2176, 2160) and `propagate` (1088, 1096) above it the chain is 6096 (6016). Inlined into its one caller, the same three temporaries sit in `predict` |
-| `project` | 1952 | 1936 | with `predicted_validity`'s 1856 above and `propagate_covariance` below, 6640; through `coast` the arming query's chain measured 9 KB, over `update::<3>` |
-| `coast` | 2152 | 2144 | with `predict` above and `propagate_covariance` below, 7160 |
-| `enforce_symmetry::<15>` | 128 | 8 | the equation form, `(P + Pᵀ)/2`, is 1884 (1820): two 15 × 15 temporaries under `predict` |
-| `init::initial_covariance` | 1120 | 1080 | a diagonal-only `P₀` inlined to 80; `Eskf::initialize` is 2224 above it |
-| `Eskf::initialize_coarse` | 3576 | 3552 | it holds a `StaticWindow` of one sample (944) and the `Startup` worked out from it (1088) |
-| `History::clear` | | | rebuilding the ring put a 1552-byte temporary in `Eskf::apply_alignment` |
-| `StaticWindow::halve` | | | a copy of the blocks is 512 bytes |
+| function | against the rejected form |
+| --- | --- |
+| `update::<3>` | the offset of (30′) in blocks costs 968 over the fifteen-state update; the augmented 16 × 16 written out cost 4168 more (a 1024-byte matrix per 900-byte temporary, plus a copy in and out); (24′)'s second Cholesky factor costs 272 (64) |
+| `update::<1>` | the second factor costs 320 (64) |
+| `reparameterize` (in `update`) | the full `G P Gᵀ` cost 864 more of `update`'s frame |
+| `fuse_gnss_velocity` → `update::<3>` | the crate's deepest path; `apply_or_recover` out of line sits beside `update` rather than above it. Inlined, it cost `fuse_gnss_velocity`'s frame 984 (2384 against 1400, a434a30); walked through the call graph at 9e3fcca, it costs `fuse_gnss_position`'s 1024 and moves the peak to a geodetic fix, 12272 against 11408 |
+| `Eskf::observe::<3>` | `Observation::delayed` 752 and `error_dynamics` 400 beneath it; inlined into `fuse_gnss_velocity` it put the high-water mark at 10800 against 9520 (a434a30), and walked at 9e3fcca at 11760 against 11408 |
+| `Eskf::fuse_heading` | one frame for every heading source, its largest instance the magnetometer's; read by hand, the course's path through it peaked at 7872 against 7624 with `fuse_mag_heading` doing the work in a frame of its own (eaf3b81) |
+| `Eskf::adopt_position`, `adopt_velocity` | inlined, +976 on `fuse_gnss_position` and +952 on `fuse_gnss_velocity`; out of line they follow `update` rather than stacking on it |
+| `propagate_covariance` | the largest frame propagation reaches. Inlined into its one caller, the same three temporaries sit in `predict` |
+| `project` | through `coast` the arming query's chain measured 9 KB, over `update::<3>` |
+| `enforce_symmetry::<15>` | the equation form, `(P + Pᵀ)/2`, is 1884 (1820): two 15 × 15 temporaries under `predict`, where the sweep needs almost none |
+| `init::initial_covariance` | a diagonal-only `P₀` inlined to 80 |
+| `Eskf::initialize_coarse` | it holds a `StaticWindow` of one sample and the `Startup` worked out from it, both on its own frame |
+| `History::clear` | rebuilding the ring put a 1552-byte temporary in `Eskf::apply_alignment` |
+| `StaticWindow::halve` | a copy of the blocks is 512 bytes |
 
-A frame of a generic function is its largest instance (`tools/footprint.py`), so a chain summed
-from them is a bound on the deepest path rather than a path. Every initialization frame stays under the 9504 of `fuse_gnss_velocity` into `update::<3>`, and so
-do the arming query and a coast, so no path but an update moves the crate's peak. That peak is
-comfortable on the STM32H7 class above and nearly all the RAM of an 8 KB Cortex-M0 part. The
-block-wise forms that would cut it (of (22), where (20)'s identity and zero blocks make most of
-`F P Fᵀ` known; of a coast, whose `F` is a four-term polynomial in `Δt` since `ω = 0` makes the
-error dynamics nilpotent; a runtime `M` for `update` in place of a type parameter) are each written
-as the equation reads until #41's figures say a target needs them.
+Walked through the call graph at 9e3fcca, frames from `-Zemit-stack-sizes` and edges from the
+rlib's relocations, the deepest path is `fuse_gnss_velocity` into `update::<3>` into `nalgebra`'s
+15 × 15 product, 11408 (11200). `predict` reaches 9064, the arming query (`predicted_validity`
+over `project` over `propagate_covariance`) 8544, and the deepest start 6112, so no path but an
+update moves the crate's peak. That peak is comfortable on the STM32H7 class above and more than
+the whole RAM of an 8 KB Cortex-M0 part; #202 pins it. The block-wise forms that would cut it (of
+(22), where (20)'s identity and zero blocks make most of `F P Fᵀ` known; of a coast, whose `F` is
+a four-term polynomial in `Δt` since `ω = 0` makes the error dynamics nilpotent; a runtime `M` for
+`update` in place of a type parameter) are each written as the equation reads until #41's figures
+say a target needs them.
 
 #### Sizes
 
-`Eskf` is 3776 bytes on both thumb targets, and the filter allocates nothing, so that is the RAM
-an integrator plans for beyond the stack (3840 on a 64-bit host, where `usize` is wider; the pin
-is the target's). Of it, the history of (23′) is 1544, `Diagnostics` 768, `P` 900 and (30′)'s
-`Offset` 64. `P` is passed by reference for its size, and `Covariance::to_rows` is a copy of it
-on the caller's stack. `StaticWindow` is 944 bytes at any rate and length, where a buffered 2 s
-window at 400 Hz is 800 `StaticSample`s of 80 bytes, 64 KB.
+`P` is passed by reference for its size, and `Covariance::to_rows` is a copy of it on the
+caller's stack. `StaticWindow` is one size at any rate and length because it folds each sample in,
+where a buffered 2 s window at 400 Hz is 800 `StaticSample`s of 80 bytes, 64 KB.
 
 #### Flash
 
-`.text` on `panic-check`'s ELF (fat LTO) linking the whole public API, an upper bound on what an
-application reaching every entry point links:
-
-| | `thumbv6m` `3` | `thumbv6m` `s` | `thumbv7em` `3` | `thumbv7em` `s` |
-| --- | --- | --- | --- | --- |
-| `.text` | 167578 | 107786 | 183820 | 114116 |
-| of which `libm` | 19532 | 10432 | 20752 | 12064 |
-| of which `compiler_builtins` | 10288 | 10334 | 7558 | 7674 |
-| of which `nalgebra`, out of line | 15348 | 2056 | 4450 | 1454 |
-| `.rodata` | 4383 | 4455 | 4527 | 4599 |
-
-`compiler_builtins` is software floating point on `thumbv6m`; on `thumbv7em` it is the `f64`
-arithmetic a single-precision FPU lacks, beside `memcpy`, 64-bit division and `fmodf` on both.
-What `nalgebra` costs is mostly not in its row: its generics are inlined into the filter's
-functions under LTO and counted there.
-
 A measurement dimension is what costs flash, not a source: `update::<1>`, which the barometer
-needs, costs 4.1 %, and the magnetic heading of (34)–(36), sharing it, 1204 bytes, 2.4 %.
-Measured by hand, and not pinned: the `magnetic-model` table is 1408 bytes of `.rodata` and its lookup 1204 of `.text` (1704 on
-`thumbv7em`), about 2.5 KB, at `opt-level = "s"`; the same lookup in `f64` linked 4496 bytes of
-`.text` in software doubles.
+needs, cost 4.1 % of `.text` when it landed (b0bf1d5), and the magnetic heading of (34)–(36),
+sharing it, 1204 bytes, 2.4 % (8799bd6). Measured by hand, and not pinned: the `magnetic-model`
+table is 1408 bytes of `.rodata` and its lookup 1204 of `.text` (1704), about 2.6 KB, at
+`opt-level = "s"`. The same lookup in `f64` linked 4496 bytes of `.text` in software doubles,
+against 1096 for the `f32` one measured with it (14a668b).
 
 #### Host timings
 

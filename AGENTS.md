@@ -178,15 +178,18 @@ per question answered, never per importance.
   rejected go to the document that owns the decision, and the comment links the heading. That
   document is one of three: the `GOALS.md` decision, where one exists; `DESIGN.md`, "Defaults and
   their evidence", under a heading named for the item (a repeated heading's bare anchor is refused
-  by `tools/check-anchors.sh`, since it moves); or a `data/manifest.txt` note. Stack frames, `.text`
-  and operation counts go to `DESIGN.md`, "Measured cost, by function", and the comment keeps why
-  its form was chosen. Pending work is one line, "Not built: #N", with at most a clause naming what
-  would build it; the argument for waiting belongs to the issue, or to `GOALS.md` if it outlives
-  it. The test is a paragraph's subject: a log or a byte count, rather than the code, is the
-  paragraph that moves. Test modules are exempt: a fixture's comment saying which mutation it
-  survives stays. Links are absolute (docs.rs serves no siblings) and reference-style
-  (`[measured]: https://…` at the block's end), and `tools/check-anchors.sh` resolves them in
-  `src/` as in the Markdown.
+  by `tools/check-anchors.sh`, since it moves); or a `data/manifest.txt` note. What a function
+  costs now (its frame, a type's size, `.text`) is `validation/cost.md`, through a `{{footprint}}`
+  placeholder on the pin and never typed; what decided its form (the rejected form's cost, host
+  timings, operation counts) goes to `DESIGN.md`, "Measured cost, by function", and the comment
+  keeps why its form was chosen. #200 re-pinned `.text` and left DESIGN's copy of the flash table
+  behind, which is why the current figures have no hand-written home. Pending work is one line,
+  "Not built: #N", with at most a clause naming what would build it; the argument for waiting
+  belongs to the issue, or to `GOALS.md` if it outlives it. The test is a paragraph's subject: a
+  log or a byte count, rather than the code, is the paragraph that moves. Test modules are
+  exempt: a fixture's comment saying which mutation it survives stays. Links are absolute
+  (docs.rs serves no siblings) and reference-style (`[measured]: https://…` at the block's end),
+  and `tools/check-anchors.sh` resolves them in `src/` as in the Markdown.
 
 **Moving evidence is an audit, not a cut and paste.** #187 moved 263 figures, and the move found
 three things a copy would have carried over:
@@ -224,6 +227,7 @@ cargo +1.89 build --lib           # MSRV
 
 tools/footprint.sh                # type sizes, stack frames, flash on both thumb targets vs data/footprint.txt; CI
 tools/footprint.sh --pin          # the file's keys at their measured values: re-pin by copying
+python3 tools/validation.py render validation/src target/validation . --only cost.md   # after a re-pin
 tools/footprint.sh --all          # every key measured, to choose what to pin
 tools/footprint.sh --install      # once: its pinned nightly, llvm-tools and both thumb targets
 python3 tools/footprint.py --self-test   # the parser's fixtures
@@ -755,8 +759,9 @@ the declination table, and CI builds and tests without it too.
   crate (`update::<3>`, `Eskf::apply` itself inlining away), and the high-water mark is
   `fuse_gnss_velocity` into it, with `observe` and `apply_or_recover` kept out of line beside it
   rather than beneath; which is why `reparameterize` applies `G P Gᵀ` block-wise and (30′)'s
-  offset enters (27) in blocks rather than as a 16 × 16. Every figure is in `DESIGN.md`,
-  "Measured cost, by function", which is where #41's will land.
+  offset enters (27) in blocks rather than as a 16 × 16. The current frames are
+  `validation/cost.md`, which is where #41's will land, and what decided each form is `DESIGN.md`,
+  "Measured cost, by function".
 - `src/observation/` — one module per sensor, each forming `y`, `H` and diagonal `R_m` and
   nothing else. `gnss.rs` holds (28) and (29) at the antenna, (28′) and (29′), `baro.rs` holds (30), `mag.rs` holds (34), (35)
   and the levelling variance (36′), and `heading.rs` holds (36), which every heading source
