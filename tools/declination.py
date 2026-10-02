@@ -283,6 +283,8 @@ def self_test():
     # compared whole against the grid it was written from.
     check("read back", table_of(generated), rows)
     check("round trip", rust("WMM_2025", "2027.5", table_of(generated)), generated)
+    # Unpacking the split refuses both of these too, so removing the count check survives
+    # them: it is there for the message.
     refused("two regions", lambda: region(text + text))
     refused("no region", lambda: region("nothing"))
     refused("a short row", lambda: table_of(generated.replace("        0, 1, 2,", "        1, 2,", 1)))
