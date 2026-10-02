@@ -5,8 +5,9 @@
 #
 # `size.` is a type's bytes, `frame.` a function's stack frame at `opt-level = 3`, `text.` and
 # `rodata.` the flash of `panic-check`'s ELF at each opt-level, `text_<crate>.` what that crate
-# kept out of line. `tools/footprint.py` says what each key means and leaves out. A frame is one
-# function's, so a path's stack is a sum of frames, and no key here is one yet (#202).
+# kept out of line, `chain.` the deepest stack a function reaches, walked call by call through
+# every crate, and `stack_peak` the largest of them. `tools/footprint.py` says what each key
+# means and leaves out.
 # validation/cost.md shows a subset of them (validation/README.md, "The cost page"), and
 # DESIGN.md, "Measured cost, by function", says which forms they decided.
 #
@@ -15,9 +16,9 @@
 # values. Moving the nightly is a re-pin of its own.
 #
 # Pinned: the types an integrator allocates and those `Eskf` is made of; each update, the frames
-# that stack on it and two of this crate's functions it calls out of line (`nalgebra`'s, the
-# deepest, are measured and not keyed: #202); each `fuse_*`; propagation and the arming query;
-# the starts. `--all` lists every function of this crate measured.
+# that stack on it and two of this crate's functions it calls out of line; each `fuse_*`;
+# propagation and the arming query; the starts; and the chain beneath each of those entry
+# points, with the peak. `--all` lists every function of this crate measured, and its chain.
 
 
 thumbv6m-none-eabi size.eskf.Eskf=3776 size.state.State=72 size.state.Covariance=900 size.state.Offset=64 size.history.History=1544 size.health.Diagnostics=768 size.config.Config=244 size.init.StaticWindow=912 size.init.StaticSample=80 size.eskf.Startup=1088
@@ -26,6 +27,7 @@ thumbv6m-none-eabi frame.eskf.Eskf.fuse_gnss_position=1376 frame.eskf.Eskf.fuse_
 thumbv6m-none-eabi frame.eskf.Eskf.adopt_position.2=1968 frame.eskf.Eskf.adopt_position.3=1984 frame.eskf.Eskf.adopt_velocity=1904 frame.eskf.Eskf.adopt_heading=2136
 thumbv6m-none-eabi frame.eskf.Eskf.predict=2176 frame.propagate.propagate=1088 frame.propagate.propagate_covariance=2832 frame.propagate.coast=2152 frame.propagate.project=1952 frame.eskf.Eskf.predicted_validity=1856 frame.math.enforce_symmetry.15=128
 thumbv6m-none-eabi frame.eskf.Eskf.initialize=2224 frame.eskf.Eskf.initialize_coarse=3504 frame.eskf.Eskf.initialize_from=1928 frame.eskf.Eskf.alignment_of=1112 frame.init.initial_covariance=1120
+thumbv6m-none-eabi chain.eskf.Eskf.predict=9164 chain.eskf.Eskf.fuse_gnss_position=10780 chain.eskf.Eskf.fuse_gnss_geodetic=11348 chain.eskf.Eskf.fuse_gnss_velocity=11508 chain.eskf.Eskf.fuse_baro_altitude=9644 chain.eskf.Eskf.fuse_mag_heading=9716 chain.eskf.Eskf.fuse_gnss_heading=9836 chain.eskf.Eskf.fuse_course=9852 chain.eskf.Eskf.predicted_validity=8644 chain.eskf.Eskf.initialize=5476 chain.eskf.Eskf.initialize_coarse=6212 chain.eskf.Eskf.initialize_from=3000 stack_peak=11508
 thumbv6m-none-eabi text.3=168926 rodata.3=4383 text_nalgebra.3=15348 text_libm.3=19532 text_compiler_builtins.3=10288 text.s=108298 rodata.s=4455 text_nalgebra.s=2056 text_libm.s=10432 text_compiler_builtins.s=10334
 
 thumbv7em-none-eabihf size.eskf.Eskf=3776 size.state.State=72 size.state.Covariance=900 size.state.Offset=64 size.history.History=1544 size.health.Diagnostics=768 size.config.Config=244 size.init.StaticWindow=912 size.init.StaticSample=80 size.eskf.Startup=1088
@@ -34,4 +36,5 @@ thumbv7em-none-eabihf frame.eskf.Eskf.fuse_gnss_position=1344 frame.eskf.Eskf.fu
 thumbv7em-none-eabihf frame.eskf.Eskf.adopt_position.2=1968 frame.eskf.Eskf.adopt_position.3=1992 frame.eskf.Eskf.adopt_velocity=1896 frame.eskf.Eskf.adopt_heading=2104
 thumbv7em-none-eabihf frame.eskf.Eskf.predict=2160 frame.propagate.propagate=1096 frame.propagate.propagate_covariance=2760 frame.propagate.coast=2144 frame.propagate.project=1936 frame.eskf.Eskf.predicted_validity=1832 frame.math.enforce_symmetry.15=8
 thumbv7em-none-eabihf frame.eskf.Eskf.initialize=2216 frame.eskf.Eskf.initialize_coarse=3488 frame.eskf.Eskf.initialize_from=1856 frame.eskf.Eskf.alignment_of=1104 frame.init.initial_covariance=1080
+thumbv7em-none-eabihf chain.eskf.Eskf.predict=8984 chain.eskf.Eskf.fuse_gnss_position=10584 chain.eskf.Eskf.fuse_gnss_geodetic=11144 chain.eskf.Eskf.fuse_gnss_velocity=11288 chain.eskf.Eskf.fuse_baro_altitude=9392 chain.eskf.Eskf.fuse_mag_heading=9480 chain.eskf.Eskf.fuse_gnss_heading=9616 chain.eskf.Eskf.fuse_course=9624 chain.eskf.Eskf.predicted_validity=8448 chain.eskf.Eskf.initialize=5312 chain.eskf.Eskf.initialize_coarse=6048 chain.eskf.Eskf.initialize_from=2896 stack_peak=11288
 thumbv7em-none-eabihf text.3=185596 rodata.3=4527 text_nalgebra.3=4450 text_libm.3=20752 text_compiler_builtins.3=7558 text.s=114708 rodata.s=4599 text_nalgebra.s=1454 text_libm.s=12064 text_compiler_builtins.s=7674

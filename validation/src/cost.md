@@ -3,8 +3,9 @@
 **What does the filter cost a microcontroller?** The whole filter, `Eskf`, is
 {{footprint thumbv6m-none-eabi size.eskf.Eskf}} bytes on a Cortex-M0 and allocates nothing
 else, so that is the RAM to plan for beyond the stack. The deepest stack is a GNSS velocity
-update, and linking every entry point takes {{footprint thumbv6m-none-eabi text.s}} bytes of
-flash at `opt-level = "s"`. Execution time on hardware is not measured yet (#41).
+update, {{footprint thumbv6m-none-eabi stack_peak}} bytes, and linking every entry point takes
+{{footprint thumbv6m-none-eabi text.s}} bytes of flash at `opt-level = "s"`. Execution time on
+hardware is not measured yet (#41).
 
 Every figure on this page is pinned exactly in `data/footprint.txt`, which CI measures on
 `{{footprint toolchain}}` with `tools/footprint.sh` and fails on any move, growth or shrinkage.
@@ -17,9 +18,16 @@ is a library call) and `thumbv7em-none-eabihf` (Cortex-M4 and M7 with a single-p
 
 - **Sizes** are `size_of` each type on the target, at any `opt-level`.
 - **Stack** is each function's own frame at `opt-level = 3`, read from the compiler
-  (`-Zemit-stack-sizes`). A frame is one function's, so a path's stack is the sum of the frames
-  along it, down to the last call made out of line. For a generic function the figure is its
-  largest instance.
+  (`-Zemit-stack-sizes`), and the deepest path beneath each entry point: its frame plus its
+  deepest callee's, walked call by call through the library's relocations, down into `nalgebra`,
+  `libm`, `core` and `compiler_builtins`. Every frame on a path is the compiler's, except
+  `compiler_builtins`' hand-written division routines, which are read from their pushes. A
+  call through a function pointer counts as deep as the deepest function whose address the
+  entry point's code takes, directly or through the data it reads. For a generic function the
+  figure is its largest instance.
+- **Not in the stack figures:** the caller's own frames, and the 32 bytes a Cortex-M stacks on
+  an exception (104 with the M4F's floating-point context). The frames are the library build's,
+  and an application built with LTO can inline them differently.
 - **Flash** is a bare-metal binary (`panic-check/`) that calls the whole public API, linked
   with fat LTO. An application reaching fewer entry points links less.
 - **Not measured:** cycle counts and a painted stack high-water mark on a real board. Both are
@@ -48,7 +56,29 @@ Sizes in bytes.
 
 ## Stack
 
-Each entry point's own frame, in bytes, and the frames beneath it that set its depth.
+The deepest stack a call into each entry point takes, in bytes, before the caller's frames.
+
+| entry point | `thumbv6m` | `thumbv7em` |
+| --- | --- | --- |
+| `predict` | {{footprint thumbv6m-none-eabi chain.eskf.Eskf.predict}} | {{footprint thumbv7em-none-eabihf chain.eskf.Eskf.predict}} |
+| `fuse_gnss_position` | {{footprint thumbv6m-none-eabi chain.eskf.Eskf.fuse_gnss_position}} | {{footprint thumbv7em-none-eabihf chain.eskf.Eskf.fuse_gnss_position}} |
+| `fuse_gnss_geodetic` | {{footprint thumbv6m-none-eabi chain.eskf.Eskf.fuse_gnss_geodetic}} | {{footprint thumbv7em-none-eabihf chain.eskf.Eskf.fuse_gnss_geodetic}} |
+| `fuse_gnss_velocity` | {{footprint thumbv6m-none-eabi chain.eskf.Eskf.fuse_gnss_velocity}} | {{footprint thumbv7em-none-eabihf chain.eskf.Eskf.fuse_gnss_velocity}} |
+| `fuse_baro_altitude` | {{footprint thumbv6m-none-eabi chain.eskf.Eskf.fuse_baro_altitude}} | {{footprint thumbv7em-none-eabihf chain.eskf.Eskf.fuse_baro_altitude}} |
+| `fuse_mag_heading` | {{footprint thumbv6m-none-eabi chain.eskf.Eskf.fuse_mag_heading}} | {{footprint thumbv7em-none-eabihf chain.eskf.Eskf.fuse_mag_heading}} |
+| `fuse_gnss_heading` | {{footprint thumbv6m-none-eabi chain.eskf.Eskf.fuse_gnss_heading}} | {{footprint thumbv7em-none-eabihf chain.eskf.Eskf.fuse_gnss_heading}} |
+| `fuse_course` | {{footprint thumbv6m-none-eabi chain.eskf.Eskf.fuse_course}} | {{footprint thumbv7em-none-eabihf chain.eskf.Eskf.fuse_course}} |
+| `predicted_validity` | {{footprint thumbv6m-none-eabi chain.eskf.Eskf.predicted_validity}} | {{footprint thumbv7em-none-eabihf chain.eskf.Eskf.predicted_validity}} |
+| `initialize` | {{footprint thumbv6m-none-eabi chain.eskf.Eskf.initialize}} | {{footprint thumbv7em-none-eabihf chain.eskf.Eskf.initialize}} |
+| `initialize_coarse` | {{footprint thumbv6m-none-eabi chain.eskf.Eskf.initialize_coarse}} | {{footprint thumbv7em-none-eabihf chain.eskf.Eskf.initialize_coarse}} |
+| `initialize_from` | {{footprint thumbv6m-none-eabi chain.eskf.Eskf.initialize_from}} | {{footprint thumbv7em-none-eabihf chain.eskf.Eskf.initialize_from}} |
+| **the deepest of them** | **{{footprint thumbv6m-none-eabi stack_peak}}** | **{{footprint thumbv7em-none-eabihf stack_peak}}** |
+
+The deepest path is `fuse_gnss_velocity` calling the three-measurement update, which calls
+`nalgebra`'s 15 × 15 matrix product, which calls the soft-float multiply on `thumbv6m` and
+`memcpy` on `thumbv7em`. `tools/footprint.py --path` prints any entry point's path, frame by frame.
+
+Each entry point's own frame, and the frames beneath it that set its depth:
 
 | function | `thumbv6m` | `thumbv7em` |
 | --- | --- | --- |
@@ -80,13 +110,6 @@ Each entry point's own frame, in bytes, and the frames beneath it that set its d
 | beneath `predict`, across a gap: the coast of (22′) | {{footprint thumbv6m-none-eabi frame.propagate.coast}} | {{footprint thumbv7em-none-eabihf frame.propagate.coast}} |
 | beneath `predicted_validity`: the covariance carried over the horizon | {{footprint thumbv6m-none-eabi frame.propagate.project}} | {{footprint thumbv7em-none-eabihf frame.propagate.project}} |
 | beneath `initialize` and `initialize_coarse`: the initial covariance | {{footprint thumbv6m-none-eabi frame.init.initial_covariance}} | {{footprint thumbv7em-none-eabihf frame.init.initial_covariance}} |
-
-The deepest path is `fuse_gnss_velocity` calling the three-measurement update, and below the
-update the calls it makes out of line, the deepest of them `nalgebra`'s 15 × 15 matrix product.
-The compiler measures `nalgebra`'s frames, but `tools/footprint.sh` keys only this crate's, so
-the rows above leave the deepest frame on that path out of the stack an integrator plans for.
-One pinned figure for the whole path, walked call by call, is #202; until then DESIGN.md quotes
-the walk, and why no other path is deeper.
 
 ## Flash
 
