@@ -11,7 +11,7 @@ the words mean.
 
 ## Architecture
 
-Two paths, and every public call is on one of them. The IMU drives the first on every sample; each
+Two paths carry the filter once it has started. The IMU drives the first on every sample; each
 measurement drives the second, fused against the state *at the time it was taken*. Both end in a
 typed outcome, and both feed the health the estimate carries. The mathematics is visible in the
 code rather than behind an abstraction: each step cites its equation, and the
@@ -85,8 +85,8 @@ it, so the public 15 × 15 stays the navigation state's:
           δp     δv     δθ     δβa    δβg          b
         ┌──────┬──────┬──────┬──────┬──────┐    ┌──────┐
   rows  │ 0–2  │ 3–5  │ 6–8  │ 9–11 │12–14 │    │ P_xb │  Offset: a column and a
-        └──────┴──────┴──────┴──────┴──────┘    │ P_bb │  variance, appended for
-         Covariance, 15 × 15, 900 bytes in f32  └──────┘  an update and nowhere else
+        └──────┴──────┴──────┴──────┴──────┘    │ P_bb │  variance, propagated
+         Covariance, 15 × 15, 900 bytes in f32  └──────┘  with P, updated in blocks
 ```
 
 See [state definitions](EQUATIONS.md#state-definitions).

@@ -306,7 +306,7 @@ The options, in the order they are worth doing:
 | 3. gate policy while aligning | built: heading adopted, tilt left to the ordinary gate |
 | 4. in-motion levelling, (5′) | inputs carried, subtraction unbuilt (#59) |
 | 5. yaw from course over ground | built, `Eskf::fuse_course` |
-| 6. an EKF-GSF yaw estimator | only if 4 and 5 prove insufficient (#165) |
+| 6. an EKF-GSF yaw estimator | not built (#165); the open case is a multirotor with neither a magnetometer nor a second antenna |
 
 1. **Seeded initialization.** Take the estimate from whatever the application already has: a
    companion AHRS, a survey, the previous flight's saved state. No new mathematics, no new
@@ -468,7 +468,7 @@ measured against it and what it costs; the measurements live with the decision.
 | [barometric reference](#barometric-reference-as-an-estimated-offset) | an offset estimated beside the covariance | a constant, a consider state, a tracker outside `P` |
 | [correlated error](#correlated-measurement-error-as-equivalent-white-noise) | equivalent white noise per source, (24′) | white noise, a floor on `P`, Gauss–Markov states |
 | [latency](#measurement-latency) | fusing at the measurement's time against a state history | fusing as current, extrapolating back, PX4's delayed horizon |
-| [local gravity](#local-gravity-configured-derived-offline) | a `Config` value derived offline from the site | the standard value, or deriving it mid-flight |
+| [local gravity](#local-gravity-configured-derived-offline) | `Config::gravity`, the standard value unless derived offline from the site | deriving it at origin placement, mid-flight |
 | [declination](#magnetic-declination-from-a-table-read-where-the-origin-is-placed) | a WMM table read where the origin is placed | zero until the caller sets it, or a dated lookup |
 | [sensor offsets](#sensor-offsets-as-per-call-arguments) | the antenna as an argument to each GNSS call, in `H` | a `Config` field, or correcting the measurement alone |
 | [rejection handling](#rejection-handling-recover-by-default-opt-out-per-source) | recover by adoption, switched per source | report and leave recovery to the application |
@@ -545,7 +545,7 @@ rather than something to fix. PX4 runs a dedicated bias estimator per height sou
 filter fusing `measurement - altitude` with variance `measurement_var + P(z,z)`, seeded from a
 low-passed barometer reading and reset whenever height resets, and it adds that estimator's
 variance to the barometer's `R`
-(`src/modules/ekf2/EKF/aid_sources/barometer/baro_height_control.cpp:79`, `:86` and `:112` at
+(`src/modules/ekf2/EKF/aid_sources/barometer/baro_height_control.cpp:79`, `:87` and `:112` at
 `c4e4ef98e9`). ArduPilot slews a `baroHgtOffset` toward `baro + z` with a 0.1 gain clamped to
 ±5 m, and separately corrects its origin height with a filter that models baro drift rate
 explicitly.
@@ -571,7 +571,7 @@ at `:79`. That reference inherits the estimate's height error, one number shared
 and on `moving_start`:
 
 * **Constant:** `nees_pos` 112.59.
-* **Constant, with its variance added to `R`** (PX4's `:86`): 14.58. N readings with a common
+* **Constant, with its variance added to `R`** (PX4's `:87`): 14.58. N readings with a common
   error average `S` down as though their errors were independent, so no `R` holds it.
 * **A consider state**, `b` carried in the covariance and never corrected: 1.035, the best of
   the three. It fails on the corpus's one drifting barometer. `2c42096b` is a grounded two-hour

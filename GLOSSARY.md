@@ -74,7 +74,8 @@ the difference is the kind that costs a day.
 * **Inertial navigation**, **dead reckoning**: integrating gyroscope and accelerometer readings
   to carry position, velocity and attitude forward with no outside reference. It is exact for an
   instant and hopeless over a minute, because every error integrates: an attitude error tips
-  gravity into the horizontal channel and integrates twice. The term is not the status:
+  gravity into the horizontal channel and integrates twice; on the simulator's `gnss_outage`,
+  [20 s without GNSS](VALIDATION.md) is metres. The term is not the status:
   `Status::DeadReckoning` means no *horizontal* aiding, so a filter fusing only a barometer and a
   magnetometer reports it while still corrected in height and heading.
 * **Kalman filter**: the recursive estimator underneath all of this: carry a state estimate and
@@ -273,10 +274,11 @@ the difference is the kind that costs a day.
   [per-quantity validity](GOALS.md#per-quantity-validity-not-one-ladder).
 * **`Accuracy`**: what the *mission* needs from each output, and the one knob the filter cannot
   derive for the caller. It moves `Validity` and nothing else.
-* **Aligning**: the filter is running, but its attitude has not yet converged from a coarse
-  start. It latches: once resolved it never returns, because read live it flaps.
+* **Aligning**: the filter is running, but its attitude has not converged: a coarse start, a
+  vague seed, or a heading no source has observed yet. It latches: once resolved it never returns, because read live it flaps.
 * **Seed**: a start from an estimate the application already holds (`Eskf::initialize_from`),
-  rather than from a window. It vouches for every quantity, so nothing is adopted after it.
+  rather than from a window. It vouches for every quantity, so no first measurement is adopted
+  after it; recovery from gate lockout still is.
 * **Unestablished**: a quantity that was never observed, as distinct from one that has gone
   stale. A prior is not an estimate.
 * **Differentiator**: one of the commitments in

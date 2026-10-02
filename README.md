@@ -10,7 +10,8 @@ flight controllers, UAVs, and other embedded navigation.
 
 *A simulated flight that loses GNSS for 20 s. The line is the position error against truth, the
 grey band the filter's own ±3σ, the shading its `Status`: yellow `Degraded`, red
-`DeadReckoning`. The band widens as the error grows, and the first fix brings both back.
+`DeadReckoning`. The band widens as the error grows, and the first fix puts the error back inside
+a band that then narrows.
 [VALIDATION.md](https://github.com/wboayue/fusion-nav/blob/main/VALIDATION.md) has the rest, against simulated truth, real UAV
 flights and PX4's EKF2.*
 
@@ -19,8 +20,8 @@ flights and PX4's EKF2.*
 * **Readable mathematics.** The code cites a numbered equation for every step it takes, in
   [EQUATIONS.md](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md), and a table maps each equation to the function
   implementing it. No generated code.
-* **Frames in the types.** NED and FRD are type parameters, so passing an ENU vector where NED is
-  expected is a compile error. ENU, FLU and ROS conventions convert at the edge, by name, and a
+* **Frames in the types.** Every vector carries its frame, `Ned`, `Enu` or `Body` (FRD), as a type
+  parameter, so passing an ENU vector where NED is expected is a compile error. ENU, FLU and ROS conventions convert at the edge, by name, and a
   PX4 or ArduPilot attitude seeds with no conversion.
 * **Health travels with the estimate.** `state()` returns the solution with its `Status` and a
   validity flag per quantity, and every call returns a typed outcome: accepted, rejected,
@@ -482,7 +483,7 @@ Three questions, three answers:
   most severe   DeadReckoning   no horizontal GNSS accepted for dead_reckoning_after
        ▲        Aligning        attitude not yet converged; leaves once, never returns
        │        Degraded        a source that was accepted has timed out
-  least severe  Healthy         every source fused is still accepted
+  least severe  Healthy         every source fused is still accepted (the course is not counted)
 ```
 
 When several apply the most severe wins, in the order `DeadReckoning` > `Aligning` > `Degraded` >

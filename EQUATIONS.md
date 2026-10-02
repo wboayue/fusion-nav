@@ -48,8 +48,8 @@ flowchart LR
 | what each sensor reads | (28)–(36′) | [observation models](#observation-models) |
 | when, and how often | (23′), (24′) | [measurement time and correlation](#measurement-time-and-correlation) |
 
-Each section below is numbered as the code cites it, so the numbers run in the order the
-equations were written rather than the order above.
+The sections below follow that order. Equations keep the numbers the code cites, so the numbers
+jump: (27) is followed by (37)–(44), then (28)–(36), then (23′) and (24′).
 
 ## Notation and conventions
 
@@ -727,8 +727,9 @@ r = \frac{\epsilon}{\gamma}
 
 so that $`r > 1`$ means rejected regardless of the degrees of freedom of the observation. One
 number is then comparable across GNSS position, barometric altitude, and magnetic heading, and
-directly comparable with the innovation test ratios PX4 publishes in its logs — which is what
-makes replay comparison against EKF2 a like-for-like check rather than an approximate one.
+on the same scale as the innovation test ratios PX4 publishes in its logs, so a replay puts
+rejection behaviour beside EKF2's. The two group components differently, PX4's per axis; the
+glossary's [innovation test ratio](GLOSSARY.md#coming-from-px4-or-ardupilot) says how.
 
 This single mechanism covers GNSS glitches, barometer transients, and magnetic interference.
 
@@ -903,8 +904,9 @@ $`\hat{p} = 0`$, per (28).
 
 ## Observation models
 
-Which error-state blocks each observation's $`H`$ touches directly; everything else it corrects
-through the correlations in $`P`$.
+Which error-state blocks each observation's $`H`$ touches directly, as fused at the present;
+everything else it corrects through the correlations in $`P`$. A measurement fused at its own
+time, (23′), reaches further through $`A`$.
 
 | observation | $`\delta p`$ | $`\delta v`$ | $`\delta\theta`$ | $`\delta\beta_a`$ | $`\delta\beta_g`$ | $`b`$ |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -918,7 +920,7 @@ through the correlations in $`P`$.
 | (35″) course | | ● | ● | | | |
 
 No observation touches $`\delta\beta_a`$: the accelerometer bias is learned only through (17)'s
-coupling, which is why it is unobservable at rest.
+coupling, and at rest that coupling cannot separate its horizontal part from tilt.
 
 ### GNSS position
 
@@ -1378,7 +1380,7 @@ Each implementing function cites its equation numbers in a doc comment.
 | (30) `α₀` | barometric reference and its variance | `init.rs` | `BaroReadings::reference`, through `StaticWindow::alpha0` |
 | (9)–(11) | bias correction, gravity | `propagate.rs` | `ImuSample`, `corrected_imu` |
 | (12)–(15) | nominal propagation | `propagate.rs` | `propagate_nominal` |
-| (16)–(19) | error dynamics | `propagate.rs` | `error_dynamics`, the continuous `A` that (23′) carries `H` through; (20) discretizes it in `transition_matrix` |
+| (16)–(19) | error dynamics | `propagate.rs` | `error_dynamics`, the continuous `A` that (23′) carries `H` through; `transition_matrix` writes (20) out beside it, and a test holds the two together |
 | (20) | state transition matrix | `propagate.rs` | `transition_matrix` |
 | (21) | discrete process noise | `propagate.rs` | `process_noise` |
 | (22) | covariance propagation | `propagate.rs` | `propagate_covariance`, called with (9)–(15) by `propagate` |
