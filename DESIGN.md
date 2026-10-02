@@ -25,11 +25,11 @@ flowchart LR
     end
     predict --> hist[("History<br/>history.rs")]
     subgraph meas["every measurement, at its own time"]
-        z["time, z, R"] --> admit["admit<br/>eskf.rs"]
+        z["time, z, R"] --> admit["admit<br/>eskf/fuse.rs"]
         admit --> observe["observe at t<br/>observation/* (28)–(36), (23′)"]
         observe --> gate{"gate<br/>update.rs (37)–(38)"}
         gate -- "r ≤ 1" --> upd["Joseph update, inject, reset<br/>update.rs (24)–(27), (39)–(41)"]
-        gate -- "r > 1" --> rec["apply_or_recover<br/>eskf.rs"]
+        gate -- "r > 1" --> rec["apply_or_recover<br/>eskf/fuse.rs"]
         upd --> rec
         rec --> fout(["Fusion"])
     end
@@ -54,7 +54,8 @@ with its time and its uncertainty.
 
 | module | holds |
 | ------ | ----- |
-| `src/eskf.rs` | `Eskf`, the whole public filter: `initialize*`, `predict`, `fuse_*`, `state`, `reset_*_to` |
+| `src/eskf.rs` | `Eskf`, the whole public filter: its fields, `state`, the floor of (42′) every covariance passes through, and `Status` |
+| `src/eskf/` | `Eskf`'s methods by topic, one `impl Eskf` each: `start` (`initialize*`), `site` (origin, declination, barometric reference), `predict`, `fuse` (the shared update path, GNSS and barometer), `heading`, `adopt` (`reset_*_to`, adoption, recovery), `validity`; and `estimate`, the state and its history behind the only writers of either |
 | `src/init.rs` | initialization types (`StaticSample`, `StaticWindow`, `Alignment`, `Coarse`, `InitError`) and the pure functions the `initialize*` methods commit |
 | `src/propagate.rs` | `ImuSample`; equations (9)–(22), the coast of (22′), and `error_dynamics`, the `A` that (23′) carries `H` through |
 | `src/history.rs` | the recent past of the nominal state, which a measurement is fused against at the time it was taken, equation (23′) |

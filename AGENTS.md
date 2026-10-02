@@ -213,7 +213,7 @@ three things a copy would have carried over:
 ```bash
 cargo test --all-targets          # unit tests: inline `mod tests` across src/, and in examples/replay/main.rs
 cargo test --doc                  # README.md (included by lib.rs), plus the item doctests
-cargo test --lib eskf::tests::a_gap_is_coasted_on_the_estimated_velocity_and_the_time_still_passes  # one test
+cargo test --lib eskf::predict::tests::a_gap_is_coasted_on_the_estimated_velocity_and_the_time_still_passes  # one test
 cargo fmt --all -- --check
 cargo clippy --all-targets --no-deps   # CI runs with RUSTFLAGS=-D warnings
 cargo build --lib --target thumbv7em-none-eabihf   # also thumbv6m-none-eabi; both gate CI
@@ -669,7 +669,7 @@ The rule reaches past *computing* a number, and the extension is the one that ha
 A statistic that **audits a filter claim** must falsify it in the shape the filter states it, not
 merely read its verdict. `false_valid` took `Validity` off the filter exactly as intended and then
 tested the 2-D norm of the horizontal error, while `Eskf::validity` states the claim per axis
-(`within(PositionNorth) && within(PositionEast)`, `src/eskf.rs:2145-2146`) — a bar √2 tighter than
+(`within(PositionNorth) && within(PositionEast)`, `src/eskf/validity.rs:97-98`) — a bar √2 tighter than
 the one the filter asserted, diverging from it precisely as the estimate approaches it, which is
 the only regime where such a count says anything. Reading the verdict and re-deriving the geometry
 is still two implementations of one claim. It applies to every scoring statistic still to land:
@@ -754,8 +754,14 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`), plus `defmt` b
 off-by-default feature of the same name. `magnetic-model`, on by default, pulls no crate: it links
 the declination table, and CI builds and tests without it too.
 
-- `src/eskf.rs` — `Eskf`, the whole public filter: `initialize`, `initialize_from`, `predict`,
-  `fuse_*`, `state`, `reset_*_to`. `initialize_from` is stage 1
+- `src/eskf.rs` — `Eskf`, the whole public filter, its fields, `state` and `Status`; its methods
+  live in `src/eskf/`, one `impl Eskf` per topic: `start.rs` (`initialize*`, `alignment_of`),
+  `site.rs` (origin, declination, barometric reference), `predict.rs`, `fuse.rs` (the shared
+  update path, then GNSS and barometer), `heading.rs`, `adopt.rs` (`reset_*_to`, adoption,
+  recovery) and `validity.rs`. A child module sees `Eskf`'s private fields but not a sibling's
+  private items, so the `pub(super)` helpers are the seams between topics; `estimate.rs` uses
+  the same rule to keep the state and its history behind their only writers, and `fixtures.rs`
+  holds what the modules' tests share. `initialize_from` is stage 1
   of GOALS.md's "Alignment beyond the static window": the static window stays the preferred path,
   a moving or short window starts coarse under `Status::Aligning`, yaw from course is
   `fuse_course` (#53), and in-motion leveling (5′, #59) is the option still unbuilt — read that
@@ -766,7 +772,7 @@ the declination table, and CI builds and tests without it too.
   it is pushed, so a caller never buffers the window; its doc comment owns how each statistic
   is taken in one pass, and `StaticWindow::noise` reports the sensors' noise floor, (8″). The `initialize*` methods on `Eskf` call these and commit the result.
   Tests for the pure functions live here; tests of what the filter does with them stay in
-  `eskf.rs`.
+  `src/eskf/start.rs`.
 - `src/propagate.rs` — `ImuSample` and equations (9)–(22), in increments; `error_dynamics`, the
   `A` of (16)–(19) that (23′) carries `H` through.
 - `src/history.rs` — the recent past of the nominal state for (23′): 32 entries 10 ms apart,

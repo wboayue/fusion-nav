@@ -1440,14 +1440,14 @@ Each implementing function cites its equation numbers in a doc comment.
 | (20) | state transition matrix | `propagate.rs` | `transition_matrix` |
 | (21) | discrete process noise | `propagate.rs` | `process_noise` |
 | (22) | covariance propagation | `propagate.rs` | `propagate_covariance`, called with (9)–(15) by `propagate` |
-| (22′) | coasting across an IMU gap | `propagate.rs`, `eskf.rs` | `coast`, with `unaccelerated_sample` and `repeat_covariance`; chosen by `Eskf::predict` |
+| (22′) | coasting across an IMU gap | `propagate.rs`, `eskf/predict.rs` | `coast`, with `unaccelerated_sample` and `repeat_covariance`; chosen by `Eskf::predict` |
 | (23)–(27) | generic update, Joseph form | `update.rs` | `update` |
-| (23′) | delayed measurements | `eskf.rs`, `history.rs`, `update.rs`, `propagate.rs` | `Eskf::observe`, `Eskf::past`, `Eskf::carried_position` and `carried_velocity`; `History`; `Observation::delayed`; `error_dynamics` |
-| (24′) | correlated measurements | `math.rs`, `update.rs`, `health.rs`, `eskf.rs` | `correlation_inflation`; `Observation::correlated` and its `r_gain`; `SourceHealth`'s `since_measured` for `Δt`; each `fuse_*` |
+| (23′) | delayed measurements | `eskf/fuse.rs`, `history.rs`, `update.rs`, `propagate.rs` | `Eskf::observe`, `Eskf::past`, `Eskf::carried_position` and `carried_velocity`; `History`; `Observation::delayed`; `error_dynamics` |
+| (24′) | correlated measurements | `math.rs`, `update.rs`, `health.rs`, `eskf/fuse.rs`, `eskf/heading.rs` | `correlation_inflation`; `Observation::correlated` and its `r_gain`; `SourceHealth`'s `since_measured` for `Δt`; each `fuse_*` |
 | (28) | GNSS position, as a horizontal and a height half | `observation/gnss.rs` | `horizontal_jacobian`, `horizontal_observation`, `height_jacobian`, `height_observation` |
-| (28′) | GNSS position at the antenna | `observation/gnss.rs`, `eskf.rs` | `arm`, within `horizontal_observation` and `height_observation`; `Eskf::carried_position` for an adoption |
+| (28′) | GNSS position at the antenna | `observation/gnss.rs`, `eskf/fuse.rs` | `arm`, within `horizontal_observation` and `height_observation`; `Eskf::carried_position` for an adoption |
 | (29) | GNSS velocity | `observation/gnss.rs` | `velocity_jacobian`, `velocity_observation` |
-| (29′) | GNSS velocity at the antenna | `observation/gnss.rs`, `eskf.rs` | `velocity_observation`; `Eskf::mean_rate` for `ω`, `Eskf::carried_velocity` for an adoption |
+| (29′) | GNSS velocity at the antenna | `observation/gnss.rs`, `eskf/fuse.rs` | `velocity_observation`; `Eskf::mean_rate` for `ω`, `Eskf::carried_velocity` for an adoption |
 | (30) | barometric altitude | `observation/baro.rs` | `altitude_jacobian`, `altitude_observation` |
 | (30′) | barometric offset | `state.rs`, `update.rs`, `propagate.rs` | `Offset`; `update`'s blocks; `propagate_offset`; `Eskf::establish_reference` |
 | (31)–(33) | magnetometer, three-axis | — | unbuilt and [out of scope](GOALS.md#magnetometer-without-magnetic-field-states); no `field_jacobian` exists |
@@ -1459,12 +1459,12 @@ Each implementing function cites its equation numbers in a doc comment.
 | (37)–(38) | innovation gating, test ratio | `update.rs` | `nis`, `test_ratio`, called by `update` |
 | — | per-source health tracking | `health.rs` | `SourceHealth`, `Status` |
 | (39)–(41) | injection and reset | `update.rs` | `inject`, `reset_jacobian`, `reparameterize`, `reparameterize_offset`, called by `update` |
-| (41) | reset after an adoption | `eskf.rs` | `Eskf::reset_heading_by`, through `update.rs`'s `reparameterize` and `state.rs`'s `Covariance::reset_attitude_direction` |
+| (41) | reset after an adoption | `eskf/heading.rs` | `Eskf::reset_heading_by`, through `update.rs`'s `reparameterize` and `state.rs`'s `Covariance::reset_attitude_direction` |
 | (42) | symmetry enforcement | `math.rs` | `enforce_symmetry`, called by `propagate_covariance`, `reparameterize`, `Covariance::reset_attitude_direction`, `AttitudeVariance::in_body` and `Eskf::initialize_from` |
 | (42′) | diagonal variance floor | `math.rs` | `floor_diagonal`, `floor_offset` and `FLOOR`; applied by `Eskf::commit_covariance` |
 | (43) | local tangent plane | `geodetic.rs` | `LocalOrigin::to_ned`, `to_geodetic` |
 | (44) | origin placement | `geodetic.rs` | `LocalOrigin::placing`; committed by `Eskf::fuse_gnss_geodetic` |
-| (6), (35) `D_m` | declination from a magnetic model at the origin | `magnetic.rs`, `eskf.rs` | `declination_at` through `Geodetic::magnetic_declination`; applied by `Eskf::place_origin` |
+| (6), (35) `D_m` | declination from a magnetic model at the origin | `magnetic.rs`, `eskf/site.rs` | `declination_at` through `Geodetic::magnetic_declination`; applied by `Eskf::place_origin` |
 | — | skew, quaternion exponential, angle wrap | `math.rs` | `skew`, `exp_quat`, `wrap_pi` |
 
 ## References
