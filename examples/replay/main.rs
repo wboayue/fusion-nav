@@ -4747,15 +4747,16 @@ mod tests {
     fn an_unaided_attitude_stops_being_valid_and_the_line_says_when() {
         // The covariance growth of (16)–(22) on a log with no truth: a window that observed
         // both tilt and heading aligns at 0.00 and the tilt variance then crosses
-        // `Accuracy::tilt` 3.83 s later, which is the figure `Accuracy`'s defaults cite. Six
-        // seconds of stillness at 50 Hz is enough to see it.
+        // `Accuracy::tilt` 4.84 s later: its gyroscope never scatters, so the bias is weighed
+        // under the configured density rather than the window's own. Six seconds of stillness
+        // at 50 Hz is enough to see it.
         let log = Log::new().mag(0.0).run(0.0, 400, DT, STILL);
         let summary = replay(&log).summary();
         assert_eq!(key(&summary, "aligned_at"), "0.00");
         assert_eq!(
             key(&summary, "attitude_lost"),
-            "3.84",
-            "one epoch past 3.83 s at this rate: {summary}"
+            "4.84",
+            "the first epoch past the bar at this rate: {summary}"
         );
     }
 
@@ -4788,7 +4789,7 @@ mod tests {
                 "{unmoved}: {tight}"
             );
         }
-        assert_eq!(key(&default, "attitude_lost"), "3.84");
+        assert_eq!(key(&default, "attitude_lost"), "4.84");
         assert_eq!(key(&tight, "attitude_lost"), "0.00", "{tight}");
     }
 

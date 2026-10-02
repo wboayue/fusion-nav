@@ -13,7 +13,7 @@
 use nalgebra::{ComplexField, Matrix3, RealField, Vector3};
 
 use crate::frames::Ned;
-use crate::units::Position;
+use crate::units::{Position, RadiansPerSecond};
 
 /// WGS84 semi-major axis, in meters: a defining parameter of the ellipsoid,
 /// NGA.STND.0036 v1.0.0 Table 3.1.
@@ -34,6 +34,11 @@ const WGS84_K: f64 = 1.931_852_652_458e-3;
 
 /// WGS84 normal gravity formula constant `m = ω²a²b/GM`, NGA.STND.0036 v1.0.0 Table 3.6.
 const WGS84_M: f64 = 3.449_786_506_841e-3;
+
+/// WGS84 angular velocity of the Earth, `ω`, NGA.STND.0036 v1.0.0 Table 3.1. The propagation of
+/// (9)–(15) leaves it out; [`Measured::gyro_bias`](crate::init::Measured::gyro_bias) says what
+/// that costs the gyroscope bias.
+pub(crate) const EARTH_RATE: RadiansPerSecond = RadiansPerSecond::from_rad_per_s(7.292_115e-5);
 
 /// A position on the WGS84 ellipsoid: latitude, longitude, and height.
 ///

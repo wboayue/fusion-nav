@@ -4,7 +4,7 @@
 **What does the filter cost a microcontroller?** The whole filter, `Eskf`, is
 3776 bytes on a Cortex-M0 and allocates nothing
 else, so that is the RAM to plan for beyond the stack. The deepest stack is a GNSS velocity
-update, and linking every entry point takes 107894 bytes of
+update, and linking every entry point takes 108298 bytes of
 flash at `opt-level = "s"`. Execution time on hardware is not measured yet (#41).
 
 Every figure on this page is pinned exactly in `data/footprint.txt`, which CI measures on
@@ -41,7 +41,7 @@ host timings, which are taken on one machine and pinned nowhere.
 | of which the barometric offset of (30′) | 64 | 64 |
 | `State`, the estimate `state()` returns | 72 | 72 |
 | `Config` | 244 | 244 |
-| `StaticWindow`, at any rate and length | 944 | 944 |
+| `StaticWindow`, at any rate and length | 912 | 912 |
 | `StaticSample` | 80 | 80 |
 | `Startup`, a start worked out and checked before it commits, on a start's stack | 1088 | 1088 |
 
@@ -63,7 +63,7 @@ Each entry point's own frame, in bytes, and the frames beneath it that set its d
 | `fuse_course` | 256 | 264 |
 | `predicted_validity` | 1856 | 1832 |
 | `initialize` | 2224 | 2216 |
-| `initialize_coarse` | 3576 | 3552 |
+| `initialize_coarse` | 3504 | 3488 |
 | `initialize_from` | 1928 | 1856 |
 | beneath the three heading entry points: the heading update they share | 1232 | 1240 |
 | beneath `fuse_gnss_velocity`: the update of (23)–(27), three measurements | 8088 | 7960 |
@@ -93,7 +93,7 @@ the walk, and why no other path is deeper.
 
 | bytes | `thumbv6m` `3` | `thumbv6m` `s` | `thumbv7em` `3` | `thumbv7em` `s` |
 | --- | --- | --- | --- | --- |
-| `.text` | 167798 | 107894 | 184012 | 114300 |
+| `.text` | 168926 | 108298 | 185596 | 114708 |
 | of which `libm` | 19532 | 10432 | 20752 | 12064 |
 | of which `compiler_builtins` | 10288 | 10334 | 7558 | 7674 |
 | of which `nalgebra`, out of line | 15348 | 2056 | 4450 | 1454 |

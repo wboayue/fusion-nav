@@ -5,7 +5,9 @@ use crate::frames::{Body, Ned};
 use crate::geodetic::{Geodetic, LocalOrigin};
 use crate::health::{Diagnostics, Fusion, GnssFusion, Propagation, SourceHealth, Status, Validity};
 use crate::history::History;
-use crate::init::{self, Alignment, Coarse, InitError, Measured, StaticSample, StaticWindow};
+use crate::init::{
+    self, Alignment, Coarse, GyroBias, InitError, Measured, StaticSample, StaticWindow,
+};
 use crate::math::{
     below_floor, correlation_inflation, enforce_symmetry, exp_quat, floor_diagonal, floor_offset,
     wrap_pi,
@@ -337,7 +339,7 @@ impl Eskf {
         // Measured from the window rather than read off `alignment`, because a window too
         // short to align an attitude from can still be a window of a parked vehicle.
         let at_rest = init::at_rest(measured.peaks, &self.config.init, self.config.gravity);
-        let state = init::nominal_state(&measured, self.declination, at_rest);
+        let gyro_bias = measured.gyro_bias(at_rest, &self.config);
         let reference = at_rest.then(|| {
             window
                 .alpha0()
@@ -345,8 +347,8 @@ impl Eskf {
         });
         self.checked_startup(
             alignment,
-            state,
             &measured,
+            gyro_bias,
             at_rest,
             measured.end,
             reference,
@@ -403,19 +405,19 @@ impl Eskf {
         // this entry point.
         let measured = window.measured()?;
         let alignment = Alignment::Coarse(Coarse::not_stationary(&measured, self.config.gravity));
-        // The same rule `initialize` applies: the gyroscope bias is worth taking only
-        // where the sample says the vehicle was on the ground, and one reading of a
-        // stationary gyroscope is a noisier bias than a window's average but a better
-        // one than zero.
+        // The same rule `initialize` applies: the gyroscope bias is weighed only where the
+        // sample says the vehicle was on the ground, and one reading is weighed by its own
+        // noise, which at a sample's interval leaves it mostly to the prior.
         let at_rest = init::at_rest(measured.peaks, &self.config.init, self.config.gravity);
-        let state = init::nominal_state(&measured, self.declination, at_rest);
+        let gyro_bias = measured.gyro_bias(at_rest, &self.config);
         // That reading establishes nothing, which is why it is not passed on as one. A
         // window shows rest by holding still over a span of time and this one spans none:
         // an accelerometer reading `γ` for an instant is a hover as readily as a vehicle
         // on the ground, and this entry point exists for the launches that are moving.
         // The barometric reference is left alone: one sample does not establish one, and
         // a restart at altitude should keep the reference the flight began with.
-        let startup = self.checked_startup(alignment, state, &measured, false, imu.time, None)?;
+        let startup =
+            self.checked_startup(alignment, &measured, gyro_bias, false, imu.time, None)?;
         self.commit_startup(startup);
         Ok(alignment)
     }
@@ -2197,10 +2199,12 @@ impl Eskf {
     /// equivalent, and neither publishes the projection.
     ///
     /// Tilt is where the projection earns its place, because nothing aids it: a static
-    /// window brings it in and (20)'s gyroscope-bias term takes it back out, on a schedule
-    /// the covariance knows and no acceptance timer does. At [`ImuNoise`](crate::ImuNoise)'s
-    /// defaults an unaided start holds tilt for 3.83 s, so a horizon under that arms and one
-    /// over it does not, which the current value alone cannot say.
+    /// window brings it in and the gyroscope's noise and bias take it back out through (20),
+    /// on a schedule the covariance knows and no acceptance timer does. At
+    /// [`ImuNoise`](crate::ImuNoise)'s defaults an unaided start holds tilt for 10.3 s from a
+    /// window that measured its gyroscope and 4.84 s from one whose gyroscope never scattered,
+    /// so a horizon under that arms and one over it does not, which the current value alone
+    /// cannot say.
     ///
     /// The projection reads slightly optimistic and the amount is measured: a first-order
     /// step understates growth, and `propagate.rs`'s `PROJECTION_STEP` holds that within
@@ -2404,8 +2408,8 @@ impl Eskf {
         self.commit_covariance(covariance, offset);
     }
 
-    /// Work out the covariance for a start, equation (8), and check the whole of it before
-    /// anything is committed. `reference` is the barometric reference the start sets:
+    /// Work out a start, the nominal state of (7) with `gyro_bias` and the covariance of (8),
+    /// and check the whole of it before anything is committed. `reference` is the barometric reference the start sets:
     /// `None` leaves the one held alone, `Some(None)` clears it.
     ///
     /// Refused as [`InitError::NotFinite`] when the state, the covariance or the reference is
@@ -2415,12 +2419,13 @@ impl Eskf {
     fn checked_startup(
         &self,
         alignment: Alignment,
-        state: State,
         measured: &Measured,
+        gyro_bias: GyroBias,
         settled: bool,
         time: Timestamp,
         reference: Option<Option<(Altitude, Offset)>>,
     ) -> Result<Startup, InitError> {
+        let state = init::nominal_state(measured, self.declination, gyro_bias.estimate);
         // The bias of (7) as committed, so that what it absorbed is not charged a second
         // time as motion the window could not vouch for; see `init::coarse_sigmas`.
         let (sigma_tilt, sigma_yaw) = init::attitude_sigmas(
@@ -2436,6 +2441,7 @@ impl Eskf {
             sigma_tilt,
             sigma_yaw,
             measured.level_scatter,
+            gyro_bias.sigmas,
             self.config.gravity,
         );
         let reference_finite = reference.flatten().is_none_or(|(altitude, offset)| {
@@ -2975,44 +2981,61 @@ mod tests {
             .as_secs()
     }
 
-    /// The margin [`Accuracy`]'s defaults were chosen for, measured rather than derived: a
-    /// static start with a magnetometer in the window holds its tilt for 3.83 s of unaided
-    /// propagation and its heading for 37.8 s, at [`ImuNoise`](crate::ImuNoise)'s defaults.
+    /// The margin [`Accuracy`]'s defaults buy, measured rather than derived, from a static start
+    /// with a magnetometer in the window at [`ImuNoise`](crate::ImuNoise)'s defaults: 10.3 s of
+    /// unaided tilt and 274 s of heading from a window that measured its gyroscope, 4.84 s and
+    /// 51.4 s from one whose gyroscope never scattered, whose `ω̄` is weighed under the
+    /// configured density.
     ///
-    /// Not the `σ_g² t` the white-noise density alone would give — that is 10.4 s and 674 s.
-    /// The gyroscope-bias prior reaches attitude through (20)'s `−I Δt` and accumulates as
-    /// `σ_βg² t²`, which overtakes the white-noise term within two seconds and is what actually
-    /// sets both figures. A test rather than a comment because [`Accuracy`] cites the numbers:
-    /// change a bar or a density and this says by how much the margin moved.
+    /// The gyroscope-bias prior reaches attitude through (20)'s `−I Δt` and grows as
+    /// `σ_βg² t²`, so the window sets both figures. Measured, it leaves tilt to the white
+    /// noise's `σ_g² t`, 10.4 s alone, and heading to that and the bias walk. A test rather than
+    /// a comment because [`Accuracy`] cites the numbers: change a bar or a density and this says
+    /// by how much the margin moved.
     #[test]
     fn an_unaided_start_holds_its_attitude_for_the_margin_the_defaults_buy() {
+        // Forty samples 50 ms apart, the gyroscope alternating ±1.9 × 10⁻³ rad/s on every
+        // axis: blocks enough for (8″), and `ω̄` known to 3 × 10⁻⁴ rad/s.
+        let mut measured = [StaticSample {
+            mag: Some(MagField::body(0.22, 0.0, 0.44)),
+            ..still()
+        }; 40];
+        for (index, sample) in measured.iter_mut().enumerate() {
+            let rate = if index % 2 == 0 { 1.9e-3 } else { -1.9e-3 };
+            sample.imu = sample.imu.with_gyro(AngularRate::body(rate, rate, rate));
+        }
+        let (tilt, heading) = held(&measured, Seconds::from_secs(0.05));
+        assert!((tilt - 10.3).abs() < 0.1, "tilt held {tilt} s");
+        assert!((heading - 274.0).abs() < 2.0, "heading held {heading} s");
+
+        // A gyroscope that never scatters, held or coarsely quantized, measures nothing of
+        // itself, so the configured density is weighed against the prior.
+        let (tilt, heading) = held(&window_with_mag(), Seconds::from_secs(0.25));
+        assert!((tilt - 4.84).abs() < 0.05, "tilt held {tilt} s");
+        assert!((heading - 51.4).abs() < 0.3, "heading held {heading} s");
+    }
+
+    /// How long a static start from `window` holds tilt and heading unaided.
+    fn held(window: &[StaticSample], dt: Seconds) -> (f32, f32) {
         let mut filter = Eskf::default();
-        assert_eq!(
-            filter.initialize_over(&window_with_mag(), Seconds::from_secs(0.25)),
-            Ok(Alignment::Static)
-        );
+        assert_eq!(filter.initialize_over(window, dt), Ok(Alignment::Static));
 
         let dt = Seconds::from_secs(0.005);
         let holding_still = still().imu;
-        let (mut tilt_held, mut heading_held) = (None, None);
-
-        for step in 1..8_000 {
+        let mut tilt_held = None;
+        // Past the 274 s the measured window buys, at 5 ms.
+        for step in 1..100_000 {
             assert_eq!(filter.step(holding_still, dt), Propagation::Propagated);
             let elapsed = step as f32 * dt.as_secs();
             let validity = filter.validity();
             if tilt_held.is_none() && !validity.tilt {
                 tilt_held = Some(elapsed);
             }
-            if heading_held.is_none() && !validity.heading {
-                heading_held = Some(elapsed);
-                break;
+            if !validity.heading {
+                return (tilt_held.unwrap_or(f32::NAN), elapsed);
             }
         }
-
-        let tilt = tilt_held.expect("tilt leaves the bar inside 40 s");
-        let heading = heading_held.expect("heading leaves the bar inside 40 s");
-        assert!((tilt - 3.83).abs() < 0.05, "tilt held {tilt} s");
-        assert!((heading - 37.8).abs() < 0.2, "heading held {heading} s");
+        (tilt_held.unwrap_or(f32::NAN), f32::NAN)
     }
 
     #[test]
@@ -3032,6 +3055,22 @@ mod tests {
             Propagation::Propagated
         );
         assert_eq!(elapsed(&filter), DT.as_secs());
+    }
+
+    /// That `initialize_coarse` weighs its one reading, `Measured::gyro_bias`, rather than
+    /// taking it whole; the weighing itself is tested in `init.rs`.
+    #[test]
+    fn one_still_sample_starts_the_gyroscope_bias_no_less_certain_than_the_prior() {
+        let mut filter = Eskf::default();
+        let sample = still()
+            .imu
+            .with_gyro(AngularRate::body(0.05, 0.05, 0.05))
+            .timed(Timestamp::from_micros(5_000), Seconds::from_secs(0.005));
+        assert!(filter.initialize_coarse(sample).is_ok());
+        let prior = Config::default().init.sigma_gyro_bias.as_rad_per_s();
+        let sigma = filter.covariance().variance(ErrorState::GyroBiasX).sqrt();
+        assert!(sigma <= prior && sigma > 0.99 * prior, "{sigma}");
+        assert!(filter.state().gyro_bias.vector().x.abs() < 1e-3);
     }
 
     /// The `Eskf`-level check that (16)–(22) are wired at all: a step grows the uncertainty it
@@ -4959,10 +4998,14 @@ mod tests {
 
     #[test]
     fn a_still_window_commits_its_gyroscope_bias_and_a_moving_one_does_not() {
+        // About the offset by ±10⁻⁴ rad/s, so the window measures how well it knows it.
         let offset = AngularRate::body(0.01, -0.02, 0.003);
         let mut window = [still(); 8];
-        for sample in &mut window {
-            sample.imu = sample.imu.with_gyro(offset);
+        for (index, sample) in window.iter_mut().enumerate() {
+            let noise = if index % 2 == 0 { 1e-4 } else { -1e-4 };
+            sample.imu = sample
+                .imu
+                .with_gyro(AngularRate::from_vector(offset.vector().add_scalar(noise)));
         }
 
         let mut filter = Eskf::default();
@@ -4973,7 +5016,7 @@ mod tests {
             Alignment::Static
         );
         assert!(
-            (filter.state().gyro_bias.vector() - offset.vector()).norm() < 1e-7,
+            (filter.state().gyro_bias.vector() - offset.vector()).norm() < 1e-5,
             "{:?}",
             filter.state().gyro_bias
         );
@@ -5319,11 +5362,11 @@ mod tests {
         assert!(filter.is_aligned());
         assert!(filter.validity().tilt);
 
-        // Past the 3.83 s the default bars buy, with a GNSS fix arriving at 2 Hz so that
-        // aiding is never stale. A 100 m one, which holds the status out of `DeadReckoning`
+        // Past the 4.84 s this unscattered window buys, with a GNSS fix arriving at 2 Hz so
+        // that aiding is never stale. A 100 m one, which holds the status out of `DeadReckoning`
         // and tells tilt nothing: a velocity would, through the accelerometer bias (8)
         // correlates it with.
-        for step in 1..=800 {
+        for step in 1..=1_200 {
             assert_eq!(
                 filter.step(still().imu, Seconds::from_secs(0.005),),
                 Propagation::Propagated
@@ -5336,6 +5379,16 @@ mod tests {
                     Position::zero(),
                 );
                 assert!(fix.horizontal.is_accepted(), "{fix:?}");
+                // And the barometer, whose silence would degrade the status by itself.
+                assert!(
+                    filter
+                        .fuse_baro_altitude(
+                            filter.now(),
+                            Altitude::from_meters(100.0),
+                            AltitudeNoise::from_sigma(2.0),
+                        )
+                        .is_accepted()
+                );
             }
         }
 
@@ -5863,8 +5916,7 @@ mod tests {
     #[test]
     fn the_horizon_is_what_separates_predicted_validity_from_the_current_one() {
         // The projection's whole point, on the quantity nothing aids. A static start levels
-        // tilt and holds it for 3.83 s unaided
-        // (`an_unaided_start_holds_its_attitude_for_the_margin_the_defaults_buy`), so a
+        // tilt and, its gyroscope unscattered, holds it for 4.84 s unaided, so a
         // horizon inside that arms and one outside it does not -- while `validity` says the
         // same thing at both, because it is answering about now.
         let ask = |seconds: f32| {
@@ -5882,7 +5934,7 @@ mod tests {
             (filter.validity().tilt, filter.predicted_validity().tilt)
         };
 
-        assert_eq!(ask(1.0), (true, true), "a second is inside the 3.83 s hold");
+        assert_eq!(ask(1.0), (true, true), "a second is inside the 4.84 s hold");
         assert_eq!(ask(6.0), (true, false), "six seconds is outside it");
     }
 

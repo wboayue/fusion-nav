@@ -525,6 +525,42 @@ its attitude was overconfident on 50 seeds wherever (24′) did not inflate the 
 correlation. On the corpus it is worth most on `7ce66f0d`, the hand launch levelled 12° wrong: when
 measured, 28 recoveries against 69 at 0.1, and aligned at 17.7 s rather than 32.7.
 
+**The gyroscope bias at rest, the window's mean weighed against the prior.** Checked against
+EKF2's bias 10 s after the start, with the Earth's rotation taken out in body axes at the start's attitude: on eight of the
+nine real logs that start at rest and log an EKF2 bias, the window's average agrees to
+3.4 × 10⁻⁴ rad/s RMS per axis, under EKF2's own σ there (3–7 × 10⁻⁴). So the corpus bounds a shift
+between the ground and the air at about that, and cannot resolve the floor beneath it.
+`a299e722`, whose rows each average 2.5 ms of 20, is the ninth: 2.1 × 10⁻³ and −3.0 × 10⁻³ rad/s
+off on x and z, still so at +120 s, an offset in every sample that its blocks' scatter cannot see.
+Against 0.01 rad/s on every start, averaged over 30 seeds: `mission` yaw 0.332° against 0.382°
+and its bias error halved, `flight` tilt 0.620° against 0.823° and horizontal position 1.17 m
+against 1.47, while `harsh_imu`, whose bias walks at nearly twice the filter's rate, gives yaw
+1.027° against 0.953°. Attitude ANEES on 50 seeds moves by under 0.03 on every scenario,
+`harsh_imu` 0.140 against 0.117. On the corpus the unaided tilt holds 10.32 s on `7592c9b2` and
+9.83 s on `f16771dd` against 3.88 and 3.84, and `a299e722` never loses it, for nine more GNSS
+velocity rejections there (324 against 315).
+
+On those windows the mean's variance `R` is, on the worst axis, 1/36 of the 0.01 rad/s prior's
+on `2c42096b`'s 0.8 s window to 1/25000 on `7592c9b2`'s, so `K`, the share of `ω̄` (7) takes,
+runs from 0.973 to 1.000: below 0.99 on `2c42096b`, `3949f175` and `f16771dd`.
+
+**`sigma_gyro_bias`, 0.01 rad/s, the prior a start in motion keeps.** PX4's 0.1 and ArduPilot's
+2.5°/s were both measured on the corpus's coarse starts and `moving_start`, and both cost:
+
+```text
+                         0.01     0.044     0.1
+7ce66f0d  rejected       4877      5602    58157
+          recovered        27        37      932
+          aligned_at    31.53     16.33    10.23
+cd7e0001  attitude_lost never      1.24     0.47
+moving_start  yaw (°)    1.494     1.664    2.048
+          aligned_at     3.40      8.16    11.41
+```
+
+A wide prior lets a coarse start read its attitude error as bias. The biases it has to cover are
+small: EKF2's per-log medians on the corpus are 1.2 × 10⁻³ rad/s RMS over the axes, none past
+4.5 × 10⁻³ (`2b2ad123`'s z).
+
 ### `FLOOR`
 
 The floor of (42′) is PX4's values, and the corpus says they sit below anything an honest source

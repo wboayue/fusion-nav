@@ -204,18 +204,24 @@ The nominal state is then initialized as
 **(7)**
 
 ```math
-\hat{q}_0 = q_{ZYX}(\psi_0, \theta_0, \phi_0), \qquad \hat{p}_0 = 0, \qquad \hat{v}_0 = 0, \qquad \hat{\beta}_{a,0} = 0, \qquad \hat{\beta}_{g,0} = \overline{\omega_m}
+\hat{q}_0 = q_{ZYX}(\psi_0, \theta_0, \phi_0), \qquad \hat{p}_0 = 0, \qquad \hat{v}_0 = 0, \qquad \hat{\beta}_{a,0} = 0, \qquad \hat{\beta}_{g,0} = K\, \overline{\omega_m}
 ```
 
 with $`q_{ZYX}`$ the quaternion of the yaw-pitch-roll sequence
 $`R = R_z(\psi) R_y(\theta) R_x(\phi)`$, matching $`R_0`$ in (6).
 
-The gyroscope bias is observable at rest and is initialized to the measured average. The
-accelerometer bias is not separable from attitude error at rest and is initialized to zero.
+The gyroscope bias is observable at rest, and the window's mean rate
+$`\overline{\omega_m} = \sum \Delta\theta / \sum T`$ is a measurement of it, weighed against
+the prior per body axis by $`K = \sigma_{\beta g}^2 / (\sigma_{\beta g}^2 + R)`$, with
+$`\sigma_{\beta g}`$ `Initialization::sigma_gyro_bias` and $`R`$ the variance of the mean, below
+(8). On the corpus's still windows $`K`$ is near one (`DESIGN.md`,
+[`Initialization`](DESIGN.md#initialization)); one sample's $`R`$ is far above the prior's, and
+$`K`$ near zero. The accelerometer bias is not separable from attitude error at rest and is
+initialized to zero.
 
-`β̂_{g,0} = \overline{\omega_m}` holds only where the window was taken **at rest**, which is what
-makes the bias observable; a window taken in motion offers the vehicle's own rotation under the
-same name, so it starts at zero instead. That test is `init::at_rest`, not the `Alignment` — the
+The weighing holds only where the window was taken **at rest**, which is what makes the bias
+observable; a window taken in motion offers the vehicle's own rotation under the same name, so
+it starts at zero instead, $`K = 0`$. That test is `init::at_rest`, not the `Alignment` — the
 same distinction `α₀` draws below. Neither production estimator averages at all: ArduPilot zeroes
 the bias at bootstrap (`libraries/AP_NavEKF3/AP_NavEKF3_core.cpp:546`, `368dc0c4`) and PX4 refuses
 to initialize outside 0.8–1.2 g and 15°/s (`src/modules/ekf2/EKF/ekf.cpp:213-227`, `c4e4ef98`).
@@ -231,7 +237,7 @@ P_0 = \begin{bmatrix}
 0 & \sigma_{v,0}^2 I & 0 & 0 & 0 \\
 0 & 0 & P_{\theta\theta} & P_{\theta\beta_a} & 0 \\
 0 & 0 & P_{\theta\beta_a}^\mathsf{T} & \sigma_{\beta a,0}^2 I & 0 \\
-0 & 0 & 0 & 0 & \sigma_{\beta g,0}^2 I
+0 & 0 & 0 & 0 & \operatorname{diag}(\sigma_{\beta g,0}^2)
 \end{bmatrix}
 ```
 
@@ -247,6 +253,21 @@ with $`\hat d = R(\hat q_0)^\mathsf{T} e_3`$, navigation down in body axes, and 
 window's own scatter across gravity as a tilt: the sample covariance $`C`$ of the specific force,
 $`\lambda = \tfrac{1}{2}\bigl(\operatorname{tr} C - \hat d^\mathsf{T} C \hat d\bigr) / (N \gamma^2)`$
 per horizontal axis. A window of one measures none, and takes $`\lambda = \sigma_{\text{tilt},0}^2`$.
+
+The gyroscope-bias prior is what the weighing of (7) leaves. Where the window was at rest, per
+body axis,
+
+```math
+\sigma_{\beta g,0}^2 = K R + \Omega_{ie}^2, \qquad R = \frac{\hat N^2}{T} \cdot \frac{J - 1}{J - 3}
+```
+
+with $`\hat N`$ the gyroscope's density of (8″) over $`J`$ blocks and the window's span $`T`$.
+$`\hat N^2`$ is a $`\chi^2`$ of $`J - 1`$ degrees of freedom, and $`(J - 1)/(J - 3)`$ is the
+expected overconfidence an inverse of it carries, so $`R`$ is scaled by it and taken from four
+blocks; under four, or on an axis whose blocks did not scatter at all, $`R = N^2 / T`$ at the
+configured `ImuNoise::gyro_white`. $`\Omega_{ie}`$ is
+the Earth's rotation rate, which (9)–(15) leave out and $`\overline{\omega_m}`$ therefore holds.
+In motion $`\sigma_{\beta g,0}`$ is `Initialization::sigma_gyro_bias`.
 
 The cross block is what (5) does to a biased accelerometer. At rest the sensor reads
 $`\bar f = R^\mathsf{T}(-\gamma e_3) + \beta_a`$, and (5) levels to $`\bar f`$ as though
@@ -331,8 +352,9 @@ its heading from, and is the rate at which a tilt error turns that heading.
 ### What a still window measures of its sensors
 
 A window at rest also measures each sensor's white noise, which the filter reports and never
-applies: a floor under $`Q`$ and $`R_m`$, since a vehicle on the ground is quieter than one in
-the air. A white-noise density $`N`$ on a rate gives an increment of variance $`N^2 T`$ over any
+applies as noise: a floor under $`Q`$ and $`R_m`$, since a vehicle on the ground is quieter than one in
+the air. What it does apply is $`\hat N^2 / T`$, how well this window's own average is known, in
+the weighing of (7) and the bias prior of (8). A white-noise density $`N`$ on a rate gives an increment of variance $`N^2 T`$ over any
 interval $`T`$, so the rates of samples $`\Delta t`$ apart scatter by $`N/\sqrt{\Delta t}`$, and
 (21) adds $`N^2 \Delta t`$ per step. The window sums each IMU's increments into blocks $`B_j`$ of
 length $`T_j \approx T`$ and weights each squared deviation by $`1/T_j`$, which makes blocks of
@@ -1275,9 +1297,9 @@ Each implementing function cites its equation numbers in a doc comment.
 | equations | concept | module | function |
 | --------- | ------- | ------ | -------- |
 | (1)–(4) | state definitions | `state.rs` | `State`, `ErrorState` |
-| (5)–(8) | static initialization | `init.rs` | `StaticWindow::push` and `measured`, `level_from_accel`, `heading_from_mag`, `nominal_state`, `classify`, `attitude_sigmas`, `initial_covariance`, with `state.rs`'s `AttitudeVariance::in_body` and `Covariance::set_attitude_accel_bias_block` |
+| (5)–(8) | static initialization | `init.rs` | `StaticWindow::push` and `measured`, `level_from_accel`, `heading_from_mag`, `nominal_state`, `classify`, `attitude_sigmas`, `Measured::gyro_bias`, `initial_covariance`, with `state.rs`'s `AttitudeVariance::in_body` and `Covariance::set_attitude_accel_bias_block` |
 | (8′) | what a coarse window supports | `init.rs` | `coarse_sigmas`, `window_drift`, `heading_sensitivity` — `tan δ` shared with (36′) |
-| (8″) | white noise a still window measures | `init.rs` | `Density`, `BaroReadings::noise`; reported by `StaticWindow::noise` as `WindowNoise` |
+| (8″) | white noise a still window measures | `init.rs` | `Density`, `BaroReadings::noise`, and `Density::mean_variance` for the bias of (7)–(8); reported by `StaticWindow::noise` as `WindowNoise` |
 | (5′) `ā_n` | in-motion levelling | `init.rs` | `Velocities::inertial_acceleration`; the correction itself: not built, #59 |
 | (30) `α₀` | barometric reference and its variance | `init.rs` | `BaroReadings::reference`, through `StaticWindow::alpha0` |
 | (9)–(11) | bias correction, gravity | `propagate.rs` | `ImuSample`, `corrected_imu` |

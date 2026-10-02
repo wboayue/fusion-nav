@@ -1231,6 +1231,7 @@ mod tests {
             Radians::from_radians(0.02),
             Radians::from_radians(0.35),
             Some(0.0),
+            Vector3::repeat(0.01),
             GRAVITY,
         );
 
@@ -1452,6 +1453,8 @@ mod projection_steps {
                 Radians::from_radians(0.02),
                 Radians::from_radians(0.35),
                 Some(0.0),
+                // The gyroscope-bias prior `PROJECTION_STEP`'s figures were measured at.
+                Vector3::repeat(0.01),
                 GRAVITY,
             ),
             ImuNoise::default(),

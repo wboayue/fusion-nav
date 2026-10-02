@@ -10,6 +10,7 @@ use nalgebra::{ComplexField, Matrix3, RealField, Rotation3, UnitQuaternion, Vect
 use crate::config::{Config, Initialization};
 use crate::display::{Decimals, Fixed};
 use crate::frames::{Body, Ned};
+use crate::geodetic::EARTH_RATE;
 use crate::math::{skew, wrap_pi};
 use crate::propagate::ImuSample;
 use crate::state::{AttitudeVariance, Covariance, State};
@@ -139,11 +140,7 @@ impl StaticSample {
 pub struct StaticWindow {
     /// `Σ f fᵀ`, for the window's scatter about `f̄`; see [`level_scatter`].
     outer: Matrix3<f64>,
-    /// `Σ ω`, the angular rate (7) takes as the gyroscope bias.
-    rate: Vector3<f64>,
     peaks: Peaks,
-    /// The time the samples integrated; see [`span`](Self::span).
-    span: f64,
     /// The last sample's time: the start of the filter's clock, and what the next sample's
     /// step is differenced against.
     end: Option<Timestamp>,
@@ -168,9 +165,7 @@ impl StaticWindow {
     pub fn new() -> Self {
         Self {
             outer: Matrix3::zeros(),
-            rate: Vector3::zeros(),
             peaks: Peaks::NONE,
-            span: 0.0,
             end: None,
             sums: BlockSums::new(),
             velocities: Velocities::default(),
@@ -215,14 +210,12 @@ impl StaticWindow {
         self.peaks.push(accel, gyro);
         let interval = f64::from(sample.imu.angle_interval.as_secs());
         let velocity_interval = f64::from(sample.imu.velocity_interval.as_secs());
-        let (accel, gyro) = (widen(accel), widen(gyro));
+        let accel = widen(accel);
         self.outer += accel * accel.transpose();
-        self.rate += gyro;
         self.gyro_noise
             .push(widen(sample.imu.delta_angle.vector()), interval);
         self.accel_noise
             .push(widen(sample.imu.delta_velocity.vector()), velocity_interval);
-        self.span += interval;
         self.end = Some(sample.imu.time);
         self.sums.push(
             accel,
@@ -289,7 +282,7 @@ impl StaticWindow {
     /// `data/flight.csv`'s window: summed in `f32`, it starts `short`.
     #[must_use]
     pub fn span(&self) -> Seconds {
-        Seconds::from_secs(self.span as f32)
+        Seconds::from_secs(self.gyro_noise.span() as f32)
     }
 
     /// What the window measured, or [`InitError::NoSamples`] for a window with nothing in it.
@@ -299,7 +292,7 @@ impl StaticWindow {
         let whole = first.merged(second);
         Ok(Measured {
             force: Acceleration::from_vector(mean(whole.force, whole.samples)),
-            rate: AngularRate::from_vector(mean(self.rate, whole.samples)),
+            rate: AngularRate::from_vector(self.gyro_noise.mean()),
             field: (whole.fields > 0)
                 .then(|| MagField::from_vector(mean(whole.field, whole.fields))),
             inertial_accel: self.velocities.inertial_acceleration(),
@@ -308,6 +301,7 @@ impl StaticWindow {
             end,
             halves: Halves::of(first, second),
             level_scatter: level_scatter(self.outer, whole.force, whole.samples),
+            rate_variance: self.gyro_noise.mean_variance(),
         })
     }
 
@@ -491,8 +485,8 @@ impl WindowNoise {
 pub(crate) struct Measured {
     /// `f̄`, the averaged specific force (5) levels from. Every sample carries one.
     pub force: Acceleration<Body>,
-    /// `ω̄`, the averaged angular rate (7) takes as the gyroscope bias. Every sample
-    /// carries one.
+    /// `ω̄ = ΣΔθ / ΣT`, the window's mean angular rate, which (7) weighs as a measurement
+    /// of the gyroscope bias. Every sample carries one.
     pub rate: AngularRate<Body>,
     /// `m̄`, the averaged magnetic field (6) takes a heading from, over the samples that
     /// carry one. `None` if none do, which is a vehicle with no magnetometer.
@@ -515,6 +509,10 @@ pub(crate) struct Measured {
     /// which measure no scatter. `f64`, because the division by `γ²` waits for the `γ` the
     /// filter is configured with.
     pub level_scatter: Option<f64>,
+    /// How well `ω̄` itself is known: per axis, the variance of the mean from the window's own
+    /// blocks of (8″), `Density::mean_variance`. `None` under `Density::FEWEST_FOR_MEAN`; see
+    /// [`gyro_bias`](Self::gyro_bias).
+    pub rate_variance: Option<Vector3<f32>>,
 }
 
 /// The averages of equations (5)–(6) taken over each half of the window separately, so
@@ -587,6 +585,53 @@ impl Peaks {
 }
 
 impl Measured {
+    /// The gyroscope bias (7) commits and its prior `σ_βg,0` of (8), per body axis.
+    ///
+    /// At rest, `ω̄` is a measurement of the bias with the variance `R` of a mean, and it is
+    /// weighed against [`Initialization::sigma_gyro_bias`] by the two variances, rather than
+    /// replacing it: `β̂ = ω̄ σ² / (σ² + R)`, `P = σ² R / (σ² + R)`. A still window's own
+    /// blocks keep `R` well under the prior's, and `ω̄` is taken nearly whole ([evidence]); one
+    /// 5 ms sample, under the configured [`ImuNoise::gyro_white`] since it has no blocks, is
+    /// worth less than the prior, and a bias taken from it whole would start 0.2 rad/s
+    /// uncertain. An axis whose blocks did not scatter at all, a held or coarsely quantized
+    /// stream, has measured nothing either, and takes the configured density too: zero would
+    /// claim the bias known to the Earth's rotation. In motion, `ω̄` is the
+    /// vehicle's rotation and nothing is weighed: zero under the prior, since seeding a turn
+    /// rate would subtract it from every later measurement as though it were a sensor error.
+    /// Neither production estimator averages at all, ArduPilot zeroing the bias at bootstrap
+    /// (`libraries/AP_NavEKF3/AP_NavEKF3_core.cpp:546`, `368dc0c4`) and PX4 refusing to
+    /// initialize outside 0.8–1.2 g and 15°/s (`src/modules/ekf2/EKF/ekf.cpp:213-227`,
+    /// `c4e4ef98`), so weighing is this crate's, taken only where their precondition holds.
+    ///
+    /// Plus [`EARTH_RATE`]'s square at rest: the filter does not model the Earth's rotation, so
+    /// `ω̄` holds its projection on body axes, and a turn moves that projection by as much. On
+    /// eight of the nine real logs that start at rest, `ω̄` agrees with EKF2's bias 10 s later to
+    /// 3.4 × 10⁻⁴ rad/s RMS, under EKF2's own σ, so the corpus bounds the floor without resolving
+    /// it ([evidence]).
+    ///
+    /// [`ImuNoise::gyro_white`]: crate::ImuNoise::gyro_white
+    /// [evidence]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#initialization
+    pub(crate) fn gyro_bias(&self, at_rest: bool, config: &Config) -> GyroBias {
+        let prior = config.init.sigma_gyro_bias.as_rad_per_s();
+        if !at_rest {
+            return GyroBias {
+                estimate: AngularRate::zero(),
+                sigmas: Vector3::repeat(prior),
+            };
+        }
+        let prior = prior * prior;
+        let unmeasured = config.imu.gyro_white.powi(2) / self.span.as_secs();
+        let r = self.rate_variance.map_or(Vector3::repeat(unmeasured), |r| {
+            r.map(|r| if r > 0.0 { r } else { unmeasured })
+        });
+        let floor = EARTH_RATE.as_rad_per_s();
+        let gain = r.map(|r| prior / (prior + r));
+        GyroBias {
+            estimate: AngularRate::from_vector(self.rate.vector().component_mul(&gain)),
+            sigmas: r.zip_map(&gain, |r, k| ComplexField::sqrt(k * r + floor * floor)),
+        }
+    }
+
     /// The direction equation (5) called down, `−f̄ / ‖f̄‖`: the axis the tilt bound and
     /// the dip are both measured about.
     ///
@@ -853,16 +898,53 @@ impl Density {
         if self.blocks < WindowNoise::MIN_READINGS {
             return None;
         }
+        Some(self.variance().map(|n2| ComplexField::sqrt(n2) as f32))
+    }
+
+    /// `N̂²` per axis, (8″), over the closed blocks; at least two, which callers check.
+    fn variance(&self) -> Vector3<f64> {
         let j = self.blocks as f64;
-        let axis = |squares: f64, sum: f64| {
-            let variance = scatter(squares, sum, self.interval) / (j - 1.0);
-            ComplexField::sqrt(variance.max(0.0)) as f32
-        };
-        Some(Vector3::new(
+        let axis =
+            |squares: f64, sum: f64| (scatter(squares, sum, self.interval) / (j - 1.0)).max(0.0);
+        Vector3::new(
             axis(self.squares.x, self.sum.x),
             axis(self.squares.y, self.sum.y),
             axis(self.squares.z, self.sum.z),
-        ))
+        )
+    }
+
+    /// The time the increments span, the open block's included.
+    fn span(&self) -> f64 {
+        self.interval + self.open_interval
+    }
+
+    /// `ω̄ = ΣΔθ / ΣT`, the mean rate over every increment, the open block's included: (7) in
+    /// increments, which weighs each sample by the time it integrated, as `N̂² / T` assumes.
+    fn mean(&self) -> Vector3<f32> {
+        let span = self.span();
+        if span <= 0.0 {
+            return Vector3::zeros();
+        }
+        ((self.sum + self.open) / span).map(|rate| rate as f32)
+    }
+
+    /// The fewest blocks [`mean_variance`](Self::mean_variance) takes a variance from.
+    ///
+    /// `N̂²` is a `χ²` of `J − 1` degrees of freedom, and dividing by it is what an inverse
+    /// variance does, so unscaled the expected NEES of the committed bias is `(J − 1)/(J − 3)`:
+    /// 1.40 at eight blocks, infinite at three. Four is the fewest where it is finite.
+    const FEWEST_FOR_MEAN: u64 = 4;
+
+    /// The variance of [`mean`](Self::mean) per axis, `N̂² / T` scaled by `(J − 1)/(J − 3)` so
+    /// that the expected NEES is one, and `None` under
+    /// [`FEWEST_FOR_MEAN`](Self::FEWEST_FOR_MEAN) blocks.
+    fn mean_variance(&self) -> Option<Vector3<f32>> {
+        if self.blocks < Self::FEWEST_FOR_MEAN {
+            return None;
+        }
+        let j = self.blocks as f64;
+        let scale = (j - 1.0) / (j - 3.0) / self.span();
+        Some(self.variance().map(|n2| (n2 * scale) as f32))
     }
 }
 
@@ -1272,19 +1354,16 @@ fn long_enough(span: Seconds, init: &Initialization) -> bool {
 
 /// The nominal state a window yields. Equation (7), from the attitude of (5)–(6).
 ///
-/// `at_rest` is [`at_rest`]'s verdict on the window, and it gates the gyroscope bias
-/// alone. (7) takes `β̂_g,0 = ω̄` because stillness is what makes the bias observable; a
-/// window that was moving offers the vehicle's own rotation under the same name, and
-/// seeding that would subtract a turn rate from every later measurement as though it
-/// were a sensor error. Neither production estimator averages at all — ArduPilot zeroes
-/// the bias at bootstrap (`libraries/AP_NavEKF3/AP_NavEKF3_core.cpp:546`, `368dc0c4`),
-/// and PX4 refuses to initialize outside 0.8–1.2 g and 15°/s
-/// (`src/modules/ekf2/EKF/ekf.cpp:213-227`, `c4e4ef98`) — so averaging is this crate's,
-/// and it is worth taking only where their precondition holds.
+/// `gyro_bias` is [`Measured::gyro_bias`]'s estimate, taken once so that the covariance
+/// prices the bias this commits.
 ///
 /// Every value read here is finite and the window is non-empty: [`StaticWindow`] refuses
 /// both before any of this is reached.
-pub(crate) fn nominal_state(measured: &Measured, declination: Radians, at_rest: bool) -> State {
+pub(crate) fn nominal_state(
+    measured: &Measured,
+    declination: Radians,
+    gyro_bias: AngularRate<Body>,
+) -> State {
     let (roll, pitch) = level_from_accel(measured.force);
     // Stillness observes tilt and never the rotation about it, so a window with no
     // magnetometer anywhere in it keeps ψ₀ = 0 — a stated direction rather than a
@@ -1307,11 +1386,7 @@ pub(crate) fn nominal_state(measured: &Measured, declination: Radians, at_rest: 
         // it leans the measured gravity vector and (5) has already read that lean as
         // attitude — so there is nothing left for this to hold.
         accel_bias: Acceleration::zero(),
-        gyro_bias: if at_rest {
-            measured.rate
-        } else {
-            AngularRate::zero()
-        },
+        gyro_bias,
         // `status` and `validity` are inert in the stored state; `Eskf::state`
         // overwrites both on every read.
         ..State::default()
@@ -1619,13 +1694,13 @@ pub(crate) fn initial_covariance(
     sigma_tilt: Radians,
     sigma_yaw: Radians,
     level_scatter: Option<f64>,
+    gyro_bias: Vector3<f32>,
     gravity: f32,
 ) -> Covariance {
     let position = init.sigma_position.as_meters();
     let velocity = init.sigma_velocity.as_m_per_s();
     let (tilt, yaw) = (sigma_tilt.as_radians(), sigma_yaw.as_radians());
     let accel_bias = init.sigma_accel_bias.as_m_per_s2();
-    let gyro_bias = init.sigma_gyro_bias.as_rad_per_s();
     // In the `ErrorState` ordering: `[δp δv δθ δβa δβg]`.
     #[rustfmt::skip]
     let sigmas = [
@@ -1633,7 +1708,7 @@ pub(crate) fn initial_covariance(
         velocity,   velocity,   velocity,
         0.0,        0.0,        0.0,
         accel_bias, accel_bias, accel_bias,
-        gyro_bias,  gyro_bias,  gyro_bias,
+        gyro_bias.x, gyro_bias.y, gyro_bias.z,
     ];
     let explained = accel_bias / gravity;
     let gamma = f64::from(gravity);
@@ -1659,6 +1734,16 @@ pub(crate) fn initial_covariance(
         .inverse_transform_vector(&Vector3::z());
     covariance.set_attitude_accel_bias_block(skew(down) * (-accel_bias * explained));
     covariance
+}
+
+/// The gyroscope bias a start commits, (7), and the standard deviation (8) gives it per body
+/// axis; [`Measured::gyro_bias`] says how both are taken.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct GyroBias {
+    /// `β̂_g,0`.
+    pub estimate: AngularRate<Body>,
+    /// `σ_βg,0` per body axis.
+    pub sigmas: Vector3<f32>,
 }
 
 /// Standard deviation of a heading known only to lie somewhere on the circle: `π / √3`,
@@ -1782,11 +1867,9 @@ pub(crate) mod tests {
 
     /// The nominal state a window yields at the default 4 Hz.
     fn nominal(window: &[StaticSample], declination: Radians, at_rest: bool) -> State {
-        nominal_state(
-            &measure(&spaced(window, DT)).expect("a usable window"),
-            declination,
-            at_rest,
-        )
+        let measured = measure(&spaced(window, DT)).expect("a usable window");
+        let bias = measured.gyro_bias(at_rest, &Config::default()).estimate;
+        nominal_state(&measured, declination, bias)
     }
 
     /// The tilt and yaw sigmas a window would start with, in radians.
@@ -1796,11 +1879,10 @@ pub(crate) mod tests {
     fn sigmas(window: &[StaticSample], dt: Seconds) -> (f32, f32) {
         let init = Initialization::default();
         let measured = measure(&spaced(window, dt)).expect("a usable window");
-        let state = nominal_state(
-            &measured,
-            Radians::ZERO,
-            at_rest(measured.peaks, &init, GRAVITY),
-        );
+        let bias = measured
+            .gyro_bias(at_rest(measured.peaks, &init, GRAVITY), &Config::default())
+            .estimate;
+        let state = nominal_state(&measured, Radians::ZERO, bias);
         let (tilt, yaw) = attitude_sigmas(
             &init,
             classify(&measured, &init, GRAVITY),
@@ -1922,6 +2004,7 @@ pub(crate) mod tests {
                 init.sigma_tilt,
                 init.sigma_yaw,
                 measured.level_scatter,
+                Vector3::repeat(init.sigma_gyro_bias.as_rad_per_s()),
                 GRAVITY,
             );
             let theta = ErrorState::AttitudeX.index();
@@ -1969,6 +2052,144 @@ pub(crate) mod tests {
         );
     }
 
+    /// `window`, each sample `dt` long, with the gyroscope reading `rate(index)`.
+    fn rates(n: usize, dt: f32, rate: impl Fn(usize) -> [f32; 3]) -> Measured {
+        let window: std::vec::Vec<_> = (0..n)
+            .map(|index| {
+                let [x, y, z] = rate(index);
+                StaticSample {
+                    imu: still().imu.with_gyro(AngularRate::body(x, y, z)),
+                    ..still()
+                }
+            })
+            .collect();
+        measure(&spaced(&window, Seconds::from_secs(dt))).expect("a usable window")
+    }
+
+    #[test]
+    fn a_still_window_weighs_its_mean_rate_by_the_scatter_of_its_blocks() {
+        // 2.03 s at 100 Hz: forty closed 50 ms blocks, each holding one rate about `c`, the
+        // blocks alternating in sign, and three samples left open; the worst axis is in the
+        // middle. The closed blocks' scatter gives `N̂² = b² · 0.05 · 40/39`, the mean's
+        // variance divides it by all 2.03 s and scales it by 39/37, and `ω̄` counts the open
+        // samples too. One sample's scatter over the count, taking each block's five samples for
+        // five readings, would say 2.3 times too little; dividing by the closed 2.0 s, a little
+        // too much.
+        let (b, c) = ([1e-3f32, 4e-3, 2e-3], 3e-3f32);
+        let sign = |index: usize| {
+            if (index / 5).is_multiple_of(2) {
+                1.0
+            } else {
+                -1.0
+            }
+        };
+        let measured = rates(203, 0.01, |index| b.map(|b| c + sign(index) * b));
+        let config = Config::default();
+        let prior = f64::from(config.init.sigma_gyro_bias.as_rad_per_s()).powi(2);
+        let floor = f64::from(EARTH_RATE.as_rad_per_s());
+        let bias = measured.gyro_bias(true, &config);
+        for (axis, b) in b.into_iter().enumerate() {
+            let b = f64::from(b);
+            let r = b * b * 0.05 * 40.0 / 39.0 * 39.0 / 37.0 / 2.03;
+            let k = prior / (prior + r);
+            let mean = f64::from(c) + b * 0.03 / 2.03;
+            let sigma = (k * r + floor * floor).sqrt();
+            assert!(
+                (f64::from(bias.sigmas[axis]) - sigma).abs() < 1e-3 * sigma,
+                "axis {axis}: sigma {sigma}, got {}",
+                bias.sigmas[axis]
+            );
+            let estimate = f64::from(bias.estimate.vector()[axis]);
+            assert!(
+                (estimate - k * mean).abs() < 1e-3 * mean,
+                "axis {axis}: estimate {}, got {estimate}",
+                k * mean
+            );
+        }
+
+        // In motion the window measured no bias, and the prior stands.
+        let moving = measured.gyro_bias(false, &config);
+        assert_eq!(moving.estimate, AngularRate::zero());
+        assert_eq!(
+            moving.sigmas,
+            Vector3::repeat(config.init.sigma_gyro_bias.as_rad_per_s())
+        );
+    }
+
+    #[test]
+    fn a_window_of_few_blocks_is_charged_for_how_little_it_knows_its_scatter() {
+        // Four 50 ms blocks alternating ±b: `N̂² = b² · 0.05 · 4/3`, and the mean's variance
+        // scales it by 3/1, the `(J − 1)/(J − 3)` that makes the expected NEES one. Three
+        // blocks measure nothing, and the configured density stands in.
+        let b = 2e-3f64;
+        let config = Config::default();
+        let prior = f64::from(config.init.sigma_gyro_bias.as_rad_per_s()).powi(2);
+        let floor = f64::from(EARTH_RATE.as_rad_per_s());
+        let alternating = |index: usize| [(if index.is_multiple_of(2) { b } else { -b }) as f32; 3];
+        let sigma = |r: f64| (prior * r / (prior + r) + floor * floor).sqrt();
+
+        let four = rates(4, 0.05, alternating).gyro_bias(true, &config);
+        let expected = sigma(b * b * 0.05 * 4.0 / 3.0 * 3.0 / 0.2);
+        assert!(
+            (f64::from(four.sigmas.x) - expected).abs() < 1e-3 * expected,
+            "{} against {expected}",
+            four.sigmas.x
+        );
+
+        let three = rates(3, 0.05, alternating).gyro_bias(true, &config);
+        let white = f64::from(config.imu.gyro_white);
+        let expected = sigma(white * white / 0.15);
+        assert!(
+            (f64::from(three.sigmas.x) - expected).abs() < 1e-3 * expected,
+            "{} against {expected}",
+            three.sigmas.x
+        );
+    }
+
+    #[test]
+    fn one_sample_is_weighed_by_its_own_noise_and_left_mostly_to_the_prior() {
+        // A 5 ms reading under the configured density is worth 0.21 rad/s, twenty times the
+        // prior: weighed, the bias stays near zero and the prior near itself, where taking the
+        // reading whole would start the bias 0.2 rad/s uncertain.
+        let config = Config::default();
+        let measured = rates(1, 0.005, |_| [0.05; 3]);
+        let bias = measured.gyro_bias(true, &config);
+        let prior = config.init.sigma_gyro_bias.as_rad_per_s();
+        assert!(
+            bias.sigmas.x < prior && bias.sigmas.x > 0.99 * prior,
+            "{:?}",
+            bias.sigmas
+        );
+        assert!(bias.estimate.vector().x.abs() < 1e-3, "{:?}", bias.estimate);
+    }
+
+    #[test]
+    fn the_mean_rate_weighs_each_sample_by_the_time_it_integrated() {
+        // 0.01 rad/s for 1 ms and nothing for 9 ms, alternating: 0.001 over the time, where an
+        // average of the samples' rates says 0.005.
+        let window: std::vec::Vec<_> = (0..40)
+            .map(|index| {
+                let (rate, dt) = if index % 2 == 0 {
+                    (0.01, 0.001)
+                } else {
+                    (0.0, 0.009)
+                };
+                StaticSample {
+                    imu: still()
+                        .imu
+                        .with_gyro(AngularRate::body(rate, rate, rate))
+                        .timed(
+                            Timestamp::from_micros(index as u64 * 10_000 + 10_000),
+                            Seconds::from_secs(dt),
+                        ),
+                    ..still()
+                }
+            })
+            .collect();
+        let rate = measure(&window).expect("a usable window").rate.vector().x;
+        assert!((rate - 0.001).abs() < 1e-6, "got {rate}");
+    }
+
     #[test]
     fn a_scattered_window_keeps_tilt_uncertain_once_the_bias_is_known() {
         // At the defaults the bias explains all of `sigma_tilt`, so the tilt variance left
@@ -1983,6 +2204,7 @@ pub(crate) mod tests {
             init.sigma_yaw,
             // The scatter whose tilt is `level`.
             Some(f64::from(level) * f64::from(GRAVITY) * f64::from(GRAVITY)),
+            Vector3::repeat(init.sigma_gyro_bias.as_rad_per_s()),
             GRAVITY,
         );
         let m = p.as_matrix();
@@ -2112,14 +2334,20 @@ pub(crate) mod tests {
     fn a_still_window_takes_its_gyroscope_bias_from_the_average() {
         // A gyroscope reading a constant offset while the vehicle does not turn is
         // reading its own bias, and at rest that is the one place it is observable.
+        // About the offset by ±10⁻⁴ rad/s, so the window measures how well it knows it.
         let offset = AngularRate::body(0.01, -0.02, 0.003);
-        let window = [StaticSample {
-            imu: still().imu.with_gyro(offset),
-            ..still()
-        }; 8];
+        let window: [StaticSample; 8] = core::array::from_fn(|index| {
+            let noise = if index % 2 == 0 { 1e-4 } else { -1e-4 };
+            StaticSample {
+                imu: still()
+                    .imu
+                    .with_gyro(AngularRate::from_vector(offset.vector().add_scalar(noise))),
+                ..still()
+            }
+        });
         let state = nominal(&window, Radians::ZERO, true);
         assert!(
-            (state.gyro_bias.vector() - offset.vector()).norm() < 1e-7,
+            (state.gyro_bias.vector() - offset.vector()).norm() < 1e-5,
             "{:?}",
             state.gyro_bias
         );
@@ -2313,8 +2541,11 @@ pub(crate) mod tests {
         // part and well inside the 0.262 rad/s tolerance; eight samples at 0.2 s is a
         // 1.6 s window, still, and coarse only for being short.
         let mut window = window_at(0.0, 0.0, 0.0, 0.0);
-        for sample in &mut window {
-            sample.imu = sample.imu.with_gyro(AngularRate::body(0.05, 0.0, 0.0));
+        for (index, sample) in window.iter_mut().enumerate() {
+            let noise = if index % 2 == 0 { 1e-4 } else { -1e-4 };
+            sample.imu = sample
+                .imu
+                .with_gyro(AngularRate::body(0.05 + noise, noise, noise));
         }
         let dt = Seconds::from_secs(0.2);
         let init = Initialization::default();
@@ -2323,11 +2554,12 @@ pub(crate) mod tests {
             at_rest(measured.peaks, &init, GRAVITY),
             "0.05 rad/s is inside 0.262"
         );
-        let bias = nominal_state(&measured, Radians::ZERO, true)
-            .gyro_bias
+        let bias = measured
+            .gyro_bias(true, &Config::default())
+            .estimate
             .vector();
         assert!(
-            (bias.x - 0.05).abs() < 1e-6,
+            (bias.x - 0.05).abs() < 1e-5,
             "(7) commits the average, got {bias:?}"
         );
 

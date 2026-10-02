@@ -20,18 +20,18 @@
 # the starts. `--all` lists every function of this crate measured.
 
 
-thumbv6m-none-eabi size.eskf.Eskf=3776 size.state.State=72 size.state.Covariance=900 size.state.Offset=64 size.history.History=1544 size.health.Diagnostics=768 size.config.Config=244 size.init.StaticWindow=944 size.init.StaticSample=80 size.eskf.Startup=1088
+thumbv6m-none-eabi size.eskf.Eskf=3776 size.state.State=72 size.state.Covariance=900 size.state.Offset=64 size.history.History=1544 size.health.Diagnostics=768 size.config.Config=244 size.init.StaticWindow=912 size.init.StaticSample=80 size.eskf.Startup=1088
 thumbv6m-none-eabi frame.update.update.1=6368 frame.update.update.2=7400 frame.update.update.3=8088 frame.eskf.Eskf.observe.1=1272 frame.eskf.Eskf.observe.2=1376 frame.eskf.Eskf.observe.3=1464 frame.eskf.Eskf.apply=1048 frame.eskf.Eskf.apply_or_recover=1120 frame.update.reparameterize=456 frame.update.inject=168
 thumbv6m-none-eabi frame.eskf.Eskf.fuse_gnss_position=1376 frame.eskf.Eskf.fuse_gnss_geodetic=568 frame.eskf.Eskf.fuse_gnss_velocity=1416 frame.eskf.Eskf.fuse_baro_altitude=1272 frame.eskf.Eskf.fuse_mag_heading=112 frame.eskf.Eskf.fuse_gnss_heading=248 frame.eskf.Eskf.fuse_course=256 frame.eskf.Eskf.fuse_heading=1232
 thumbv6m-none-eabi frame.eskf.Eskf.adopt_position.2=1968 frame.eskf.Eskf.adopt_position.3=1984 frame.eskf.Eskf.adopt_velocity=1904 frame.eskf.Eskf.adopt_heading=2136
 thumbv6m-none-eabi frame.eskf.Eskf.predict=2176 frame.propagate.propagate=1088 frame.propagate.propagate_covariance=2832 frame.propagate.coast=2152 frame.propagate.project=1952 frame.eskf.Eskf.predicted_validity=1856 frame.math.enforce_symmetry.15=128
-thumbv6m-none-eabi frame.eskf.Eskf.initialize=2224 frame.eskf.Eskf.initialize_coarse=3576 frame.eskf.Eskf.initialize_from=1928 frame.eskf.Eskf.alignment_of=1112 frame.init.initial_covariance=1120
-thumbv6m-none-eabi text.3=167798 rodata.3=4383 text_nalgebra.3=15348 text_libm.3=19532 text_compiler_builtins.3=10288 text.s=107894 rodata.s=4455 text_nalgebra.s=2056 text_libm.s=10432 text_compiler_builtins.s=10334
+thumbv6m-none-eabi frame.eskf.Eskf.initialize=2224 frame.eskf.Eskf.initialize_coarse=3504 frame.eskf.Eskf.initialize_from=1928 frame.eskf.Eskf.alignment_of=1112 frame.init.initial_covariance=1120
+thumbv6m-none-eabi text.3=168926 rodata.3=4383 text_nalgebra.3=15348 text_libm.3=19532 text_compiler_builtins.3=10288 text.s=108298 rodata.s=4455 text_nalgebra.s=2056 text_libm.s=10432 text_compiler_builtins.s=10334
 
-thumbv7em-none-eabihf size.eskf.Eskf=3776 size.state.State=72 size.state.Covariance=900 size.state.Offset=64 size.history.History=1544 size.health.Diagnostics=768 size.config.Config=244 size.init.StaticWindow=944 size.init.StaticSample=80 size.eskf.Startup=1088
+thumbv7em-none-eabihf size.eskf.Eskf=3776 size.state.State=72 size.state.Covariance=900 size.state.Offset=64 size.history.History=1544 size.health.Diagnostics=768 size.config.Config=244 size.init.StaticWindow=912 size.init.StaticSample=80 size.eskf.Startup=1088
 thumbv7em-none-eabihf frame.update.update.1=6216 frame.update.update.2=7320 frame.update.update.3=7960 frame.eskf.Eskf.observe.1=1256 frame.eskf.Eskf.observe.2=1352 frame.eskf.Eskf.observe.3=1440 frame.eskf.Eskf.apply=1048 frame.eskf.Eskf.apply_or_recover=1064 frame.update.reparameterize=448 frame.update.inject=88
 thumbv7em-none-eabihf frame.eskf.Eskf.fuse_gnss_position=1344 frame.eskf.Eskf.fuse_gnss_geodetic=560 frame.eskf.Eskf.fuse_gnss_velocity=1408 frame.eskf.Eskf.fuse_baro_altitude=1256 frame.eskf.Eskf.fuse_mag_heading=104 frame.eskf.Eskf.fuse_gnss_heading=256 frame.eskf.Eskf.fuse_course=264 frame.eskf.Eskf.fuse_heading=1240
 thumbv7em-none-eabihf frame.eskf.Eskf.adopt_position.2=1968 frame.eskf.Eskf.adopt_position.3=1992 frame.eskf.Eskf.adopt_velocity=1896 frame.eskf.Eskf.adopt_heading=2104
 thumbv7em-none-eabihf frame.eskf.Eskf.predict=2160 frame.propagate.propagate=1096 frame.propagate.propagate_covariance=2760 frame.propagate.coast=2144 frame.propagate.project=1936 frame.eskf.Eskf.predicted_validity=1832 frame.math.enforce_symmetry.15=8
-thumbv7em-none-eabihf frame.eskf.Eskf.initialize=2216 frame.eskf.Eskf.initialize_coarse=3552 frame.eskf.Eskf.initialize_from=1856 frame.eskf.Eskf.alignment_of=1104 frame.init.initial_covariance=1080
-thumbv7em-none-eabihf text.3=184012 rodata.3=4527 text_nalgebra.3=4450 text_libm.3=20752 text_compiler_builtins.3=7558 text.s=114300 rodata.s=4599 text_nalgebra.s=1454 text_libm.s=12064 text_compiler_builtins.s=7674
+thumbv7em-none-eabihf frame.eskf.Eskf.initialize=2216 frame.eskf.Eskf.initialize_coarse=3488 frame.eskf.Eskf.initialize_from=1856 frame.eskf.Eskf.alignment_of=1104 frame.init.initial_covariance=1080
+thumbv7em-none-eabihf text.3=185596 rodata.3=4527 text_nalgebra.3=4450 text_libm.3=20752 text_compiler_builtins.3=7558 text.s=114708 rodata.s=4599 text_nalgebra.s=1454 text_libm.s=12064 text_compiler_builtins.s=7674
