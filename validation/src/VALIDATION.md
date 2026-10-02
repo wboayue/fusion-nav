@@ -64,9 +64,17 @@ whose attitude this filter gets wrong at startup, a known gap (#59).
 
 {{figure 89a498ce/raw track}}
 
+## [Cost](validation/cost.md): what does it take on a microcontroller?
+
+Not a question about the estimate, and answered from the build rather than from a flight: the
+memory, stack and flash the filter needs on a Cortex-M0 and on a Cortex-M4 or M7, per entry
+point. It allocates nothing. Execution time on a real board is not measured yet (#41).
+
 ## Where the numbers come from
 
 Nothing on these pages is typed by hand. Every number is copied from the output of a tool in
 this repository, and every figure is drawn from the run it describes, named by scenario and
 seed or by log. `tools/validation.sh` regenerates all of it, and
 `tools/validation.sh --check` fails if any page differs from what a fresh run produces.
+The cost page's figures are the ones CI pins in `data/footprint.txt`, and CI checks that page
+on every build.
