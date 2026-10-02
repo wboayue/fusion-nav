@@ -6,25 +6,73 @@ Embedded-first inertial navigation using a 15-state Error-State Kalman Filter (E
 barometric altitude, and magnetometer observations. It is `no_std`, allocation-free, and aimed at
 flight controllers, UAVs, and other embedded navigation.
 
+![The simulator's gnss_outage flight: position error against truth stays inside the filter's own 3-sigma band, which widens while GNSS is lost and closes at the first fix](https://raw.githubusercontent.com/wboayue/fusion-nav/main/validation/figures/gnss_outage/error_position.png)
+
+*A simulated flight that loses GNSS for 20 s. The line is the position error against truth, the
+grey band the filter's own ±3σ, the shading its `Status`: yellow `Degraded`, red
+`DeadReckoning`. The band widens as the error grows, and the first fix brings both back.
+[VALIDATION.md](https://github.com/wboayue/fusion-nav/blob/main/VALIDATION.md) has the rest, against simulated truth, real UAV
+flights and PX4's EKF2.*
+
+## Why this crate
+
+* **Readable mathematics.** The code cites a numbered equation for every step it takes, in
+  [EQUATIONS.md](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md), and a table maps each equation to the function
+  implementing it. No generated code.
+* **Frames in the types.** NED and FRD are type parameters, so passing an ENU vector where NED is
+  expected is a compile error. ENU, FLU and ROS conventions convert at the edge, by name, and a
+  PX4 or ArduPilot attitude seeds with no conversion.
+* **Health travels with the estimate.** `state()` returns the solution with its `Status` and a
+  validity flag per quantity, and every call returns a typed outcome: accepted, rejected,
+  adopted, or refused with a reason.
+* **Pure Rust, one dependency** (`nalgebra`). `no_std`, allocation-free, no C++ toolchain, and no reachable
+  panic, which CI checks by linking the whole API for two Cortex-M targets.
+* **Validation you can rerun.** Seeded simulations scored against truth, and the covariance's
+  honesty tested on 50 seeds, gate CI with no hardware; real PX4 logs replay beside EKF2, and one
+  script regenerates every published figure.
+* **Configuration derived, not demanded.** `replay --derive` prints a `Config` from your own log;
+  the accuracy your mission needs is the one thing you must supply.
+
+[GOALS.md](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md) says what each claim rests on and what would falsify it.
+
+## How it fits together
+
 ```text
-   IMU ──► state propagation ──┐
-                               │      ┌──────────────────┐     attitude
-  GNSS ──► position, velocity ─┤      │    fusion-nav    │     position NED
-  Baro ──► altitude ───────────┼────► │  15-state ESKF   │ ──► velocity NED
-   Mag ──► heading ────────────┘      └──────────────────┘     accelerometer bias
-                                                               gyroscope bias
+  every IMU sample                              every measurement, at its own time
+  ────────────────                              ──────────────────────────────────
+  predict(imu) ──► Propagation                  fuse_*(time, z, noise)
+       │           Propagated · Coasted ·            │ refused before the gate? ──► Fusion::NotFinite, …
+       │           refused                           ▼
+       ▼                                        gate: is z consistent with the estimate then?
+  nominal state + covariance  ◄── correct ───── accept ──► Fusion::Accepted
+       │                                        reject ──► Fusion::Rejected
+       │                      ◄── adopt ──────── └─ locked out past its timeout ──► Fusion::Reset
+       ▼
+  state() ──► position, velocity, attitude, biases
+              + Status + validity per quantity
 ```
+
+Every call returns an outcome, and every output carries its health. The two paths are
+[DESIGN.md](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#architecture)'s, with the module that owns each step.
 
 ## Why an ESKF?
 
 No single sensor gives you navigation. An IMU is fast and self-contained but integrating it drifts
-without bound: a small gyroscope bias becomes an attitude error, and an accelerometer bias becomes
-velocity error that grows linearly and position error that grows quadratically. GNSS is absolute
-but slow, noisy, and sometimes absent. A barometer gives height only; a magnetometer gives heading
-only and is easily disturbed.
+without bound. GNSS is absolute but slow, noisy, and sometimes absent. A barometer gives height
+only; a magnetometer gives heading only and is easily disturbed.
 
-The errors are also coupled. A small attitude error projects gravity into the wrong axis, and
-that becomes acceleration error, then velocity error, then position error.
+The errors are also coupled, and each step integrates once more. Followed from a constant
+gyroscope bias:
+
+```text
+  gyroscope bias ──► attitude error ──► velocity error ──► position error
+     constant           grows ∝ t         grows ∝ t²          grows ∝ t³
+                            │                 ▲
+                            └─ gravity tipped ┘
+                               into the wrong axis
+```
+
+An accelerometer bias enters one step later, at velocity, so it grows position error as `t²`.
 
 A Kalman filter that carries all of these quantities together models that coupling through its
 covariance, so a GNSS position fix corrects not only position but the attitude and IMU biases that
@@ -329,15 +377,16 @@ are integrated over their own intervals. The result is `#[must_use]`:
 | `fuse_gnss_geodetic(time, fix, noise, antenna)` | latitude, longitude, height; converted about the filter's origin |
 | `fuse_gnss_position(time, position, noise, antenna)` | NED position about the filter's origin, for a caller that converts itself |
 
-Both GNSS position calls return a `GnssFusion`, a `Fusion` for each half of the fix —
-`horizontal` and `height` — because the two are gated apart: a height the estimate disagrees with
-is rejected without costing the horizontal fix beside it, and `diagnostics()` carries each half
-as its own source, `gnss_position` and `gnss_height`. `is_accepted()` on it asks for both.
 | `fuse_gnss_velocity(time, velocity, noise, antenna)` | NED velocity |
 | `fuse_baro_altitude(time, altitude, noise)` | altitude, relative to `α₀` |
 | `fuse_mag_heading(time, field, noise)` | body-frame field, reduced to a heading and fused as one scalar |
 | `fuse_gnss_heading(time, heading, noise)` | true heading from a dual-antenna receiver, the mounting angle already removed |
 | `fuse_course(time, sideslip)` | a constraint rather than a reading: the nose points along the estimated velocity, to within `sideslip`. Call it after `fuse_gnss_velocity`, with that fix's `time`. Fixed-wing and ground vehicles; never a multirotor |
+
+Both GNSS position calls return a `GnssFusion`, a `Fusion` for each half of the fix, `horizontal`
+and `height`, because the two are gated apart: a height the estimate disagrees with is rejected
+without costing the horizontal fix beside it, and `diagnostics()` carries each half as its own
+source, `gnss_position` and `gnss_height`. `is_accepted()` on it asks for both.
 
 `antenna` is where the GNSS antenna sits relative to the IMU, in body axes, `Position::body(forward,
 right, down)` or `Position::flu(..)`, and `Position::zero()` for one on top of it. A fix measures
@@ -406,11 +455,19 @@ converted back.
 
 ## Health reporting
 
-A single rejection needs no action — that is what the gate is for. Sustained rejection is
+A single rejection needs no action: that is what the gate is for. Sustained rejection is
 different: if the filter itself is wrong, correct measurements look inconsistent, all are
 rejected, and the filter silently dead-reckons while looking confident. So health travels with
 the estimate: `filter.state()` returns the solution together with its status and validity, and a
 solution cannot be read without them.
+
+Three questions, three answers:
+
+| question | answer | read it |
+| --- | --- | --- |
+| how bad is the worst thing? | `state().status` | for a mode change, a failsafe, a log line |
+| which outputs can I use now? | `state().validity`, one flag per quantity | before using a quantity in control |
+| will they still be good if I take off now? | `predicted_validity()` | in an arming check |
 
 ### `Status` — how bad is the worst thing
 
@@ -420,6 +477,13 @@ solution cannot be read without them.
 | `Aligning` | running and aided, but attitude has not converged — a coarse start still learning, or a heading no magnetometer has observed yet |
 | `Degraded` | a source has timed out; horizontal position is still aided |
 | `DeadReckoning` | neither GNSS position nor velocity has been accepted for `Config::timeouts.dead_reckoning_after`; horizontal position drifts without bound, whatever the barometer and magnetometer still hold |
+
+```text
+  most severe   DeadReckoning   no horizontal GNSS accepted for dead_reckoning_after
+       ▲        Aligning        attitude not yet converged; leaves once, never returns
+       │        Degraded        a source that was accepted has timed out
+  least severe  Healthy         every source fused is still accepted
+```
 
 When several apply the most severe wins, in the order `DeadReckoning` > `Aligning` > `Degraded` >
 `Healthy`, so a vehicle waiting for its first GNSS fix reads `DeadReckoning`, not `Aligning`, while
@@ -738,13 +802,16 @@ Features out of scope (wind, terrain, optical flow, airspeed, ...) are listed in
 
 ## Further reading
 
-* [GLOSSARY.md](https://github.com/wboayue/fusion-nav/blob/main/GLOSSARY.md) — the vocabulary the other four assume: innovation, NEES, bias,
-  specific force, consistency against accuracy, and what PX4 and ArduPilot call the same things
-* [DESIGN.md](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md) — architecture, state definition, measurement models, gating, embedded
-  budget, scope
-* [EQUATIONS.md](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md) — the mathematics, numbered, with an equation-to-code map
-* [GOALS.md](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md) — positioning, differentiators, decisions, open questions
-* [data/README.md](https://github.com/wboayue/fusion-nav/blob/main/data/README.md) — the replay harness and PX4 log corpus
+The documents, by question:
+
+| question | document |
+| --- | --- |
+| why does this crate exist, and what did it decide? | [GOALS.md](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md): positioning, differentiators, decisions, non-goals |
+| how is it built, and where do its numbers come from? | [DESIGN.md](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md): architecture, modules, defaults and their evidence, measured cost |
+| what does it compute? | [EQUATIONS.md](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md): the mathematics, numbered, with an equation-to-code map |
+| what does a word mean here? | [GLOSSARY.md](https://github.com/wboayue/fusion-nav/blob/main/GLOSSARY.md): innovation, NEES, bias, specific force, and what PX4 and ArduPilot call the same things |
+| how good is it? | [VALIDATION.md](https://github.com/wboayue/fusion-nav/blob/main/VALIDATION.md): accuracy, honesty, robustness and cost, regenerated from the runs |
+| how is it tested on logs? | [data/README.md](https://github.com/wboayue/fusion-nav/blob/main/data/README.md): the replay harness and the PX4 log corpus |
 
 ## License
 
