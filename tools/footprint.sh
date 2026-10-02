@@ -10,7 +10,7 @@
 # Four figures per target, each one an integrator plans around (validation/cost.md): a type's
 # size, from `-Zprint-type-sizes`; a function's stack frame, from `-Zemit-stack-sizes` at
 # `opt-level = 3` in the library's own release profile; the deepest stack a function reaches,
-# those frames walked through the rlibs' call relocations (`llvm-objdump -dr`); and the flash
+# those frames walked through the rlibs' relocations (`llvm-objdump -d -r -t`); and the flash
 # of `panic-check`'s ELF, which links the whole public API under fat LTO, at each level
 # `panic-check/profile.sh` names.
 # `tools/footprint.py` reads them into keys, and its docstring says what each key means and what it
@@ -57,7 +57,8 @@ esac
 
 host=$(rustc "+$TOOLCHAIN" -vV 2>/dev/null | sed -n 's/^host: //p' || true)
 [ -n "$host" ] || die "no $TOOLCHAIN: run tools/footprint.sh --install"
-tools="$(rustc "+$TOOLCHAIN" --print sysroot)/lib/rustlib/$host/bin"
+sysroot=$(rustc "+$TOOLCHAIN" --print sysroot)
+tools="$sysroot/lib/rustlib/$host/bin"
 for tool in llvm-readobj llvm-objdump llvm-nm llvm-size; do
     [ -x "$tools/$tool" ] || die "$tool not in $tools: run tools/footprint.sh --install"
 done
@@ -73,19 +74,20 @@ export RUSTFLAGS=
 # moves no code; the ELF builds go without it.
 frames_flag=-Zemit-stack-sizes
 
-# rlibs <crate>...: the rlibs cargo's JSON on stdin names for those crates, or for every crate
-# but this one with none named.
+# rlibs <target> <crate>...: the rlibs cargo's JSON on stdin names for those crates, or for
+# every crate but this one with none named, built for <target>: a build script's dependencies
+# are the host's, and hold no code the target runs.
 rlibs() {
     python3 -c '
 import json, sys
-wanted = set(sys.argv[1:])
+target, wanted = sys.argv[1], set(sys.argv[2:])
 for line in sys.stdin:
     m = json.loads(line)
     if m.get("reason") != "compiler-artifact":
         continue
     name = m["target"]["name"]
     if (name in wanted) if wanted else name != "fusion_nav":
-        print("\n".join(f for f in m["filenames"] if f.endswith(".rlib")))
+        print("\n".join(f for f in m["filenames"] if f.endswith(".rlib") and f"/{target}/" in f))
 ' "$@"
 }
 
@@ -99,7 +101,7 @@ measure() {
     # The dependencies first, for the rlibs cargo names: built here as an integrator builds
     # them, and fresh for the build below.
     deps=$(RUSTFLAGS=$frames_flag cargo "+$TOOLCHAIN" build --quiet --lib --release \
-        --target "$target" --message-format=json | rlibs) || exit 1
+        --target "$target" --message-format=json | rlibs "$target") || exit 1
     # `cargo rustc` hands the flag to this crate alone, so dependencies print no layouts of
     # their own. Cleaned first: a crate cargo considers fresh is not compiled, and prints
     # nothing to read.
@@ -111,18 +113,26 @@ measure() {
     # The sysroot ships `core` and `compiler_builtins` prebuilt, without the section, so
     # `-Zbuild-std` rebuilds them with it, in a directory of its own: this crate built against
     # them moves by tens of bytes, so only their frames are read from it. Their code is the
-    # sysroot's, function for function, on the soft-float path the deepest chain ends in.
+    # sysroot's, which `footprint.py` checks function by function against the prebuilt copy.
     std=$(CARGO_TARGET_DIR="$root/target/footprint-std" RUSTFLAGS=$frames_flag \
         cargo "+$TOOLCHAIN" build --quiet --lib --release --target "$target" \
         -Zbuild-std=core,compiler_builtins --message-format=json \
-        | rlibs core compiler_builtins) || exit 1
+        | rlibs "$target" core compiler_builtins) || exit 1
     [ "$(echo "$std" | wc -l)" -eq 2 ] || die "build-std named no core and compiler_builtins"
     # shellcheck disable=SC2086 # one path per word: cargo's target directories hold no spaces
     set -- "$lib" $deps $std
-    # Both exit 1 on the rlibs' metadata members, which carry no code, after printing the
-    # rest; `footprint.py` refuses a report holding no frame or no chain at all.
-    "$tools/llvm-readobj" --stack-sizes --demangle "$@" >"$out/frames.txt" 2>/dev/null || true
-    "$tools/llvm-objdump" -d -r -t --demangle "$@" >"$out/code.txt" 2>/dev/null || true
+    # Each exits 1 on the rlibs' metadata members, which carry no code, after printing the
+    # rest, so what they say goes to a file rather than failing the run. A dump that stopped
+    # short fails anyway: `footprint.py` refuses a call into code no input holds.
+    "$tools/llvm-readobj" --stack-sizes --demangle "$@" >"$out/frames.txt" 2>"$out/tools.err" || true
+    {
+        "$tools/llvm-objdump" -d -r -t --demangle "$@"
+        # Every section's relocations, for the function pointers data holds; `-d -r` prints
+        # only the code's.
+        "$tools/llvm-objdump" -r --demangle "$@"
+    } >"$out/code.txt" 2>>"$out/tools.err" || true
+    "$tools/llvm-objdump" -d -r -t --demangle "$sysroot/lib/rustlib/$target/lib/"lib{core,compiler_builtins}-*.rlib \
+        >"$out/sysroot.txt" 2>>"$out/tools.err" || true
 
     # The ELF under `panic-check`'s profile, in a subshell so its fat LTO never reaches the
     # library build above.
@@ -144,7 +154,7 @@ measure() {
     # Through files rather than the environment: the symbol table alone is past the 128 KB
     # Linux allows one environment string.
     python3 "$root/tools/footprint.py" "$out/types.txt" "$out/frames.txt" "$out/flash.txt" \
-        "$out/code.txt"
+        "$out/code.txt" "$out/sysroot.txt"
 }
 
 [ -f "$expectations" ] || die "no expectations at $expectations"
