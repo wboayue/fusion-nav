@@ -611,6 +611,22 @@ again. On a rendered page the same rot can hide inside placeholders: `a299e722`'
 sentence argued "closer" from two heading figures that, once the numbers moved, said the
 opposite, with every placeholder still resolving.
 
+**A comparison is two figures from one build.** Evidence for a form, "inlined it cost 2384
+against 1400", ages one number at a time: a later commit re-quoted the current half and kept the
+old one, and the subtraction then measured nothing. Two of DESIGN.md's stack pairs had split this
+way before #201 found them, `apply_or_recover`'s 984 read as 968 and `fuse_heading`'s 7872 as
+7848. So a pair carries the commit it was measured together at, once the code has moved past it;
+a current figure that a decision rests on renders from a pin instead (`validation/cost.md`), and
+a re-measurement is quoted as a pair of its own. Name a commit `main` holds: a branch's commits
+vanish in the squash merge, so a figure measured on a branch whose `src/` matches `main` cites
+`main`'s commit.
+
+**A sum of named frames is not a path.** The crate's stack peak was quoted for months as
+`fuse_gnss_velocity` plus `update::<3>`, 9504 B. Walked through the rlib's call edges it is
+11408, because the deepest frame below `update` is `nalgebra`'s 15 × 15 product, which
+`-Zemit-stack-sizes` measures and `tools/footprint.py` keys out as another crate's. A figure built
+from the functions someone thought to name is bounded by that list; #202 makes the path a pin.
+
 **An absence is measured only on what was fused.** `Gates`' doc comment dismissed the cost of a
 joint GNSS gate because "the corpus shows no such fix" — true, because `2c42096b`'s barometer was
 being discarded. The first change that fused it (#115) rejected 3945 of its 4616 fixes, every one
