@@ -306,12 +306,11 @@ was measured together, at the commit named where the code has moved since.
 | `History::clear` | rebuilding the ring put a 1552-byte temporary in `Eskf::apply_alignment` |
 | `StaticWindow::halve` | a copy of the blocks is 512 bytes |
 
-Walked through the call graph (`tools/footprint.py`, `chain.`), the deepest path is
-`fuse_gnss_velocity` into `update::<3>` into `nalgebra`'s 15 × 15 product, then the soft-float
-or `memcpy` routines beneath it. `predict`, the arming query (`predicted_validity` over `project`
-over `propagate_covariance`) and the starts all reach less, so no path but an update moves the
-crate's peak. That peak, on [validation/cost.md](validation/cost.md#stack), is comfortable on the
-STM32H7 class above and more than the whole RAM of an 8 KB Cortex-M0 part.
+Walked through the call graph (`tools/footprint.py`, `chain.`), no path but an update moves the
+crate's peak: `predict`, the arming query (`predicted_validity` over `project` over
+`propagate_covariance`) and the starts all reach less. The path and its figures are on
+[validation/cost.md](validation/cost.md#stack); the peak is comfortable on the STM32H7 class
+above and more than the whole RAM of an 8 KB Cortex-M0 part.
 
 The block-wise forms that would cut it are each written as the equation reads until #41's figures
 say a target needs them:

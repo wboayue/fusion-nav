@@ -227,14 +227,14 @@ uv run tools/declination.py --px4 ~/projects/PX4-Autopilot   # rebuild PX4's tab
 python3 tools/declination.py --self-test   # its fixtures; CI
 cargo +1.89 build --lib           # MSRV
 
-tools/footprint.sh                # type sizes, stack frames, flash on both thumb targets vs data/footprint.txt; CI
+tools/footprint.sh                # type sizes, stack frames and paths, flash on both thumb targets vs data/footprint.txt; CI
 tools/footprint.sh --pin          # the file's keys at their measured values: re-pin by copying
 python3 tools/validation.py render validation/src target/validation . --only cost.md   # after a re-pin
 tools/footprint.sh --all          # every key measured, to choose what to pin
 tools/footprint.sh --install      # once: its pinned nightly, llvm-tools, rust-src and both thumb targets
 python3 tools/footprint.py --self-test   # the parser's and the call-graph walk's fixtures
 d=target/footprint/thumbv6m-none-eabi; python3 tools/footprint.py --path chain.eskf.Eskf.predict \
-    $d/types.txt $d/frames.txt $d/flash.txt $d/code.txt   # one chain, frame by frame, after a run
+    $d/frames.txt $d/code.txt $d/sysroot.txt   # one chain, frame by frame, after a run
 # When a frame grows, bisect it: strip one candidate per build and re-measure. #122's +4168 bytes on `update::<3>`
 # was not only the 16 x 16 it looked like -- returning `(Covariance, Offset)` as a tuple through
 # `reset` cost a 900-byte copy of P on its own.
@@ -629,9 +629,9 @@ vanish in the squash merge, so a figure measured on a branch whose `src/` matche
 `9e3fcca` it was 11408, because the deepest frame below `update` is `nalgebra`'s 15 × 15 product,
 which `-Zemit-stack-sizes` measures and `tools/footprint.py` keyed out as another crate's. A
 figure built from the functions someone thought to name is bounded by that list, and the hand walk
-had a list too: it stopped at `nalgebra`, and #202's walk through every crate found the soft-float
-multiply beneath it, 100 B more on `thumbv6m` (88 on `thumbv7em`, `memcpy`). So `chain.` follows every call, refuses what it cannot bound,
-and `stack_peak` is the pin.
+had a list too: it stopped at `nalgebra`. #202's walk through every crate found `compiler_builtins`
+frames beneath it, which in that one build added 100 B on `thumbv6m` and 88 on `thumbv7em`. So
+`chain.` follows every call, refuses what it cannot bound, and `stack_peak` is the pin.
 
 **An absence is measured only on what was fused.** `Gates`' doc comment dismissed the cost of a
 joint GNSS gate because "the corpus shows no such fix" — true, because `2c42096b`'s barometer was

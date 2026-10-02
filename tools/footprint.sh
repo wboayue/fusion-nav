@@ -91,9 +91,44 @@ for line in sys.stdin:
 ' "$@"
 }
 
+# build_std <target>: the rlibs of `core` and `compiler_builtins`, rebuilt with the stack-size
+# section the sysroot's prebuilt copies lack, in a directory of their own: this crate built
+# against them moves by tens of bytes, so only their frames are read from it. Their code is the
+# sysroot's, which `footprint.py` checks function by function against the prebuilt copy.
+build_std() {
+    local target=$1 std
+    std=$(CARGO_TARGET_DIR="$root/target/footprint-std" RUSTFLAGS=$frames_flag \
+        cargo "+$TOOLCHAIN" build --quiet --lib --release --target "$target" \
+        -Zbuild-std=core,compiler_builtins --message-format=json \
+        | rlibs "$target" core compiler_builtins) || exit 1
+    [ "$(echo "$std" | wc -l)" -eq 2 ] || die "build-std named no core and compiler_builtins"
+    echo "$std"
+}
+
+# dump <out> <target> <rlib>...: the rlibs' frames, code and data relocations, and the
+# sysroot's prebuilt `core` and `compiler_builtins`, as `footprint.py` reads them. Each tool
+# exits 1 on the rlibs' metadata members, which carry no code, after printing the rest, so what
+# they say goes to a file rather than failing the run. A dump that stopped short fails anyway:
+# `footprint.py` refuses a call into code no input holds.
+dump() {
+    local out=$1 target=$2
+    shift 2
+    "$tools/llvm-readobj" --stack-sizes --demangle "$@" >"$out/frames.txt" 2>"$out/tools.err" || true
+    {
+        "$tools/llvm-objdump" -d -r -t --demangle "$@"
+        # Every section's relocations, for the function pointers data holds; `-d -r` prints
+        # only the code's.
+        "$tools/llvm-objdump" -r --demangle "$@"
+    } >"$out/code.txt" 2>>"$out/tools.err" || true
+    "$tools/llvm-objdump" -d -r -t --demangle \
+        "$sysroot/lib/rustlib/$target/lib/"lib{core,compiler_builtins}-*.rlib \
+        >"$out/sysroot.txt" 2>>"$out/tools.err" || true
+}
+
 # measure <target>: print one line of `key=value` pairs.
 measure() {
-    local target=$1 out="$CARGO_TARGET_DIR/$target" lib elf level deps std
+    local target=$1 out lib elf level deps std
+    out="$CARGO_TARGET_DIR/$target"
     # Called in a command substitution, where bash clears `-e`. Each step below says how it
     # stops rather than leaning on it.
 
@@ -110,29 +145,9 @@ measure() {
         -- -Zprint-type-sizes >"$out/types.txt" || exit 1
     lib="$out/release/libfusion_nav.rlib"
     [ -f "$lib" ] || die "cargo built no rlib at $lib"
-    # The sysroot ships `core` and `compiler_builtins` prebuilt, without the section, so
-    # `-Zbuild-std` rebuilds them with it, in a directory of its own: this crate built against
-    # them moves by tens of bytes, so only their frames are read from it. Their code is the
-    # sysroot's, which `footprint.py` checks function by function against the prebuilt copy.
-    std=$(CARGO_TARGET_DIR="$root/target/footprint-std" RUSTFLAGS=$frames_flag \
-        cargo "+$TOOLCHAIN" build --quiet --lib --release --target "$target" \
-        -Zbuild-std=core,compiler_builtins --message-format=json \
-        | rlibs "$target" core compiler_builtins) || exit 1
-    [ "$(echo "$std" | wc -l)" -eq 2 ] || die "build-std named no core and compiler_builtins"
+    std=$(build_std "$target") || exit 1
     # shellcheck disable=SC2086 # one path per word: cargo's target directories hold no spaces
-    set -- "$lib" $deps $std
-    # Each exits 1 on the rlibs' metadata members, which carry no code, after printing the
-    # rest, so what they say goes to a file rather than failing the run. A dump that stopped
-    # short fails anyway: `footprint.py` refuses a call into code no input holds.
-    "$tools/llvm-readobj" --stack-sizes --demangle "$@" >"$out/frames.txt" 2>"$out/tools.err" || true
-    {
-        "$tools/llvm-objdump" -d -r -t --demangle "$@"
-        # Every section's relocations, for the function pointers data holds; `-d -r` prints
-        # only the code's.
-        "$tools/llvm-objdump" -r --demangle "$@"
-    } >"$out/code.txt" 2>>"$out/tools.err" || true
-    "$tools/llvm-objdump" -d -r -t --demangle "$sysroot/lib/rustlib/$target/lib/"lib{core,compiler_builtins}-*.rlib \
-        >"$out/sysroot.txt" 2>>"$out/tools.err" || true
+    dump "$out" "$target" "$lib" $deps $std
 
     # The ELF under `panic-check`'s profile, in a subshell so its fat LTO never reaches the
     # library build above.

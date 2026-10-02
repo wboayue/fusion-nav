@@ -4,7 +4,8 @@
 {{footprint thumbv6m-none-eabi size.eskf.Eskf}} bytes on a Cortex-M0 and allocates nothing
 else, so that is the RAM to plan for beyond the stack. The deepest stack is a GNSS velocity
 update, {{footprint thumbv6m-none-eabi stack_peak}} bytes, and linking every entry point takes
-{{footprint thumbv6m-none-eabi text.s}} bytes of flash at `opt-level = "s"`. Execution time on hardware is not measured yet (#41).
+{{footprint thumbv6m-none-eabi text.s}} bytes of flash at `opt-level = "s"`. Execution time on
+hardware is not measured yet (#41).
 
 Every figure on this page is pinned exactly in `data/footprint.txt`, which CI measures on
 `{{footprint toolchain}}` with `tools/footprint.sh` and fails on any move, growth or shrinkage.
@@ -19,11 +20,11 @@ is a library call) and `thumbv7em-none-eabihf` (Cortex-M4 and M7 with a single-p
 - **Stack** is each function's own frame at `opt-level = 3`, read from the compiler
   (`-Zemit-stack-sizes`), and the deepest path beneath each entry point: its frame plus its
   deepest callee's, walked call by call through the library's relocations, down into `nalgebra`,
-  `libm`, `core` and `compiler_builtins`. Every frame on a path is the compiler's, except the
-  hand-written division routines (two on `thumbv6m`, one on `thumbv7em`), which are read from
-  their pushes. A call through a function pointer counts as deep as the deepest function whose
-  address the entry point's code takes, directly or through the data it reads. For a generic
-  function the figure is its largest instance.
+  `libm`, `core` and `compiler_builtins`. Every frame on a path is the compiler's, except
+  `compiler_builtins`' hand-written division routines, which are read from their pushes. A
+  call through a function pointer counts as deep as the deepest function whose address the
+  entry point's code takes, directly or through the data it reads. For a generic function the
+  figure is its largest instance.
 - **Not in the stack figures:** the caller's own frames, and the 32 bytes a Cortex-M stacks on
   an exception (104 with the M4F's floating-point context). The frames are the library build's,
   and an application built with LTO can inline them differently.
