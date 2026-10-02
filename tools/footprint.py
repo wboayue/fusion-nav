@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Read the compiler's and the linker's own reports of what the filter costs, as `key=value` pairs.
 
-    tools/footprint.py TYPES FRAMES FLASH CODE SYSROOT          print one line of pairs
-    tools/footprint.py --path <key> TYPES FRAMES FLASH CODE SYSROOT
-                                                    print one chain's path, or why it was refused
-    tools/footprint.py --self-test                  run the fixtures
+    tools/footprint.py TYPES FRAMES FLASH CODE SYSROOT    print one line of pairs
+    tools/footprint.py --path <key> FRAMES CODE SYSROOT   print one chain's path, or why it was
+                                                          refused
+    tools/footprint.py --self-test                        run the fixtures
 
 `tools/footprint.sh` builds and writes the five inputs, and compares the line against
 `data/footprint.txt`; this reads text and computes nothing about the filter:
@@ -107,9 +107,15 @@ def generics(name):
     return out
 
 
+def unsuffixed(name):
+    """`f (.llvm.123)` -> `f`: the suffix LLVM gives a local symbol it promotes, which differs
+    between two builds of the same code."""
+    return re.sub(r" \(\.llvm\.\d+\)$", "", name)
+
+
 def path(name):
     """`<fusion_nav::eskf::Eskf>::predict` -> `eskf.Eskf.predict`; None for anything not keyed."""
-    name = re.sub(r" \(\.llvm\.\d+\)$", "", name)
+    name = unsuffixed(name)
     if not name.startswith(("fusion_nav::", "<fusion_nav::")):
         return None
     name = generics(name)
@@ -140,7 +146,28 @@ CALL = re.compile(r"R_ARM_(THM_)?(CALL|JUMP\d*|PC24|PLT32)$")
 COND = r"(eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al)?"
 # A file of the `-Zbuild-std` rebuild, whose code must be the sysroot's (`same_as_sysroot`).
 REBUILT = re.compile(r"/lib(core|compiler_builtins)-[0-9a-f]+\.rlib\(")
-IMMEDIATE = r"#(-?(?:0x[0-9a-f]+|\d+))$"
+
+# `llvm-objdump`'s lines, one pattern per kind. A relocation's symbol drops its addend.
+RELOCATION = r"(R_ARM_\w+)\s+(.+?)(?:[+-]0x[0-9a-f]+)?$"
+FILE = re.compile(r"(\S.*\)):\s+file format ")
+SECTION = re.compile(r"Disassembly of section (\S+):$")
+RECORDS = re.compile(r"RELOCATION RECORDS FOR \[(\S+)\]:$")
+RECORD = re.compile(r"[0-9a-f]{8} " + RELOCATION)
+LABEL = re.compile(r"([0-9a-f]{8}) <(.*)>:$")
+INLINE = re.compile(r"\s+[0-9a-f]+:\s+" + RELOCATION)
+INSTRUCTION = re.compile(r"\s+[0-9a-f]+:\s+(?:[0-9a-f]{2,8} )+\s*\t(\S+)(?:\t(.*))?$")
+SYMBOL = re.compile(r"([0-9a-f]{8}) (.{7}) (\S+)\t[0-9a-f]+ (\.hidden )?(.+)$")
+
+# An instruction's mnemonic and operands, one pattern per question `instruction` asks.
+REGISTER_CALL = re.compile(f"bl?x{COND}")
+JUMP = re.compile(f"mov{COND}")
+OFFSET_JUMP = re.compile(f"add{COND}")
+LOAD = re.compile(f"ldr{COND}(\\.w)?")
+STORE_MULTIPLE = re.compile(r"stmdb(\.w)?")
+ADJUST = re.compile(r"(sub|add)s?w?(\.w)?")
+MOVE = re.compile(r"mov(\.w)?")
+IMMEDIATE = re.compile(r"#(-?(?:0x[0-9a-f]+|\d+))$")
+PRE_INDEXED = re.compile(r"#-(0x[0-9a-f]+|\d+)\]!")
 
 
 class Refused(Exception):
@@ -162,9 +189,19 @@ class Function:
         self.pushed = 0          # bytes its pushes and `sub sp` take, for a function with no frame
         self.dynamic = False     # it moves `sp` by a register: no prologue read bounds it
 
+    def is_table(self, symbol):
+        """Whether a reference to `symbol` is an entry of the function's own jump table: an
+        address in its own section, which neither takes an address nor makes `mov pc` a call."""
+        return symbol == self.section
+
     def indirect_calls(self):
-        own = self.section in self.references
-        return self.indirect + (0 if own else self.jumps)
+        has_table = any(self.is_table(symbol) for symbol in self.references)
+        return self.indirect + (0 if has_table else self.jumps)
+
+    def signature(self):
+        """What two builds of the same function share: callees, pushes, indirect calls."""
+        return (sorted(map(unsuffixed, self.calls)), self.pushed, self.dynamic,
+                self.indirect_calls())
 
 
 def registers(operand):
@@ -181,34 +218,34 @@ def registers(operand):
 
 def instruction(function, mnemonic, operands):
     """Note what one instruction says about calls and the stack."""
-    immediate = re.search(IMMEDIATE, operands)
-    if re.fullmatch(f"bl?x{COND}", mnemonic) and re.fullmatch(r"r\d+", operands):
+    if REGISTER_CALL.fullmatch(mnemonic) and re.fullmatch(r"r\d+", operands):
         function.indirect += 1
-    elif re.fullmatch(f"mov{COND}", mnemonic) and operands.startswith("pc,"):
+    elif JUMP.fullmatch(mnemonic) and operands.startswith("pc,"):
         function.jumps += 1
-    elif re.fullmatch(f"add{COND}", mnemonic) and operands.startswith("pc,"):
+    elif OFFSET_JUMP.fullmatch(mnemonic) and operands.startswith("pc,"):
         # Thumb-1's jump table: `pc` plus an offset read from a table inline in the function,
         # so a branch inside its own code.
         pass
-    elif re.fullmatch(f"ldr{COND}(\\.w)?", mnemonic) and operands.startswith("pc,"):
+    elif LOAD.fullmatch(mnemonic) and operands.startswith("pc,"):
         # `ldr pc, [sp], #4` is a return; any other load into pc is a jump the walk cannot see.
-        if not re.match(r"pc, \[sp\], #", operands):
+        if not operands.startswith("pc, [sp], #"):
             function.indirect += 1
     elif mnemonic.split(".")[0] in ("push", "vpush") or (
-        re.fullmatch(r"stmdb(\.w)?", mnemonic) and operands.startswith("sp!,")
+        STORE_MULTIPLE.fullmatch(mnemonic) and operands.startswith("sp!,")
     ):
         count, width = registers(operands.removeprefix("sp!, "))
         function.pushed += count * width
-    elif re.fullmatch(r"(sub|add)s?w?(\.w)?", mnemonic) and operands.startswith("sp,"):
+    elif ADJUST.fullmatch(mnemonic) and operands.startswith("sp,"):
+        immediate = IMMEDIATE.search(operands)
         if re.match(r"sp, (sp, )?r\d", operands) or not immediate:
             function.dynamic = True
         else:
             moved = int(immediate.group(1), 0)
             function.pushed += moved if mnemonic.startswith("sub") else max(0, -moved)
-    elif re.fullmatch(r"mov(\.w)?", mnemonic) and operands.startswith("sp,"):
+    elif MOVE.fullmatch(mnemonic) and operands.startswith("sp,"):
         function.dynamic = True
-    elif mnemonic.startswith(("str", "stm")) and re.search(r"\[sp, #-|sp!", operands):
-        m = re.search(r"#-(0x[0-9a-f]+|\d+)\]!", operands)
+    elif mnemonic.startswith(("str", "stm")) and ("[sp, #-" in operands or "sp!" in operands):
+        m = PRE_INDEXED.search(operands)
         if m:
             function.pushed += int(m.group(1), 0)
         else:
@@ -236,72 +273,66 @@ def stack_sizes(frames):
 
 class Program:
     """Every function in `llvm-objdump -d -r -t --demangle` of the rlibs, followed by
-    `llvm-objdump -r` of the same files for the relocations of their data, with each function's
-    frame from `llvm-readobj --stack-sizes`.
+    `llvm-objdump -r` of the same files for the relocations of their data. `attach` gives each
+    function its frame from `llvm-readobj --stack-sizes`.
 
     A call resolves to a local symbol only in its own object file, and to a global one in every
     file defining it, since a weak definition can stand in more than one place."""
 
-    def __init__(self, code, frames):
-        aliases = {}       # (file, section, value) -> [(exported, local, name)]
-        homes = {}         # (file, name) or name -> (file, section): where a symbol lives
-        self.data = {}     # (file, section) -> symbols its relocations name
+    def __init__(self, code):
+        self.functions = {}  # (file, section, value) -> Function
+        self.data = {}       # (file, section) -> symbols its relocations name
+        self.homes = {}      # (file, name) for a local symbol, name for a global -> (file, section)
         self.defined = set()
-        self.functions = {}
+        aliases = self.read(code)
+        self.index(aliases)
+
+    def read(self, code):
+        """Read the dump line by line into functions, data relocations and symbols; return the
+        function symbols by address, (exported, local, name), for `index`."""
+        aliases = {}
         member = section = current = None
-        held = None        # the data section whose relocation records follow
+        held = None  # the data section whose relocation records follow
         for line in code.splitlines():
-            m = re.match(r"(\S.*\)):\s+file format ", line)
-            if m:
+            if m := FILE.match(line):
                 member, current, held = m.group(1), None, None
-                continue
-            m = re.match(r"Disassembly of section (\S+):$", line)
-            if m:
+            elif m := SECTION.match(line):
                 section, held = m.group(1), None
-                continue
-            m = re.match(r"RELOCATION RECORDS FOR \[(\S+)\]:$", line)
-            if m:
+            elif m := RECORDS.match(line):
                 current = None
                 held = None if m.group(1).startswith(".text") else (member, m.group(1))
-                continue
-            m = re.match(r"[0-9a-f]{8} (R_ARM_\w+)\s+(.+?)(?:[+-]0x[0-9a-f]+)?$", line)
-            if m:
+            elif m := RECORD.match(line):
                 if held is not None:
                     self.data.setdefault(held, set()).add(m.group(2))
-                continue
-            m = re.match(r"([0-9a-f]{8}) <(.*)>:$", line)
-            if m:
+            elif m := LABEL.match(line):
                 key = (member, section, int(m.group(1), 16))
                 current = self.functions[key] = Function(member, section, m.group(2))
                 if key in aliases:
                     current.names = [name for _, _, name in aliases[key]]
                     current.exported = any(e for e, _, _ in aliases[key])
-                continue
-            m = re.match(r"\s+[0-9a-f]+:\s+(R_ARM_\w+)\s+(.+?)(?:[+-]0x[0-9a-f]+)?$", line)
-            if m:
+            elif m := INLINE.match(line):
                 if current is not None:
                     if CALL.match(m.group(1)):
                         current.calls.append(m.group(2))
                     else:
                         current.references.add(m.group(2))
-                continue
-            m = re.match(r"\s+[0-9a-f]+:\s+(?:[0-9a-f]{2,8} )+\s*\t(\S+)(?:\t(.*))?$", line)
-            if m:
+            elif m := INSTRUCTION.match(line):
                 if current is not None:
                     instruction(current, m.group(1), (m.group(2) or "").split(" @ ")[0].strip())
-                continue
-            m = re.match(r"([0-9a-f]{8}) (.{7}) (\S+)\t[0-9a-f]+ (\.hidden )?(.+)$", line)
-            if m and m.group(3) != "*UND*":
+            elif (m := SYMBOL.match(line)) and m.group(3) != "*UND*":
                 flags, where, name = m.group(2), m.group(3), m.group(5)
                 local = flags[0] == "l"
                 self.defined.add(name)
-                homes[(member, name) if local else name] = (member, where)
+                self.homes[(member, name) if local else name] = (member, where)
                 if "F" in flags:
                     exported = not local and not m.group(4)
                     aliases.setdefault((member, where, int(m.group(1), 16)), []).append(
                         (exported, local, name)
                     )
+        return aliases
 
+    def index(self, aliases):
+        """The lookups `resolve` reads: local names per file, global names, and sections."""
         self.local, self.exported_names, self.sections = {}, {}, {}
         for key, names in aliases.items():
             function = self.functions.get(key)
@@ -314,8 +345,10 @@ class Program:
                     self.exported_names.setdefault(name, []).append(function)
         for function in self.functions.values():
             self.sections.setdefault((function.member, function.section), []).append(function)
-        self.homes = homes
 
+    def attach(self, frames):
+        """Give each function its frame, the largest any of its names has. Refuses a frame no
+        function holds: an alias renamed out from under its entry."""
         named = {(f.member, n): f for f in self.functions.values() for n in f.names}
         for where, names, size in stack_sizes(frames):
             matched = [named[(where, n)] for n in names if (where, n) in named]
@@ -323,24 +356,30 @@ class Program:
                 raise ValueError(f"a frame for {names[0]} in {where}, which the code holds nowhere")
             for function in matched:
                 function.frame = max(size, function.frame or 0)
+        return self
 
-    def resolve(self, caller, symbol):
-        """The functions a relocation against `symbol` from `caller`'s file may reach; None if
-        no file holds it as code."""
-        if (caller.member, symbol) in self.local:
-            return [self.local[(caller.member, symbol)]]
+    def resolve(self, member, symbol):
+        """The functions a relocation against `symbol` in file `member` may reach; None if no
+        file holds it as code."""
+        if (member, symbol) in self.local:
+            return [self.local[(member, symbol)]]
         if symbol in self.exported_names:
             return self.exported_names[symbol]
         # A section symbol: an address inside that section, which the walk takes as any of it.
-        return self.sections.get((caller.member, symbol))
+        return self.sections.get((member, symbol))
 
-    def held(self, caller, symbol):
+    def home(self, member, symbol):
+        """The (file, section) holding `symbol` as named from file `member`; None if none does."""
+        found = self.homes.get((member, symbol)) or self.homes.get(symbol)
+        if found is None and (member, symbol) in self.data:
+            found = (member, symbol)
+        return found
+
+    def held(self, member, symbol):
         """The functions whose addresses the data `symbol` names holds, through any data it
         points at in turn: a table of function pointers, a vtable, a constant structure. None
         if no file defines the symbol at all."""
-        start = self.homes.get((caller.member, symbol)) or self.homes.get(symbol)
-        if start is None and (caller.member, symbol) in self.data:
-            start = (caller.member, symbol)
+        start = self.home(member, symbol)
         if start is None:
             return None if symbol not in self.defined else []
         found, seen, pending = [], set(), [start]
@@ -350,15 +389,10 @@ class Program:
                 continue
             seen.add(home)
             for target in self.data.get(home, ()):
-                anchor = Function(home[0], home[1], home[1])
-                code = self.resolve(anchor, target)
+                code = self.resolve(home[0], target)
                 if code is not None:
                     found += code
-                    continue
-                inner = self.homes.get((home[0], target)) or self.homes.get(target)
-                if inner is None and (home[0], target) in self.data:
-                    inner = (home[0], target)
-                if inner is not None:
+                elif (inner := self.home(home[0], target)) is not None:
                     pending.append(inner)
         return found
 
@@ -377,47 +411,62 @@ def frame_of(function):
     return function.pushed
 
 
-def walk(root, program, visited):
-    """The deepest stack `root` reaches, as (bytes, [(function, frame), ...]) along the path,
-    adding every function reached to `visited`.
-
-    An indirect call is bounded by the deepest function whose address anything `root` reaches
-    takes, in code or through the data it points at. A pointer reaches a call from where it was
-    taken or from `root`'s caller, so the bound holds for an exported root, whose caller is an
-    integrator's and passes none: no public function takes a function pointer or a trait object.
-    Refused for an indirect call under a root that is not exported, for a call to code no input
-    holds, a cycle, or an indirect call with nothing taken or a reference to nothing defined."""
-    reached, taken, unknown, pending = set(), set(), set(), [root]
+def reach(root, program):
+    """Everything `root` can run: (reached, callees per function, taken, unknown). `taken` is
+    every function whose address reached code takes, in code or through the data it points at;
+    `unknown`, every symbol it names that no file defines. Refused for a call to code no input
+    holds."""
+    reached, callees, taken, unknown, pending = set(), {}, set(), set(), [root]
     while pending:
         function = pending.pop()
         if function in reached:
             continue
         reached.add(function)
+        callees[function] = []
         for symbol in function.calls:
-            callees = program.resolve(function, symbol)
-            if callees is None:
+            found = program.resolve(function.member, symbol)
+            if found is None:
                 raise Refused(f"{function.label} calls {symbol}, which no input holds")
-            pending.extend(callees)
+            callees[function] += found
+        pending.extend(callees[function])
         for symbol in function.references:
-            if symbol == function.section:
+            if function.is_table(symbol):
                 continue
-            targets = program.resolve(function, symbol)
+            targets = program.resolve(function.member, symbol)
             if targets is None:
-                targets = program.held(function, symbol)
+                targets = program.held(function.member, symbol)
             if targets is None:
                 unknown.add(symbol)
                 continue
             taken.update(targets)
             pending.extend(targets)
-    visited.update(reached)
-    indirect = sorted(f.label for f in reached if f.indirect_calls())
-    if indirect and not root.exported:
-        raise Refused(f"{indirect[0]} calls through a register, under a root a caller in the crate can pass a pointer")
-    if indirect and unknown:
-        raise Refused(f"{indirect[0]} calls through a register, and {sorted(unknown)[0]} is undefined")
-    if indirect and not taken:
-        raise Refused(f"{indirect[0]} calls through a register, and nothing reached takes an address")
+    return reached, callees, taken, unknown
 
+
+def bound(root, reached, taken, unknown):
+    """Refuse unless every indirect call `root` reaches is bounded by `taken`.
+
+    A pointer reaches a call from where it was taken or from `root`'s caller, so `taken` bounds
+    it under an exported root, whose caller is an integrator's and passes none: no public
+    function takes a function pointer or a trait object. Under a root the crate keeps to itself,
+    a caller can pass a pointer the root never took."""
+    indirect = sorted(f.label for f in reached if f.indirect_calls())
+    if not indirect:
+        return
+    if not root.exported:
+        raise Refused(f"{indirect[0]} calls through a register, under a root a caller in the "
+                      "crate can pass a pointer")
+    if unknown:
+        raise Refused(f"{indirect[0]} calls through a register, and {sorted(unknown)[0]} is "
+                      "undefined")
+    if not taken:
+        raise Refused(f"{indirect[0]} calls through a register, and nothing reached takes an "
+                      "address")
+
+
+def deepest(root, callees, taken):
+    """The deepest stack beneath `root`, as (bytes, [(function, frame), ...]) along the path;
+    an indirect call's callees are `taken`. Refused for a cycle."""
     memo, active = {}, set()
 
     def depth(function):
@@ -426,58 +475,56 @@ def walk(root, program, visited):
         if function in active:
             raise Refused(f"a cycle through {function.label}")
         active.add(function)
-        callees = [c for symbol in function.calls for c in program.resolve(function, symbol)]
+        beneath = list(callees[function])
         if function.indirect_calls():
-            callees += sorted(taken, key=lambda f: f.label)
-        deepest = max((depth(c) for c in callees), key=lambda d: d[0], default=(0, []))
+            beneath += sorted(taken, key=lambda f: f.label)
+        down = max((depth(c) for c in beneath), key=lambda d: d[0], default=(0, []))
         own = frame_of(function)
         active.discard(function)
-        memo[function] = (own + deepest[0], [(function.label, own)] + deepest[1])
+        memo[function] = (own + down[0], [(function.label, own)] + down[1])
         return memo[function]
 
     return depth(root)
 
 
-def same_as_sysroot(program, visited, sysroot):
-    """Refuse unless every function the walks reached in the `-Zbuild-std` rebuild of `core` and
+def same_as_sysroot(visited, sysroot):
+    """Refuse unless every function the walks visited in the `-Zbuild-std` rebuild of `core` and
     `compiler_builtins` is the sysroot's prebuilt one, which is what links: the same callees,
     pushes and indirect calls. Its frames are read off the rebuild, which only the sysroot's
     code makes them a measure of."""
-    def plain(name):
-        return re.sub(r" \(\.llvm\.\d+\)$", "", name)
-
     shipped = {}
-    for function in Program(sysroot, "").functions.values():
+    for function in Program(sysroot).functions.values():
         for name in function.names:
-            shipped[plain(name)] = function
+            shipped[unsuffixed(name)] = function
     for function in sorted(visited, key=lambda f: f.label):
         if not REBUILT.search(function.member):
             continue
-        prebuilt = shipped.get(plain(function.label))
+        prebuilt = shipped.get(unsuffixed(function.label))
         if prebuilt is None:
             raise ValueError(f"build-std's {function.label} is not in the sysroot")
-        mine = (sorted(map(plain, function.calls)), function.pushed, function.dynamic,
-                function.indirect_calls())
-        theirs = (sorted(map(plain, prebuilt.calls)), prebuilt.pushed, prebuilt.dynamic,
-                  prebuilt.indirect_calls())
-        if mine != theirs:
+        if function.signature() != prebuilt.signature():
             raise ValueError(f"build-std's {function.label} differs from the sysroot's")
 
 
-def chains(code, frames, sysroot=None):
+def chains(code, frames):
     """`chain.<function>=` for every function `frame.` keys: its frame and the deepest path of
     calls beneath it, through `nalgebra`, `libm`, `core` and `compiler_builtins` as well as this
     crate. A key holds its largest instance, as `frame.` does, and `refused` if any instance is.
-    `stack_peak=` is the largest exported chain, `refused` if any exported one is. Also the
-    paths, for `--path`."""
-    program = Program(code, frames)
+    `stack_peak=` is the largest exported chain, `refused` if any exported one is.
+
+    Returns the pairs, each chain's path for `--path`, and every function a walk visited, for
+    `same_as_sysroot`."""
+    program = Program(code).attach(frames)
     pairs, paths, visited, peak = {}, {}, set(), []
     for function in program.functions.values():
         keys = {k for k in map(path, function.names) if k is not None}
         if not keys:
             continue
         try:
-            bytes_, steps = walk(function, program, visited)
+            reached, callees, taken, unknown = reach(function, program)
+            visited |= reached
+            bound(function, reached, taken, unknown)
+            bytes_, steps = deepest(function, callees, taken)
         except Refused as reason:
             bytes_, steps = "refused", [(str(reason), 0)]
         if function.exported:
@@ -491,15 +538,12 @@ def chains(code, frames, sysroot=None):
     if not peak:
         raise ValueError("no exported chain: was the disassembly taken of this crate's rlib?")
     pairs["stack_peak"] = "refused" if "refused" in peak else max(peak)
-    if sysroot is not None:
-        same_as_sysroot(program, visited, sysroot)
-    return pairs, paths
+    return pairs, paths, visited
 
 
-def parse(types, frames, flash, code=None, sysroot=None):
+def parse(types, frames, flash):
     """The reports as a dict of pairs. Refuses an empty report: a build cargo considered
-    fresh compiles nothing and prints nothing, and its keys would read as renamed. Without
-    `code`, no chain: the fixtures of the other three readers need none."""
+    fresh compiles nothing and prints nothing, and its keys would read as renamed."""
     pairs = {}
 
     def largest(key, value):
@@ -542,8 +586,6 @@ def parse(types, frames, flash, code=None, sysroot=None):
                 pairs[f"text_{owner}.{level}"] += int(m.group(1), 16)
     if level is None:
         raise ValueError("no flash: no `level` line")
-    if code is not None:
-        pairs.update(chains(code, frames, sysroot)[0])
     return pairs
 
 
@@ -551,7 +593,16 @@ def line(pairs):
     return " ".join(f"{k}={v}" for k, v in sorted(pairs.items()))
 
 
-def objects(*files, data=()):
+def refused(check, name, call, *inputs):
+    """Check that `call(*inputs)` refuses its input with a ValueError."""
+    try:
+        call(*inputs)
+        check(name, "accepted", "refused")
+    except ValueError:
+        pass
+
+
+def objects(*files, data=(), entries=()):
     """`llvm-objdump` and `llvm-readobj --stack-sizes` text for synthetic object files.
 
     Each file is (member, [(binding, names, frame, body)]): a member without an archive is put
@@ -559,7 +610,8 @@ def objects(*files, data=()):
     first name labels its code, the rest alias it; a frame of None writes no stack-size entry;
     and each body line is an instruction (`push\t{r7, lr}`) or a relocation
     (`R_ARM_THM_CALL\tsymbol`). `data` is (member, section, [symbol]): a data section of that
-    file and the symbols its relocations name."""
+    file and the symbols its relocations name. `entries` is (member, names, frame): a stack-size
+    entry more, read after the files' own."""
     code, frames, records = [], [], []
 
     def archive(member):
@@ -594,6 +646,9 @@ def objects(*files, data=()):
         records += [f"{archive(where)}:\tfile format elf32-littlearm", "",
                     f"RELOCATION RECORDS FOR [{section}]:", "OFFSET   TYPE                     VALUE"]
         records += [f"{i * 4:08x} R_ARM_ABS32              {s}" for i, s in enumerate(symbols)]
+    for where, names, frame in entries:
+        frames += [f"File: {archive(where)}", "StackSizes [", "  Entry {",
+                   f"    Functions: [{', '.join(names)}]", f"    Size: 0x{frame:X}", "  }", "]"]
     return "\n".join(code + [""] + records), "\n".join(frames)
 
 
@@ -675,9 +730,8 @@ def walk_fixtures(check):
         ("g", [f + "weak"], 70, []),
     ]
     data = [("a.o", ".rodata.table", [f + "heavy"])]
-    code, frames = objects(("a.o", a), ("b.o", b), data=data)
-    frames += f"\nFile: lib.rlib(a.o)\n  Entry {{\n    Functions: [{f}folded_b]\n    Size: 0x28\n  }}"
-    pairs, paths = chains(code, frames)
+    entries = [("a.o", [f + "folded_b"], 40)]
+    pairs, paths, _ = chains(*objects(("a.o", a), ("b.o", b), data=data, entries=entries))
     want = {
         "root": 100 + 50 + 400,
         "near": 10 + 400,
@@ -713,36 +767,31 @@ def walk_fixtures(check):
 
     # The peak is the deepest exported chain; a deeper one the crate keeps to itself is read
     # through its exported callers, and an exported one refused refuses the peak above.
-    pairs, _ = chains(*objects(("a.o", [
+    pairs, _, _ = chains(*objects(("a.o", [
         ("g", [f + "entry"], 10, [call + "inside"]),
         ("h", [f + "inside"], 20, []),
         ("h", [f + "orphan"], 5000, []),
     ])))
     check("peak", pairs["stack_peak"], 10 + 20)
 
-    def refused(name, *inputs):
-        try:
-            chains(*inputs)
-            check(name, "accepted", "refused")
-        except ValueError:
-            pass
-
     # A frame the code holds nowhere: an alias renamed out from under its entry.
-    code, frames = objects(("a.o", [("g", [f + "entry"], 10, [])]))
-    refused("an unmatched frame", code, frames + "\nFile: lib.rlib(a.o)\n  Entry {\n"
-            f"    Functions: [{f}renamed]\n    Size: 0x10\n  }}")
+    refused(check, "an unmatched frame", chains,
+            *objects(("a.o", [("g", [f + "entry"], 10, [])]), entries=[("a.o", [f + "renamed"], 16)]))
 
     # A rebuilt builtin compared with the sysroot's: the same, then pushing one more register.
     rebuilt = "std/libcompiler_builtins-0123abcd.rlib(cb.o)"
-    code, frames = objects(("a.o", [("g", [f + "entry"], 10, ["R_ARM_THM_CALL\t__aeabi_x"])]),
-                           (rebuilt, [("g", ["__aeabi_x"], 8, ["push\t{r7, lr}"])]))
+    pairs, _, visited = chains(*objects(
+        ("a.o", [("g", [f + "entry"], 10, ["R_ARM_THM_CALL\t__aeabi_x"])]),
+        (rebuilt, [("g", ["__aeabi_x"], 8, ["push\t{r7, lr}"])]),
+    ))
     same, _ = objects(("sysroot/libcompiler_builtins-ffff.rlib(cb.o)",
                        [("g", ["__aeabi_x"], None, ["push\t{r7, lr}"])]))
     differs, _ = objects(("sysroot/libcompiler_builtins-ffff.rlib(cb.o)",
                           [("g", ["__aeabi_x"], None, ["push\t{r4, r7, lr}"])]))
-    check("sysroot same", chains(code, frames, same)[0]["chain.f.entry"], 10 + 8)
-    refused("a rebuilt builtin unlike the sysroot's", code, frames, differs)
-    refused("a rebuilt builtin the sysroot lacks", code, frames, "")
+    check("rebuilt builtin", pairs["chain.f.entry"], 10 + 8)
+    check("sysroot same", same_as_sysroot(visited, same), None)
+    refused(check, "a rebuilt builtin unlike the sysroot's", same_as_sysroot, visited, differs)
+    refused(check, "a rebuilt builtin the sysroot lacks", same_as_sysroot, visited, "")
 
 
 def self_test():
@@ -829,18 +878,12 @@ def self_test():
         "text_nalgebra.s=32",
     ]))
 
-    def refused(name, *inputs):
-        try:
-            parse(*inputs)
-            failures.append(f"{name}: accepted")
-        except ValueError:
-            pass
-
-    refused("no types", "", frames, flash)
-    refused("no frames", types, "", flash)
-    refused("no flash", types, frames, "")
-    refused("a section before a level", types, frames, ".text  1  0")
-    refused("an unbalanced list", types, "Functions: [fusion_nav::f::<1]\nSize: 0x10", flash)
+    refused(check, "no types", parse, "", frames, flash)
+    refused(check, "no frames", parse, types, "", flash)
+    refused(check, "no flash", parse, types, frames, "")
+    refused(check, "a section before a level", parse, types, frames, ".text  1  0")
+    refused(check, "an unbalanced list", parse, types, "Functions: [fusion_nav::f::<1]\nSize: 0x10",
+            flash)
 
     walk_fixtures(check)
 
@@ -855,23 +898,27 @@ def main(argv):
     if argv == ["--self-test"]:
         self_test()
         return
-    show = None
-    if argv[:1] == ["--path"] and len(argv) == 7:
-        show, argv = argv[1], argv[2:]
-    if len(argv) != 5:
+    show = argv[1] if argv[:1] == ["--path"] and len(argv) == 5 else None
+    if show is None and len(argv) != 5:
         sys.exit(__doc__.split("\n\n")[1])
     try:
         texts = []
-        for name in argv:
+        for name in argv[2:] if show else argv:
             with open(name) as f:
                 texts.append(f.read())
         if show is None:
-            print(line(parse(*texts)))
+            types, frames, flash, code, sysroot = texts
+            pairs = parse(types, frames, flash)
+        else:
+            frames, code, sysroot = texts
+        walked, paths, visited = chains(code, frames)
+        same_as_sysroot(visited, sysroot)
+        if show is None:
+            print(line(pairs | walked))
             return
-        pairs, paths = chains(texts[3], texts[1], texts[4])
         if show not in paths:
             raise ValueError(f"no {show}")
-        print(f"{show}={pairs[show]}")
+        print(f"{show}={walked[show]}")
         for function, frame in paths[show]:
             print(f"{frame:8} {function}")
     except (OSError, ValueError) as error:
