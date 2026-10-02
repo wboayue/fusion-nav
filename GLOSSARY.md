@@ -22,7 +22,7 @@ the difference is the kind that costs a day.
   [conventions](EQUATIONS.md#notation-and-conventions).
 * **FRD**, **FLU**: Forward-Right-Down and Forward-Left-Up, the same disagreement for the body
   frame. This crate is FRD; many IMU breakout boards are FLU.
-* **Attitude**: the vehicle's orientation: the rotation that carries a body-frame vector into
+* **Attitude**: the vehicle's orientation, the rotation that carries a body-frame vector into
   the navigation frame. Equivalently roll, pitch and yaw, or a quaternion, or a 3 × 3 rotation
   matrix.
 * **Roll, pitch, yaw**: rotations about the forward, right and down axes. **Tilt** is roll and
@@ -34,15 +34,11 @@ the difference is the kind that costs a day.
   they have no gimbal lock and compose cheaply. The cost is conventions that look alike and are
   not. **Hamilton** vs JPL is settled here as Hamilton, and **scalar-first** vs scalar-last
   storage is not settled at all: `Quaternion`'s fields are named `w`, `x`, `y`, `z`, so a caller
-  writes the order down rather than assuming one. What `Attitude`'s constructors name is the
-  frame and the direction (`from_body_to_ned`, `from_ned_to_body`, `from_flu_to_enu`,
-  `from_flu_to_nwu`), because a stored inverse or an ENU quaternion taken as body-to-NED produces
-  a filter that runs and reports health while flying an attitude that is, in the level case, a
-  half turn out.
-* **Specific force**: what an accelerometer actually measures: acceleration minus gravity, in
-  body axes. A stationary level vehicle reads `[0, 0, −γ]`, not zero, which is what makes
-  levelling from the accelerometer possible at all. See
-  [initialization](EQUATIONS.md#initialization).
+  writes the order down rather than assuming one. The constructors that name frame and direction,
+  and what a wrong one costs, are in [seeding an attitude](README.md#seeding-an-attitude).
+* **Specific force**: what an accelerometer measures, acceleration minus gravity, in body axes.
+  A stationary level vehicle reads `[0, 0, −γ]`, not zero, which is what makes levelling from
+  the accelerometer possible. See [initialization](EQUATIONS.md#initialization).
 * **Levelling**, **alignment**: recovering the initial attitude before the filter can run.
   Levelling is the tilt half, from gravity; alignment is the whole job, including heading.
   A **static** (quasi-stationary) window gives the good answer, a **coarse** one the usable
@@ -53,8 +49,9 @@ the difference is the kind that costs a day.
   **WMM** (World Magnetic Model) table at the origin unless the caller sets it,
   [the decision](GOALS.md#magnetic-declination-from-a-table-read-where-the-origin-is-placed).
 * **Barometric reference**, `α₀`: the barometric altitude that corresponds to the navigation
-  origin, so a barometer reading becomes a height. Set by a still start or read from the estimate, then
-  estimated as an **offset** beside the covariance, since a barometer drifts with the weather,
+  origin, so a barometer reading becomes a height. Set by a still start or read from the
+  estimate, then estimated as an **offset** beside the covariance, since a barometer drifts with
+  the weather,
   [equation (30′)](EQUATIONS.md#barometric-offset).
 * **Course**, **sideslip**: course is the direction of the horizontal velocity, where the
   vehicle is going; heading is where its nose points; sideslip is the angle between them. A
@@ -74,12 +71,12 @@ the difference is the kind that costs a day.
 * **Inertial navigation**, **dead reckoning**: integrating gyroscope and accelerometer readings
   to carry position, velocity and attitude forward with no outside reference. It is exact for an
   instant and hopeless over a minute, because every error integrates: an attitude error tips
-  gravity into the horizontal channel and integrates twice; on the simulator's `gnss_outage`,
-  [20 s without GNSS](VALIDATION.md) is metres. The term is not the status:
+  gravity into the horizontal channel and integrates twice. On the simulator's `gnss_outage`, 20 s
+  without GNSS costs metres ([VALIDATION.md](VALIDATION.md)). The term is not the status:
   `Status::DeadReckoning` means no *horizontal* aiding, so a filter fusing only a barometer and a
   magnetometer reports it while still corrected in height and heading.
-* **Kalman filter**: the recursive estimator underneath all of this: carry a state estimate and
-  a covariance, **predict** both forward with a model, **correct** both when a measurement
+* **Kalman filter**: the recursive estimator underneath all of this. It carries a state estimate and
+  a covariance, **predicts** both forward with a model and **corrects** both when a measurement
   arrives, weighting the two by how much each claims to be trusted.
 * **Extended Kalman filter (EKF)**: a Kalman filter on a nonlinear system, linearized about the
   current estimate at each step. `H` and `F` are that linearization.
@@ -104,7 +101,7 @@ the difference is the kind that costs a day.
   `Config::max_predict_dt`, which no single sample can describe. The filter assumes no
   acceleration and no rotation over the gap and prices that assumption into the covariance,
   [equation (22′)](EQUATIONS.md#coasting-across-a-gap); `Propagation::Coasted` reports it.
-* **Injection and reset**: the ESKF's extra step: the estimated error is added into the nominal
+* **Injection and reset**: the ESKF's extra step. The estimated error is added into the nominal
   state, then the error state is zeroed and the covariance rotated by the **reset Jacobian**
   `G`. This is why the error state's prior is always zero.
   [Equations (39)–(41)](EQUATIONS.md#error-injection-and-reset).
@@ -112,7 +109,7 @@ the difference is the kind that costs a day.
   as six states, three per sensor, because an unestimated gyroscope bias is an attitude error
   that grows linearly and then a position error that grows cubically. **Drift** is what the
   *solution* does when a bias is not estimated; the bias is the cause, the drift the symptom.
-* **Random walk**: the model for how a bias moves: the integral of white noise, so its
+* **Random walk**: the model for how a bias moves, the integral of white noise, so its
   uncertainty grows linearly with time rather than staying put. `ImuNoise::gyro_bias_walk` and
   `accel_bias_walk` are its strength. Measuring it honestly takes an **Allan variance** soak of
   several hours, which is why `GOALS.md` lists it as a number the user supplies.
@@ -124,7 +121,7 @@ the difference is the kind that costs a day.
 
 ## Uncertainty
 
-* **Covariance**, `P`: the filter's own account of how wrong it might be: a 15 × 15 matrix whose
+* **Covariance**, `P`: the filter's own account of how wrong it might be, a 15 × 15 matrix whose
   diagonal holds each state's variance and whose off-diagonal terms hold the correlations. The
   correlations are what let a GNSS position fix correct velocity and attitude.
 * **Variance**, **σ (sigma)**: squared spread and spread. A state's σ is the square root of its
@@ -136,8 +133,8 @@ the difference is the kind that costs a day.
   (`Initialization::sigma_*`), a prior on the state and not a property of any sensor. `P` is none
   of the three: it is the estimate's own uncertainty, which the other three set and move.
 * **Noise density**, **spectral density**: the units `ImuNoise` states, `rad s⁻¹/√Hz` and
-  friends. They look odd because the noise is continuous-time: variance accumulates linearly with
-  time, so the σ over an interval `Δt` is the density times `√Δt`. Doubling the sample rate does
+  friends. They look odd because the noise is continuous-time: variance grows linearly with time,
+  so the σ over an interval `Δt` is the density times `√Δt`. Doubling the sample rate does
   not double the drift.
 * **Noise floor**, **window noise**: the white noise a still initialization window measured on
   each sensor, as `StaticWindow::noise` reports it (`WindowNoise`), by
@@ -149,9 +146,6 @@ the difference is the kind that costs a day.
 * **Consider state**: a quantity carried in the covariance whose uncertainty is priced but which
   is never corrected. Measured and rejected for the barometric reference in favour of an
   estimated one, [the decision](GOALS.md#barometric-reference-as-an-estimated-offset).
-* **Kalman gain**, `K`: how much of a measurement's disagreement to believe, set by the ratio of
-  the filter's uncertainty to the total. Confident filter, ignored measurement; uncertain filter,
-  adopted measurement.
 * **Joseph form**: the algebraically equivalent but numerically stabler way of writing the
   covariance update, [equation (27)](EQUATIONS.md#measurement-update). It costs more arithmetic
   and keeps `P` symmetric and positive definite in `f32`, which the short form does not.
@@ -180,6 +174,9 @@ the difference is the kind that costs a day.
   checking a filter that has no truth to compare against.
 * **Innovation covariance**, `S`: how large the innovation should be if both the filter and the
   sensor are telling the truth: `H P Hᵀ + R`. The filter's uncertainty and the sensor's, added.
+* **Kalman gain**, `K`: how much of a measurement's disagreement to believe, set by the ratio of
+  the filter's uncertainty to the total. Confident filter, ignored measurement; uncertain filter,
+  adopted measurement.
 * **Mahalanobis distance**: distance measured in σ rather than in metres, `yᵀ S⁻¹ y` under the
   square root. It is what makes "is 3 m a lot?" answerable: it depends on `S`.
 * **NIS**, normalized innovation squared: that distance squared, `ε = yᵀ S⁻¹ y`,
@@ -267,15 +264,18 @@ the difference is the kind that costs a day.
 ## Words this crate uses in a particular way
 
 * **`Status`**: one enum answering *how bad is the worst thing*, most-severe-first:
-  `DeadReckoning` > `Aligning` > `Degraded` > `Healthy`.
+  `DeadReckoning` > `Aligning` > `Degraded` > `Healthy`. See
+  [health reporting](README.md#health-reporting).
 * **`Validity`**: six per-quantity flags answering *which outputs can I use*, derived from `P`
   against `Config::accuracy`. `Status` is the summary, `Validity` the detail, and neither
-  substitutes for the other; the reasoning is
-  [per-quantity validity](GOALS.md#per-quantity-validity-not-one-ladder).
+  substitutes for the other. Usage is [health reporting](README.md#health-reporting), the
+  reasoning [per-quantity validity](GOALS.md#per-quantity-validity-not-one-ladder).
 * **`Accuracy`**: what the *mission* needs from each output, and the one knob the filter cannot
-  derive for the caller. It moves `Validity` and nothing else.
+  derive for the caller. It moves `Validity` and nothing else
+  ([health reporting](README.md#health-reporting)).
 * **Aligning**: the filter is running, but its attitude has not converged: a coarse start, a
-  vague seed, or a heading no source has observed yet. It latches: once resolved it never returns, because read live it flaps.
+  vague seed, or a heading no source has observed yet. It latches: once resolved it never
+  returns, because read live it flaps.
 * **Seed**: a start from an estimate the application already holds (`Eskf::initialize_from`),
   rather than from a window. It vouches for every quantity, so no first measurement is adopted
   after it; recovery from gate lockout still is.
