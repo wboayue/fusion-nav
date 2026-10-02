@@ -684,6 +684,9 @@ def walk_fixtures(check):
         # holding a `fn` would: the bound is `heavy`, which no code relocation names.
         ("g", [f + "table_user"], 2, ["R_ARM_ABS32\t.rodata.table", "bx\tr3"]),
         ("h", [f + "heavy"], 900, []),
+        # The same through a table of tables, data pointing at data first.
+        ("g", [f + "nested_user"], 2, ["R_ARM_ABS32\t.rodata.outer", "bx\tr3"]),
+        ("h", [f + "heavier"], 950, []),
         # A tail call and a conditional call through a register, and a jump loaded into pc:
         # each bounded by `select`, the one address taken.
         ("g", [f + "tail"], 2, ["R_ARM_ABS32\t" + f + "select", "bx\tr1"]),
@@ -691,6 +694,10 @@ def walk_fixtures(check):
         ("g", [f + "load"], 2, ["R_ARM_ABS32\t" + f + "select", "ldr.w\tpc, [r1, #4]"]),
         # A jump table: `mov pc` through entries in its own section is no call.
         ("g", [f + "table"], 12, ["mov\tpc, r2", f"R_ARM_ABS32\t.text.{f}table"]),
+        # A jump table beside a real indirect call: the table's entries take no address, or the
+        # function would bound its own call and refuse as a cycle.
+        ("g", [f + "switch"], 12, ["mov\tpc, r2", f"R_ARM_ABS32\t.text.{f}switch",
+                                   "R_ARM_ABS32\t" + f + "select", "blx\tr3"]),
         # A section symbol: a call into `.text.<leaf>` reaches `leaf`.
         ("g", [f + "by_section"], 3, [f"R_ARM_THM_CALL\t.text.{f}leaf"]),
         # Hand-written assembly with no stack-size entry, read from its pushes, called through
@@ -729,7 +736,8 @@ def walk_fixtures(check):
         ("l", [f + "dup"], 800, []),
         ("g", [f + "weak"], 70, []),
     ]
-    data = [("a.o", ".rodata.table", [f + "heavy"])]
+    data = [("a.o", ".rodata.table", [f + "heavy"]), ("a.o", ".rodata.outer", [".rodata.inner"]),
+            ("a.o", ".rodata.inner", [f + "heavier"])]
     entries = [("a.o", [f + "folded_b"], 40)]
     pairs, paths, _ = chains(*objects(("a.o", a), ("b.o", b), data=data, entries=entries))
     want = {
@@ -742,6 +750,8 @@ def walk_fixtures(check):
         "cond": 2 + 4,
         "load": 2 + 4,
         "table": 12,
+        "switch": 12 + 4,
+        "nested_user": 2 + 950,
         "by_section": 3 + 400,
         "asm": 0 + (2 + 4) * 4,
         "asm2": 8 + 0x100 + 0x20 + 2 * 4 + 2 * 8,
