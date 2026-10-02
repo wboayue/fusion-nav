@@ -1138,8 +1138,39 @@ counts or dependency lag: "~36 in the last 90 days" was already 33 when someone 
 "nine minor versions behind" became ten when `nalgebra` shipped. crates.io and the linked
 repositories own those figures.
 
-Prose in the documents avoids em dashes: a comma, colon, parenthesis or a new sentence carries
-the same aside. `GOALS.md` is written that way; the rest converts as it is edited.
+Prose in the documents is a concise narrative in American English: one idea per sentence, the
+point first, a table or list where a paragraph enumerates. It avoids em dashes: a comma, colon,
+parenthesis or a new sentence carries the same aside. Concise is not lossy, so the evidence-move
+audit above applies to a rewrite as much as to a move.
+
+**The documents answer one question each**, and each opens with the same line naming all five:
+README how to use the filter, GOALS why it exists, DESIGN how it is built and where its numbers
+come from, EQUATIONS what it computes, GLOSSARY what a word means. Two pictures recur, labeled per
+document so a reader recognizes them: the filter loop (API names in the README, owning modules in
+DESIGN, equation numbers in EQUATIONS) and the error-growth chain. A change to one copy is a
+change to all three. EQUATIONS runs in execution order, so its numbers jump; never renumber to
+fix that. A GOALS decision reads context, then **Decided**, **Measured against** (or "Not
+measured") and **Costs**, and the decision index above them gains a row.
+
+What #205 learned doing this, each caught by a review rather than by a check:
+- **A rewrite changes claims without losing figures.** The readability pass cleared the figure
+  audit and still moved twelve claims: an unbuilt (5′) described as leveling, a precondition
+  dropped from option 6, a caveat moved from `gyro_white` to all noise. Fact-check the sentences a
+  concision pass touches, not only its numbers.
+- **A table puts figures in one frame.** Two `moving_start` yaw figures sat side by side, one
+  measured before (24′) landed and one after. A row built from prose carries the build it was
+  measured on, or is re-measured.
+- **A diagram is a claim.** The first EQUATIONS loop drew every IMU step triggering an update.
+  Render each mermaid block before committing it (`npx -y -p @mermaid-js/mermaid-cli mmdc -i x.mmd
+  -o x.png`) and read it as a newcomer would.
+- **A blank line inside a Markdown table ends the table** on GitHub, crates.io and docs.rs, and the
+  rows after it print as pipes. Moving a paragraph out of a table did it twice.
+- **A heading's spelling is its anchor.** The American-spelling sweep (#206) renamed two
+  EQUATIONS headings; every in-repo link moved with them by applying the same word rule to the
+  links, and `tools/check-anchors.sh` proved it. Links from issues cannot be moved. A sweep keeps
+  identifiers (no letter, digit or `_` may touch the word) and anything the converter writes, and
+  changes a validation template, its rendered page and any caption string that reaches the page
+  together.
 
 The README **is** the crate's front page: `src/lib.rs` is one `#![doc = include_str!]` and no
 prose of its own, so `cargo test --doc` compiles every snippet the user guide shows. A snippet
