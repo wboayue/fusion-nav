@@ -9,7 +9,7 @@
 //! NCEI's coefficient file, and its `--drift` says when the epoch has gone stale ([table]). The
 //! WMM is US-government work in the public domain, so the table carries no licence.
 //!
-//! It costs about 2.5 KB of flash ([measured]). Hence the feature, which GOALS.md's
+//! It costs about 2.6 KB of flash ([measured]). Hence the feature, which GOALS.md's
 //! derived-configuration table asks for, "optional, for its flash cost": off, none of it is linked.
 //!
 //! PX4 (`geo_magnetic_tables.hpp`) and ArduPilot (`AP_Declination`) ship the same shape, and

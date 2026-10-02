@@ -16,10 +16,11 @@ CI also checks that this page shows the pinned values.
 The two targets are `thumbv6m-none-eabi` (Cortex-M0 and M0+, no FPU, so every float operation
 is a library call) and `thumbv7em-none-eabihf` (Cortex-M4 and M7 with a single-precision FPU).
 
-- **Sizes** are `size_of` each type, the same on any build.
+- **Sizes** are `size_of` each type on the target, at any `opt-level`.
 - **Stack** is each function's own frame at `opt-level = 3`, read from the compiler
   (`-Zemit-stack-sizes`). A frame is one function's, so a path's stack is the sum of the frames
-  along it. For a generic function the figure is its largest instance, so a sum is a bound.
+  along it, down to the last call made out of line. For a generic function the figure is its
+  largest instance.
 - **Flash** is a bare-metal binary (`panic-check/`) that calls the whole public API, linked
   with fat LTO. An application reaching fewer entry points links less.
 - **Not measured:** cycle counts and a painted stack high-water mark on a real board. Both are
@@ -42,9 +43,9 @@ host timings, which are taken on one machine and pinned nowhere.
 | `Config` | 244 | 244 |
 | `StaticWindow`, at any rate and length | 944 | 944 |
 | `StaticSample` | 80 | 80 |
+| `Startup`, a start worked out and checked before it commits, on a start's stack | 1088 | 1088 |
 
-Sizes in bytes. `StaticWindow` folds each sample in as it arrives, so the start needs no
-buffer of samples. `Covariance::to_rows` copies `P` onto the caller's stack.
+Sizes in bytes.
 
 ## Stack
 
@@ -64,20 +65,28 @@ Each entry point's own frame, in bytes, and the frames beneath it that set its d
 | `initialize` | 2224 | 2216 |
 | `initialize_coarse` | 3576 | 3552 |
 | `initialize_from` | 1928 | 1856 |
-| beneath every `fuse_*`: the update of (23)–(27), three measurements | 8088 | 7960 |
+| beneath the three heading entry points: the heading update they share | 1232 | 1240 |
+| beneath every `fuse_*` (a geodetic fix through `fuse_gnss_position`, a heading through the row above): the update of (23)–(27), three measurements | 8088 | 7960 |
 | two measurements | 7400 | 7320 |
 | one measurement | 6368 | 6216 |
 | beside the update: the observation formed at the measurement's time, (23′) | 1464 | 1440 |
 | beside the update: committing or adopting its result | 1120 | 1064 |
+| beneath the update: the attitude reset of (41) | 456 | 448 |
+| beneath the update: the injection of (39)–(40) | 168 | 88 |
 | beneath `predict`: one sample, (9)–(22) | 1088 | 1096 |
 | beneath that: the covariance step of (22) | 2832 | 2760 |
+| beneath that and the reset of (41): symmetry, (42) | 128 | 8 |
 | beneath `predict`, across a gap: the coast of (22′) | 2152 | 2144 |
 | beneath `predicted_validity`: the covariance carried over the horizon | 1952 | 1936 |
-| beneath `initialize`: the initial covariance | 1120 | 1080 |
+| beneath every start: the initial covariance | 1120 | 1080 |
 
-The deepest path is `fuse_gnss_velocity` calling the three-measurement update: the sum of those
-two frames is the stack an integrator plans for. Summed along their own paths, propagation, a
-coast, the arming query and every start come to less; DESIGN.md names the paths.
+The deepest path is `fuse_gnss_velocity` calling the three-measurement update, and below the
+update the calls it makes out of line: the reset and its symmetry pass, the injection, and
+`nalgebra`'s matrix products and factorization, whose frames are not measured. So the sum of
+the rows on that path leaves those last frames out of the stack an integrator plans for. One
+figure for the whole path, walked call by call, is #202. Propagation, a coast, the arming query
+and every start come to less than the update's path on the frames measured; DESIGN.md names
+their paths.
 
 ## Flash
 

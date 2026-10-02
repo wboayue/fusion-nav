@@ -183,13 +183,13 @@ per question answered, never per importance.
   placeholder on the pin and never typed; what decided its form (the rejected form's cost, host
   timings, operation counts) goes to `DESIGN.md`, "Measured cost, by function", and the comment
   keeps why its form was chosen. #200 re-pinned `.text` and left DESIGN's copy of the flash table
-  behind, which is why the current figures have no hand-written home. Pending work is one line, "Not built: #N", with at most a clause naming what
-  would build it; the argument for waiting belongs to the issue, or to `GOALS.md` if it outlives
-  it. The test is a paragraph's subject: a log or a byte count, rather than the code, is the
-  paragraph that moves. Test modules are exempt: a fixture's comment saying which mutation it
-  survives stays. Links are absolute (docs.rs serves no siblings) and reference-style
-  (`[measured]: https://…` at the block's end), and `tools/check-anchors.sh` resolves them in
-  `src/` as in the Markdown.
+  behind, which is why the current figures have no hand-written home. Pending work is one line,
+  "Not built: #N", with at most a clause naming what would build it; the argument for waiting
+  belongs to the issue, or to `GOALS.md` if it outlives it. The test is a paragraph's subject: a
+  log or a byte count, rather than the code, is the paragraph that moves. Test modules are
+  exempt: a fixture's comment saying which mutation it survives stays. Links are absolute
+  (docs.rs serves no siblings) and reference-style (`[measured]: https://…` at the block's end),
+  and `tools/check-anchors.sh` resolves them in `src/` as in the Markdown.
 
 **Moving evidence is an audit, not a cut and paste.** #187 moved 263 figures, and the move found
 three things a copy would have carried over:
@@ -227,7 +227,7 @@ cargo +1.89 build --lib           # MSRV
 
 tools/footprint.sh                # type sizes, stack frames, flash on both thumb targets vs data/footprint.txt; CI
 tools/footprint.sh --pin          # the file's keys at their measured values: re-pin by copying
-python3 tools/validation.py render validation/src target/validation . --only cost.md   # after a re-pin; CI checks it
+python3 tools/validation.py render validation/src target/validation . --only cost.md   # after a re-pin
 tools/footprint.sh --all          # every key measured, to choose what to pin
 tools/footprint.sh --install      # once: its pinned nightly, llvm-tools and both thumb targets
 python3 tools/footprint.py --self-test   # the parser's fixtures

@@ -23,7 +23,7 @@ disagree is shown with its cause, or marked as not yet explained.
 - **EKF2** is PX4's own estimator. It is not the truth; on real flights nothing is, so the
   [EKF2 page](validation/ekf2.md) measures agreement, never accuracy.
 
-Four questions, a page each, because each needs different evidence
+Four questions about the estimate, a page each, because each needs different evidence
 ([GOALS.md, three questions, three kinds of source](GOALS.md#three-questions-three-kinds-of-source)).
 
 ## [Accuracy](validation/accuracy.md): how close is it, when the truth is known?
@@ -76,5 +76,3 @@ Nothing on these pages is typed by hand. Every number is copied from the output 
 this repository, and every figure is drawn from the run it describes, named by scenario and
 seed or by log. `tools/validation.sh` regenerates all of it, and
 `tools/validation.sh --check` fails if any page differs from what a fresh run produces.
-The cost page's figures are the ones CI pins in `data/footprint.txt`, and CI checks that page
-on every build.

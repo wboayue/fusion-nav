@@ -205,7 +205,7 @@ reads and commits.
 | `correlation`, how long each source's error persists | `τ = −T / ln ρ` from a replay log's innovation autocorrelation per source, read with every measurement fused as white: a lower bound, so it raises a source's `τ` above the corpus median and never lowers it | offline, `--derive`; an estimator the filter does not bias is #195 |
 | `baro_offset_walk`, the barometric offset's drift | the structure function of barometer against GNSS height over at least half an hour, at lags from ten of GNSS height's `τ`: an upper bound | offline, `--derive`; PX4's 0.13 below 30 min |
 | local gravity `γ` | the site's latitude and height, by the WGS-84 normal gravity formula (`Geodetic::normal_gravity`) | offline, `--derive`; `Config::gravity`, see the decision below |
-| magnetic declination | a WMM table at the GNSS origin, at the table's fixed epoch | the filter, where it places its origin; the `magnetic-model` feature, on by default, for its 2.5 KB of flash |
+| magnetic declination | a WMM table at the GNSS origin, at the table's fixed epoch | the filter, where it places its origin; the `magnetic-model` feature, on by default, for its 2.6 KB of flash |
 
 And what stays with the user, because no amount of data yields it:
 
@@ -780,7 +780,7 @@ What PX4 does that this does not: it re-reads the table every 10 s at the curren
 takes a change over 1° (`EKF/aid_sources/magnetometer/mag_control.cpp:90-113`, `:641-652` at
 `c4e4ef98`). Here the value is read at the origin, which a flight inside the tangent plane's range
 barely leaves; a vehicle that travels hundreds of kilometres calls `set_magnetic_declination` as it
-goes. And the table costs 2.5 KB of flash, so it sits behind the `magnetic-model` feature, on by
+goes. And the table costs 2.6 KB of flash, so it sits behind the `magnetic-model` feature, on by
 default.
 
 ### Sensor offsets as per-call arguments
