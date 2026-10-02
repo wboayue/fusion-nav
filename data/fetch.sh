@@ -23,7 +23,7 @@
 # `cargo run --example replay` works with no network, and generated rather than downloaded:
 # `cargo run --example simulate -- flight data` rewrites it and its truth file.
 #
-# Another manifest is another licence (AGENTS.md, "Replay corpus"):
+# Another manifest is another license (AGENTS.md, "Replay corpus"):
 # data/urbannav.txt and data/insane.txt are fetched only when named, each into its own
 # directory, and their `# terms:` lines are printed before anything is downloaded. Only
 # fetching, verifying and listing take them; replaying one is its own script's

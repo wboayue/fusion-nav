@@ -1,6 +1,6 @@
 # Reference papers
 
-Fetched, not committed — arXiv's licence covers distribution *there*, this crate is MIT, and the
+Fetched, not committed — arXiv's license covers distribution *there*, this crate is MIT, and the
 standards body owns its own document. `reference/*.pdf` is gitignored; this file is the record of
 what belongs here, and an entry says what it is the source *of*, so a claim in the repository can
 be traced to one.

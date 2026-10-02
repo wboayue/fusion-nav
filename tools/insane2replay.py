@@ -317,7 +317,7 @@ def convert(directory, sequence, out, truth_out):
     header = [
         f"fusion-nav converted `{name}` from INSANE {sequence}, source {tag}",
         f"Converted from INSANE {zip_path.name} by tools/insane2replay.py",
-        "INSANE's licence forbids selling what derives from it: never commit this file or "
+        "INSANE's license forbids selling what derives from it: never commit this file or "
         "anything drawn from it (data/insane.txt)",
         f"Navigation origin {origin[0]:.9f} {origin[1]:.9f} {origin[2]:.3f} (lat deg, lon deg, "
         "height m; the first RTK2 fix)",

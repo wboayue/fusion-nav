@@ -780,7 +780,7 @@ say so. It is the one source that can score a rejection as right or wrong, and i
 vehicle with no barometer and no magnetometer, so it scores GNSS position gating and nothing
 else: heading comes from the course, and height from GNSS alone.
 
-UrbanNav states no licence (GOALS.md, "Secondary sources"), so it has its own manifest and is
+UrbanNav states no license (GOALS.md, "Secondary sources"), so it has its own manifest and is
 never committed, converted or not:
 
 ```console
@@ -817,7 +817,7 @@ and velocity, and whether the covariance covers them. It does not score attitude
 truth is fitted partly to the magnetometer the filter fuses, and at rest it tilts gravity 5° to
 17° from vertical.
 
-Its licence forbids selling what derives from it (GOALS.md, "Primary sources"), so it has its
+Its license forbids selling what derives from it (GOALS.md, "Primary sources"), so it has its
 own manifest and is never committed, converted or not:
 
 ```console

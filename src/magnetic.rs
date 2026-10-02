@@ -7,7 +7,7 @@
 //! [`TABLE`] is the model's declination every 10° of latitude and longitude at one epoch, and
 //! [`declination_at`] interpolates it bilinearly. `tools/declination.py` generates the table from
 //! NCEI's coefficient file, and its `--drift` says when the epoch has gone stale ([table]). The
-//! WMM is US-government work in the public domain, so the table carries no licence.
+//! WMM is US-government work in the public domain, so the table carries no license.
 //!
 //! It costs about 2.6 KB of flash ([measured]). Hence the feature, which GOALS.md's
 //! derived-configuration table asks for, "optional, for its flash cost": off, none of it is linked.

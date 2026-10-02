@@ -30,7 +30,7 @@ A scenario run is named as in data/scenarios.txt; a corpus run as a prefix of th
 the policy, `89a498ce/raw`, and a prefix naming two logs is refused; an UrbanNav run as
 `urbannav-<receiver>/<policy>`, what data/urbannav.sh replayed, and an INSANE run as
 `insane-<sequence>/<policy>`, data/insane.sh's. Neither places a figure: UrbanNav states no
-licence and INSANE's forbids selling what derives from it, so only their scalars are
+license and INSANE's forbids selling what derives from it, so only their scalars are
 published (data/urbannav.txt, data/insane.txt). Where a table or a count
 covers every run, it names a list rather than spelling the runs out, so a scenario or log added
 to the gates reaches the page without an edit here: `@scenarios` is data/scenarios.txt,

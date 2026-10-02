@@ -1352,7 +1352,7 @@ def release(encoded):
 # a degree on the corpus, where the saved EKF2_MAG_DECL and this table disagree by at most
 # 0.36 deg -- rather than being that build's value exactly.
 #
-# The table and lookup are PX4's, under its licence, retained here as it requires:
+# The table and lookup are PX4's, under its license, retained here as it requires:
 #
 # Copyright (c) 2020-2024 PX4 Development Team. All rights reserved.
 # Redistribution and use in source and binary forms, with or without

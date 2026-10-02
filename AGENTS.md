@@ -285,7 +285,7 @@ data/fetch.sh --check             # convert each .ulg and replay it, assert expe
 data/fetch.sh --add <url> [name]  # download once, append a manifest line to commit
 data/fetch.sh --pin <name>        # replay one log, print the expectations to append
 data/fetch.sh --compare [--pin]   # every log beside EKF2, raw and px4, against data/ekf2.txt
-data/fetch.sh --manifest data/urbannav.txt   # UrbanNav's segment into data/urbannav; no licence, never commit
+data/fetch.sh --manifest data/urbannav.txt   # UrbanNav's segment into data/urbannav; no license, never commit
 data/urbannav.sh [--pin]          # both receivers against truth, raw and px4 (M8T also recovery off)
 uv run tools/urbannav2replay.py --self-test   # the UrbanNav converter's fixtures (stdlib)
 data/fetch.sh --manifest data/insane.txt     # INSANE's three sequences into data/insane; never commit
@@ -395,17 +395,17 @@ comparison against EKF2 (`data/ekf2.txt`) runs under both.
 Renaming or removing a key breaks every
 entry at once.
 
-**One manifest per licence.** The PX4 logs are CC BY 4.0 and could be redistributed;
+**One manifest per license.** The PX4 logs are CC BY 4.0 and could be redistributed;
 they are fetched rather than committed for size, not for terms. INSANE is BSD-2 with a
 condition forbidding sale of what derives from it, so it cannot be bundled into an MIT crate at
-all: `data/insane.txt`, fetched only when named (GOALS.md, Validation). UrbanNav states no licence at all,
+all: `data/insane.txt`, fetched only when named (GOALS.md, Validation). UrbanNav states no license at all,
 which is stricter still: `data/urbannav.txt`, fetched only when named, and only scalars
 published. Adding a data source means saying which behavior it uniquely covers **and** under
-what licence — and for a restricted one, that measured scalars are publishable while converted
+what license — and for a restricted one, that measured scalars are publishable while converted
 CSVs and plots stay out of the repository.
 
 **One corpus is generated rather than fetched.** `examples/simulate.rs` writes seeded flights
-with analytic truth, so it needs no licence, no manifest and no network — and it is the only
+with analytic truth, so it needs no license, no manifest and no network — and it is the only
 source that can say how *accurate* the filter is rather than how self-consistent. The same rule
 still applies: a scenario exists because it covers something no other one does, and it says so in
 the `covers` field of the table in that file, which is the single place the list lives. Its noise
@@ -1174,7 +1174,7 @@ nothing includes them, and GitHub is where they are read.
 ### The sources are fetched, and the citations to them are checked
 
 `reference/` holds the primary sources, fetched rather than committed for the same reason as the
-corpus logs — arXiv's licence covers distribution *there*, and a standards body owns its own
+corpus logs — arXiv's license covers distribution *there*, and a standards body owns its own
 document. The PDFs are gitignored; `reference/README.md` is the record, and an entry carries a
 URL, a sha256 and a line saying what the file is the source *of*, so a claim can be traced to one
 and a source that turns out to answer nothing can be dropped.

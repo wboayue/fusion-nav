@@ -45,9 +45,9 @@ The committed figures have a budget, which `tools/validation.sh` enforces and st
 crate's `Cargo.toml` excludes this directory, so the figures cost the repository and never a
 download.
 
-## Licences
+## Licenses
 
 The corpus figures are drawn from PX4 Flight Review logs, CC BY 4.0, credited on the page that
 shows them. The simulator's are this repository's. INSANE and UrbanNav contribute measured
-scalars only: INSANE's licence and UrbanNav's lack of one keep plots and converted data out of
+scalars only: INSANE's license and UrbanNav's lack of one keep plots and converted data out of
 the repository.

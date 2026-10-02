@@ -11,7 +11,7 @@
 # on one drive: the M8T, which claims a few metres while hundreds out, and the F9P, honest
 # to its own accuracy, which is the test of rejecting good fixes at road speed.
 #
-# Local, like `data/fetch.sh --check`, and never CI: UrbanNav states no licence, so its files
+# Local, like `data/fetch.sh --check`, and never CI: UrbanNav states no license, so its files
 # are fetched (`data/fetch.sh --manifest data/urbannav.txt`) and nothing drawn from them is
 # committed but the scalars below (data/urbannav.txt carries the terms).
 
