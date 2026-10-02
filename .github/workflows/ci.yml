@@ -36,7 +36,8 @@ jobs:
       - run: tools/check-anchors.sh --self-test
       - run: tools/check-anchors.sh
       # The declination generator's fixtures, stdlib only: generating needs `pygeomag` and is
-      # local, but a broken reader or lookup would misreport `--drift` with nothing to notice.
+      # local, but a broken lookup, log reader or drift maximum would misreport `--drift` with
+      # nothing else to notice.
       - run: python3 tools/declination.py --self-test
 
   test:

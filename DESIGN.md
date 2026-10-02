@@ -332,7 +332,7 @@ functions under LTO and counted there.
 
 A measurement dimension is what costs flash, not a source: `update::<1>`, which the barometer
 needs, costs 4.1 %, and the magnetic heading of (34)–(36), sharing it, 1204 bytes, 2.4 %.
-Measured by hand, and not pinned: the `magnetic-model` table is 1408 bytes of `.rodata` and its lookup 1004 of `.text` (1488 on
+Measured by hand, and not pinned: the `magnetic-model` table is 1408 bytes of `.rodata` and its lookup 1204 of `.text` (1704 on
 `thumbv7em`), about 2.5 KB, at `opt-level = "s"`; the same lookup in `f64` linked 4496 bytes of
 `.text` in software doubles.
 

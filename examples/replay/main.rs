@@ -2273,7 +2273,7 @@ impl Replay {
             self.filter.magnetic_declination().as_radians().to_degrees(),
             // The crate's magnetic model at the log's site, beside the header's value: on a log
             // whose EKF2 read PX4's table at its first fix, the two differ by the two tables'
-            // epochs and grids, which `data/manifest.txt` pins. `none` without a site.
+            // models and epochs, which `data/manifest.txt` pins. `none` without a site.
             self.site
                 .and_then(Geodetic::magnetic_declination)
                 .map_or_else(

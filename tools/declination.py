@@ -5,39 +5,58 @@
 # ///
 """Generate the magnetic declination table in `src/magnetic.rs` from the World Magnetic Model.
 
-    uv run tools/declination.py                      regenerate at the model and epoch it names
+    uv run tools/declination.py                     regenerate at the model and epoch it names
     uv run tools/declination.py --model WMM_2025 --epoch 2027.5   regenerate at another
-    uv run tools/declination.py --px4 <checkout>     rebuild PX4's table, to check the generator
-    uv run tools/declination.py --drift [--at <year>] [log.csv ...]   the table at the corpus
-    python3 tools/declination.py --self-test         run the fixtures
+    uv run tools/declination.py --check             fail if the table is not what it generates
+    uv run tools/declination.py --drift [--at Y] [log.csv ...]   is the table stale?
+    uv run tools/declination.py --px4 <checkout>    rebuild PX4's table, to check the generator
+    python3 tools/declination.py --self-test        run the fixtures
 
 The table is the model's declination every 10 degrees of latitude and longitude, at sea level, at
 one epoch, in hundredths of a degree. The model is NCEI's coefficient file as `pygeomag` ships it,
 checked against the sha256 below (`reference/README.md` records where NCEI publishes it); the
 WMM is public domain, so the table carries no licence. The lines between the two marker comments
 in `src/magnetic.rs` are this script's output and nothing else, and a run with no arguments reads
-the model and epoch back from them, so regenerating at the same epoch must leave the file
-byte-identical.
+the model and epoch back from them, so regenerating at the same epoch leaves the file
+byte-identical and `--check` says whether it does.
 
 `--px4` is the evidence the generator is right: WMM-2020 at the epoch and scale PX4's
 `geo_magnetic_tables.hpp` names reproduces PX4's `declination_table` cell for cell, a table PX4
 built from NOAA's web calculator rather than from this code. A sign, an axis order or a unit
-wrong here fails it.
+wrong here fails it. It also checks the converter's copy of PX4's table against the header.
 
-`--drift` is when to regenerate (GOALS.md, "Magnetic declination from a table"). At every
-`# Navigation origin` in the converted logs named, `data/logs/*.csv` by default, it looks the table up as `declination_at` does and
-prints, in degrees, the largest difference from the model at the table's epoch (`interp_max`,
-the 10-degree grid's own error), at `--at` or today (`now_max`), and at the end of the model's
-five-year life (`end_max`).
+`--drift` is when to regenerate (GOALS.md, "Magnetic declination from a table"). It prints, in
+degrees, the table's largest difference from the model:
+
+    interp_max     at the sites, at the table's epoch: the 10-degree grid's own error
+    now_max        at the sites, at `--at` or today
+    end_max        at the sites, at the end of the model's five-year life
+    world_now_max  at every grid point within 60 degrees of the equator, at `--at` or today,
+    world_end_max  and at the end of the model's life: the epoch's error where no site samples it
+
+The sites are each `# Navigation origin` in the converted logs named, by default the corpus
+(`data/logs/*.csv`) and INSANE's sequences (`target/insane/*.csv`), counted apart so a missing
+set shows. `rust_max` is this script's lookup against the `declination_model=` the replay harness
+pinned for each corpus log in `data/manifest.txt`, the Rust lookup at the same origin: past the
+pins' rounding the two lookups have diverged, or the manifest predates the table, and the run
+refuses.
 """
 
+import argparse
 import glob
 import hashlib
-import math
 import os
 import re
 import sys
+import tempfile
 from datetime import date
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TARGET = os.path.join(ROOT, "src", "magnetic.rs")
+MANIFEST = os.path.join(ROOT, "data", "manifest.txt")
+CONVERTER = os.path.join(ROOT, "tools", "ulog2replay.py")
+CORPUS = os.path.join(ROOT, "data", "logs", "*.csv")
+INSANE = os.path.join(ROOT, "target", "insane", "*.csv")
 
 RESOLUTION = 10
 LATITUDES = range(-90, 91, RESOLUTION)
@@ -47,6 +66,13 @@ LONGITUDES = range(-180, 181, RESOLUTION)
 # 180 degrees is 18000, inside i16, and a round unit is one a reader can check by eye.
 SCALE = 0.01
 
+# The latitude band `world_*` reads. Past it the declination turns fast enough near the magnetic
+# poles that a 10-degree grid is no description of it at any epoch.
+WORLD_BAND = 60
+
+# `declination_model=` is printed to two decimals: half a unit, and f32 against f64 beside it.
+PIN_TOLERANCE = 0.006
+
 # sha256 of each coefficient file this script will build from, as `pygeomag` ships it. WMM_2025's
 # is that of `WMM2025.COF` in NCEI's `WMM2025COF.zip`; WMM_2020 is here for `--px4` alone.
 COEFFICIENTS = {
@@ -54,7 +80,6 @@ COEFFICIENTS = {
     "WMM_2020": "e65453b7d2ed34ae30f6f7361aaec403e103c2abf59ee46393bd4c4f880c4fa8",
 }
 
-TARGET = "src/magnetic.rs"
 BEGIN = "// BEGIN generated by tools/declination.py; edit the script, not these lines."
 END = "// END generated by tools/declination.py"
 PROVENANCE = re.compile(r"`(WMM_\d{4})` at epoch (\d{4}\.\d+)")
@@ -81,6 +106,17 @@ def declination(geomag, latitude, longitude, epoch):
                             allow_date_outside_lifespan=True).d
 
 
+def end_of(name):
+    """The last year of a model's five-year life: WMM_2025 runs to 2030."""
+    return float(name.split("_")[1]) + 5.0
+
+
+def epoch_of(text):
+    """An epoch as the generated region writes it, so `PROVENANCE` reads it back: `2032` is
+    `2032.0`."""
+    return str(float(text))
+
+
 def grid(geomag, epoch, scale):
     """The table: rows latitude -90 to 90, columns longitude -180 to 180, in units of `scale`."""
     rows = [[round(declination(geomag, lat, lon, epoch) / scale) for lon in LONGITUDES]
@@ -93,7 +129,8 @@ def grid(geomag, epoch, scale):
 
 
 def wrap(values, indent, width=100):
-    """Comma-separated values filling lines of at most `width` columns, as rustfmt would."""
+    """Comma-separated values filling lines of at most `width` columns. The table sits under
+    `#[rustfmt::skip]`, so this is the layout rather than a copy of rustfmt's."""
     lines, line = [], indent
     for i, value in enumerate(values):
         item = str(value) + ("," if i < len(values) - 1 else "")
@@ -158,7 +195,8 @@ def table_of(generated):
 
 
 def lookup(rows, scale, latitude, longitude):
-    """`declination_at` in `src/magnetic.rs`, in f64: bilinear in the cell about the point."""
+    """`declination_at` in `src/magnetic.rs`, in f64: bilinear in the cell about the point, each
+    corner taken within half a turn of the south-west one."""
     latitude = min(max(latitude, -90.0), 90.0)
     if longitude > 180.0:
         longitude -= 360.0
@@ -172,15 +210,22 @@ def lookup(rows, scale, latitude, longitude):
 
     row, north_frac = cell(latitude + 90.0, len(rows))
     column, east_frac = cell(longitude + 180.0, len(rows[0]))
-    sw, se = rows[row][column], rows[row][column + 1]
-    nw, ne = rows[row + 1][column], rows[row + 1][column + 1]
+    turn = 360.0 / scale
+    sw = rows[row][column]
+
+    def near_sw(value):
+        return sw + (value - sw + turn / 2) % turn - turn / 2
+
+    se = near_sw(rows[row][column + 1])
+    nw, ne = near_sw(rows[row + 1][column]), near_sw(rows[row + 1][column + 1])
     south = sw + east_frac * (se - sw)
     north = nw + east_frac * (ne - nw)
-    return (south + north_frac * (north - south)) * scale
+    return difference((south + north_frac * (north - south)) * scale, 0.0)
 
 
 def origins(paths):
-    """(latitude, longitude) of each converted log's `# Navigation origin`, where it has one."""
+    """(path, latitude, longitude) of each converted log's `# Navigation origin`, read from the
+    header only, where it has one."""
     found = []
     for path in paths:
         with open(path) as f:
@@ -189,7 +234,26 @@ def origins(paths):
                     break
                 m = re.match(r"# Navigation origin (-?[\d.]+) (-?[\d.]+) ", line)
                 if m:
-                    found.append((float(m.group(1)), float(m.group(2))))
+                    found.append((path, float(m.group(1)), float(m.group(2))))
+    return found
+
+
+def converted(pattern):
+    """The replay inputs a glob matches, leaving out the harness's outputs and truth files."""
+    return [p for p in sorted(glob.glob(pattern))
+            if not re.search(r"\.(replay|raw|truth|px4|off)\b", os.path.basename(p))]
+
+
+def pins(manifest):
+    """`declination_model=` per log id, from the manifest's entry lines, where it is a number."""
+    found = {}
+    for line in manifest.splitlines():
+        fields = line.split()
+        if line.startswith("#") or len(fields) < 2 or not fields[1].endswith(".ulg"):
+            continue
+        m = re.search(r"(?<= )declination_model=(-?[\d.]+)(?= |$)", line)
+        if m:
+            found[fields[1][:-4]] = float(m.group(1))
     return found
 
 
@@ -203,16 +267,58 @@ def difference(a, b):
     return (a - b + 180.0) % 360.0 - 180.0
 
 
-def regenerate(name=None, epoch=None):
+def drift_figures(rows, sites, model_at, epoch, at, end):
+    """The `--drift` maxima, from `model_at(latitude, longitude, year)` in degrees."""
+    def worst(points, when):
+        return max(abs(difference(value, model_at(lat, lon, when))) for lat, lon, value in points)
+
+    at_sites = [(lat, lon, lookup(rows, SCALE, lat, lon)) for _, lat, lon in sites]
+    nodes = [(lat, lon, rows[i][j] * SCALE) for i, lat in enumerate(LATITUDES)
+             for j, lon in enumerate(LONGITUDES) if abs(lat) <= WORLD_BAND]
+    return {
+        "interp_max": worst(at_sites, epoch),
+        "now_max": worst(at_sites, at),
+        "end_max": worst(at_sites, end),
+        "world_now_max": worst(nodes, at),
+        "world_end_max": worst(nodes, end),
+    }
+
+
+def rust_agreement(rows, sites, pinned):
+    """The largest |lookup - declination_model=| over the sites the manifest pins."""
+    gaps = [abs(difference(lookup(rows, SCALE, lat, lon), pinned[log]))
+            for path, lat, lon in sites
+            if (log := os.path.basename(path).split(".")[0]) in pinned]
+    return max(gaps) if gaps else None
+
+
+def converter_table(text):
+    """The rows of `DECLINATION_TABLE` in `tools/ulog2replay.py`."""
+    body = text.split("DECLINATION_TABLE = (", 1)[1].split("\n)", 1)[0]
+    return [[int(v) for v in re.findall(r"-?\d+", line)]
+            for line in body.splitlines() if line.strip().startswith("(")]
+
+
+def current():
     with open(TARGET) as f:
         text = f.read()
-    before, generated, after = region(text)
-    if name is None or epoch is None:
-        known_name, known_epoch = provenance(generated)
-        name, epoch = name or known_name, epoch or known_epoch
-    rows = grid(model(name), float(epoch), SCALE)
+    return (text,) + region(text)
+
+
+def regenerate(name, epoch, check):
+    text, before, generated, after = current()
+    if name is None:
+        name, epoch = provenance(generated)
+    epoch = epoch_of(epoch)
+    rendered = before + rust(name, epoch, grid(model(name), float(epoch), SCALE)) + after
+    if check:
+        if rendered != text:
+            sys.exit(f"declination: {TARGET} is not what {name} at epoch {epoch} generates; "
+                     "run tools/declination.py")
+        print(f"declination: {TARGET} is {name} at epoch {epoch}")
+        return
     with open(TARGET, "w") as f:
-        f.write(before + rust(name, epoch, rows) + after)
+        f.write(rendered)
     print(f"declination: {TARGET} from {name} at epoch {epoch}")
 
 
@@ -230,32 +336,41 @@ def px4(checkout):
     got = grid(model(name), epoch, scale)
     cells = [(lat, lon, g, w) for lat, gr, wr in zip(LATITUDES, got, want)
              for lon, g, w in zip(LONGITUDES, gr, wr) if g != w]
+    with open(CONVERTER) as f:
+        copy = "match" if converter_table(f.read()) == want else "differs"
     count = len(LATITUDES) * len(LONGITUDES)
-    print(f"px4 model={name} epoch={epoch} scale={scale} cells={count} differ={len(cells)}")
+    print(f"px4 model={name} epoch={epoch} scale={scale} cells={count} differ={len(cells)} "
+          f"converter={copy}")
     for lat, lon, g, w in cells[:10]:
         print(f"  {lat} {lon}: {g} against PX4's {w}")
-    if cells:
+    if cells or copy != "match":
         sys.exit(1)
 
 
 def drift(at, paths):
-    with open(TARGET) as f:
-        generated = region(f.read())[1]
+    _, _, generated, _ = current()
     name, epoch = provenance(generated)
     rows = table_of(generated)
-    sites = origins(paths or [p for p in sorted(glob.glob("data/logs/*.csv")) if ".replay" not in p])
+    if paths:
+        sets = {"named": origins(paths)}
+    else:
+        sets = {"corpus": origins(converted(CORPUS)), "insane": origins(converted(INSANE))}
+    sites = [site for found in sets.values() for site in found]
     if not sites:
         sys.exit("declination: no `# Navigation origin` in the logs; fetch and convert first")
     geomag = model(name)
-    end = int(name.split("_")[1]) + 5.0
-
-    def worst(when):
-        return max(abs(difference(lookup(rows, SCALE, lat, lon),
-                                  declination(geomag, lat, lon, when))) for lat, lon in sites)
-
-    print(f"drift model={name} epoch={epoch} at={at:.2f} origins={len(sites)} "
-          f"interp_max={worst(float(epoch)):.2f} now_max={worst(at):.2f} "
-          f"end_max={worst(end):.2f} end={end:.1f}")
+    figures = drift_figures(rows, sites, lambda lat, lon, when: declination(geomag, lat, lon, when),
+                            float(epoch), at, end_of(name))
+    with open(MANIFEST) as f:
+        agreement = rust_agreement(rows, sites, pins(f.read()))
+    counts = " ".join(f"{key}={len(found)}" for key, found in sets.items())
+    values = " ".join(f"{key}={value:.2f}" for key, value in figures.items())
+    rust_max = "none" if agreement is None else f"{agreement:.4f}"
+    print(f"drift model={name} epoch={epoch} at={at:.2f} end={end_of(name):.1f} {counts} "
+          f"{values} rust_max={rust_max}")
+    if agreement is not None and agreement > PIN_TOLERANCE:
+        sys.exit(f"declination: the lookup is {agreement:.4f} deg from a declination_model= pin; "
+                 "re-pin data/manifest.txt after regenerating, or the two lookups have diverged")
 
 
 def self_test():
@@ -279,6 +394,11 @@ def self_test():
     check("region before", before, "head\n")
     check("region after", after, "\ntail\n")
     check("provenance", provenance(generated), ("WMM_2025", "2027.5"))
+    # The next regeneration's natural spelling: an epoch written without a fraction still reads
+    # back, since it is written through `epoch_of`.
+    check("integer epoch", provenance(rust("WMM_2030", epoch_of("2032"), rows)),
+          ("WMM_2030", "2032.0"))
+    check("epoch unchanged", epoch_of("2027.5"), "2027.5")
     # Survives a reader that drops the first or last cell of a row, or a row: the read-back is
     # compared whole against the grid it was written from.
     check("read back", table_of(generated), rows)
@@ -304,14 +424,61 @@ def self_test():
     check("north", lookup(rows, 1.0, -80.0, -180.0), 100.0)
     check("east", lookup(rows, 1.0, -90.0, -170.0), 1.0)
     check("inside", lookup(rows, 1.0, -85.0, -177.5), 50.25)
-    check("last row and column", lookup(rows, 1.0, 90.0, 180.0), 1836.0)
+    check("last row and column", round(lookup(rows, 0.1, 90.0, 180.0), 6), -176.4)
     check("wraps", lookup(rows, 1.0, 0.0, 190.0), lookup(rows, 1.0, 0.0, -170.0))
     check("clamps", lookup(rows, 1.0, 95.0, 20.0), lookup(rows, 1.0, 90.0, 20.0))
     check("scale", lookup(rows, 0.01, -80.0, -180.0), 1.0)
+    # Across the turn: 179 and -179 are two degrees apart, so halfway between them is 180, not
+    # the 0 a plain average gives. Both orders, so a one-sided unwrap fails one of them.
+    jump = [[0] * len(LONGITUDES) for _ in LATITUDES]
+    jump[0][0], jump[0][1], jump[1][0], jump[1][1] = 17900, -17900, 17900, -17900
+    check("across the turn east", round(abs(lookup(jump, 0.01, -90.0, -175.0)), 6), 180.0)
+    jump[0][0], jump[0][1], jump[1][0], jump[1][1] = -17900, 17900, -17900, 17900
+    check("across the turn west", round(abs(lookup(jump, 0.01, -90.0, -175.0)), 6), 180.0)
+    jump[0][0], jump[0][1], jump[1][0], jump[1][1] = 17000, 17000, -17000, -17000
+    check("across the turn north", round(abs(lookup(jump, 0.01, -85.0, -180.0)), 6), 180.0)
 
     check("difference wraps", difference(179.0, -179.0), -2.0)
     check("decimal year", decimal_year(date(2027, 7, 2)), 2027 + 182 / 365)
+    check("end of life", end_of("WMM_2025"), 2030.0)
     refused("an unpinned model", lambda: model("WMM_1990"))
+
+    # Origins come from the header alone, latitude first: a data row ends it, so an origin line
+    # after one is not read (a scan that continued past the header would find it).
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "abc.csv")
+        with open(path, "w") as f:
+            f.write("# Converted from x\n# Navigation origin 10.5 -20.25 3.0 (lat deg, ...)\n"
+                    "t,ax\n# Navigation origin 1.0 2.0 3.0 (late)\n")
+        check("origins", origins([path]), [(path, 10.5, -20.25)])
+        for name in ["abc.csv.replay.csv", "abc.raw.csv", "abc.truth.csv", "abc.px4.fusion.csv"]:
+            open(os.path.join(tmp, name), "w").close()
+        check("converted", converted(os.path.join(tmp, "*.csv")), [path])
+
+    # Drift against a model that is 0.5 at the epoch, 1.5 at `at`, 3.0 at the end, on a flat
+    # table of 0: each key reads its own year, and the larger of two sites. The second site's
+    # model sits further away, so a `min` reads the first.
+    flat = [[0] * len(LONGITUDES) for _ in LATITUDES]
+    years = {2027.5: 0.5, 2026.0: 1.5, 2030.0: 3.0}
+    sites = [("a.csv", 10.0, 10.0), ("b.csv", 20.0, 20.0)]
+    figures = drift_figures(flat, sites, lambda lat, lon, when: years[when] * (1 + lat / 10),
+                            2027.5, 2026.0, 2030.0)
+    check("interp_max", round(figures["interp_max"], 6), 1.5)
+    check("now_max", round(figures["now_max"], 6), 4.5)
+    check("end_max", round(figures["end_max"], 6), 9.0)
+    # The band: 60 degrees reads 7 x 1.5, and 70 would read 8 x 1.5.
+    check("world_now_max", round(figures["world_now_max"], 6), 10.5)
+    check("world_end_max", round(figures["world_end_max"], 6), 21.0)
+
+    manifest = ("# note declination_model=9.99\nabc  aaa.ulg  url  declination=1.00 "
+                "declination_model=1.23 antenna=0\nabd  bbb.ulg  url  declination_model=none\n")
+    check("pins", pins(manifest), {"aaa": 1.23})
+    check("agreement", round(rust_agreement(flat, [("x/aaa.csv", 0.0, 0.0)], {"aaa": 1.23}), 6),
+          1.23)
+    check("no pinned site", rust_agreement(flat, [("x/zzz.csv", 0.0, 0.0)], {"aaa": 1.23}), None)
+
+    copy = "X = 1\nDECLINATION_TABLE = (\n    (1, -2,\n     3),\n    (4, 5, 6),\n)\n"
+    check("converter table", converter_table(copy), [[1, -2], [4, 5, 6]])
 
     for failure in failures:
         print(f"declination self-test: {failure}", file=sys.stderr)
@@ -321,24 +488,34 @@ def self_test():
 
 
 def main(argv):
-    if argv == ["--self-test"]:
-        self_test()
-        return
+    parser = argparse.ArgumentParser(prog="tools/declination.py",
+                                     description=__doc__.split("\n\n")[0])
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--self-test", action="store_true")
+    mode.add_argument("--check", action="store_true")
+    mode.add_argument("--drift", action="store_true")
+    mode.add_argument("--px4", metavar="CHECKOUT")
+    parser.add_argument("--model", help="with --epoch: the coefficient file, e.g. WMM_2025")
+    parser.add_argument("--epoch", help="with --model: the decimal year to evaluate it at")
+    parser.add_argument("--at", type=float, help="with --drift: the year for now_max")
+    parser.add_argument("logs", nargs="*", help="with --drift: converted logs, for the default sets")
+    args = parser.parse_args(argv)
+    if (args.model is None) != (args.epoch is None):
+        parser.error("--model and --epoch go together")
+    if (args.at is not None or args.logs) and not args.drift:
+        parser.error("--at and logs go with --drift")
+    if args.model and (args.drift or args.px4 or args.self_test):
+        parser.error("--model and --epoch regenerate, or --check")
     try:
-        if argv[:1] == ["--px4"] and len(argv) == 2:
-            px4(argv[1])
-        elif argv[:1] == ["--drift"]:
-            at, paths = decimal_year(date.today()), argv[1:]
-            if paths[:1] == ["--at"] and len(paths) >= 2:
-                at, paths = float(paths[1]), paths[2:]
-            drift(at, paths)
-        elif argv[:1] == ["--model"] and len(argv) == 4 and argv[2] == "--epoch":
-            regenerate(argv[1], argv[3])
-        elif not argv:
-            regenerate()
+        if args.self_test:
+            self_test()
+        elif args.px4:
+            px4(args.px4)
+        elif args.drift:
+            drift(args.at if args.at is not None else decimal_year(date.today()), args.logs)
         else:
-            sys.exit(__doc__.split("\n\n")[1])
-    except ValueError as e:
+            regenerate(args.model, args.epoch, args.check)
+    except (ValueError, OSError) as e:
         sys.exit(f"declination: {e}")
 
 
