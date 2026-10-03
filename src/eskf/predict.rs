@@ -49,7 +49,26 @@ impl Eskf {
     /// job. So an unaided filter's [`Validity`](crate::Validity) flags go false in the order their
     /// variances cross [`Config::accuracy`](crate::Config::accuracy), and [`Status`](crate::Status)
     /// does not follow: it reads the aiding timers and an alignment that has already latched.
+    /// The one exception is the position hold of [`Config::hold`](crate::Config::hold), which a
+    /// committed step runs while nothing aids the filter.
     pub fn predict(&mut self, imu: ImuSample) -> Propagation {
+        let outcome = self.propagate_or_coast(imu);
+        // After the step returns rather than inside it, so that the hold's update sits beside
+        // the propagation's frame instead of above it ([measured]).
+        //
+        // [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function
+        if matches!(
+            outcome,
+            Propagation::Propagated | Propagation::Coasted { .. }
+        ) {
+            self.hold_if_unaided();
+        }
+        outcome
+    }
+
+    /// [`predict`](Self::predict) without the hold: refuse, coast or integrate the step.
+    #[inline(never)]
+    fn propagate_or_coast(&mut self, imu: ImuSample) -> Propagation {
         if !self.initialized {
             return Propagation::NotInitialized;
         }
@@ -198,7 +217,7 @@ mod tests {
     /// for the whole flight.
     #[test]
     fn a_step_grows_the_covariance() {
-        let mut filter = initialized();
+        let mut filter = unheld();
         let before = *filter.covariance();
 
         assert_eq!(
@@ -531,6 +550,7 @@ mod tests {
                     acceleration,
                     rotation: 0.0,
                 }),
+                hold: None,
                 ..Config::default()
             });
             let _ = filter.step(still().imu, gap);

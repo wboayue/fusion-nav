@@ -7,8 +7,8 @@
 //! as `Config::validate` does, so a field added to a derived part of `Config` does not compile
 //! until it has a name here.
 //!
-//! What a log cannot derive is left out on purpose: `accuracy` and `timeouts` are the
-//! mission's, `init`'s tolerances are the window's policy, and `gates` take a percentile, not a
+//! What a log cannot derive is left out on purpose: `accuracy`, `timeouts` and `hold` are the
+//! mission's (`--hold` is the switch for the last), `init`'s tolerances are the window's policy, and `gates` take a percentile, not a
 //! number. `--recovery off` stays the switch for `Recovery::OFF` as a whole.
 
 use fusion_nav::Seconds;
@@ -77,6 +77,8 @@ pub fn settings(config: &Config) -> Vec<(String, String)> {
         gravity,
         max_predict_dt,
         coast,
+        // The mission's, as `accuracy` is: `--hold` sets it.
+        hold: _,
         baro_offset_walk,
         baro_reference_from_estimate: _,
     } = *config;

@@ -225,7 +225,7 @@ impl Eskf {
                 self.apply_or_recover(
                     outcome,
                     |diagnostics| &mut diagnostics.gnss_position,
-                    self.config.recovery.gnss_position,
+                    self.recovery_after(self.config.recovery.gnss_position),
                     |filter| {
                         let adopted = filter.carried_position(position, antenna, time);
                         adopted
@@ -578,7 +578,7 @@ impl Eskf {
         self.apply_or_recover(
             outcome,
             |diagnostics| &mut diagnostics.gnss_velocity,
-            self.config.recovery.gnss_velocity,
+            self.recovery_after(self.config.recovery.gnss_velocity),
             |filter| {
                 let adopted = filter.carried_velocity(velocity, antenna, time);
                 adopted
@@ -909,7 +909,12 @@ mod tests {
     #[test]
     fn an_old_fix_is_judged_against_where_the_vehicle_was() {
         let flying = || {
-            let mut filter = Eskf::default();
+            // The hold would pull a vehicle nothing aids back toward where it started.
+            let mut filter = Eskf::new(crate::Config {
+                hold: None,
+                ..crate::Config::default()
+            })
+            .unwrap();
             let state = State {
                 velocity: Velocity::ned(20.0, 0.0, 0.0),
                 ..State::default()
@@ -1549,6 +1554,10 @@ mod tests {
             ),
             Fusion::NotFinite
         );
+        assert_eq!(
+            filter.fuse_stationary(filter.now(), VelocityNoise::from_speed_accuracy(nan)),
+            Fusion::NotFinite
+        );
         assert_eq!(filter.diagnostics().gnss_position.accepted, 0);
     }
 
@@ -1582,8 +1591,12 @@ mod tests {
             let _ = filter.fuse_mag_heading(now, MagField::body(0.2, 0.0, 0.4), heading);
             let _ = filter.fuse_gnss_heading(now, Radians::from_radians(0.0), heading);
             let _ = filter.fuse_course(now, heading);
+            let _ = filter.fuse_stationary(now, VelocityNoise::from_speed_accuracy(nan));
         });
-        for (name, source) in filter.diagnostics().sources() {
+        // The hold offers nothing; the filter makes it, and `hold.rs` times it.
+        let offered = filter.diagnostics().sources();
+        let offered = offered.iter().filter(|&&(name, _)| name != "position_hold");
+        for &(name, source) in offered {
             assert_eq!(source.accepted, 0, "{name}");
             let period = source.period().map(Seconds::as_secs);
             assert!(
@@ -1632,6 +1645,13 @@ mod tests {
                 filter.now(),
                 MagField::body(0.2, 0.0, 0.4),
                 HeadingNoise::from_variance(-1.0)
+            ),
+            Fusion::InvalidNoise
+        );
+        assert_eq!(
+            filter.fuse_stationary(
+                filter.now(),
+                VelocityNoise::<Ned>::from_variance(1.0, 1.0, 0.0)
             ),
             Fusion::InvalidNoise
         );

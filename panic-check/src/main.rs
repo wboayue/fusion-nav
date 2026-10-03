@@ -191,6 +191,10 @@ fn drive() {
     ));
     let _ =
         black_box(filter.fuse_course(black_box(time), HeadingNoise::from_sigma(black_box(0.05))));
+    let _ = black_box(filter.fuse_stationary(
+        black_box(time),
+        VelocityNoise::from_speed_accuracy(black_box(0.1)),
+    ));
 
     let _ = black_box(filter.reset_position_to(position, position_noise));
     let _ = black_box(filter.reset_velocity_to(velocity, velocity_noise));

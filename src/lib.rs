@@ -94,7 +94,8 @@ pub use units::Quaternion;
 pub mod prelude {
     pub use crate::config::{
         ALIGNED_HEADING, ALIGNED_TILT, Accuracy, Coast, Config, ConfigError, Correlation, GRAVITY,
-        Gate, Gates, ImuNoise, Initialization, LATENCY_HORIZON, Percentile, Recovery, Timeouts,
+        Gate, Gates, Hold, ImuNoise, Initialization, LATENCY_HORIZON, Percentile, Recovery,
+        Timeouts,
     };
     pub use crate::eskf::Eskf;
     pub use crate::frames::{Body, Enu, Ned};

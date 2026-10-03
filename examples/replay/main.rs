@@ -23,6 +23,8 @@
 //! `--antenna zero` fuses every GNSS row as the IMU's rather than at the header's antenna.
 //! `--recovery off` replays with `Recovery::OFF`, the filter that only reports, which is how a
 //! lockout recovery ends is priced (`recovery=` on the `summary` line says which ran).
+//! `--hold off` replays without the position hold an unaided filter fuses, and `--hold <σ>`
+//! with it at another σ in meters (`hold=` says which ran, `holds=` how many it fused).
 //! `--set <field>=<value>`, repeatable, sets one `Config` field by its path, `--set
 //! correlation.gnss_position=2.5`; `settings.rs` lists the names, and `set=` on the `summary`
 //! line repeats them. `--derive` is the mode that works those values out from a log; see
@@ -429,8 +431,10 @@ const ATTITUDE_SIGMAS: [(&str, AttitudeColumn); 3] = [
 /// verdicts, the horizontal half under `gnss_pos` and the height under `gnss_hgt`, because
 /// the filter gates them apart (`GnssFusion`). `course` is the other: no row carries a course,
 /// which the harness fuses after each `gnss_vel` row when a sideslip is given (`sideslip_of`).
-const SOURCES: [&str; 7] = [
-    "gnss_pos", "gnss_hgt", "gnss_vel", "baro", "mag", "gnss_yaw", "course",
+/// `hold` is the third: the position hold the filter fuses inside `predict` while unaided,
+/// which the harness reads back from `Diagnostics` after each step (`propagate`).
+const SOURCES: [&str; 9] = [
+    "gnss_pos", "gnss_hgt", "gnss_vel", "baro", "mag", "gnss_yaw", "course", "still", "hold",
 ];
 
 /// What each source's innovation components are, in the order the filter publishes them, so a
@@ -442,7 +446,7 @@ const SOURCES: [&str; 7] = [
 /// discovered by an index out of range. The lengths are the observation dimensions of
 /// (28)–(30) and (34)–(36), and are checked against what the filter publishes rather than
 /// trusted.
-const AXES: [&[&str]; 7] = [
+const AXES: [&[&str]; 9] = [
     &["n", "e"],
     &["d"],
     &["n", "e", "d"],
@@ -450,15 +454,17 @@ const AXES: [&[&str]; 7] = [
     &["yaw"],
     &["yaw"],
     &["yaw"],
+    &["n", "e", "d"],
+    &["n", "e"],
 ];
 
 /// The row sources `--without` can drop: every aiding row an input carries. Not `SOURCES`,
 /// which names verdicts, two of which (`gnss_hgt`, `course`) no row carries, and a name that
 /// dropped nothing would still print on the `summary` line as if it had.
-const DROPPABLE: [&str; 5] = ["gnss_pos", "gnss_vel", "baro", "mag", "gnss_yaw"];
+const DROPPABLE: [&str; 6] = ["gnss_pos", "gnss_vel", "baro", "mag", "gnss_yaw", "still"];
 
 /// Last test ratio per source, in `Diagnostics` order.
-const RATIOS: [&str; 7] = [
+const RATIOS: [&str; 9] = [
     "r_gnss_pos",
     "r_gnss_hgt",
     "r_gnss_vel",
@@ -466,6 +472,8 @@ const RATIOS: [&str; 7] = [
     "r_mag",
     "r_gnss_yaw",
     "r_course",
+    "r_still",
+    "r_hold",
 ];
 const GNSS_POS: usize = 0;
 const GNSS_HGT: usize = 1;
@@ -474,6 +482,8 @@ const BARO: usize = 3;
 const MAG: usize = 4;
 const GNSS_YAW: usize = 5;
 const COURSE: usize = 6;
+const STILL: usize = 7;
+const HOLD: usize = 8;
 
 fn main() {
     if let Err(e) = run() {
@@ -515,6 +525,17 @@ fn run() -> Result<(), Box<dyn Error>> {
                 Some("off") => false,
                 _ => return Err("--recovery wants `on` or `off`".into()),
             };
+        } else if arg == "--hold" {
+            options.hold = Some(match args.next().as_deref() {
+                Some("off") => None,
+                Some(sigma) => match sigma.parse::<f32>() {
+                    Ok(sigma) => Some(Hold {
+                        sigma: Meters::from_meters(sigma),
+                    }),
+                    Err(_) => return Err("--hold wants `off` or a σ in meters".into()),
+                },
+                None => return Err("--hold wants `off` or a σ in meters".into()),
+            });
         } else if arg == "--set" {
             let pair = args.next().ok_or("--set wants <field>=<value>")?;
             let (name, value) = pair
@@ -620,6 +641,8 @@ struct Options {
     model_declination: bool,
     antenna_from_header: bool,
     recovery: bool,
+    /// `--hold`: `None` keeps `Config::hold`'s default, `Some(None)` turns it off.
+    hold: Option<Option<Hold>>,
     sets: Vec<(String, String)>,
 }
 
@@ -632,17 +655,21 @@ impl Default for Options {
             model_declination: false,
             antenna_from_header: true,
             recovery: true,
+            hold: None,
             sets: Vec::new(),
         }
     }
 }
 
 impl Options {
-    /// `Config::default()`, with `--recovery off` and then each `--set` applied.
+    /// `Config::default()`, with `--recovery off`, `--hold` and then each `--set` applied.
     fn config(&self) -> Result<Config, String> {
         let mut config = Config::default();
         if !self.recovery {
             config.recovery = Recovery::OFF;
+        }
+        if let Some(hold) = self.hold {
+            config.hold = hold;
         }
         // After `--recovery off`, so a source's own timeout can be put back on top of it.
         for (name, value) in &self.sets {
@@ -733,7 +760,25 @@ fn thresholds(gates: Gates) -> [f32; SOURCES.len()] {
         gates.mag_heading.threshold(),
         gates.gnss_heading.threshold(),
         gates.course.threshold(),
+        gates.stationary.threshold(),
+        gates.position_hold.threshold(),
     ]
+}
+
+/// The verdict a step's position hold met, from its health before and after the step, or
+/// `None` where the step fused none. The ratio is the filter's own, as `observe` reads the
+/// innovation.
+fn held(before: &SourceHealth, after: &SourceHealth) -> Option<Fusion> {
+    let ratio = after.test_ratio.unwrap_or(0.0);
+    if after.accepted != before.accepted {
+        Some(Fusion::Accepted { test_ratio: ratio })
+    } else if after.rejected != before.rejected {
+        Some(Fusion::Rejected { test_ratio: ratio })
+    } else if after.refused != before.refused {
+        Some(Fusion::StateInvalid)
+    } else {
+        None
+    }
 }
 
 /// One axis of one source's innovations, and the statistics defined on that series.
@@ -1387,6 +1432,12 @@ impl Replay {
                 );
                 self.observe(r.t, GNSS_YAW, outcome, None, out)?;
             }
+            "still" => {
+                let noise =
+                    VelocityNoise::from_variance(r.variance(0)?, r.variance(1)?, r.variance(2)?);
+                let outcome = self.filter.fuse_stationary(r.taken(), noise);
+                self.observe(r.t, STILL, outcome, None, out)?;
+            }
             other => return Err(format!("unknown source `{other}`").into()),
         }
         Ok(())
@@ -1640,10 +1691,16 @@ impl Replay {
             let time = Timestamp::from_secs_f64(t);
             let dt = time.since(self.filter.time().unwrap_or_default());
             let worst_before = self.filter.diagnostics().propagation.longest_gap;
+            let hold_before = self.filter.diagnostics().position_hold;
             let propagated = self
                 .filter
                 .predict(ImuSample::from_rates(time, imu.gyro, imu.accel, dt))
                 .is_propagated();
+            // The hold has no row of its own: the filter fuses it inside `predict`, and its
+            // verdict is read back from the count that moved, as `longest_gap` is below.
+            if let Some(outcome) = held(&hold_before, &self.filter.diagnostics().position_hold) {
+                self.observe(t, HOLD, outcome, None, out)?;
+            }
             // Timestamp the step that set a new worst, which is the one the filter kept.
             // Comparing to `dt` instead would also match a later step that merely ties it,
             // and move the report's timestamp off the gap the size belongs to.
@@ -2222,7 +2279,7 @@ impl Replay {
         format!(
             "summary rate={:.0} window={} {} align={} an={} alpha0={} heading={} \
              roll0={roll0:.2} pitch0={pitch0:.2} yaw0={yaw0:.2} declination={:.2} declination_model={} antenna={} resets={} \
-             recovered={} aligned_at={} attitude_lost={} r_policy={} recovery={} course={} without={} set={} rejected={}{} discarded={} coasted={} refused={} \
+             recovered={} aligned_at={} attitude_lost={} r_policy={} recovery={} hold={} holds={} course={} without={} set={} rejected={}{} discarded={} coasted={} refused={} \
              invalid={} floored={} epochs={}{} {} \
              degraded_s={:.2} dead_reckoning_s={:.2} transitions={} status={:?}",
             self.interval.map_or(0.0, |interval| 1.0 / interval),
@@ -2305,6 +2362,16 @@ impl Replay {
                 "off"
             } else {
                 "on"
+            },
+            // The hold's σ or `off`, a choice as `recovery=` is, and how often it fused: the
+            // filter's own count, which reads 0 on any log aided throughout.
+            self.filter.config().hold.map_or_else(
+                || "off".to_string(),
+                |h| format!("{:.1}", h.sigma.as_meters())
+            ),
+            {
+                let hold = self.filter.diagnostics().position_hold;
+                hold.accepted + hold.rejected
             },
             // Choices rather than counts, as `r_policy=` is: whether the course constraint was
             // fused and at what sideslip, and which input source was dropped, so a figure from
@@ -3861,6 +3928,12 @@ mod tests {
             self
         }
 
+        /// A claim that the vehicle is still, at 0.1 m/s on every axis.
+        fn still(mut self, t: f64) -> Self {
+            self.0 += &format!("{t:.6},still,,,,,,,0.01,0.01,0.01\n");
+            self
+        }
+
         /// The `# Course sideslip` header line, which has to lead the file to be read.
         fn course(self, sideslip: f32) -> Self {
             Self(format!("# Course sideslip {sideslip} rad\n") + &self.0)
@@ -3902,6 +3975,10 @@ mod tests {
     }
 
     /// [`drive`] against a mission bar other than the default.
+    ///
+    /// Without the position hold: these fixtures are a few seconds of a filter nothing aids,
+    /// where the hold would add a row every 0.2 s to every count they assert. Its own fixture
+    /// turns it on.
     fn drive_at(
         log: &Log,
         accuracy: Accuracy,
@@ -3911,6 +3988,7 @@ mod tests {
             log,
             Config {
                 accuracy,
+                hold: None,
                 ..Config::default()
             },
             scoring,
@@ -4761,6 +4839,34 @@ mod tests {
     }
 
     #[test]
+    fn the_hold_the_filter_fuses_inside_predict_gets_a_row_of_its_own() {
+        // No row in the log carries it: the harness reads each step's verdict back from
+        // `Diagnostics`. Thirty seconds at 50 Hz with nothing aiding, long enough for the tilt σ
+        // to pass the hold's bar, and nothing else is fused.
+        let log = Log::new().mag(0.0).run(0.0, 1500, DT, STILL);
+        let config = Config::default();
+        let (replay, rows) = drive_with(&log, config, None).expect("fixture replays");
+        let holds = rows.lines().filter(|row| row.contains(",hold,")).count();
+        let summary = replay.summary();
+        assert_eq!(key(&summary, "hold"), "10.0");
+        assert_eq!(key(&summary, "holds"), holds.to_string());
+        assert!(holds > 0, "{summary}");
+        assert_eq!(replay.consistency.dimension[HOLD], AXES[HOLD].len());
+        assert!(
+            rows.lines()
+                .all(|row| !row.contains(",hold,") || row.contains(",accepted,"))
+        );
+        // Off, there is none.
+        let off = Config {
+            hold: None,
+            ..Config::default()
+        };
+        let (replay, rows) = drive_with(&log, off, None).expect("fixture replays");
+        assert!(!rows.contains(",hold,"));
+        assert_eq!(key(&replay.summary(), "hold"), "off");
+    }
+
+    #[test]
     fn a_mission_bar_moves_attitude_lost_and_leaves_alignment_alone() {
         // `aligned_at=` and `transitions=` answer whether the start resolved, which the
         // filter decides against `ALIGNED_TILT`; `attitude_lost=` answers whether the output
@@ -5037,7 +5143,8 @@ mod tests {
             .mag(2.0)
             .mag(2.1)
             .gnss_yaw(2.0, 0.0)
-            .gnss_yaw(2.1, 0.0);
+            .gnss_yaw(2.1, 0.0)
+            .still(2.0);
         let replay = replay(&log);
         let summary = replay.summary();
         for (source, spelling) in SOURCES.iter().enumerate() {
@@ -5054,7 +5161,8 @@ mod tests {
                 );
             }
             // A course needs speed, which a still start has not got; the test below moves.
-            if source == COURSE {
+            // The hold is off in these fixtures; its own fixture checks its dimension.
+            if source == COURSE || source == HOLD {
                 continue;
             }
             assert_eq!(
@@ -6409,7 +6517,7 @@ mod tests {
             row.split(',').count(),
             "header:\n{header}\nrow:\n{row}"
         );
-        assert_eq!(header.split(',').count(), 2 + 16 + 15 + 3 + 7);
+        assert_eq!(header.split(',').count(), 2 + 16 + 15 + 3 + 9);
     }
 
     #[test]

@@ -273,6 +273,10 @@ pub struct Gates {
     pub gnss_heading: Gate<1>,
     /// Course constraint.
     pub course: Gate<1>,
+    /// A caller's claim that the vehicle is still: zero velocity, all three axes.
+    pub stationary: Gate<3>,
+    /// The position hold an unaided filter fuses: north and east.
+    pub position_hold: Gate<2>,
 }
 
 impl Gates {
@@ -286,6 +290,8 @@ impl Gates {
             mag_heading: Gate::<1>::at(percentile),
             gnss_heading: Gate::<1>::at(percentile),
             course: Gate::<1>::at(percentile),
+            stationary: Gate::<3>::at(percentile),
+            position_hold: Gate::<2>::at(percentile),
         }
     }
 }
@@ -563,6 +569,44 @@ impl Default for Coast {
     }
 }
 
+/// The position hold an unaided filter fuses to keep its tilt. Equation (28″).
+///
+/// Without horizontal aiding nothing observes tilt, so a vehicle that loses GNSS in flight loses
+/// its attitude on the schedule [`ImuNoise`] sets while the true error may still be small. Past
+/// [`Timeouts::dead_reckoning_after`] with no horizontal source accepted, and no
+/// [`Eskf::fuse_stationary`](crate::Eskf::fuse_stationary) either, the filter fuses its own
+/// position as it stood when aiding stopped, every 0.2 s at `sigma`. Bounding position bounds
+/// velocity, so a velocity error can no longer hide a tilt error, and the accelerometer levels the
+/// filter. PX4's fake position (`fake_pos_control.cpp:47-82` at `c4e4ef98`) and ArduPilot's
+/// `AID_NONE` (`AP_NavEKF3_Control.cpp:416-420` at `368dc0c4`) do the same.
+///
+/// It assumes the vehicle stays near where aiding stopped. A hover meets that; a sustained
+/// acceleration reads as tilt error, and `sigma` is the trade between the two, which is the
+/// mission's: how far a vehicle flies on without aiding is what it is flying for.
+///
+/// The hold is an assumption, not a sensor: [`Status`](crate::Status) stays `DeadReckoning`,
+/// horizontal position and velocity stay invalid in [`Validity`](crate::Validity) however tight
+/// the covariance it leaves, and the first GNSS fix or velocity after it that the gate turns down
+/// is adopted at once rather than after [`Config::recovery`]'s timeout, since what the gate would
+/// be judging it against is the hold. A source whose recovery is off is never adopted. On by default, as [`Coast`] is; `Config::hold = None` is the
+/// opt-out.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Hold {
+    /// The σ of the held position on each horizontal axis.
+    pub sigma: Meters,
+}
+
+impl Default for Hold {
+    /// PX4's `EKF2_NOAID_NOISE` (`src/modules/ekf2/module.yaml:67-75` at `c4e4ef98`) and
+    /// ArduPilot's `EK3_NOAID_M_NSE` (`AP_NavEKF3.cpp:447-453` at `368dc0c4`) both default to
+    /// 10 m.
+    fn default() -> Self {
+        Self {
+            sigma: Meters::from_meters(10.0),
+        }
+    }
+}
+
 /// Quasi-static initialization, equations (5)–(8).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Initialization {
@@ -728,7 +772,8 @@ impl Default for Accuracy {
     /// (`an_unaided_start_holds_its_attitude_for_the_margin_the_defaults_buy`). The window sets
     /// them: the gyroscope-bias prior enters attitude through equation (20)'s `−I Δt` and grows
     /// as `σ_βg² t²`, and only a window that measured the bias makes that prior small (see
-    /// [`Initialization::sigma_gyro_bias`]).
+    /// [`Initialization::sigma_gyro_bias`]). [`Config::hold`]'s position hold engages at the same
+    /// 3° and slows what follows, so these stay where tilt first leaves the bar.
     ///
     /// What those two times move is [`Validity`](crate::Validity), and nothing else.
     /// [`Status`](crate::Status) is already answering on the aiding timers by then — an unaided
@@ -820,6 +865,9 @@ pub struct Config {
     /// (22′). `None` refuses the step instead, as
     /// [`Propagation::StepTooLong`](crate::Propagation::StepTooLong).
     pub coast: Option<Coast>,
+    /// The position hold an unaided filter fuses to keep its tilt, equation (28″). `None`
+    /// fuses nothing while unaided, and tilt is lost on the schedule [`ImuNoise`] sets.
+    pub hold: Option<Hold>,
     /// Random walk of the barometric offset, m s⁻¹ / √Hz: the `q_b` of equation (30′).
     ///
     /// `α₀`, the reference a barometer's altitude is measured against, is estimated rather
@@ -877,6 +925,7 @@ impl Default for Config {
             gravity: GRAVITY,
             max_predict_dt: Seconds::from_secs(0.1),
             coast: Some(Coast::default()),
+            hold: Some(Hold::default()),
             baro_offset_walk: 0.13,
             baro_reference_from_estimate: true,
         }
@@ -942,6 +991,7 @@ impl Config {
             gravity,
             max_predict_dt,
             coast,
+            hold,
             baro_offset_walk,
             baro_reference_from_estimate: _,
         } = *self;
@@ -1007,6 +1057,9 @@ impl Config {
         {
             check("coast.acceleration", acceleration, NonNegative)?;
             check("coast.rotation", rotation, NonNegative)?;
+        }
+        if let Some(Hold { sigma }) = hold {
+            check("hold.sigma", sigma.as_meters(), Positive)?;
         }
         check("baro_offset_walk", baro_offset_walk, NonNegative)
     }
@@ -1189,7 +1242,7 @@ mod tests {
     /// bound it must meet. Written out as the struct literal names them, so a path that
     /// `validate` misspells is a failure here rather than a message nobody can act on.
     #[allow(clippy::type_complexity)]
-    const FIELDS: [(&str, fn(&mut Config, f32), ConfigBound); 38] = {
+    const FIELDS: [(&str, fn(&mut Config, f32), ConfigBound); 39] = {
         use ConfigBound::{NonNegative, Positive};
         [
             ("imu.gyro_white", |c, v| c.imu.gyro_white = v, NonNegative),
@@ -1366,6 +1419,11 @@ mod tests {
                 NonNegative,
             ),
             (
+                "hold.sigma",
+                |c, v| c.hold.get_or_insert_default().sigma = Meters::from_meters(v),
+                Positive,
+            ),
+            (
                 "baro_offset_walk",
                 |c, v| c.baro_offset_walk = v,
                 NonNegative,
@@ -1380,6 +1438,7 @@ mod tests {
             recovery: Recovery::OFF,
             correlation: Correlation::WHITE,
             coast: None,
+            hold: None,
             ..Config::default()
         };
         assert_eq!(off.validate(), Ok(()));

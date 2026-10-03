@@ -817,6 +817,10 @@ pub struct SourceHealth {
     /// measurement, rather than read as a difference of `since_initialized`, because an `f32`
     /// clock counting hours loses the digits a 0.2 s interval needs.
     pub(crate) since_measured: Option<Seconds>,
+    /// Time since the gate last judged a measurement from this source, accepted or rejected.
+    /// What the position hold reads: a receiver whose fixes the gate turns down is a matter for
+    /// [`Recovery`](crate::Recovery), not a silence to hold through.
+    pub(crate) since_judged: Option<Seconds>,
     /// How often this source speaks; see [`period`](Self::period).
     pub(crate) cadence: Cadence,
 }
@@ -825,6 +829,12 @@ impl SourceHealth {
     /// Whether this source has ever been fused.
     pub const fn has_been_used(&self) -> bool {
         self.accepted > 0
+    }
+
+    /// Whether the gate judged a measurement from this source, either way, no more than
+    /// `timeout` ago.
+    pub(crate) fn judged_within(&self, timeout: Seconds) -> bool {
+        self.since_judged.is_some_and(|elapsed| elapsed <= timeout)
     }
 
     /// Whether a measurement from this source was accepted no more than `timeout` ago.
@@ -888,7 +898,11 @@ impl SourceHealth {
 
     /// Advance the fusion clock. Called from `predict`, since the filter has no clock.
     pub(crate) fn advance(&mut self, dt: Seconds) {
-        for clock in [&mut self.time_since_accepted, &mut self.since_measured] {
+        for clock in [
+            &mut self.time_since_accepted,
+            &mut self.since_measured,
+            &mut self.since_judged,
+        ] {
             if let Some(elapsed) = *clock {
                 *clock = Some(Seconds::from_secs(elapsed.as_secs() + dt.as_secs()));
             }
@@ -902,6 +916,7 @@ impl SourceHealth {
         self.innovation = innovation;
         self.time_since_accepted = Some(Seconds::ZERO);
         self.since_measured = Some(Seconds::ZERO);
+        self.since_judged = Some(Seconds::ZERO);
         self.consecutive_rejections = 0;
         self.accepted = self.accepted.saturating_add(1);
     }
@@ -935,6 +950,7 @@ impl SourceHealth {
     pub(crate) fn record_rejected(&mut self, test_ratio: f32, innovation: Innovation) {
         self.test_ratio = Some(test_ratio);
         self.innovation = Some(innovation);
+        self.since_judged = Some(Seconds::ZERO);
         self.consecutive_rejections = self.consecutive_rejections.saturating_add(1);
         self.rejected = self.rejected.saturating_add(1);
     }
@@ -1120,6 +1136,12 @@ pub struct Diagnostics {
     pub gnss_heading: SourceHealth,
     /// Course constraint updates: heading along the estimated velocity.
     pub course: SourceHealth,
+    /// Zero-velocity updates from a caller's claim that the vehicle is still; see
+    /// [`Eskf::fuse_stationary`](crate::Eskf::fuse_stationary).
+    pub stationary: SourceHealth,
+    /// Position-hold updates the filter fuses itself while unaided; see
+    /// [`Config::hold`](crate::Config::hold).
+    pub position_hold: SourceHealth,
     /// What [`Eskf::predict`](crate::Eskf::predict) refused. Not a source, so not in
     /// [`sources`](Self::sources).
     pub propagation: PropagationHealth,
@@ -1147,9 +1169,9 @@ impl Diagnostics {
     /// Every source, for iteration.
     ///
     /// By reference, since [`Status`] reads this on every
-    /// [`Eskf::state`](crate::Eskf::state) and a copy of seven [`SourceHealth`]s is most of
+    /// [`Eskf::state`](crate::Eskf::state) and a copy of nine [`SourceHealth`]s is most of
     /// that call's stack frame.
-    pub const fn sources(&self) -> [(&'static str, &SourceHealth); 7] {
+    pub const fn sources(&self) -> [(&'static str, &SourceHealth); 9] {
         [
             ("gnss_position", &self.gnss_position),
             ("gnss_height", &self.gnss_height),
@@ -1158,19 +1180,23 @@ impl Diagnostics {
             ("mag_heading", &self.mag_heading),
             ("gnss_heading", &self.gnss_heading),
             ("course", &self.course),
+            ("stationary", &self.stationary),
+            ("position_hold", &self.position_hold),
         ]
     }
 
-    /// The sources [`Status`] counts: every one but the course constraint, which reads the
-    /// filter's own velocity rather than a sensor. See
-    /// [`Eskf::fuse_course`](crate::Eskf::fuse_course).
+    /// The sources [`Status`] counts: every one but those no sensor measures. The course
+    /// reads the filter's own velocity ([`Eskf::fuse_course`](crate::Eskf::fuse_course)), a
+    /// standstill is the caller's claim, and the position hold is the filter's assumption
+    /// while nothing aids it. Counting the hold would turn the dead reckoning it exists for
+    /// into `Healthy`.
     ///
     /// Taken from [`sources`](Self::sources) rather than listed again, so a source added there
     /// counts toward `Status` unless it is excluded here by name.
     pub(crate) fn aiding(&self) -> impl Iterator<Item = &SourceHealth> {
         self.sources()
             .into_iter()
-            .filter(|&(name, _)| name != "course")
+            .filter(|&(name, _)| !matches!(name, "course" | "stationary" | "position_hold"))
             .map(|(_, health)| health)
     }
 
@@ -1192,6 +1218,8 @@ impl Diagnostics {
         self.mag_heading.advance(dt);
         self.gnss_heading.advance(dt);
         self.course.advance(dt);
+        self.stationary.advance(dt);
+        self.position_hold.advance(dt);
     }
 }
 
@@ -1259,6 +1287,8 @@ mod tests {
         diagnostics.mag_heading.record_accepted(0.0, None);
         diagnostics.gnss_heading.record_accepted(0.0, None);
         diagnostics.course.record_accepted(0.0, None);
+        diagnostics.stationary.record_accepted(0.0, None);
+        diagnostics.position_hold.record_accepted(0.0, None);
         diagnostics.advance(secs(0.5));
         for (name, source) in diagnostics.sources() {
             assert_eq!(source.time_since_accepted, Some(secs(0.5)), "{name}");
@@ -1321,19 +1351,23 @@ mod tests {
     }
 
     #[test]
-    fn status_counts_every_source_but_the_course() {
-        // `aiding` excludes the course by name, so a misspelling would count it silently.
+    fn status_counts_every_source_but_those_no_sensor_measures() {
+        // `aiding` excludes by name, so a misspelling would count one silently.
         let diagnostics = Diagnostics::default();
+        let excluded = ["course", "stationary", "position_hold"];
         assert_eq!(
             diagnostics.aiding().count(),
-            diagnostics.sources().len() - 1
+            diagnostics.sources().len() - excluded.len()
         );
-        assert!(
-            diagnostics
-                .sources()
-                .iter()
-                .any(|&(name, _)| name == "course")
-        );
+        for name in excluded {
+            assert!(
+                diagnostics
+                    .sources()
+                    .iter()
+                    .any(|&(source, _)| source == name),
+                "{name}"
+            );
+        }
     }
 
     #[test]

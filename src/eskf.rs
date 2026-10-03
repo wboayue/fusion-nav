@@ -18,6 +18,7 @@ mod adopt;
 mod estimate;
 mod fuse;
 mod heading;
+mod hold;
 mod predict;
 mod site;
 mod start;
@@ -128,6 +129,10 @@ use estimate::Estimate;
 /// // moving: one sitting still goes nowhere, and the direction of no velocity is refused.
 /// let outcome = filter.fuse_course(now, HeadingNoise::from_sigma(0.05));
 /// assert_eq!(outcome, Fusion::Unobservable);
+///
+/// // Sitting still is a claim the application can make, and it holds the tilt.
+/// let outcome = filter.fuse_stationary(now, VelocityNoise::from_speed_accuracy(0.1));
+/// assert!(outcome.is_accepted());
 /// # Ok::<(), fusion_nav::InitError>(())
 /// ```
 #[derive(Clone, Debug)]
@@ -166,6 +171,9 @@ pub struct Eskf {
     /// test behind [`Status::Aligning`]; see [`is_aligned`](Self::is_aligned) for why it is not
     /// read live.
     aligned: bool,
+    /// Where the position hold of (28″) holds the estimate, while the filter is unaided and
+    /// [`Config::hold`] is on; see [`hold_if_unaided`](Self::hold_if_unaided).
+    anchor: Option<hold::Anchor>,
     initialized: bool,
     /// The clock; see [`time`](Self::time). Meaningless until `initialized`.
     time: Timestamp,
@@ -221,6 +229,7 @@ impl Eskf {
             earliest: Timestamp::ZERO,
             unestablished: Unestablished::default(),
             aligned: false,
+            anchor: None,
             initialized: false,
             time: Timestamp::ZERO,
         }

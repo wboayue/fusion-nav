@@ -220,6 +220,10 @@ enum Op {
         age: i64,
         sigma: f32,
     },
+    Stationary {
+        age: i64,
+        sigma: f32,
+    },
     ResetPosition {
         ned: [f32; 3],
         sigma: (f32, f32),
@@ -275,6 +279,7 @@ fn op(hostile: bool) -> BoxedStrategy<Op> {
         1 => (age(h), scalar(h, -3.2, 3.2), scalar(h, 0.02, 0.5))
             .prop_map(|(age, heading, sigma)| Op::GnssHeading { age, heading, sigma }),
         1 => (age(h), scalar(h, 0.02, 0.5)).prop_map(|(age, sigma)| Op::Course { age, sigma }),
+        1 => (age(h), scalar(h, 0.01, 1.0)).prop_map(|(age, sigma)| Op::Stationary { age, sigma }),
         1 => (vector(h, -3.0, 3.0), (sigma(), sigma()))
             .prop_map(|(ned, sigma)| Op::ResetPosition { ned, sigma }),
         1 => (vector(h, -0.3, 0.3), sigma()).prop_map(|(ned, sigma)| Op::ResetVelocity { ned, sigma }),
@@ -362,6 +367,7 @@ fn config() -> impl Strategy<Value = Config> {
         },
         Config {
             coast: None,
+            hold: None,
             correlation: Correlation::WHITE,
             ..Config::default()
         },
@@ -500,6 +506,7 @@ struct Snapshot {
     baro_reference: Option<Altitude>,
     unestablished: super::Unestablished,
     aligned: bool,
+    anchor: Option<super::hold::Anchor>,
 }
 
 fn snapshot(filter: &Eskf) -> Snapshot {
@@ -519,6 +526,7 @@ fn snapshot(filter: &Eskf) -> Snapshot {
         baro_reference: filter.baro_reference,
         unestablished: filter.unestablished,
         aligned: filter.aligned,
+        anchor: filter.anchor,
     }
 }
 
@@ -679,9 +687,15 @@ fn apply(filter: &mut Eskf, op: &Op, project: bool) -> Result<(), TestCaseError>
                         (
                             *filter.estimate.state(),
                             *filter.covariance(),
-                            filter.offset
+                            filter.offset,
+                            filter.anchor
                         ),
-                        (before.state, before.covariance, before.offset),
+                        (
+                            before.state,
+                            before.covariance,
+                            before.offset,
+                            before.anchor
+                        ),
                         "{:?} changed the estimate",
                         refused
                     );
@@ -828,6 +842,19 @@ fn apply(filter: &mut Eskf, op: &Op, project: bool) -> Result<(), TestCaseError>
                 &health,
                 &["course"],
                 &[("course", is_refused(outcome))],
+            )?;
+        }
+        Op::Stationary { age, sigma } => {
+            let noise = VelocityNoise::from_speed_accuracy(sigma);
+            let outcome = filter.fuse_stationary(at(now, age), noise);
+            if !fused(outcome) {
+                untouched(filter, "an unfused standstill")?;
+            }
+            health_of(
+                filter,
+                &health,
+                &["stationary"],
+                &[("stationary", is_refused(outcome))],
             )?;
         }
         Op::ResetPosition { ned, sigma } => {

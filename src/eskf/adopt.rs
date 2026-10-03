@@ -500,7 +500,7 @@ mod tests {
 
     #[test]
     fn a_fix_rejected_past_the_timeout_is_adopted_and_its_height_is_left_to_its_own_gate() {
-        let mut filter = initialized();
+        let mut filter = unheld();
         // Rejected for everything short of `Recovery::gnss_position`, counted from
         // initialization since nothing was ever accepted.
         hold(&mut filter, 6.9, 100, |filter| {
@@ -667,7 +667,7 @@ mod tests {
 
     #[test]
     fn a_locked_out_velocity_is_adopted() {
-        let mut filter = initialized();
+        let mut filter = unheld();
         let velocity = Velocity::ned(20.0, 0.0, 0.0);
         let noise = VelocityNoise::from_speed_accuracy(0.3);
         hold(&mut filter, 6.9, 100, |filter| {
