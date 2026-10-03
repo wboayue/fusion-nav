@@ -225,7 +225,10 @@ impl Eskf {
                 self.apply_or_recover(
                     outcome,
                     |diagnostics| &mut diagnostics.gnss_position,
-                    self.recovery_after(self.config.recovery.gnss_position),
+                    Self::recovery_after(
+                        self.position_is_held(),
+                        self.config.recovery.gnss_position,
+                    ),
                     |filter| {
                         let adopted = filter.carried_position(position, antenna, time);
                         adopted
@@ -235,6 +238,10 @@ impl Eskf {
                 )
             }
         };
+        // An adoption ended the hold on its way; a fix the gate passed measures position too.
+        if horizontal.is_accepted() {
+            self.end_position_hold();
+        }
         let height = match screen(&[z[2]], &[r[2]]) {
             Some(refusal) => refuse(&mut self.diagnostics.gnss_height, refusal),
             None => {
@@ -575,17 +582,21 @@ impl Eskf {
             &observation,
             self.config.gates.gnss_velocity,
         );
-        self.apply_or_recover(
+        let fusion = self.apply_or_recover(
             outcome,
             |diagnostics| &mut diagnostics.gnss_velocity,
-            self.recovery_after(self.config.recovery.gnss_velocity),
+            Self::recovery_after(self.velocity_is_held(), self.config.recovery.gnss_velocity),
             |filter| {
                 let adopted = filter.carried_velocity(velocity, antenna, time);
                 adopted
                     .map(|adopted| filter.adopt_velocity(adopted, noise))
                     .is_some()
             },
-        )
+        );
+        if fusion.is_accepted() {
+            self.end_velocity_hold();
+        }
+        fusion
     }
 
     /// Fuse a barometric altitude. Equation (30).

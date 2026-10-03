@@ -41,8 +41,6 @@ impl Eskf {
         }
         self.adopt_position(position, noise, POSITION);
         self.unestablished.position = false;
-        // Or the hold would pull the estimate back to where it anchored.
-        self.end_hold();
         true
     }
 
@@ -60,7 +58,6 @@ impl Eskf {
         }
         self.adopt_velocity(velocity, noise);
         self.unestablished.velocity = false;
-        self.end_hold();
         true
     }
 
@@ -95,6 +92,9 @@ impl Eskf {
             ..*self.estimate.state()
         });
         self.reset_block(axes, variances);
+        if axes.contains(&ErrorState::PositionNorth) {
+            self.end_position_hold();
+        }
     }
 
     /// Recover GNSS height: adopt the down axis, and let the barometer read its reference
@@ -130,6 +130,7 @@ impl Eskf {
             ],
             noise.variance(),
         );
+        self.end_velocity_hold();
     }
 
     /// Read `α₀` from the estimate at one altitude, `α̂₀ = α + p̂_D` — (30) solved for α₀ with

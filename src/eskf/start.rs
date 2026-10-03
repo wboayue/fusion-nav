@@ -367,7 +367,7 @@ impl Eskf {
         // `note_alignment` reads at the end of each entry point.
         self.aligned = false;
         // A hold belongs to the life it held; the next outage anchors afresh.
-        self.end_hold();
+        self.forget_hold();
     }
 }
 

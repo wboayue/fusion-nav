@@ -53,20 +53,23 @@ const HOLD_TILT: Radians = Radians::from_degrees(3.0);
 /// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#hold
 const HOLD_TAU: Seconds = Seconds::from_secs(2.0);
 
-/// The position hold's state over one outage, cleared when aiding returns, on a start and on a
-/// caller's reset.
+/// The position hold's state: where and when it last held, and which quantities still carry the
+/// covariance it shaped.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(super) struct HoldState {
     /// Where the hold holds, NED meters about the origin: the estimate when it last engaged, and
-    /// `None` while released below [`HOLD_TILT`].
+    /// `None` while released below [`HOLD_TILT`] or while something aids the filter.
     anchor: Option<Vector3<f32>>,
     /// When it last fused, kept across a release so that re-engaging waits out
     /// [`HOLD_INTERVAL`] like any other fusion.
     fused: Option<Timestamp>,
-    /// Whether it has fused in this outage. What [`Eskf::is_held`] and
-    /// [`Eskf::recovery_after`] read rather than the anchor, which a release clears while the
-    /// covariance stays the one the hold shaped.
-    held: bool,
+    /// Whether the hold has bounded horizontal position since anything measured it. Set by each
+    /// hold, and cleared only by a position the filter accepts or adopts, or a caller's reset:
+    /// the end of the outage does not clear it, since a fix the gate turns down, a velocity or
+    /// a standstill leaves the position covariance the one the assumption shaped.
+    position: bool,
+    /// The same for horizontal velocity, cleared by a velocity accepted, adopted or reset.
+    velocity: bool,
 }
 
 impl Eskf {
@@ -150,7 +153,9 @@ impl Eskf {
             return;
         };
         if !self.is_unaided() {
-            self.hold = HoldState::default();
+            // The latches outlive the outage: only a measurement of each quantity clears it.
+            self.hold.anchor = None;
+            self.hold.fused = None;
             return;
         }
         // Released as PX4 releases it, so the next engagement anchors afresh where the
@@ -171,7 +176,8 @@ impl Eskf {
             .anchor
             .get_or_insert_with(|| self.estimate.state().position.vector());
         self.hold.fused = Some(self.time);
-        self.hold.held = true;
+        self.hold.position = true;
+        self.hold.velocity = true;
         self.diagnostics.position_hold.note_arrival(self.time);
         let variance = sigma.as_meters() * sigma.as_meters();
         let observation = hold::position_hold(self.estimate.state(), position, variance)
@@ -208,31 +214,53 @@ impl Eskf {
             && !d.stationary.accepted_within(after)
     }
 
-    /// Whether the position hold has held the estimate in this outage, which is still going on.
-    /// What [`validity`](Self::validity) reads to keep horizontal position and velocity invalid
-    /// under a covariance the hold, not a sensor, has bounded, released or not.
-    pub(super) fn is_held(&self) -> bool {
-        self.hold.held && self.is_unaided()
+    /// Whether horizontal position's covariance is one the hold bounded and no position has
+    /// been accepted, adopted or reset since. What [`validity`](Self::validity) reads to keep
+    /// the quantity invalid, as it reads a start that never established it: the assumption
+    /// tightened that variance, not a sensor.
+    pub(super) fn position_is_held(&self) -> bool {
+        self.hold.position
     }
 
-    /// End the hold: a caller's reset has said where the vehicle is.
-    pub(super) fn end_hold(&mut self) {
+    /// [`position_is_held`](Self::position_is_held) for horizontal velocity. A standstill does
+    /// not clear it, for the reason it establishes no velocity after a coarse start.
+    pub(super) fn velocity_is_held(&self) -> bool {
+        self.hold.velocity
+    }
+
+    /// Horizontal position has been measured or set: its covariance is no longer the hold's,
+    /// and an anchor taken before it would pull the estimate back.
+    ///
+    /// After a caller's reset nothing aids the filter still, so the hold engages again within
+    /// [`HOLD_INTERVAL`] where the reset put the estimate, and position reads held again.
+    pub(super) fn end_position_hold(&mut self) {
+        self.hold.position = false;
+        self.hold.anchor = None;
+    }
+
+    /// [`end_position_hold`](Self::end_position_hold) for horizontal velocity.
+    pub(super) fn end_velocity_hold(&mut self) {
+        self.hold.velocity = false;
+        self.hold.anchor = None;
+    }
+
+    /// Forget the hold: a start begins a life nothing has held.
+    pub(super) fn forget_hold(&mut self) {
         self.hold = HoldState::default();
     }
 
-    /// The lockout timeout a horizontal source recovers after: none at all while the hold is
-    /// engaged, `after` otherwise, and never where `after` turns recovery off for the source.
+    /// The lockout timeout a horizontal source recovers after: none at all while the hold's
+    /// covariance stands on the quantity it measures (`held`), `after` otherwise, and never
+    /// where `after` turns recovery off for the source.
     ///
     /// The hold's covariance describes the assumption, not the vehicle, so a fix it turns down
     /// is judged against a position nobody measured; waiting out [`Config::recovery`] would hold
     /// a vehicle away from its first fix for seconds. PX4 resets to a GNSS position that fails
-    /// its test when fusion starts (`gps_control.cpp:224-245` at `c4e4ef98`). Read on the
-    /// outage rather than on [`is_held`](Self::is_held), because the fix asking is the one
-    /// about to end it.
+    /// its test when fusion starts (`gps_control.cpp:224-245` at `c4e4ef98`).
     ///
     /// [`Config::recovery`]: crate::Config::recovery
-    pub(super) fn recovery_after(&self, after: Option<Seconds>) -> Option<Seconds> {
-        if self.hold.held {
+    pub(super) fn recovery_after(held: bool, after: Option<Seconds>) -> Option<Seconds> {
+        if held {
             after.map(|_| Seconds::ZERO)
         } else {
             after
@@ -411,7 +439,16 @@ mod tests {
             assert!(fix_at_origin(filter).horizontal.is_accepted());
         });
         assert_eq!(holds(&filter), before);
-        assert_eq!(filter.hold, super::HoldState::default());
+        // No velocity was offered, so that latch is the one thing left of the hold.
+        let velocity = filter.hold.velocity;
+        assert!(velocity && !filter.validity().horizontal_velocity);
+        assert_eq!(
+            filter.hold,
+            super::HoldState {
+                velocity,
+                ..Default::default()
+            }
+        );
     }
 
     /// Each filter is the control for the one before: the hold's own adoption, the lockout
@@ -453,7 +490,101 @@ mod tests {
         });
         // The steps before the first claim are the only ones that could hold.
         assert!(holds(&filter) <= before + 1);
+        assert_eq!((filter.hold.anchor, filter.hold.fused), (None, None));
+    }
+
+    /// A filter whose bars the hold's covariance passes with room, held for a minute: what is
+    /// left when the outage ends is the covariance the assumption shaped.
+    fn held_under_loose_bars(recovery: Recovery) -> Eskf {
+        let mut filter = Eskf::new(Config {
+            accuracy: crate::config::Accuracy {
+                position: crate::units::Meters::from_meters(1000.0),
+                velocity: crate::units::MetersPerSecond::from_m_per_s(1000.0),
+                ..crate::config::Accuracy::default()
+            },
+            recovery,
+            ..Config::default()
+        })
+        .unwrap();
+        let _ = filter.initialize_over(&[still(); 8], Seconds::from_secs(0.25));
+        hold(&mut filter, 60.0, 1, |_| {});
+        assert!(holds(&filter) > 0);
+        filter
+    }
+
+    fn horizontal(filter: &Eskf) -> (bool, bool) {
+        let validity = filter.validity();
+        (validity.horizontal_position, validity.horizontal_velocity)
+    }
+
+    /// Survives either latch cleared when the outage ends, as one `held` flag read with
+    /// `is_unaided` was: each of these ends the outage and measures no position, and the 1000 m
+    /// bar would pass the hold's σ.
+    #[test]
+    fn the_end_of_an_outage_validates_only_what_was_measured() {
+        // A standstill measures neither.
+        let mut filter = held_under_loose_bars(Recovery::default());
+        hold(&mut filter, 1.0, 10, |filter| {
+            let outcome = filter.fuse_stationary(filter.now(), standstill());
+            assert!(outcome.is_accepted(), "{outcome:?}");
+        });
+        assert_eq!(horizontal(&filter), (false, false));
+
+        // A fix the gate turns down, with no recovery to adopt it, measures neither.
+        let mut filter = held_under_loose_bars(Recovery::OFF);
+        let far = Position::ned(500.0, 0.0, 0.0);
+        hold(&mut filter, 1.0, 10, |filter| {
+            let outcome =
+                filter.fuse_gnss_position(filter.now(), far, one_metre(), Position::zero());
+            assert!(matches!(outcome.horizontal, Fusion::Rejected { .. }));
+        });
+        assert_eq!(horizontal(&filter), (false, false));
+
+        // A velocity measures velocity, and a position after it position.
+        let mut filter = held_under_loose_bars(Recovery::default());
+        hold_velocity(&mut filter, crate::units::Velocity::zero());
+        hold(&mut filter, 1.0, 1, |_| {});
+        assert_eq!(horizontal(&filter), (false, true));
+        assert!(fix_at_origin(&mut filter).horizontal.is_accepted());
+        assert_eq!(horizontal(&filter), (true, true));
+    }
+
+    /// Survives `end_velocity_hold` removed from `adopt_velocity`: the reset is the only thing
+    /// here that could clear the latch, and the validity is read before the next hold sets it.
+    #[test]
+    fn a_velocity_reset_ends_the_hold_on_velocity_alone() {
+        let mut filter = held_under_loose_bars(Recovery::default());
+        let noise = VelocityNoise::from_speed_accuracy(0.3);
+        assert!(filter.reset_velocity_to(crate::units::Velocity::zero(), noise));
+        assert_eq!(horizontal(&filter), (false, true));
+        assert_eq!(filter.hold.anchor, None);
+    }
+
+    /// Survives `forget_hold` removed from a start: the second window is the only thing
+    /// between the hold and the validity read.
+    #[test]
+    fn a_new_start_forgets_the_hold() {
+        let mut filter = held_under_loose_bars(Recovery::default());
+        assert_eq!(horizontal(&filter), (false, false));
+        let _ = filter.initialize_over(&[still(); 8], Seconds::from_secs(0.25));
         assert_eq!(filter.hold, super::HoldState::default());
+        assert_eq!(horizontal(&filter), (true, true));
+    }
+
+    /// Survives `Coasted` dropped from `predict`'s match: every step here is past
+    /// `max_predict_dt`, so no other outcome runs the hold.
+    #[test]
+    fn a_coasted_step_runs_the_hold() {
+        let mut filter = initialized();
+        let gap = Seconds::from_secs(0.5);
+        for _ in 0..40 {
+            let outcome = filter.step(still().imu, gap);
+            assert!(
+                matches!(outcome, Propagation::Coasted { .. }),
+                "{outcome:?}"
+            );
+        }
+        assert!(holds(&filter) > 0);
     }
 
     /// Survives the reset leaving the hold alone: forty seconds unaided widen the covariance
@@ -470,9 +601,8 @@ mod tests {
         assert!(north > 95.0, "pulled back to {north} m");
     }
 
-    /// Survives either guard in `validity_of` removed, or `is_held` reading the anchor: the bar
-    /// is loose enough that the covariance alone would call both valid, and the hold releases
-    /// and re-engages around 3° through the minute.
+    /// Survives either guard in `validity_of` removed: the bar is loose enough that the
+    /// covariance alone would call both valid.
     #[test]
     fn position_and_velocity_stay_invalid_through_the_whole_outage() {
         let mut filter = Eskf::new(Config {
@@ -485,18 +615,15 @@ mod tests {
         })
         .unwrap();
         let _ = filter.initialize_over(&[still(); 8], Seconds::from_secs(0.25));
-        let mut released = 0;
+        let mut held = 0;
         hold(&mut filter, 60.0, 1, |filter| {
             if holds(filter) > 0 {
                 let validity = filter.validity();
                 assert!(!validity.horizontal_position && !validity.horizontal_velocity);
-                released += usize::from(filter.hold.anchor.is_none());
+                held += 1;
             }
         });
-        assert!(
-            released > 0,
-            "the hold never released, so nothing was tested"
-        );
+        assert!(held > 5000, "{held} steps under the hold");
     }
 
     /// Survives the interval read off the anchor, which a release clears: re-engaging then fuses
