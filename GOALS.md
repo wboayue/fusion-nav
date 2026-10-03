@@ -963,8 +963,9 @@ while unaided: PX4's fake position (`fake_pos_control.cpp:47-82` at `c4e4ef98`) 
   judged for `Timeouts::dead_reckoning_after` and the tilt σ has passed 3°, `predict` fuses the
   position estimate from when the hold engaged, every 0.2 s at 10 m, at (24′)'s `τ` of 2 s. It
   releases below 3° and re-anchors when it next engages. It is not aiding: `Status` stays
-  `DeadReckoning`, horizontal position and velocity stay invalid, and the first GNSS fix or
-  velocity the gate turns down after it is adopted at once. `Config::hold = None` turns it off,
+  `DeadReckoning`, horizontal position and velocity each stay invalid until a measurement of that
+  quantity is accepted or adopted, and the first GNSS fix or velocity the gate turns down after
+  it is adopted at once. `Config::hold = None` turns it off,
   as rejection handling turns its corrections off.
 - **The standstill**, caller-driven, `Eskf::fuse_stationary`: zero velocity on all three axes at
   the caller's `R`, for a vehicle it knows is still. Zero velocity rather than PX4's constant
@@ -994,7 +995,7 @@ drifting 27 m) and the corpus. DESIGN.md, "Hold", has the tables.
   for seconds at a time, went from 27 recoveries to 62. A receiver the gate rejects is
   `Recovery`'s.
 - **Corpus:** `f16771dd`, whose EKF2 ran its own fake position, agrees with it on tilt at 0.92° RMS
-  against 1.73° with no hold and 0.67° white, and on velocity at 0.56 m/s against 2.42.
+  against 1.73° with no hold and 0.67° white, and on east velocity at 0.56 m/s against 2.42.
   `7592c9b2`, against LPE, 0.75° → 0.25°. Every other log reads `holds=0` save `2c42096b`'s 4 and
   `7ce66f0d`'s 1, and with the hold off every log reproduces the filter without it byte for byte.
 
@@ -1021,7 +1022,8 @@ grows a branch and, while held, a 2-D update every 0.2 s, so its worst case is a
 motion reads as tilt until the gate turns it down.
 
 Not built: a corpus source for the standstill. PX4 logs `vehicle_land_detected.at_rest`, and
-reading it is a converter change, batched with the next.
+reading it is a converter change, batched with the next. EKF2's verdict on its own fake
+position, `estimator_aid_src_fake_pos`, joins the comparison in the same batch.
 
 ### Ecosystem coherence, dropped
 

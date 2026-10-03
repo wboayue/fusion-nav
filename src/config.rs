@@ -587,13 +587,15 @@ impl Default for Coast {
 /// keeps moving without GNSS, a car or a fixed-wing, should turn it off: on UrbanNav's car the
 /// hold took the F9P's position NEES from 1.02 to 32 ([decision]).
 ///
-/// The hold is an assumption, not a sensor: [`Status`](crate::Status) stays `DeadReckoning`,
-/// horizontal position and velocity stay invalid in [`Validity`](crate::Validity) for the rest of
-/// the outage however tight the covariance it leaves, and the first GNSS fix or velocity after it
-/// that the gate turns down is adopted at once rather than after [`Config::recovery`]'s timeout,
-/// since what the gate would be judging it against is the hold. A source whose recovery is off is
-/// never adopted. A caller's `reset_position_to` or `reset_velocity_to` ends it. On by default,
-/// as [`Coast`] is; `Config::hold = None` is the opt-out.
+/// The hold is an assumption, not a sensor: [`Status`](crate::Status) stays `DeadReckoning`, and
+/// horizontal position and velocity each stay invalid in [`Validity`](crate::Validity), however
+/// tight the covariance the hold leaves, until a measurement of that quantity is accepted or
+/// adopted. A standstill, a fix the gate turns down or a velocity does not validate position. The
+/// first GNSS fix or velocity after it that the gate turns down is adopted at once rather than
+/// after [`Config::recovery`]'s timeout, since what the gate would be judging it against is the
+/// hold. A source whose recovery is off is never adopted. A caller's `reset_position_to` or
+/// `reset_velocity_to` ends it for its quantity, until the hold next fuses. On by default, as
+/// [`Coast`] is; `Config::hold = None` is the opt-out.
 ///
 /// [decision]: https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#holding-tilt-without-aiding
 #[derive(Clone, Copy, Debug, PartialEq)]

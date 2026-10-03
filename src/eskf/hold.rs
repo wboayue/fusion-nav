@@ -45,10 +45,8 @@ const HOLD_TILT: Radians = Radians::from_degrees(3.0);
 ///
 /// Fused as white, as PX4 and ArduPilot fuse theirs, five readings a second average `S` down
 /// around an error that persists for the whole outage, and the covariance follows them:
-/// `hover_outage`'s ensemble read `anees_pos` 61 and `anees_vel` 0.97, every block past its bound
-/// and attitude too where GNSS returns. At 2 s every block passes, and the estimate it leaves is
-/// better, not only more honest: `pos_h` 38 m to 7.8 against 36 with no hold. 1 s still fails
-/// (`anees_pos` 46); longer weakens the hold toward none ([measured]).
+/// `hover_outage`'s ensemble read `anees_pos` 61 against a bound it meets at 2 s, the shortest
+/// `τ` measured that passes ([measured]).
 ///
 /// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#hold
 const HOLD_TAU: Seconds = Seconds::from_secs(2.0);

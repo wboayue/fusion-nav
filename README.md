@@ -807,7 +807,7 @@ issue that removes them, where one is open.
   without GNSS, should set `Config::hold = None`. While it holds, a multirotor that keeps
   flying reads partly as tilt error, which the 3° gate and (24′) keep small, and the position it
   reports is pulled toward where the hold engaged. That is why position stays invalid
-  through it. See
+  until a fix is accepted or adopted after it. See
   [holding tilt without aiding](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#holding-tilt-without-aiding).
 * **Local tangent plane.** Position is Cartesian NED about a fixed origin. The geodetic
   conversion is exact at any range

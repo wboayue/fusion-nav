@@ -240,7 +240,7 @@ adding one: (28″) is (28)'s horizontal rows against an anchor, (29″) is (29)
 * **The standstill** is `fuse_stationary`, an ordinary `fuse_*` the application calls.
 
 Neither counts toward `Status`, neither is adopted, and the hold keeps horizontal position and
-velocity invalid while it holds. See [holding tilt without aiding](EQUATIONS.md#holding-tilt-without-aiding),
+velocity invalid, each until a measurement of it is accepted or adopted. See [holding tilt without aiding](EQUATIONS.md#holding-tilt-without-aiding),
 and [the decision](GOALS.md#holding-tilt-without-aiding) for what it was measured against.
 
 ## Innovation Gating
@@ -502,10 +502,14 @@ The position hold of (28″): σ 10 m, PX4's and ArduPilot's default; engaged pa
 reads; fused at (24′) with `τ` = 2 s. Each choice was measured on `gnss_outage` (20 s without
 GNSS over the circuit's fastest turns), `hover_outage` (90 s without GNSS in a hover drifting
 27 m) and the corpus's two logs with no GNSS, `f16771dd` (EKF2's reference, which runs PX4's hold)
-and `7592c9b2` (LPE's). Scenario figures are one seed's `score` line; ANEES is 50 seeds. The
-shipped rows are re-measured on the hold as it ships; the other rows were measured before its
-review made one outage one hold (the 0.2 s interval kept across a release, and validity and
-recovery read per outage), which moved the shipped figures by under 1.5 %.
+and `7592c9b2` (LPE's). Scenario figures are one seed's `score` line; ANEES is 50 seeds.
+
+The tables hold two builds. The shipped rows (no hold; the gate with (24′) at 2 s; `τ` 2 s; σ
+10 m; UrbanNav's first two columns) and the white hold behind the gate are measured on the hold
+as it ships. Every other row was measured on the build before its review, which kept the 0.2 s
+interval across a release and latched validity and recovery per quantity, and on which the
+shipped rows read within 1.5 % of these, UrbanNav's F9P `nees_pos` excepted: 27 there, 32.01
+here. Compare a rejected row with the shipped one for its direction, not its last digit.
 
 The forms, at 10 m, on one seed:
 
@@ -532,7 +536,7 @@ second as one error:
 
 With no hold the two logs read 1.729° and 0.750°. 2 s is the shortest `τ` measured that passes,
 and the most accurate that does. At 1 s the hold is strong enough to pull tilt σ back under 3°
-and release, 106 holds against 382 at 2 s; why that leaves the ensemble overconfident is not
+and release, 106 holds against 382 at 2 s on that build; why that leaves the ensemble overconfident is not
 established. Latched instead, held until aiding returns, `gnss_outage` failed every block
 (`any_pos` 1794 at 2 s).
 
