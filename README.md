@@ -370,6 +370,17 @@ are integrated over their own intervals. The result is `#[must_use]`:
 | `StateNotFinite` | the propagated **state** did, so it was discarded; a finite sample can still overflow f32 through (11)–(14) |
 | `NotInitialized` | no state to propagate |
 
+Without horizontal aiding nothing observes tilt, so it grows on the schedule `ImuNoise` sets. Once
+no GNSS position or velocity has been judged for `Timeouts::dead_reckoning_after`, and the tilt σ
+has passed 3°, a committed step also fuses a **position hold**: the estimate's own position from
+when the hold engaged, at `Config::hold`'s σ (10 m), five times a second
+([equation (28″)](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#holding-tilt-without-aiding)).
+Bounding position bounds velocity, which is what lets the accelerometer level the filter. It is an
+assumption, not a sensor: `Status` stays `DeadReckoning`, horizontal position and velocity stay
+invalid, and the first GNSS fix the gate turns down after it is adopted at once.
+`Config::hold = None` turns it off. PX4's fake position and ArduPilot's `AID_NONE` do the same;
+this one is fused as correlated, (24′), so the covariance it leaves stays honest.
+
 ### Measurements
 
 | method | measurement |
@@ -381,6 +392,7 @@ are integrated over their own intervals. The result is `#[must_use]`:
 | `fuse_mag_heading(time, field, noise)` | body-frame field, reduced to a heading and fused as one scalar |
 | `fuse_gnss_heading(time, heading, noise)` | true heading from a dual-antenna receiver, the mounting angle already removed |
 | `fuse_course(time, sideslip)` | a constraint rather than a reading: the nose points along the estimated velocity, to within `sideslip`. Call it after `fuse_gnss_velocity`, with that fix's `time`. Fixed-wing and ground vehicles; never a multirotor |
+| `fuse_stationary(time, noise)` | a claim rather than a reading: the vehicle is still, so velocity is zero on every axis. Call it while a landed detector or the application knows it; it holds tilt on a bench with no GNSS, and a claim the gate turns down is never adopted |
 
 Both GNSS position calls return a `GnssFusion`, a `Fusion` for each half of the fix, `horizontal`
 and `height`, because the two are gated apart. A height the estimate disagrees with is rejected
@@ -530,8 +542,8 @@ position to propagate, and that fixes are arriving is the whole answer.
 Tilt is where it matters most, because nothing aids it: a static window brings it in, and the
 gyroscope's noise and bias uncertainty take it back out on a schedule only the covariance knows.
 At default noise an unaided start keeps valid tilt for 10.3 s after a 2 s window that measured
-its gyroscope, and 4.84 s after one whose gyroscope never scattered. A horizon shorter than that
-arms; a longer one does not.
+its gyroscope, and 4.84 s after one whose gyroscope never scattered; the position hold engages
+there and slows what follows. A horizon shorter than that arms; a longer one does not.
 
 `Accuracy::horizon` is the one number in the crate no data could settle: how long after arming
 you need the estimate. It defaults to 1 s. At zero nothing is projected, leaving the aiding clause
@@ -716,6 +728,7 @@ What is not a rename:
 | `recovery.*` | none; constants | none; constants |
 | `correlation.*` | none; neither models a source's error as correlated in time | none |
 | `coast` | none | none |
+| `hold` | `EKF2_NOAID_NOISE`; the fake position, fused as white | `EK3_NOAID_M_NSE`; `AID_NONE`'s synthetic position, fused as white |
 | `init.sigma_tilt` | `EKF2_ANGERR_INIT` | none; 0.1 rad, a constant |
 | `init.sigma_accel_bias`, `init.sigma_gyro_bias` | `EKF2_ABIAS_INIT`, `EKF2_GBIAS_INIT` | `EK3_ACC_BIAS_LIM` × 0.2; a per-sensor constant |
 | `init.sigma_position`, `init.sigma_velocity` | the GNSS noise parameters, reused as a prior | the same |
@@ -735,10 +748,10 @@ What is left out:
   `EKF2_SENS_EN` and `EK3_SRC*` select sources, which here is which `fuse_*` the caller calls.
   Magnetic-field states, airspeed, range, flow, wind, drag and multiple lanes are
   [non-goals](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#non-goals).
-* **Candidates, each needing evidence first,** neither refused nor built: a stationary or
-  zero-velocity observation (`EKF2_POS_LOCK`, `EK3_NOAID_M_NSE`), a magnetometer disturbance check
-  (`EKF2_MAG_CHECK`), and bad vertical-accelerometer detection (PX4's `bad_acc_vertical`,
-  ArduPilot's `badIMUdata`), reported through `Diagnostics`.
+* **Candidates, each needing evidence first,** neither refused nor built: a magnetometer
+  disturbance check (`EKF2_MAG_CHECK`) and bad vertical-accelerometer detection (PX4's
+  `bad_acc_vertical`, ArduPilot's `badIMUdata`), reported through `Diagnostics`. PX4's
+  `EKF2_POS_LOCK` is `fuse_stationary` here, called by the application rather than set.
 * **Declined until a log shows need:** a barometer ground-effect dead zone (`EKF2_GND_EFF_DZ`,
   `EK3_GND_EFF_DZ`) and inhibiting accelerometer-bias learning under hard maneuvers
   (`EKF2_ABL_ACCLIM`). Each is a threshold on the airframe, a knob data could settle.
@@ -790,6 +803,11 @@ issue that removes them, where one is open.
   until `Config::recovery` adopts a fix. `cargo run --example replay -- --derive <log>` prints
   the densities a vehicle's own logged gaps need, among the rest of a `Config` derived from the
   log ([deriving a `Config`](https://github.com/wboayue/fusion-nav/blob/main/data/README.md#deriving-a-config)).
+* **The position hold assumes the vehicle stays put.** While it holds, a vehicle that keeps
+  flying reads partly as tilt error, which the 3° gate and (24′) keep small, and the position it
+  reports is pulled toward where the hold engaged. That is why position stays invalid
+  through it. See
+  [holding tilt without aiding](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#holding-tilt-without-aiding).
 * **Local tangent plane.** Position is Cartesian NED about a fixed origin. The geodetic
   conversion is exact at any range
   ([equation (43)](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#geodetic-origin)),
