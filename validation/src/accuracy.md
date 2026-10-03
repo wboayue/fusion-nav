@@ -53,7 +53,7 @@ for. Against `mission`:
   ([GOALS.md](../GOALS.md#holding-tilt-without-aiding)) bounds its σ near 3°: tilt reads
   {{score hover_outage tilt}}° RMS and position {{score hover_outage pos_h}} m RMS. What the
   hold buys is position and a bounded covariance, not a better tilt, and `Validity::tilt` still
-  goes false {{summary hover_outage attitude_lost}} s in. `bench` has no GNSS at all, and the
+  goes false during the outage (`attitude_lost={{summary hover_outage attitude_lost}}`). `bench` has no GNSS at all, and the
   application's word that it is still keeps its attitude valid throughout
   (`attitude_lost={{summary bench attitude_lost}}`), at {{score bench tilt}}° RMS; the claim
   buys validity, not accuracy.
