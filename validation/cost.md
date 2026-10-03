@@ -69,6 +69,7 @@ The deepest stack a call into each entry point takes, in bytes, before the calle
 | `fuse_mag_heading` | 9732 | 9504 |
 | `fuse_gnss_heading` | 9852 | 9640 |
 | `fuse_course` | 9868 | 9648 |
+| `fuse_stationary` | 11484 | 11264 |
 | `predicted_validity` | 8652 | 8448 |
 | `initialize` | 5476 | 5312 |
 | `initialize_coarse` | 6212 | 6048 |
@@ -84,6 +85,8 @@ Each entry point's own frame, and the frames beneath it that set its depth:
 | function | `thumbv6m` | `thumbv7em` |
 | --- | --- | --- |
 | `predict` | 16 | 16 |
+| `propagate_or_coast`, the step it calls | 2168 | 2160 |
+| `hold_if_unaided`, the hold it calls beside the step | 1304 | 1304 |
 | `fuse_gnss_position` | 1376 | 1336 |
 | `fuse_gnss_geodetic` | 336 | 328 |
 | `fuse_gnss_velocity` | 1416 | 1408 |
@@ -91,6 +94,7 @@ Each entry point's own frame, and the frames beneath it that set its depth:
 | `fuse_mag_heading` | 112 | 104 |
 | `fuse_gnss_heading` | 248 | 256 |
 | `fuse_course` | 256 | 264 |
+| `fuse_stationary` | 1360 | 1344 |
 | `predicted_validity` | 1864 | 1832 |
 | `initialize` | 2224 | 2216 |
 | `initialize_coarse` | 3504 | 3488 |
