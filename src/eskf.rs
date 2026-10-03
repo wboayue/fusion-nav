@@ -171,9 +171,9 @@ pub struct Eskf {
     /// test behind [`Status::Aligning`]; see [`is_aligned`](Self::is_aligned) for why it is not
     /// read live.
     aligned: bool,
-    /// Where the position hold of (28″) holds the estimate, while the filter is unaided and
-    /// [`Config::hold`] is on; see [`hold_if_unaided`](Self::hold_if_unaided).
-    anchor: Option<hold::Anchor>,
+    /// The position hold of (28″) over the current outage; see
+    /// [`hold_if_unaided`](Self::hold_if_unaided).
+    hold: hold::HoldState,
     initialized: bool,
     /// The clock; see [`time`](Self::time). Meaningless until `initialized`.
     time: Timestamp,
@@ -229,7 +229,7 @@ impl Eskf {
             earliest: Timestamp::ZERO,
             unestablished: Unestablished::default(),
             aligned: false,
-            anchor: None,
+            hold: hold::HoldState::default(),
             initialized: false,
             time: Timestamp::ZERO,
         }

@@ -506,7 +506,7 @@ struct Snapshot {
     baro_reference: Option<Altitude>,
     unestablished: super::Unestablished,
     aligned: bool,
-    anchor: Option<super::hold::Anchor>,
+    hold: super::hold::HoldState,
 }
 
 fn snapshot(filter: &Eskf) -> Snapshot {
@@ -526,7 +526,7 @@ fn snapshot(filter: &Eskf) -> Snapshot {
         baro_reference: filter.baro_reference,
         unestablished: filter.unestablished,
         aligned: filter.aligned,
-        anchor: filter.anchor,
+        hold: filter.hold,
     }
 }
 
@@ -688,14 +688,9 @@ fn apply(filter: &mut Eskf, op: &Op, project: bool) -> Result<(), TestCaseError>
                             *filter.estimate.state(),
                             *filter.covariance(),
                             filter.offset,
-                            filter.anchor
+                            filter.hold
                         ),
-                        (
-                            before.state,
-                            before.covariance,
-                            before.offset,
-                            before.anchor
-                        ),
+                        (before.state, before.covariance, before.offset, before.hold),
                         "{:?} changed the estimate",
                         refused
                     );

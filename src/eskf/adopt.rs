@@ -41,6 +41,8 @@ impl Eskf {
         }
         self.adopt_position(position, noise, POSITION);
         self.unestablished.position = false;
+        // Or the hold would pull the estimate back to where it anchored.
+        self.end_hold();
         true
     }
 
@@ -58,6 +60,7 @@ impl Eskf {
         }
         self.adopt_velocity(velocity, noise);
         self.unestablished.velocity = false;
+        self.end_hold();
         true
     }
 
