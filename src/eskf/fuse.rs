@@ -1,6 +1,7 @@
 //! The update every source shares, (23)–(27) at the measurement's own time, (23′), and at its
 //! equivalent white noise, (24′), then the sources that use it directly: GNSS position, (28) and
-//! (28′), GNSS velocity, (29) and (29′), and barometric altitude, (30) and (30′).
+//! (28′), converted from geodetic by (43) about the origin `site.rs` places by (44), GNSS
+//! velocity, (29) and (29′), and barometric altitude, (30) and (30′).
 //!
 //! Entry points: [`Eskf::fuse_gnss_position`], [`Eskf::fuse_gnss_geodetic`],
 //! [`Eskf::fuse_gnss_velocity`] and [`Eskf::fuse_baro_altitude`]. The shared path comes first,
@@ -10,7 +11,7 @@ use crate::config::LATENCY_HORIZON;
 use crate::frames::{Body, Ned};
 use crate::geodetic::{Geodetic, LocalOrigin};
 use crate::health::{Diagnostics, Fusion, GnssFusion, SourceHealth};
-use crate::math::{correlation_inflation, exp_quat};
+use crate::math::correlation_inflation;
 use crate::observation::{baro, gnss};
 use crate::propagate;
 use crate::state::State;
@@ -19,7 +20,6 @@ use crate::units::{
     VelocityNoise,
 };
 use crate::update::{Observation, Update, update};
-use nalgebra::Vector3;
 
 use super::Eskf;
 use super::adopt::{HORIZONTAL, POSITION};
@@ -492,22 +492,10 @@ impl Eskf {
         }
 
         // Equation (44): the origin under the estimate when the fix was taken, and the fix's
-        // error as the position's. The estimate of the antenna's position, which is what the
-        // fix measures, (28′), with the heading the site's declination turns it to first: read
-        // before, a 1 m arm under a 14.0° turn misplaces the origin by 0.24 m. The turn is
-        // committed only once the origin is found, so a fix refused here changes nothing.
-        let learned = self.declination_at(fix);
-        let turn = learned.map_or(0.0, |(_, turn)| turn);
-        let (past, _) = self.past(time);
-        let attitude_then = exp_quat(Vector3::z() * turn) * past.attitude.quaternion();
-        let antenna_then = past.position.vector() + attitude_then * antenna.vector();
-        let Some(origin) = LocalOrigin::placing(fix, Position::from_vector(antenna_then)) else {
+        // error as the position's.
+        if !self.place_origin_under_estimate(fix, antenna, time) {
             return self.refuse_gnss(Fusion::NoReference);
-        };
-        if let Some(learned) = learned {
-            self.learn_declination(learned);
         }
-        self.origin = Some(origin);
         let placed = self.reset_position_to(self.estimate.state().position, noise);
         debug_assert!(
             placed,

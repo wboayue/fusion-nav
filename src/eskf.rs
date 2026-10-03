@@ -414,38 +414,11 @@ impl Eskf {
         } else if d
             .aiding()
             .filter(|source| source.has_been_used())
-            .all(|source| self.accepted_recently(source))
+            .all(|source| source.is_fresh(&self.config.timeouts))
         {
             Status::Healthy
         } else {
             Status::Degraded
-        }
-    }
-}
-
-impl Unestablished {
-    /// What a start leaves unestablished, read off what its window showed rather than off
-    /// which [`Alignment`](crate::Alignment) it earned.
-    ///
-    /// `settled` is [`init::at_rest`](crate::init::at_rest)'s verdict. A vehicle that held still
-    /// through the window is where the origin says it is and is not moving, which is the whole of
-    /// what a static start ever claimed about position and velocity — and a window too short to
-    /// align an attitude from claims it just as honestly, which is
-    /// [`Coarse::WindowTooShort`](crate::Coarse::WindowTooShort). A window taken in motion
-    /// establishes neither: the vehicle passed through somewhere the filter cannot name. Those wait
-    /// for the first fix.
-    ///
-    /// Heading needs a magnetometer in the window on top of stillness. Gravity pins tilt and
-    /// nothing pins the rotation about it, so a window carrying no field leaves yaw a prior however
-    /// long and however still it was —
-    /// [`Initialization::sigma_yaw`](crate::Initialization::sigma_yaw) is 0.35 rad against an
-    /// [`Accuracy::heading`](crate::Accuracy::heading) of 0.52, so the covariance alone would
-    /// report a yaw nobody measured as good.
-    const fn after(settled: bool, observed_field: bool) -> Self {
-        Self {
-            position: !settled,
-            velocity: !settled,
-            heading: !(settled && observed_field),
         }
     }
 }

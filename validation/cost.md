@@ -5,7 +5,7 @@
 3776 bytes on a Cortex-M0 and allocates nothing
 else, so that is the RAM to plan for beyond the stack. The deepest stack is a GNSS velocity
 update, 11508 bytes, and linking every entry point takes
-108462 bytes of flash at `opt-level = "s"`. Execution time on
+108474 bytes of flash at `opt-level = "s"`. Execution time on
 hardware is not measured yet (#41).
 
 Every figure on this page is pinned exactly in `data/footprint.txt`, which CI measures on
@@ -63,7 +63,7 @@ The deepest stack a call into each entry point takes, in bytes, before the calle
 | --- | --- | --- |
 | `predict` | 9164 | 8984 |
 | `fuse_gnss_position` | 10780 | 10576 |
-| `fuse_gnss_geodetic` | 11348 | 11136 |
+| `fuse_gnss_geodetic` | 11124 | 10904 |
 | `fuse_gnss_velocity` | 11508 | 11288 |
 | `fuse_baro_altitude` | 9644 | 9392 |
 | `fuse_mag_heading` | 9716 | 9480 |
@@ -85,7 +85,7 @@ Each entry point's own frame, and the frames beneath it that set its depth:
 | --- | --- | --- |
 | `predict` | 2176 | 2160 |
 | `fuse_gnss_position` | 1376 | 1336 |
-| `fuse_gnss_geodetic` | 568 | 560 |
+| `fuse_gnss_geodetic` | 344 | 328 |
 | `fuse_gnss_velocity` | 1416 | 1408 |
 | `fuse_baro_altitude` | 1272 | 1256 |
 | `fuse_mag_heading` | 112 | 104 |
@@ -116,10 +116,10 @@ Each entry point's own frame, and the frames beneath it that set its depth:
 
 | bytes | `thumbv6m` `3` | `thumbv6m` `s` | `thumbv7em` `3` | `thumbv7em` `s` |
 | --- | --- | --- | --- | --- |
-| `.text` | 168926 | 108462 | 185340 | 114796 |
+| `.text` | 168758 | 108474 | 183636 | 114684 |
 | of which `libm` | 19532 | 10432 | 20752 | 12064 |
 | of which `compiler_builtins` | 10288 | 10334 | 7558 | 7674 |
-| of which `nalgebra`, out of line | 15348 | 2056 | 4450 | 1454 |
+| of which `nalgebra`, out of line | 15256 | 2056 | 4202 | 1080 |
 | `.rodata` | 4383 | 4455 | 4527 | 4599 |
 
 The column heads are target and `opt-level`. `compiler_builtins` is software floating point on

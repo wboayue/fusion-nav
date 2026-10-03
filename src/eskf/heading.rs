@@ -220,7 +220,11 @@ impl Eskf {
         // A velocity no GNSS velocity is holding is a dead-reckoned one, and a course along it
         // would read as aiding while it drifts. It also covers a velocity never established,
         // which only a GNSS velocity's acceptance or `reset_velocity_to` establishes.
-        if !self.accepted_recently(&self.diagnostics.gnss_velocity) {
+        if !self
+            .diagnostics
+            .gnss_velocity
+            .is_fresh(&self.config.timeouts)
+        {
             return refuse(&mut self.diagnostics.course, Fusion::NoReference);
         }
         // Screened on the state the observation is built on, the one at `time`.
@@ -313,7 +317,7 @@ impl Eskf {
     ) -> Option<Seconds> {
         if arbiters
             .iter()
-            .any(|arbiter| self.accepted_recently(arbiter))
+            .any(|arbiter| arbiter.is_fresh(&self.config.timeouts))
         {
             None
         } else {

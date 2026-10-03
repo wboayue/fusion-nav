@@ -130,10 +130,12 @@ pub(super) fn flying(config: Config) -> Eskf {
     filter
 }
 
-/// `Config::gravity` is the `γ` every equation reads, and each test below fails if one of
-/// them reads `GRAVITY` instead: 9.79 is a site's value the default is 0.017 m s⁻² off.
+/// `Config::gravity` is the `γ` every equation reads, and each test built on [`at_site`], in
+/// `predict.rs` and `start.rs`, fails if one of them reads `GRAVITY` instead: 9.79 is a site's
+/// value the default is 0.017 m s⁻² off.
 pub(super) const SITE_GRAVITY: f32 = 9.79;
 
+/// The default configuration at a site whose gravity is [`SITE_GRAVITY`].
 pub(super) fn at_site() -> Config {
     Config {
         gravity: SITE_GRAVITY,

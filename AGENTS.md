@@ -755,13 +755,10 @@ off-by-default feature of the same name. `magnetic-model`, on by default, pulls 
 the declination table, and CI builds and tests without it too.
 
 - `src/eskf.rs` — `Eskf`, the whole public filter, its fields, `state` and `Status`; its methods
-  live in `src/eskf/`, one `impl Eskf` per topic: `start.rs` (`initialize*`, `alignment_of`),
-  `site.rs` (origin, declination, barometric reference), `predict.rs`, `fuse.rs` (the shared
-  update path, then GNSS and barometer), `heading.rs`, `adopt.rs` (`reset_*_to`, adoption,
-  recovery) and `validity.rs`. A child module sees `Eskf`'s private fields but not a sibling's
-  private items, so the `pub(super)` helpers are the seams between topics; `estimate.rs` uses
-  the same rule to keep the state and its history behind their only writers, and `fixtures.rs`
-  holds what the modules' tests share. `initialize_from` is stage 1
+  live in `src/eskf/`, one `impl Eskf` per topic, which `DESIGN.md`'s module map lists. A child
+  module sees `Eskf`'s private fields but not a sibling's private items, so the `pub(super)`
+  items are the seams between topics, and a new one is a claim that two topics share it.
+  `initialize_from` is stage 1
   of GOALS.md's "Alignment beyond the static window": the static window stays the preferred path,
   a moving or short window starts coarse under `Status::Aligning`, yaw from course is
   `fuse_course` (#53), and in-motion leveling (5′, #59) is the option still unbuilt — read that
@@ -772,14 +769,13 @@ the declination table, and CI builds and tests without it too.
   it is pushed, so a caller never buffers the window; its doc comment owns how each statistic
   is taken in one pass, and `StaticWindow::noise` reports the sensors' noise floor, (8″). The `initialize*` methods on `Eskf` call these and commit the result.
   Tests for the pure functions live here; tests of what the filter does with them stay in
-  `src/eskf/start.rs`.
+  `src/eskf/`.
 - `src/propagate.rs` — `ImuSample` and equations (9)–(22), in increments; `error_dynamics`, the
   `A` of (16)–(19) that (23′) carries `H` through.
 - `src/history.rs` — the recent past of the nominal state for (23′): 32 entries 10 ms apart,
   interpolated, carried forward on velocity and the last sample's rate for a time ahead of the
-  present, and shifted by every correction in navigation axes through `Estimate::commit`.
-  `Estimate` (`src/eskf/estimate.rs`) holds the state and the history behind private fields, so
-  its three writers are the only ones the compiler allows. `Eskf::observe` and `Eskf::past` are
+  present, and shifted by every correction in navigation axes through `Estimate::commit`, one
+  of the state's only writers (`DESIGN.md`, "Time and history"). `Eskf::observe` and `Eskf::past` are
   its only readers, and it costs 1.5 KB of `Eskf`.
 - `src/update.rs` — the update every observation shares: (23)–(27) in Joseph form, the gate of
   (37)–(38), the injection and reset of (39)–(41). Generic over `dim(z)` and free of `Eskf`, so it
@@ -819,7 +815,7 @@ the declination table, and CI builds and tests without it too.
   equations (43)–(44), exact via ECEF (fixed-iteration inverse, no data-dependent loops). The filter owns the origin: `fuse_gnss_geodetic` places it on the first
   fix (under the estimate of the antenna, or at the fix after a coarse start), a static start clears it.
 - `src/magnetic.rs` — the WMM declination table and its bilinear lookup, behind the
-  `magnetic-model` feature; `Eskf::place_origin` reads it at every origin placement. The table
+  `magnetic-model` feature; `Eskf::declination_at` reads it at every origin placement. The table
   is generated, between marker comments, by `tools/declination.py`; never hand-edit it.
   **It ages, so expect to regenerate it periodically**, about once per model: the grid within
   60° of the equator drifts past GOALS.md's 1° near 2029.0, and NCEI replaces the model every

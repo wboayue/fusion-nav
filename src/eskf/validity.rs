@@ -174,7 +174,7 @@ impl Eskf {
         );
         let ahead = self.validity_of(&horizon);
 
-        let fresh = |source: &SourceHealth| self.accepted_recently(source);
+        let fresh = |source: &SourceHealth| source.is_fresh(&self.config.timeouts);
         let d = &self.diagnostics;
         let (position, velocity) = (fresh(&d.gnss_position), fresh(&d.gnss_velocity));
         let height = fresh(&d.gnss_height) || fresh(&d.baro_altitude);
@@ -193,14 +193,6 @@ impl Eskf {
             horizontal_velocity: ahead.horizontal_velocity || velocity,
             vertical_velocity: ahead.vertical_velocity || velocity,
         }
-    }
-
-    /// Whether `source` was accepted within its own
-    /// [`timeout`](crate::SourceHealth::timeout): aiding that is arriving, as
-    /// [`Status`](crate::Status), [`predicted_validity`](Self::predicted_validity), the course and
-    /// the recovery guards all ask.
-    pub(super) fn accepted_recently(&self, source: &SourceHealth) -> bool {
-        source.is_fresh(&self.config.timeouts)
     }
 }
 

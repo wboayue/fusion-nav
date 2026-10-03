@@ -5,63 +5,16 @@
 //! [`Eskf::set_magnetic_declination`], [`Eskf::magnetic_declination`],
 //! [`Eskf::set_baro_reference`] and [`Eskf::baro_reference`].
 
+use crate::frames::Body;
 use crate::geodetic::{Geodetic, LocalOrigin};
 use crate::math::{exp_quat, wrap_pi};
 use crate::state::{Offset, State};
-use crate::units::{Altitude, AltitudeNoise, Attitude, Radians};
+use crate::units::{Altitude, AltitudeNoise, Attitude, Position, Radians, Timestamp};
 use nalgebra::Vector3;
 
 use super::Eskf;
 
 impl Eskf {
-    /// Set the barometric reference `α₀` directly, with the σ it is known to. Equations (30)
-    /// and (30′).
-    ///
-    /// For a reference known better than the estimate: a surveyed pad, or the ground
-    /// re-established before takeoff. A filter with no reference needs none of this, since
-    /// [`fuse_baro_altitude`](Self::fuse_baro_altitude) takes one from the estimate unless
-    /// [`Config::baro_reference_from_estimate`](crate::Config::baro_reference_from_estimate)
-    /// says otherwise. The filter estimates `α₀` from then on, starting from this σ and
-    /// uncorrelated with the state, so `noise` is the claim that decides how far the first
-    /// disagreement with GNSS height moves it.
-    ///
-    /// Returns `false`, changing nothing, for a reference that is not a number or a σ that is
-    /// not positive: `α₀` appears in every barometric measurement for the rest of the flight,
-    /// so a NaN here is not one bad update but the end of barometric aiding, and a σ of zero
-    /// is a reference no disagreement could ever move.
-    #[must_use = "a refused reference leaves barometric fusion returning NoReference"]
-    pub fn set_baro_reference(&mut self, reference: Altitude, noise: AltitudeNoise) -> bool {
-        if !reference.as_meters().is_finite() || !noise.is_finite() || !noise.is_positive() {
-            return false;
-        }
-        self.establish_reference(Some((reference, Offset::independent(noise.variance()))));
-        true
-    }
-
-    /// Set `α₀` together with the covariance of its error, or clear both. Equation (30′).
-    ///
-    /// One place, because the two describe one thing: a reference with no offset row claims
-    /// to be exact, and an offset row with no reference correlates the estimate with nothing.
-    pub(super) fn establish_reference(&mut self, reference: Option<(Altitude, Offset)>) {
-        match reference {
-            Some((reference, offset)) => {
-                self.baro_reference = Some(reference);
-                self.commit_offset(offset);
-            }
-            None => {
-                self.baro_reference = None;
-                self.offset = Offset::default();
-            }
-        }
-    }
-
-    /// The offset a fresh covariance keeps: the reference's own variance, and no correlation
-    /// with an error state that has just been replaced. A start that keeps the reference the
-    /// flight had keeps its error too, since nothing about the reference changed.
-    pub(super) fn surviving_offset(&self) -> Offset {
-        Offset::independent(self.offset.variance)
-    }
-
     /// Put the navigation origin at a known point, such as a surveyed home or a landing
     /// pad. Equation (43).
     ///
@@ -107,11 +60,32 @@ impl Eskf {
         true
     }
 
+    /// The navigation origin: the point [`State::position`](crate::State::position) is
+    /// relative to, and the tangent plane the filter converts geodetic fixes in. `None`
+    /// until the first [`fuse_gnss_geodetic`](Self::fuse_gnss_geodetic) or
+    /// [`set_origin`](Self::set_origin).
+    ///
+    /// Also the conversion an application wants for anything else it holds in latitude
+    /// and longitude — a waypoint, a geofence — so that it lands in the same frame as the
+    /// estimate.
+    pub const fn origin(&self) -> Option<LocalOrigin> {
+        self.origin
+    }
+
+    /// The position estimate as latitude, longitude and height, once the filter is
+    /// initialized and has an [`origin`](Self::origin) to place it with.
+    pub fn geodetic_position(&self) -> Option<Geodetic> {
+        if !self.initialized {
+            return None;
+        }
+        self.origin
+            .map(|origin| origin.to_geodetic(self.estimate.state().position))
+    }
+
     /// Hold `origin` as the navigation origin, and read the site's declination from the
     /// magnetic model there unless the caller has set one. Every placement reads the model:
     /// [`set_origin`](Self::set_origin) and the coarse start's through here, and (44) through
-    /// [`declination_at`](Self::declination_at) and
-    /// [`learn_declination`](Self::learn_declination) directly, at the fix.
+    /// [`place_origin_under_estimate`](Self::place_origin_under_estimate), at the fix.
     ///
     /// GOALS.md differentiator 7: the site is the one thing the model needs, and the origin is
     /// the moment the filter learns it, as PX4 learns it from its first valid fix
@@ -140,46 +114,34 @@ impl Eskf {
         self.origin = Some(origin);
     }
 
-    /// What the magnetic model says at `site`, committing nothing: its declination there, and
-    /// the turn about navigation down that gives a heading referred to north through the
-    /// declination alone (zero for any other). `None` where there is nothing to learn: a
-    /// declination the caller set, or no model.
-    pub(super) fn declination_at(&self, site: Geodetic) -> Option<(Radians, f32)> {
-        if self.declination_set {
-            return None;
-        }
-        let declination = model_declination(site)?;
-        let change = wrap_pi(declination.as_radians() - self.declination.as_radians());
-        let turns = self.initialized && self.magnetic_north;
-        Some((declination, if turns { change } else { 0.0 }))
-    }
-
-    /// Commit what [`declination_at`](Self::declination_at) read: the declination half of
-    /// [`place_origin`](Self::place_origin), apart for (44), which places the origin with the
-    /// turned heading before it commits the turn.
-    pub(super) fn learn_declination(&mut self, (declination, turn): (Radians, f32)) {
-        self.declination = declination;
-        if turn != 0.0 {
-            let mut turned =
-                exp_quat(Vector3::z() * turn) * self.estimate.state().attitude.quaternion();
-            turned.renormalize();
-            self.estimate.commit(State {
-                attitude: Attitude::from_quaternion(turned),
-                ..*self.estimate.state()
-            });
-        }
-    }
-
-    /// The navigation origin: the point [`State::position`](crate::State::position) is
-    /// relative to, and the tangent plane the filter converts geodetic fixes in. `None`
-    /// until the first [`fuse_gnss_geodetic`](Self::fuse_gnss_geodetic) or
-    /// [`set_origin`](Self::set_origin).
+    /// Place the origin by equation (44) under the estimate of the antenna when `fix` was
+    /// taken, so that the fix's error becomes the position's. Returns `false`, committing
+    /// nothing, where no origin puts `fix` at the estimate (see [`LocalOrigin::placing`]).
     ///
-    /// Also the conversion an application wants for anything else it holds in latitude
-    /// and longitude — a waypoint, a geofence — so that it lands in the same frame as the
-    /// estimate.
-    pub const fn origin(&self) -> Option<LocalOrigin> {
-        self.origin
+    /// The estimate of the antenna's position is what the fix measures, (28′), with the
+    /// heading the site's declination turns it to first: read before, a 1 m arm under a 14.0°
+    /// turn misplaces the origin by 0.24 m. The turn is committed only once the origin is
+    /// found, so a fix refused here changes nothing. [`place_origin`](Self::place_origin)
+    /// takes the other order, for an origin already named.
+    pub(super) fn place_origin_under_estimate(
+        &mut self,
+        fix: Geodetic,
+        antenna: Position<Body>,
+        time: Timestamp,
+    ) -> bool {
+        let learned = self.declination_at(fix);
+        let turn = learned.map_or(0.0, |(_, turn)| turn);
+        let (past, _) = self.past(time);
+        let attitude_then = exp_quat(Vector3::z() * turn) * past.attitude.quaternion();
+        let antenna_then = past.position.vector() + attitude_then * antenna.vector();
+        let Some(origin) = LocalOrigin::placing(fix, Position::from_vector(antenna_then)) else {
+            return false;
+        };
+        if let Some(learned) = learned {
+            self.learn_declination(learned);
+        }
+        self.origin = Some(origin);
+        true
     }
 
     /// Set the magnetic declination at the operating site: `D_m` of equations (6) and (35),
@@ -224,14 +186,58 @@ impl Eskf {
         self.declination
     }
 
-    /// The position estimate as latitude, longitude and height, once the filter is
-    /// initialized and has an [`origin`](Self::origin) to place it with.
-    pub fn geodetic_position(&self) -> Option<Geodetic> {
-        if !self.initialized {
+    /// What the magnetic model says at `site`, committing nothing: its declination there, and
+    /// the turn about navigation down that gives a heading referred to north through the
+    /// declination alone (zero for any other). `None` where there is nothing to learn: a
+    /// declination the caller set, or no model.
+    fn declination_at(&self, site: Geodetic) -> Option<(Radians, f32)> {
+        if self.declination_set {
             return None;
         }
-        self.origin
-            .map(|origin| origin.to_geodetic(self.estimate.state().position))
+        let declination = model_declination(site)?;
+        let change = wrap_pi(declination.as_radians() - self.declination.as_radians());
+        let turns = self.initialized && self.magnetic_north;
+        Some((declination, if turns { change } else { 0.0 }))
+    }
+
+    /// Commit what [`declination_at`](Self::declination_at) read: the declination half of
+    /// [`place_origin`](Self::place_origin), apart for (44), which places the origin with the
+    /// turned heading before it commits the turn.
+    fn learn_declination(&mut self, (declination, turn): (Radians, f32)) {
+        self.declination = declination;
+        if turn != 0.0 {
+            let mut turned =
+                exp_quat(Vector3::z() * turn) * self.estimate.state().attitude.quaternion();
+            turned.renormalize();
+            self.estimate.commit(State {
+                attitude: Attitude::from_quaternion(turned),
+                ..*self.estimate.state()
+            });
+        }
+    }
+
+    /// Set the barometric reference `α₀` directly, with the σ it is known to. Equations (30)
+    /// and (30′).
+    ///
+    /// For a reference known better than the estimate: a surveyed pad, or the ground
+    /// re-established before takeoff. A filter with no reference needs none of this, since
+    /// [`fuse_baro_altitude`](Self::fuse_baro_altitude) takes one from the estimate unless
+    /// [`Config::baro_reference_from_estimate`](crate::Config::baro_reference_from_estimate)
+    /// says otherwise. The filter estimates `α₀` from then on, starting from this σ and
+    /// uncorrelated with the state, so `noise` is the claim that decides how far the first
+    /// disagreement with GNSS height moves it.
+    ///
+    /// Returns `false`, changing nothing, for a reference that is not a number or a σ that is
+    /// not positive: `α₀` appears in every barometric measurement for the rest of the flight,
+    /// so a NaN here is not one bad update but the end of barometric aiding, and a σ of zero
+    /// is a reference no disagreement could ever move.
+    #[must_use = "a refused reference leaves barometric fusion returning NoReference"]
+    pub fn set_baro_reference(&mut self, reference: Altitude, noise: AltitudeNoise) -> bool {
+        if !reference.as_meters().is_finite() || !noise.is_finite() || !noise.is_positive() {
+            return false;
+        }
+        self.establish_reference(Some((reference, Offset::independent(noise.variance()))));
+        true
     }
 
     /// The barometric reference `α₀` as currently estimated, equations (30) and (30′):
@@ -247,6 +253,30 @@ impl Eskf {
     /// allows.
     pub const fn baro_reference(&self) -> Option<Altitude> {
         self.baro_reference
+    }
+
+    /// Set `α₀` together with the covariance of its error, or clear both. Equation (30′).
+    ///
+    /// One place, because the two describe one thing: a reference with no offset row claims
+    /// to be exact, and an offset row with no reference correlates the estimate with nothing.
+    pub(super) fn establish_reference(&mut self, reference: Option<(Altitude, Offset)>) {
+        match reference {
+            Some((reference, offset)) => {
+                self.baro_reference = Some(reference);
+                self.commit_offset(offset);
+            }
+            None => {
+                self.baro_reference = None;
+                self.offset = Offset::default();
+            }
+        }
+    }
+
+    /// The offset a fresh covariance keeps: the reference's own variance, and no correlation
+    /// with an error state that has just been replaced. A start that keeps the reference the
+    /// flight had keeps its error too, since nothing about the reference changed.
+    pub(super) fn surviving_offset(&self) -> Offset {
+        Offset::independent(self.offset.variance)
     }
 }
 

@@ -55,7 +55,7 @@ with its time and its uncertainty.
 | module | holds |
 | ------ | ----- |
 | `src/eskf.rs` | `Eskf`, the whole public filter: its fields, `state`, the floor of (42′) every covariance passes through, and `Status` |
-| `src/eskf/` | `Eskf`'s methods by topic, one `impl Eskf` each: `start` (`initialize*`), `site` (origin, declination, barometric reference), `predict`, `fuse` (the shared update path, GNSS and barometer), `heading`, `adopt` (`reset_*_to`, adoption, recovery), `validity`; and `estimate`, the state and its history behind the only writers of either |
+| `src/eskf/` | `Eskf`'s methods by topic, one `impl Eskf` each: `start` (`initialize*`), `site` (origin, declination, barometric reference), `predict`, `fuse` (the shared update path, GNSS and barometer), `heading`, `adopt` (`reset_*_to`, and the writers an adoption or a recovery commits), `validity`; `estimate`, the state and its history; `fixtures`, what the modules' tests share |
 | `src/init.rs` | initialization types (`StaticSample`, `StaticWindow`, `Alignment`, `Coarse`, `InitError`) and the pure functions the `initialize*` methods commit |
 | `src/propagate.rs` | `ImuSample`; equations (9)–(22), the coast of (22′), and `error_dynamics`, the `A` that (23′) carries `H` through |
 | `src/history.rs` | the recent past of the nominal state, which a measurement is fused against at the time it was taken, equation (23′) |

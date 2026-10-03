@@ -1,6 +1,8 @@
 //! Adoption: a measurement taken whole rather than fused, for a quantity the start never
 //! established or a source locked out past [`Config::recovery`](crate::Config::recovery), and the
-//! caller's own resets.
+//! caller's own resets. The writers here are what an adoption commits; the decision to adopt is
+//! each source's, in `fuse.rs` and `heading.rs`. Also the barometric reference a first altitude
+//! reads from the estimate, (30) solved for `α₀` with its row of (30′).
 //!
 //! Entry points: [`Eskf::reset_position_to`] and [`Eskf::reset_velocity_to`].
 
