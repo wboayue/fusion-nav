@@ -998,8 +998,20 @@ drifting 27 m) and the corpus. DESIGN.md, "Hold", has the tables.
   `7592c9b2`, against LPE, 0.75° → 0.25°. Every other log reads `holds=0` save `2c42096b`'s 4 and
   `7ce66f0d`'s 1, and with the hold off every log reproduces the filter without it byte for byte.
 
-**Costs:** a vehicle that keeps flying through the hold reads partly as tilt error and has its
-velocity pulled toward zero; the gate and (24′) bound that rather than remove it. Attitude goes
+- **A car**, UrbanNav's, which keeps driving through GNSS gaps: the F9P's 131 s gap reads `pos_h`
+  334 m → 113 under the hold, but `nees_pos` 1.02 → 27 and tilt 1.40° → 1.64°; the M8T without
+  recovery 408 m → 898, no fix after a gap ever adopted. Engaging only while the estimated velocity
+  was consistent with zero, read from its own covariance, left the simulator and corpus unmoved
+  and the car no better: the F9P's `nees_pos` 17.9 to 87.6 across four variants, still far from 1,
+  and the M8T without recovery 0.6 to 9.8 km against 408 m with no hold.
+  So UrbanNav is pinned under `--hold off`, a car's configuration, with the F9P under the default
+  hold beside it.
+
+**Costs:** the hold is a hover assumption. A vehicle that keeps moving without GNSS, a car or a
+fixed-wing, should set `Config::hold = None`: under it the position covariance narrows around a
+place the vehicle has left. A multirotor that flies on through the hold reads partly as tilt
+error and has its velocity pulled toward zero; the gate and (24′) bound that rather than remove
+it. Attitude goes
 invalid when its honest σ crosses `Accuracy::tilt`, sooner than the white hold claims. `f16771dd`
 agrees with EKF2 less than the white hold does, which is the form EKF2 itself runs. `predict`
 grows a branch and, while held, a 2-D update every 0.2 s, so its worst case is an update's

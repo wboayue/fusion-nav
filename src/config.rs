@@ -582,7 +582,11 @@ impl Default for Coast {
 ///
 /// It assumes the vehicle stays near where aiding stopped. A hover meets that; a sustained
 /// acceleration reads as tilt error, and `sigma` is the trade between the two, which is the
-/// mission's: how far a vehicle flies on without aiding is what it is flying for.
+/// mission's: how far a vehicle flies on without aiding is what it is flying for. A vehicle that
+/// keeps moving without GNSS, a car or a fixed-wing, should turn it off: on UrbanNav's car the
+/// hold took the F9P's position NEES from 1.02 to 27 ([decision]).
+///
+/// [decision]: https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#holding-tilt-without-aiding
 ///
 /// The hold is an assumption, not a sensor: [`Status`](crate::Status) stays `DeadReckoning`,
 /// horizontal position and velocity stay invalid in [`Validity`](crate::Validity) however tight

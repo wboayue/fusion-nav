@@ -541,6 +541,18 @@ established. Latched instead, held until aiding returns, `gnss_outage` failed ev
 | 10 m | 7.753 m | 6, 1.680 m | passes | 0.922° | 0.252° |
 | 30 m | 10.71 m | 61, 12.78 m | `gnss_outage` fails (`any_pos` 735) | 1.084° | 0.342° |
 
+On UrbanNav's car, which keeps driving through its gaps, the hold is the wrong assumption. Engaging
+only while `v̂ᵀ P_vv⁻¹ v̂` read the horizontal velocity as consistent with zero moved nothing on the
+simulator or the corpus, whose unaided vehicles are near still, and worsened the car:
+
+| run | no hold | the hold | velocity at P95, engagement | velocity at P999, every fusion |
+| --- | --- | --- | --- | --- |
+| F9P `pos_h` | 334.2 m | 113.1 m | 105.0 m | 334.2 m |
+| F9P `nees_pos` | 1.016 | 26.99 | 17.86 | 87.58 |
+| F9P tilt | 1.398° | 1.635° | 2.127° | 1.404° |
+| M8T `pos_h` | 254.5 m | 208.9 m | 278.8 m | 249.1 m |
+| M8T without recovery, `pos_h` | 407.6 m | 897.7 m | 9583 m | 9811 m |
+
 Engaged on acceptance rather than on silence, the hold ran through `7ce66f0d`'s rejection runs
 and recoveries went from 27 to 62 (white, from the first unaided step), with tilt to EKF2
 3.61° → 5.75°. Read on silence it holds there once and moves nothing.

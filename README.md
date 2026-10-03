@@ -803,7 +803,8 @@ issue that removes them, where one is open.
   until `Config::recovery` adopts a fix. `cargo run --example replay -- --derive <log>` prints
   the densities a vehicle's own logged gaps need, among the rest of a `Config` derived from the
   log ([deriving a `Config`](https://github.com/wboayue/fusion-nav/blob/main/data/README.md#deriving-a-config)).
-* **The position hold assumes the vehicle stays put.** While it holds, a vehicle that keeps
+* **The position hold assumes the vehicle stays put.** A car or a fixed-wing, which keeps moving
+  without GNSS, should set `Config::hold = None`. While it holds, a multirotor that keeps
   flying reads partly as tilt error, which the 3° gate and (24′) keep small, and the position it
   reports is pulled toward where the hold engaged. That is why position stays invalid
   through it. See
