@@ -179,7 +179,7 @@
 static           1  pos_h<=0.666 pos_v<=0.367 vel<=0.140 pos_h_max<=1.040  tilt<=0.545 yaw<=0.560 ba<=0.07604 bg<=0.000332 in3s>=0.9900 nees_pos<=0.3989   nees_vel<=0.1074 nees_att<=0.0412 false_valid<=0   false_valid_att<=0   scored>=11600  recovered=0 noise_gyro=0.000208..0.000338 noise_accel=0.001600..0.002600 noise_baro=0.2800..0.4400
 mission          2  pos_h<=0.329 pos_v<=0.173 vel<=0.140 pos_h_max<=0.820  tilt<=0.332 yaw<=0.407 ba<=0.03490 bg<=0.000481 in3s>=0.9900 nees_pos<=0.0837   nees_vel<=0.1049 nees_att<=0.0222 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0 noise_gyro=0.000208..0.000338 noise_accel=0.001600..0.002600 noise_baro=0.2800..0.4400
 harsh_imu        2  pos_h<=0.331 pos_v<=0.171 vel<=0.145 pos_h_max<=0.828  tilt<=0.930 yaw<=1.848 ba<=0.10258 bg<=0.003865 in3s>=0.9900 nees_pos<=0.0845   nees_vel<=0.1124 nees_att<=0.2706 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0 noise_gyro=0.002080..0.003380 noise_accel=0.016000..0.026000 noise_baro=0.2800..0.4400
-gnss_outage      2  pos_h<=1.694 pos_v<=0.105 vel<=0.214 pos_h_max<=9.805  tilt<=0.344 yaw<=0.468 ba<=0.03526 bg<=0.000484 in3s>=0.9900 nees_pos<=0.2427   nees_vel<=0.0954 nees_att<=0.0237 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
+gnss_outage      2  pos_h<=1.697 pos_v<=0.105 vel<=0.215 pos_h_max<=9.077  tilt<=0.346 yaw<=0.467 ba<=0.03541 bg<=0.000484 in3s>=0.9900 nees_pos<=0.2377   nees_vel<=0.0961 nees_att<=0.0243 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
 moving_start     4  pos_h<=0.474 pos_v<=0.890 vel<=0.147 pos_h_max<=0.771  tilt<=1.571 yaw<=1.509 ba<=0.04140 bg<=0.002058 in3s>=0.9900 nees_pos<=0.2224   nees_vel<=0.1086 nees_att<=0.0344 false_valid<=0   false_valid_att<=0   scored>=15999  recovered=0 noise_gyro=none noise_accel=none noise_baro=none
 baro_drift       2  pos_h<=0.329 pos_v<=1.134 vel<=0.140 pos_h_max<=0.820  tilt<=0.331 yaw<=0.406 ba<=0.03486 bg<=0.000481 in3s>=0.9900 nees_pos<=0.5003   nees_vel<=0.1051 nees_att<=0.0222 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
 gnss_latency     2  pos_h<=0.331 pos_v<=0.160 vel<=0.145 pos_h_max<=0.835  tilt<=0.343 yaw<=0.434 ba<=0.03675 bg<=0.000482 in3s>=0.9900 nees_pos<=0.0793  nees_vel<=0.1023 nees_att<=0.0237 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=0
@@ -195,6 +195,18 @@ lever_arm        2  pos_h<=0.327 pos_v<=0.176 vel<=0.140 pos_h_max<=0.812 tilt<=
 no_mag           3  pos_h<=0.280 pos_v<=0.225 vel<=0.141 pos_h_max<=0.570 tilt<=0.503 yaw<=6.660 ba<=0.03564 bg<=0.000348 in3s>=0.9900 nees_pos<=0.0782 nees_vel<=0.1067 nees_att<=0.2048 false_valid<=0 false_valid_att<=0 scored>=23600 recovered=0
 logging_dropout  2  pos_h<=0.328 pos_v<=0.149 vel<=0.142 pos_h_max<=2.711  tilt<=0.410 yaw<=0.479 ba<=0.03630 bg<=0.000518 in3s>=0.9900 nees_pos<=0.0785   nees_vel<=0.1055 nees_att<=0.0243 false_valid<=0   false_valid_att<=0   scored>=36360  recovered=0
 flight           8  pos_h<=1.556 pos_v<=0.351 vel<=0.433 pos_h_max<=3.605  tilt<=0.485 yaw<=8.058 ba<=0.08514 bg<=0.000205 in3s>=0.9900 nees_pos<=0.1270   nees_vel<=0.0890 nees_att<=0.1243 false_valid<=0   false_valid_att<=0   scored>=600  recovered=0 noise_gyro=0.000208..0.000338 noise_accel=0.001600..0.002600 noise_baro=0.2800..0.4400
+# The position hold of (28'') bounds tilt where nothing aids it. It engages once the tilt sigma
+# passes 3 deg, PX4's bar, and is fused at (24')'s tau of 2 s rather than as white. `gnss_outage`
+# holds 6 times in its 20 s gap and moves within noise (`pos_h` 1.677 to 1.680, `nees_att` 0.0234
+# to 0.0240); held from the first unaided step and white it read `false_valid_att`=3092 and
+# `tilt` 2.68 deg. `bench` is still with no GNSS and told so, which (29'') answers, and the hold
+# never engages. `hover_outage` drifts 27 m through a 90 s gap: `pos_h` 36.42 to 7.753, `vel`
+# 1.181 to 0.475, `tilt` 0.582 to 0.524 deg against the same flight with the hold off, and
+# attitude stays valid to 36.26 s rather than 25.32. Fused white it held attitude valid
+# throughout at `nees_pos` 7.01, the hold's 10 m against a 100 m error. Measured in DESIGN.md,
+# "Hold".
+bench            9  pos_h<=0.003 pos_v<=0.050 vel<=0.003 pos_h_max<=0.004  tilt<=0.430 yaw<=0.384 ba<=0.07699 bg<=0.000176 in3s>=0.9900 nees_pos<=0.0081   nees_vel<=0.0002 nees_att<=0.0255 false_valid<=0   false_valid_att<=0   scored>=23600  recovered=0 noise_gyro=0.000208..0.000338 noise_accel=0.001600..0.002600 noise_baro=0.2800..0.4400
+hover_outage     10 pos_h<=7.831 pos_v<=0.254 vel<=0.480 pos_h_max<=17.863  tilt<=0.530 yaw<=0.241 ba<=0.07604 bg<=0.000232 in3s>=0.9900 nees_pos<=0.2478   nees_vel<=0.0510 nees_att<=0.0190 false_valid<=0   false_valid_att<=0   scored>=29600  recovered=0 noise_gyro=0.000208..0.000338 noise_accel=0.001600..0.002600 noise_baro=0.2800..0.4400
 
 # (34)-(36) are what `yaw` reads now, and what it buys depends entirely on what the start knew.
 # Where yaw was never observed the magnetometer is the whole estimate: `moving_start` goes 3.228
