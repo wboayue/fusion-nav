@@ -984,26 +984,27 @@ drifting 27 m) and the corpus. DESIGN.md, "Hold", has the tables.
   covariance overconfident on every block over 50 seeds (`anees_pos` 61, `over_vel` 0.24, and
   attitude at GNSS's return). One assumption read five times a second is one error, which
   (24) cannot represent and (24′) can. At 2 s every block passes; at 1 s `anees_pos` reads 46. The
-  estimate improves too: `pos_h` 36.4 m → 7.75 against no hold, where white read 38.0, and
-  attitude holds to 36.26 s rather than 25.32.
+  estimate improves too: `pos_h` 36.4 m → 7.67 against no hold, where white read 38.0, and
+  attitude holds to 35.72 s rather than 25.32.
 - **Latched** rather than released below 3°: `gnss_outage` failed every block.
 - **σ** at 3, 10 and 30 m under the gate and (24′): only 10 passes both scenarios' ANEES. 3 m is
   overconfident on `hover_outage`, and 30 m too weak to pull tilt back under 3°, so it stays
-  engaged through `gnss_outage`'s turns (61 holds, `pos_h` 12.8 m).
+  engaged through `gnss_outage`'s turns (59 holds, `pos_h` 12.8 m).
 - **Engaging on acceptance** rather than on silence: `7ce66f0d`, whose receiver the gate turns down
   for seconds at a time, went from 27 recoveries to 62. A receiver the gate rejects is
   `Recovery`'s.
 - **Corpus:** `f16771dd`, whose EKF2 ran its own fake position, agrees with it on tilt at 0.92° RMS
-  against 1.73° with no hold and 0.67° white, and on velocity at 0.55 m/s against 2.42.
+  against 1.73° with no hold and 0.67° white, and on velocity at 0.56 m/s against 2.42.
   `7592c9b2`, against LPE, 0.75° → 0.25°. Every other log reads `holds=0` save `2c42096b`'s 4 and
   `7ce66f0d`'s 1, and with the hold off every log reproduces the filter without it byte for byte.
 
 - **A car**, UrbanNav's, which keeps driving through GNSS gaps: the F9P's 131 s gap reads `pos_h`
-  334 m → 113 under the hold, but `nees_pos` 1.02 → 27 and tilt 1.40° → 1.64°; the M8T without
-  recovery 408 m → 898, no fix after a gap ever adopted. Engaging only while the estimated velocity
+  334 m → 124 under the hold, but `nees_pos` 1.02 → 32 and tilt 1.40° → 1.70°; the M8T without
+  recovery 408 m → 945, no fix after a gap ever adopted. Engaging only while the estimated velocity
   was consistent with zero, read from its own covariance, left the simulator and corpus unmoved
-  and the car no better: the F9P's `nees_pos` 17.9 to 87.6 across four variants, still far from 1,
-  and the M8T without recovery 0.6 to 9.8 km against 408 m with no hold.
+  and the car no better: the F9P's `nees_pos` 17.9 to 87.6 across four variants, against the
+  hold's 27 on that build, and the M8T without recovery 0.6 to 9.8 km against 408 m with no
+  hold.
   So UrbanNav is pinned under `--hold off`, a car's configuration, with the F9P under the default
   hold beside it.
 
@@ -1015,8 +1016,8 @@ it. Attitude goes
 invalid when its honest σ crosses `Accuracy::tilt`, sooner than the white hold claims. `f16771dd`
 agrees with EKF2 less than the white hold does, which is the form EKF2 itself runs. `predict`
 grows a branch and, while held, a 2-D update every 0.2 s, so its worst case is an update's
-(#41), and its deepest stack 9164 B → 10748 on `thumbv6m`, still under the crate's peak.
-`Eskf` grows 328 B. The standstill is only as true as the caller's claim, and a claim made in
+(#41), and its deepest stack is the hold's, still under the crate's peak
+([validation/cost.md](validation/cost.md)). The standstill is only as true as the caller's claim, and a claim made in
 motion reads as tilt until the gate turns it down.
 
 Not built: a corpus source for the standstill. PX4 logs `vehicle_land_detected.at_rest`, and

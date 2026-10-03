@@ -313,7 +313,7 @@ was measured together, at the commit named where the code has moved since.
 | `update::<1>` | the second factor costs 320 (64) |
 | `reparameterize` (in `update`) | the full `G P Gᵀ` cost 864 more of `update`'s frame |
 | `fuse_gnss_velocity` → `update::<3>` | the crate's deepest path; `apply_or_recover` out of line sits beside `update` rather than above it. Inlined, it cost `fuse_gnss_velocity`'s frame 984 (2384 against 1400, a434a30); walked through the call graph at 9e3fcca, it costs `fuse_gnss_position`'s 1024 and moves the peak to a geodetic fix, 12272 against 11408 |
-| `predict` → `hold_if_unaided` | run by `predict` after the step returns, with the step out of line in `propagate_or_coast`, so the hold's update sits beside propagation's frame rather than above it. Called inside `commit_step` instead, the chain went `predict` 2160, `commit_step` 984, `hold_if_unaided` 2304, `update::<2>` 7344: 14712 on `thumbv7em`, the crate's peak by 3.4 KB. Beside it, `predict`'s chain is 10584 (#210, measured together). The hold commits through `apply_or_recover` out of line: inlined `apply` was most of its 2304 |
+| `predict` → `hold_if_unaided` | run by `predict` after the step returns, with the step out of line in `propagate_or_coast`, so the hold's update sits beside propagation's frame rather than above it. Called inside `commit_step` instead, the chain went `predict` 2160, `commit_step` 984, `hold_if_unaided` 2304, `update::<2>` 7344: 14712 on `thumbv7em`, the crate's peak by 3.4 KB. Beside it, `predict`'s chain was 10584 (#210, measured together). The hold commits through `apply_or_recover` out of line: inlined `apply` was most of its 2304 |
 | `Eskf::observe::<3>` | `Observation::delayed` 752 and `error_dynamics` 400 beneath it; inlined into `fuse_gnss_velocity` it put the high-water mark at 10800 against 9520 (a434a30), and walked at 9e3fcca at 11760 against 11408 |
 | `Eskf::fuse_heading` | one frame for every heading source, its largest instance the magnetometer's; read by hand, the course's path through it peaked at 7872 against 7624 with `fuse_mag_heading` doing the work in a frame of its own (eaf3b81) |
 | `Eskf::adopt_position`, `adopt_velocity` | inlined, +976 on `fuse_gnss_position` and +952 on `fuse_gnss_velocity`; out of line they follow `update` rather than stacking on it |
@@ -502,7 +502,10 @@ The position hold of (28″): σ 10 m, PX4's and ArduPilot's default; engaged pa
 reads; fused at (24′) with `τ` = 2 s. Each choice was measured on `gnss_outage` (20 s without
 GNSS over the circuit's fastest turns), `hover_outage` (90 s without GNSS in a hover drifting
 27 m) and the corpus's two logs with no GNSS, `f16771dd` (EKF2's reference, which runs PX4's hold)
-and `7592c9b2` (LPE's). Scenario figures are one seed's `score` line; ANEES is 50 seeds.
+and `7592c9b2` (LPE's). Scenario figures are one seed's `score` line; ANEES is 50 seeds. The
+shipped rows are re-measured on the hold as it ships; the other rows were measured before its
+review made one outage one hold (the 0.2 s interval kept across a release, and validity and
+recovery read per outage), which moved the shipped figures by under 1.5 %.
 
 The forms, at 10 m, on one seed:
 
@@ -512,7 +515,7 @@ The forms, at 10 m, on one seed:
 | white, from the first unaided step | 2.682° | 3092 | 11.23 m | never |
 | white, PX4's gate and velocity reset | 0.936° | 112 | 10.50 m | never |
 | white, PX4's gate | 0.344° | 0 | 37.97 m | never |
-| PX4's gate, (24′) at 2 s | 0.342° | 0 | 7.753 m | 36.26 s |
+| PX4's gate, (24′) at 2 s | 0.342° | 0 | 7.670 m | 35.72 s |
 
 The white forms are overconfident where it matters. Behind the gate, 50 seeds of `hover_outage`
 read `anees_pos` 61.00, `over_vel` 0.24 and `any_att` 40, the last at GNSS's return, against
@@ -523,7 +526,7 @@ second as one error:
 | --- | --- | --- | --- | --- |
 | white | 61.00 (fails) | never | 0.668° | 0.749° |
 | 1 s | 46.06 (fails) | never | 0.749° | 0.749° |
-| 2 s | 0.40 | 36.26 s | 0.922° | 0.252° |
+| 2 s | 0.41 | 35.72 s | 0.922° | 0.252° |
 | 5 s | 0.24 | 30.72 s | 0.984° | 0.287° |
 | 60 s | passes | 27.95 s | 1.184° | 0.398° |
 
@@ -538,8 +541,8 @@ established. Latched instead, held until aiding returns, `gnss_outage` failed ev
 | σ | `hover_outage` `pos_h` | `gnss_outage` holds, `pos_h` | ANEES | `f16771dd` tilt | `7592c9b2` tilt |
 | --- | --- | --- | --- | --- | --- |
 | 3 m | 38.56 m | 3, 1.787 m | `hover_outage` fails (`over_pos` 0.47) | 0.676° | 0.749° |
-| 10 m | 7.753 m | 6, 1.680 m | passes | 0.922° | 0.252° |
-| 30 m | 10.71 m | 61, 12.78 m | `gnss_outage` fails (`any_pos` 735) | 1.084° | 0.342° |
+| 10 m | 7.670 m | 6, 1.680 m | passes | 0.922° | 0.252° |
+| 30 m | 10.68 m | 59, 12.76 m | `gnss_outage` fails (`any_pos` 734) | 1.084° | 0.342° |
 
 On UrbanNav's car, which keeps driving through its gaps, the hold is the wrong assumption. Engaging
 only while `v̂ᵀ P_vv⁻¹ v̂` read the horizontal velocity as consistent with zero moved nothing on the
@@ -547,11 +550,11 @@ simulator or the corpus, whose unaided vehicles are near still, and worsened the
 
 | run | no hold | the hold | velocity at P95, engagement | velocity at P999, every fusion |
 | --- | --- | --- | --- | --- |
-| F9P `pos_h` | 334.2 m | 113.1 m | 105.0 m | 334.2 m |
-| F9P `nees_pos` | 1.016 | 26.99 | 17.86 | 87.58 |
-| F9P tilt | 1.398° | 1.635° | 2.127° | 1.404° |
-| M8T `pos_h` | 254.5 m | 208.9 m | 278.8 m | 249.1 m |
-| M8T without recovery, `pos_h` | 407.6 m | 897.7 m | 9583 m | 9811 m |
+| F9P `pos_h` | 334.2 m | 123.8 m | 105.0 m | 334.2 m |
+| F9P `nees_pos` | 1.016 | 32.01 | 17.86 | 87.58 |
+| F9P tilt | 1.398° | 1.702° | 2.127° | 1.404° |
+| M8T `pos_h` | 254.5 m | 212.6 m | 278.8 m | 249.1 m |
+| M8T without recovery, `pos_h` | 407.6 m | 945.4 m | 9583 m | 9811 m |
 
 Engaged on acceptance rather than on silence, the hold ran through `7ce66f0d`'s rejection runs
 and recoveries went from 27 to 62 (white, from the first unaided step), with tilt to EKF2

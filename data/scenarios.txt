@@ -200,13 +200,16 @@ flight           8  pos_h<=1.556 pos_v<=0.351 vel<=0.433 pos_h_max<=3.605  tilt<
 # holds 6 times in its 20 s gap and moves within noise (`pos_h` 1.677 to 1.680, `nees_att` 0.0234
 # to 0.0240); held from the first unaided step and white it read `false_valid_att`=3092 and
 # `tilt` 2.68 deg. `bench` is still with no GNSS and told so, which (29'') answers, and the hold
-# never engages. `hover_outage` drifts 27 m through a 90 s gap: `pos_h` 36.42 to 7.753, `vel`
-# 1.181 to 0.475, `tilt` 0.582 to 0.524 deg against the same flight with the hold off, and
-# attitude stays valid to 36.26 s rather than 25.32. Fused white it held attitude valid
+# never engages. The standstill keeps tilt valid there, not more accurate: `tilt` reads 0.425
+# deg, against 0.276 with neither it nor the hold (valid only to 10.29 s) and 0.376 under the
+# hold alone (to 19.27 s), the window's leveling being the best a still simulator gives. Why the
+# standstill's corrections leave it worse was not chased. `hover_outage` drifts 27 m through a 90 s gap: `pos_h` 36.42 to 7.670, `vel`
+# 1.181 to 0.476, `tilt` 0.582 to 0.523 deg against the same flight with the hold off, and
+# attitude stays valid to 35.72 s rather than 25.32. Fused white it held attitude valid
 # throughout at `nees_pos` 7.01, the hold's 10 m against a 100 m error. Measured in DESIGN.md,
 # "Hold".
 bench            9  pos_h<=0.003 pos_v<=0.050 vel<=0.003 pos_h_max<=0.004  tilt<=0.430 yaw<=0.384 ba<=0.07699 bg<=0.000176 in3s>=0.9900 nees_pos<=0.0081   nees_vel<=0.0002 nees_att<=0.0255 false_valid<=0   false_valid_att<=0   scored>=23600  recovered=0 noise_gyro=0.000208..0.000338 noise_accel=0.001600..0.002600 noise_baro=0.2800..0.4400
-hover_outage     10 pos_h<=7.831 pos_v<=0.254 vel<=0.480 pos_h_max<=17.863  tilt<=0.530 yaw<=0.241 ba<=0.07604 bg<=0.000232 in3s>=0.9900 nees_pos<=0.2478   nees_vel<=0.0510 nees_att<=0.0190 false_valid<=0   false_valid_att<=0   scored>=29600  recovered=0 noise_gyro=0.000208..0.000338 noise_accel=0.001600..0.002600 noise_baro=0.2800..0.4400
+hover_outage     10 pos_h<=7.747 pos_v<=0.254 vel<=0.481 pos_h_max<=17.644  tilt<=0.529 yaw<=0.241 ba<=0.07607 bg<=0.000232 in3s>=0.9900 nees_pos<=0.2451   nees_vel<=0.0511 nees_att<=0.0190 false_valid<=0   false_valid_att<=0   scored>=29600  recovered=0 noise_gyro=0.000208..0.000338 noise_accel=0.001600..0.002600 noise_baro=0.2800..0.4400
 
 # (34)-(36) are what `yaw` reads now, and what it buys depends entirely on what the start knew.
 # Where yaw was never observed the magnetometer is the whole estimate: `moving_start` goes 3.228
