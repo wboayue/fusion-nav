@@ -172,6 +172,11 @@ per question answered, never per importance.
 - **Inline `//` justifies the line beneath it** — an ordering constraint, a tolerance, the
   subtraction that needed f64 — in one or two sentences. Narration of what the next line does is
   deleted; anything longer is a doc comment or a `DESIGN.md` paragraph.
+- **An intra-doc link may resolve only through a `use`.** rustc does not count a doc link as a
+  use, so `cargo fix` deletes the import and the link breaks with nothing failing but
+  `cargo doc --document-private-items`. #188 hit 33 of them moving code between modules. Give such
+  a link an explicit target (``[`Status`](crate::Status)``), and after a move run rustdoc with
+  `-D warnings` against main's error list, since main carries some of its own.
 - **A stale *why* is worse than none**, because it reads as evidence. Evidence in a comment (a
   corpus count, a PX4 default, a `**Stub.**` marker) moves in the commit that moves the thing it
   describes.
@@ -632,6 +637,14 @@ figure built from the functions someone thought to name is bounded by that list,
 had a list too: it stopped at `nalgebra`. #202's walk through every crate found `compiler_builtins`
 frames beneath it, which in that one build added 100 B on `thumbv6m` and 88 on `thumbv7em`. So
 `chain.` follows every call, refuses what it cannot bound, and `stack_peak` is the pin.
+
+**A module move is a codegen change.** `tools/footprint.py` keys a method by its type
+(`eskf.Eskf.predict`) and a type or free function by its module path, so #188's split kept every
+method key and renamed `size.eskf.Startup` to `size.eskf.start.Startup`. It moved values too: each
+module is its own codegen unit in the library build the pins measure, and `screen`, `within` and
+`model_declination`, inlined while they shared `eskf.rs`, came out of line beside their callers. So
+a split that claims to change nothing is measured with `--all` before and after, and a moved value
+is reported against the commit that moved it.
 
 **An absence is measured only on what was fused.** `Gates`' doc comment dismissed the cost of a
 joint GNSS gate because "the corpus shows no such fix" — true, because `2c42096b`'s barometer was
