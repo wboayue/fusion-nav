@@ -2,10 +2,10 @@
 # Cost on a target
 
 **What does the filter cost a microcontroller?** The whole filter, `Eskf`, is
-4104 bytes on a Cortex-M0 and allocates nothing
+4112 bytes on a Cortex-M0 and allocates nothing
 else, so that is the RAM to plan for beyond the stack. The deepest stack is a GNSS velocity
 update, 11540 bytes, and linking every entry point takes
-112042 bytes of flash at `opt-level = "s"`. Execution time on
+112002 bytes of flash at `opt-level = "s"`. Execution time on
 hardware is not measured yet (#41).
 
 Every figure on this page is pinned exactly in `data/footprint.txt`, which CI measures on
@@ -42,7 +42,7 @@ host timings, which are taken on one machine and pinned nowhere.
 
 | type | `thumbv6m` | `thumbv7em` |
 | --- | --- | --- |
-| `Eskf`, the filter | 4104 | 4104 |
+| `Eskf`, the filter | 4112 | 4112 |
 | of which the state history of (23′) | 1544 | 1544 |
 | of which the covariance `P` | 900 | 900 |
 | of which `Diagnostics` | 1048 | 1048 |
@@ -61,19 +61,19 @@ The deepest stack a call into each entry point takes, in bytes, before the calle
 
 | entry point | `thumbv6m` | `thumbv7em` |
 | --- | --- | --- |
-| `predict` | 10748 | 10584 |
+| `predict` | 10748 | 10576 |
 | `fuse_gnss_position` | 10804 | 10600 |
 | `fuse_gnss_geodetic` | 11140 | 10928 |
 | `fuse_gnss_velocity` | 11540 | 11328 |
 | `fuse_baro_altitude` | 9652 | 9416 |
-| `fuse_mag_heading` | 9732 | 9504 |
+| `fuse_mag_heading` | 9732 | 9496 |
 | `fuse_gnss_heading` | 9852 | 9640 |
 | `fuse_course` | 9868 | 9648 |
 | `fuse_stationary` | 11484 | 11264 |
 | `predicted_validity` | 8652 | 8448 |
-| `initialize` | 5476 | 5312 |
-| `initialize_coarse` | 6212 | 6048 |
-| `initialize_from` | 3008 | 2896 |
+| `initialize` | 5484 | 5312 |
+| `initialize_coarse` | 6220 | 6048 |
+| `initialize_from` | 3016 | 2896 |
 | **the deepest of them** | **11540** | **11328** |
 
 The deepest path is `fuse_gnss_velocity` calling the three-measurement update, which calls
@@ -85,8 +85,8 @@ Each entry point's own frame, and the frames beneath it that set its depth:
 | function | `thumbv6m` | `thumbv7em` |
 | --- | --- | --- |
 | `predict` | 16 | 16 |
-| `propagate_or_coast`, the step it calls | 2168 | 2160 |
-| `hold_if_unaided`, the hold it calls beside the step | 1304 | 1304 |
+| `propagate_or_coast`, the step it calls | 2176 | 2160 |
+| `hold_if_unaided`, the hold it calls beside the step | 1304 | 1296 |
 | `fuse_gnss_position` | 1376 | 1336 |
 | `fuse_gnss_geodetic` | 336 | 328 |
 | `fuse_gnss_velocity` | 1416 | 1408 |
@@ -99,14 +99,14 @@ Each entry point's own frame, and the frames beneath it that set its depth:
 | `initialize` | 2224 | 2216 |
 | `initialize_coarse` | 3504 | 3488 |
 | `initialize_from` | 1928 | 1856 |
-| beneath the three heading entry points: the heading update they share | 1232 | 1240 |
+| beneath the three heading entry points: the heading update they share | 1232 | 1232 |
 | beneath `fuse_gnss_velocity`: the update of (23)–(27), three measurements | 8120 | 8000 |
 | beneath `fuse_gnss_position` (and so a geodetic fix): two, the horizontal pair | 7424 | 7344 |
 | beneath `fuse_gnss_position`'s height, `fuse_baro_altitude` and the heading update: one | 6384 | 6240 |
 | beside the update: the observation formed at the measurement's time, (23′) | 1464 | 1440 |
 | beside the update: committing its result, or handing it to an adoption | 1120 | 1072 |
 | beside the update: adopting a position, from `fuse_gnss_position` | 1976 | 1992 |
-| beside the update: adopting a velocity, from `fuse_gnss_velocity` | 1896 | 1904 |
+| beside the update: adopting a velocity, from `fuse_gnss_velocity` | 1904 | 1904 |
 | beneath the update: the attitude reset of (41) | 456 | 448 |
 | beneath the update: the injection of (39)–(40) | 168 | 88 |
 | beneath `predict`: one sample, (9)–(22) | 1088 | 1096 |
@@ -120,7 +120,7 @@ Each entry point's own frame, and the frames beneath it that set its depth:
 
 | bytes | `thumbv6m` `3` | `thumbv6m` `s` | `thumbv7em` `3` | `thumbv7em` `s` |
 | --- | --- | --- | --- | --- |
-| `.text` | 173106 | 112042 | 194396 | 118668 |
+| `.text` | 173122 | 112002 | 194820 | 118684 |
 | of which `libm` | 19532 | 10432 | 20752 | 12620 |
 | of which `compiler_builtins` | 10334 | 10334 | 7674 | 7674 |
 | of which `nalgebra`, out of line | 15256 | 1900 | 3956 | 924 |
