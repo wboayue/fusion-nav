@@ -5,7 +5,7 @@
 4112 bytes on a Cortex-M0 and allocates nothing
 else, so that is the RAM to plan for beyond the stack. The deepest stack is a GNSS velocity
 update, 11540 bytes, and linking every entry point takes
-112042 bytes of flash at `opt-level = "s"`. Execution time on
+112082 bytes of flash at `opt-level = "s"`. Execution time on
 hardware is not measured yet (#41).
 
 Every figure on this page is pinned exactly in `data/footprint.txt`, which CI measures on
@@ -61,7 +61,7 @@ The deepest stack a call into each entry point takes, in bytes, before the calle
 
 | entry point | `thumbv6m` | `thumbv7em` |
 | --- | --- | --- |
-| `predict` | 10748 | 10576 |
+| `predict` | 10748 | 10584 |
 | `fuse_gnss_position` | 10804 | 10600 |
 | `fuse_gnss_geodetic` | 11140 | 10928 |
 | `fuse_gnss_velocity` | 11540 | 11328 |
@@ -86,7 +86,7 @@ Each entry point's own frame, and the frames beneath it that set its depth:
 | --- | --- | --- |
 | `predict` | 16 | 16 |
 | `propagate_or_coast`, the step it calls | 2176 | 2160 |
-| `hold_if_unaided`, the hold it calls beside the step | 1304 | 1296 |
+| `hold_if_unaided`, the hold it calls beside the step | 1304 | 1304 |
 | `fuse_gnss_position` | 1376 | 1336 |
 | `fuse_gnss_geodetic` | 336 | 328 |
 | `fuse_gnss_velocity` | 1416 | 1408 |
@@ -120,7 +120,7 @@ Each entry point's own frame, and the frames beneath it that set its depth:
 
 | bytes | `thumbv6m` `3` | `thumbv6m` `s` | `thumbv7em` `3` | `thumbv7em` `s` |
 | --- | --- | --- | --- | --- |
-| `.text` | 173026 | 112042 | 194684 | 118676 |
+| `.text` | 173070 | 112082 | 194732 | 118716 |
 | of which `libm` | 19532 | 10432 | 20752 | 12620 |
 | of which `compiler_builtins` | 10334 | 10334 | 7674 | 7674 |
 | of which `nalgebra`, out of line | 15256 | 1900 | 3956 | 924 |
