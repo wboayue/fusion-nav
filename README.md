@@ -631,10 +631,10 @@ or CI stops. A failure names the function that can panic, not just the symbol it
 
 Two boundaries, both real:
 
-* **`debug-assertions = false`**, the release default. Three `debug_assert!`s in `src/eskf.rs`
-  restate a condition the lines above them just checked. With assertions on they are panics like
-  any other, and the gate fails by design. They check the crate's own reasoning at test time; they
-  are not a runtime guard, which is why they are `debug_assert!` and not `if`.
+* **`debug-assertions = false`**, the release default. One `debug_assert!`, in
+  `src/eskf/fuse.rs`, restates a condition the lines above it just checked. With assertions on it
+  is a panic like any other, and the gate fails by design. It checks the crate's own reasoning at
+  test time; it is not a runtime guard, which is why it is `debug_assert!` and not `if`.
 * **`opt-level = 3` or `"s"`.** At `"z"` and `1`, LLVM stops proving that `nalgebra`'s statically
   sized `Matrix3 * Vector3` indexes in bounds and leaves the check in as dead code, reached from
   `LocalOrigin::to_ned`. That is the optimizer giving up, not a path this crate can take, and

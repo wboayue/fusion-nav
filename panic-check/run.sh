@@ -40,7 +40,7 @@ export CARGO_TARGET_DIR="$TARGET_DIR"
 # an opening paren, with a boundary in front — a plain substring lets `fuse_mag_heading(`
 # stand in for a new `heading(`, which is the collision this check exists to catch.
 missing=()
-for name in $(grep -hoE '^[[:space:]]*pub (const )?fn [a-z_0-9]+' ../src/*.rs |
+for name in $(grep -hoE '^[[:space:]]*pub (const )?fn [a-z_0-9]+' ../src/*.rs ../src/*/*.rs |
   awk '{ print $NF }' | sort -u); do
   grep -qE "[^A-Za-z0-9_]$name\(" src/main.rs || missing+=("$name")
 done

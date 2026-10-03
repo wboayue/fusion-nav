@@ -213,7 +213,7 @@ three things a copy would have carried over:
 ```bash
 cargo test --all-targets          # unit tests: inline `mod tests` across src/, and in examples/replay/main.rs
 cargo test --doc                  # README.md (included by lib.rs), plus the item doctests
-cargo test --lib eskf::tests::a_gap_is_coasted_on_the_estimated_velocity_and_the_time_still_passes  # one test
+cargo test --lib eskf::predict::tests::a_gap_is_coasted_on_the_estimated_velocity_and_the_time_still_passes  # one test
 cargo fmt --all -- --check
 cargo clippy --all-targets --no-deps   # CI runs with RUSTFLAGS=-D warnings
 cargo build --lib --target thumbv7em-none-eabihf   # also thumbv6m-none-eabi; both gate CI
@@ -669,7 +669,7 @@ The rule reaches past *computing* a number, and the extension is the one that ha
 A statistic that **audits a filter claim** must falsify it in the shape the filter states it, not
 merely read its verdict. `false_valid` took `Validity` off the filter exactly as intended and then
 tested the 2-D norm of the horizontal error, while `Eskf::validity` states the claim per axis
-(`within(PositionNorth) && within(PositionEast)`, `src/eskf.rs:2145-2146`) — a bar √2 tighter than
+(`within(PositionNorth) && within(PositionEast)`, `src/eskf/validity.rs:97-98`) — a bar √2 tighter than
 the one the filter asserted, diverging from it precisely as the estimate approaches it, which is
 the only regime where such a count says anything. Reading the verdict and re-deriving the geometry
 is still two implementations of one claim. It applies to every scoring statistic still to land:
@@ -754,8 +754,11 @@ edition 2024, MSRV 1.89, one dependency (`nalgebra` with `libm`), plus `defmt` b
 off-by-default feature of the same name. `magnetic-model`, on by default, pulls no crate: it links
 the declination table, and CI builds and tests without it too.
 
-- `src/eskf.rs` — `Eskf`, the whole public filter: `initialize`, `initialize_from`, `predict`,
-  `fuse_*`, `state`, `reset_*_to`. `initialize_from` is stage 1
+- `src/eskf.rs` — `Eskf`, the whole public filter, its fields, `state` and `Status`; its methods
+  live in `src/eskf/`, one `impl Eskf` per topic, which `DESIGN.md`'s module map lists. A child
+  module sees `Eskf`'s private fields but not a sibling's private items, so the `pub(super)`
+  items are the seams between topics, and a new one is a claim that two topics share it.
+  `initialize_from` is stage 1
   of GOALS.md's "Alignment beyond the static window": the static window stays the preferred path,
   a moving or short window starts coarse under `Status::Aligning`, yaw from course is
   `fuse_course` (#53), and in-motion leveling (5′, #59) is the option still unbuilt — read that
@@ -766,13 +769,13 @@ the declination table, and CI builds and tests without it too.
   it is pushed, so a caller never buffers the window; its doc comment owns how each statistic
   is taken in one pass, and `StaticWindow::noise` reports the sensors' noise floor, (8″). The `initialize*` methods on `Eskf` call these and commit the result.
   Tests for the pure functions live here; tests of what the filter does with them stay in
-  `eskf.rs`.
+  `src/eskf/`.
 - `src/propagate.rs` — `ImuSample` and equations (9)–(22), in increments; `error_dynamics`, the
   `A` of (16)–(19) that (23′) carries `H` through.
 - `src/history.rs` — the recent past of the nominal state for (23′): 32 entries 10 ms apart,
   interpolated, carried forward on velocity and the last sample's rate for a time ahead of the
-  present, and shifted by every correction in navigation axes through `Eskf::commit_state`, the
-  one writer of the state outside a propagation or a start. `Eskf::observe` and `Eskf::past` are
+  present, and shifted by every correction in navigation axes through `Estimate::commit`, one
+  of the state's only writers (`DESIGN.md`, "Time and history"). `Eskf::observe` and `Eskf::past` are
   its only readers, and it costs 1.5 KB of `Eskf`.
 - `src/update.rs` — the update every observation shares: (23)–(27) in Joseph form, the gate of
   (37)–(38), the injection and reset of (39)–(41). Generic over `dim(z)` and free of `Eskf`, so it
@@ -812,7 +815,7 @@ the declination table, and CI builds and tests without it too.
   equations (43)–(44), exact via ECEF (fixed-iteration inverse, no data-dependent loops). The filter owns the origin: `fuse_gnss_geodetic` places it on the first
   fix (under the estimate of the antenna, or at the fix after a coarse start), a static start clears it.
 - `src/magnetic.rs` — the WMM declination table and its bilinear lookup, behind the
-  `magnetic-model` feature; `Eskf::place_origin` reads it at every origin placement. The table
+  `magnetic-model` feature; `Eskf::declination_at` reads it at every origin placement. The table
   is generated, between marker comments, by `tools/declination.py`; never hand-edit it.
   **It ages, so expect to regenerate it periodically**, about once per model: the grid within
   60° of the equator drifts past GOALS.md's 1° near 2029.0, and NCEI replaces the model every

@@ -175,8 +175,8 @@ pub(crate) mod tests {
 
     /// What a magnetometer reads on a vehicle at `attitude` in the field of `declination`.
     ///
-    /// Shared with `eskf.rs`, which needs a field that means a heading rather than an
-    /// arbitrary vector, the way it shares `init::tests`' windows.
+    /// Shared with `eskf`'s tests, which need a field that means a heading rather than an
+    /// arbitrary vector, the way they share `init::tests`' windows.
     pub(crate) fn measured(attitude: Attitude, declination: f32) -> MagField<Body> {
         let body = attitude.quaternion().inverse() * field_ned(declination);
         MagField::body(body.x, body.y, body.z)

@@ -25,16 +25,16 @@ flowchart LR
     end
     predict --> hist[("History<br/>history.rs")]
     subgraph meas["every measurement, at its own time"]
-        z["time, z, R"] --> admit["admit<br/>eskf.rs"]
+        z["time, z, R"] --> admit["admit<br/>eskf/fuse.rs"]
         admit --> observe["observe at t<br/>observation/* (28)–(36), (23′)"]
         observe --> gate{"gate<br/>update.rs (37)–(38)"}
         gate -- "r ≤ 1" --> upd["Joseph update, inject, reset<br/>update.rs (24)–(27), (39)–(41)"]
-        gate -- "r > 1" --> rec["apply_or_recover<br/>eskf.rs"]
+        gate -- "r > 1" --> rec["apply_or_recover<br/>eskf/fuse.rs"]
         upd --> rec
         rec --> fout(["Fusion"])
     end
     hist -.-> observe
-    rec -. "commit_state shifts it" .-> hist
+    rec -. "Estimate::commit shifts it" .-> hist
     pout --> health["Diagnostics → Status, Validity<br/>health.rs"]
     fout --> health
 ```
@@ -45,7 +45,7 @@ measurement of a quantity the start never established. The gate runs before the 
 rejection computes nothing it could commit. `apply_or_recover` is the one place every source
 recovers through: it commits an accepted update, records a rejection, or adopts the measurement
 when its source has been locked out past `Config::recovery`. Every correction it commits shifts
-`History` through `Eskf::commit_state`.
+`History` through `Estimate::commit`.
 
 Sensor drivers and hardware are outside the crate. The application supplies each measurement
 with its time and its uncertainty.
@@ -54,7 +54,8 @@ with its time and its uncertainty.
 
 | module | holds |
 | ------ | ----- |
-| `src/eskf.rs` | `Eskf`, the whole public filter: `initialize*`, `predict`, `fuse_*`, `state`, `reset_*_to` |
+| `src/eskf.rs` | `Eskf`, the whole public filter: its fields, `state`, the floor of (42′) every covariance passes through, and `Status` |
+| `src/eskf/` | `Eskf`'s methods by topic, one `impl Eskf` each: `start` (`initialize*`), `site` (origin, declination, barometric reference), `predict`, `fuse` (the shared update path, GNSS and barometer), `heading`, `adopt` (`reset_*_to`, and the writers an adoption or a recovery commits), `validity`; `estimate`, the state and its history; `fixtures`, what the modules' tests share |
 | `src/init.rs` | initialization types (`StaticSample`, `StaticWindow`, `Alignment`, `Coarse`, `InitError`) and the pure functions the `initialize*` methods commit |
 | `src/propagate.rs` | `ImuSample`; equations (9)–(22), the coast of (22′), and `error_dynamics`, the `A` that (23′) carries `H` through |
 | `src/history.rs` | the recent past of the nominal state, which a measurement is fused against at the time it was taken, equation (23′) |
@@ -146,10 +147,11 @@ The correction lands on the current state. So the `Fusion` a call returns is the
 on that measurement, not a promise of one later, as PX4's delayed horizon would make it
 ([measurement latency](GOALS.md#measurement-latency)).
 
-`History` holds 32 entries 10 ms apart. Every correction shifts it through `Eskf::commit_state`,
-the one writer of the state outside a propagation or a start. A time older than
-`LATENCY_HORIZON` is refused as `OutOfHorizon`; one slightly ahead of the state is carried forward
-on the estimated velocity.
+`History` holds 32 entries 10 ms apart. Every correction shifts it through `Estimate::commit`.
+`Estimate` holds the state and its history behind private fields, so its three writers (`commit`,
+`step` for a propagation, `restart` for a start) are the only ones the compiler allows. A time
+older than `LATENCY_HORIZON` is refused as `OutOfHorizon`; one slightly ahead of the state is
+carried forward on the estimated velocity.
 
 ### GNSS Position
 

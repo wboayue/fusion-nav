@@ -506,7 +506,7 @@ fn snapshot(filter: &Eskf) -> Snapshot {
     Snapshot {
         // The stored estimate: `state()` derives a status from the clock, which a refused
         // step still moves.
-        state: filter.state,
+        state: *filter.estimate.state(),
         covariance: *filter.covariance(),
         offset: filter.offset,
         time: filter.time(),
@@ -526,7 +526,7 @@ fn snapshot(filter: &Eskf) -> Snapshot {
 /// [`Eskf::predicted_validity`], which projects `P` up to 64 steps and is most of the suite's
 /// time, so [`run`] asks for it on a sample of calls rather than every one.
 fn check(filter: &Eskf, after: &str, project: bool) -> Result<(), TestCaseError> {
-    let state = &filter.state;
+    let state = filter.estimate.state();
     prop_assert!(state.is_finite(), "{after}: state not finite: {state:?}");
     let norm = state.attitude.quaternion().norm();
     prop_assert!((norm - 1.0).abs() < 1e-3, "{after}: quaternion norm {norm}");
@@ -676,7 +676,11 @@ fn apply(filter: &mut Eskf, op: &Op, project: bool) -> Result<(), TestCaseError>
                 Propagation::InvalidStep { .. } => untouched(filter, "InvalidStep")?,
                 refused => {
                     prop_assert_eq!(
-                        (filter.state, *filter.covariance(), filter.offset),
+                        (
+                            *filter.estimate.state(),
+                            *filter.covariance(),
+                            filter.offset
+                        ),
                         (before.state, before.covariance, before.offset),
                         "{:?} changed the estimate",
                         refused
@@ -770,7 +774,7 @@ fn apply(filter: &mut Eskf, op: &Op, project: bool) -> Result<(), TestCaseError>
                 // A first altitude seeds the reference from the estimate, which is
                 // the one unfused outcome that moves the offset.
                 prop_assert_eq!(
-                    (filter.state, *filter.covariance()),
+                    (*filter.estimate.state(), *filter.covariance()),
                     (before.state, before.covariance),
                     "an unfused altitude changed the estimate"
                 );

@@ -50,7 +50,7 @@ host timings, which are taken on one machine and pinned nowhere.
 | `Config` | {{footprint thumbv6m-none-eabi size.config.Config}} | {{footprint thumbv7em-none-eabihf size.config.Config}} |
 | `StaticWindow`, at any rate and length | {{footprint thumbv6m-none-eabi size.init.StaticWindow}} | {{footprint thumbv7em-none-eabihf size.init.StaticWindow}} |
 | `StaticSample` | {{footprint thumbv6m-none-eabi size.init.StaticSample}} | {{footprint thumbv7em-none-eabihf size.init.StaticSample}} |
-| `Startup`, a start worked out and checked before it commits, on a start's stack | {{footprint thumbv6m-none-eabi size.eskf.Startup}} | {{footprint thumbv7em-none-eabihf size.eskf.Startup}} |
+| `Startup`, a start worked out and checked before it commits, on a start's stack | {{footprint thumbv6m-none-eabi size.eskf.start.Startup}} | {{footprint thumbv7em-none-eabihf size.eskf.start.Startup}} |
 
 Sizes in bytes.
 
