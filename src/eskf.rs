@@ -171,8 +171,8 @@ pub struct Eskf {
     /// test behind [`Status::Aligning`]; see [`is_aligned`](Self::is_aligned) for why it is not
     /// read live.
     aligned: bool,
-    /// The position hold of (28″) over the current outage; see
-    /// [`hold_if_unaided`](Self::hold_if_unaided).
+    /// The position hold of (28″): its anchor, and which quantities still carry the covariance
+    /// it shaped; see [`hold_if_unaided`](Self::hold_if_unaided).
     hold: hold::HoldState,
     initialized: bool,
     /// The clock; see [`time`](Self::time). Meaningless until `initialized`.

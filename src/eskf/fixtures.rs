@@ -69,7 +69,7 @@ pub(super) fn initialized() -> Eskf {
 }
 
 /// [`initialized`] with the position hold off: for a test of what an unaided filter does
-/// without it, which the default hold, engaged from the first step, would otherwise hide.
+/// without it, which the default hold would otherwise bound.
 pub(super) fn unheld() -> Eskf {
     let mut filter = Eskf::new(Config {
         hold: None,

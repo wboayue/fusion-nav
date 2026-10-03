@@ -95,13 +95,13 @@ impl Eskf {
             // it looks: nobody set that number.
             // Nor one the position hold bounds: the assumption tightened it, not a sensor.
             horizontal_position: !self.unestablished.position
-                && !self.position_is_held()
+                && !self.hold.holds_position()
                 && within(p, ErrorState::PositionNorth, position)
                 && within(p, ErrorState::PositionEast, position),
             vertical_position: !self.unestablished.position
                 && within(p, ErrorState::PositionDown, position),
             horizontal_velocity: !self.unestablished.velocity
-                && !self.velocity_is_held()
+                && !self.hold.holds_velocity()
                 && within(p, ErrorState::VelocityNorth, velocity)
                 && within(p, ErrorState::VelocityEast, velocity),
             vertical_velocity: !self.unestablished.velocity

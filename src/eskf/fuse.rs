@@ -23,6 +23,7 @@ use crate::update::{Observation, Update, update};
 
 use super::Eskf;
 use super::adopt::{HORIZONTAL, POSITION};
+use super::hold::recovery_after;
 
 impl Eskf {
     /// Commit what an update produced and record it against its source, handing the outcome
@@ -225,8 +226,8 @@ impl Eskf {
                 self.apply_or_recover(
                     outcome,
                     |diagnostics| &mut diagnostics.gnss_position,
-                    Self::recovery_after(
-                        self.position_is_held(),
+                    recovery_after(
+                        self.hold.holds_position(),
                         self.config.recovery.gnss_position,
                     ),
                     |filter| {
@@ -238,9 +239,14 @@ impl Eskf {
                 )
             }
         };
-        // An adoption ended the hold on its way; a fix the gate passed measures position too.
-        if horizontal.is_accepted() {
-            self.end_position_hold();
+        // An adoption ended the hold's claim on position on its way. A fix the gate passes
+        // measures position too, and one it passes against a position already measured since
+        // the hold has checked the velocity that carried the estimate there.
+        if matches!(horizontal, Fusion::Accepted { .. }) {
+            if !self.hold.holds_position() {
+                self.hold.end_velocity();
+            }
+            self.hold.end_position();
         }
         let height = match screen(&[z[2]], &[r[2]]) {
             Some(refusal) => refuse(&mut self.diagnostics.gnss_height, refusal),
@@ -585,7 +591,10 @@ impl Eskf {
         let fusion = self.apply_or_recover(
             outcome,
             |diagnostics| &mut diagnostics.gnss_velocity,
-            Self::recovery_after(self.velocity_is_held(), self.config.recovery.gnss_velocity),
+            recovery_after(
+                self.hold.holds_velocity(),
+                self.config.recovery.gnss_velocity,
+            ),
             |filter| {
                 let adopted = filter.carried_velocity(velocity, antenna, time);
                 adopted
@@ -593,8 +602,9 @@ impl Eskf {
                     .is_some()
             },
         );
-        if fusion.is_accepted() {
-            self.end_velocity_hold();
+        // An adoption ended the hold's claim on velocity in `adopt_velocity`.
+        if matches!(fusion, Fusion::Accepted { .. }) {
+            self.hold.end_velocity();
         }
         fusion
     }
