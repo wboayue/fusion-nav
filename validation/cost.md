@@ -5,7 +5,7 @@
 4112 bytes on a Cortex-M0 and allocates nothing
 else, so that is the RAM to plan for beyond the stack. The deepest stack is a GNSS velocity
 update, 11540 bytes, and linking every entry point takes
-112002 bytes of flash at `opt-level = "s"`. Execution time on
+112042 bytes of flash at `opt-level = "s"`. Execution time on
 hardware is not measured yet (#41).
 
 Every figure on this page is pinned exactly in `data/footprint.txt`, which CI measures on
@@ -105,7 +105,7 @@ Each entry point's own frame, and the frames beneath it that set its depth:
 | beneath `fuse_gnss_position`'s height, `fuse_baro_altitude` and the heading update: one | 6384 | 6240 |
 | beside the update: the observation formed at the measurement's time, (23′) | 1464 | 1440 |
 | beside the update: committing its result, or handing it to an adoption | 1120 | 1072 |
-| beside the update: adopting a position, from `fuse_gnss_position` | 1976 | 1992 |
+| beside the update: adopting a position, from `fuse_gnss_position` | 1984 | 1992 |
 | beside the update: adopting a velocity, from `fuse_gnss_velocity` | 1904 | 1904 |
 | beneath the update: the attitude reset of (41) | 456 | 448 |
 | beneath the update: the injection of (39)–(40) | 168 | 88 |
@@ -120,7 +120,7 @@ Each entry point's own frame, and the frames beneath it that set its depth:
 
 | bytes | `thumbv6m` `3` | `thumbv6m` `s` | `thumbv7em` `3` | `thumbv7em` `s` |
 | --- | --- | --- | --- | --- |
-| `.text` | 173122 | 112002 | 194820 | 118684 |
+| `.text` | 173026 | 112042 | 194684 | 118676 |
 | of which `libm` | 19532 | 10432 | 20752 | 12620 |
 | of which `compiler_builtins` | 10334 | 10334 | 7674 | 7674 |
 | of which `nalgebra`, out of line | 15256 | 1900 | 3956 | 924 |
