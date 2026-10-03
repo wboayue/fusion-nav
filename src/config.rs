@@ -445,6 +445,9 @@ impl Default for Correlation {
 ///
 /// Per source, not per quantity, because a source is what the gate rejects: the fields mirror
 /// [`Gates`] and [`Diagnostics`](crate::Diagnostics).
+///
+/// After a position hold the timeout is waived once: the first GNSS position or velocity the
+/// gate turns down is adopted at once, unless its field here is `None`; see [`Hold`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Recovery {
     /// GNSS horizontal position: north and east are adopted, height is left alone.
@@ -572,8 +575,9 @@ impl Default for Coast {
 /// The position hold an unaided filter fuses to keep its tilt. Equation (28″).
 ///
 /// Without horizontal aiding nothing observes tilt, so a vehicle that loses GNSS in flight loses
-/// its attitude on the schedule [`ImuNoise`] sets while the true error may still be small. Past
-/// [`Timeouts::dead_reckoning_after`] with no horizontal measurement judged, no
+/// its attitude on the schedule [`ImuNoise`] sets while the true error may still be small. With
+/// no horizontal measurement judged within [`Timeouts::dead_reckoning_after`], which a start that
+/// has heard none meets from its first step, no
 /// [`Eskf::fuse_stationary`](crate::Eskf::fuse_stationary) accepted, and the tilt σ past 3°, the
 /// filter fuses its own position estimate from the step the hold engaged, every 0.2 s at `sigma`.
 /// Bounding position bounds velocity, so a velocity error can no longer hide a tilt error, and the
@@ -590,7 +594,9 @@ impl Default for Coast {
 /// The hold is an assumption, not a sensor: [`Status`](crate::Status) stays `DeadReckoning`, and
 /// horizontal position and velocity each stay invalid in [`Validity`](crate::Validity), however
 /// tight the covariance the hold leaves, until a measurement of that quantity is accepted or
-/// adopted. A standstill, a fix the gate turns down or a velocity does not validate position. The
+/// adopted. A standstill, a fix the gate turns down or a velocity does not validate position;
+/// a standstill does bound velocity, and so does the second position fix the gate passes, which
+/// has checked the velocity that carried the estimate from the first. The
 /// first GNSS fix or velocity after it that the gate turns down is adopted at once rather than
 /// after [`Config::recovery`]'s timeout, since what the gate would be judging it against is the
 /// hold. A source whose recovery is off is never adopted. A caller's `reset_position_to` or

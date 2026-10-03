@@ -1308,7 +1308,7 @@ $`\hat{p}_0`$ at the step the hold engaged, at a variance $`\sigma_h^2`$ per axi
 z = \hat{p}_{0,NE}, \qquad h(x) = p_{NE}, \qquad R_m = \sigma_h^2 I_2
 ```
 
-The filter fuses it itself, every 0.2 s, once no horizontal source has been judged for
+The filter fuses it itself, every 0.2 s, once no horizontal source has been judged within
 `Timeouts::dead_reckoning_after` and the tilt σ has passed 3°, and it releases it below 3°. Its
 error is where the vehicle went since $`\hat{p}_0`$, one error for the whole outage rather than one
 per reading, so it is fused at (24′) with $`\tau = 2`$ s rather than as white. PX4 and ArduPilot

@@ -960,7 +960,8 @@ while unaided: PX4's fake position (`fake_pos_control.cpp:47-82` at `c4e4ef98`) 
 **Decided:** two observations from an assumption, equations (28″) and (29″).
 
 - **The position hold**, filter-driven, `Config::hold`. Once no GNSS position or velocity has been
-  judged for `Timeouts::dead_reckoning_after` and the tilt σ has passed 3°, `predict` fuses the
+  judged within `Timeouts::dead_reckoning_after` (a start that has heard none meets that from its
+  first step) and the tilt σ has passed 3°, `predict` fuses the
   position estimate from when the hold engaged, every 0.2 s at 10 m, at (24′)'s `τ` of 2 s. It
   releases below 3° and re-anchors when it next engages. It is not aiding: `Status` stays
   `DeadReckoning`, horizontal position and velocity each stay invalid until a measurement of that
@@ -1009,7 +1010,20 @@ drifting 27 m) and the corpus. DESIGN.md, "Hold", has the tables.
   So UrbanNav is pinned under `--hold off`, a car's configuration, with the F9P under the default
   hold beside it.
 
-**Costs:** the hold is a hover assumption. A vehicle that keeps moving without GNSS, a car or a
+**Costs:** the hold is a hover assumption, and in motion it holds for a short gap only.
+`gnss_outage`'s circuit passes every ANEES block through its 20 s gap. With the gap lengthened
+to 40 s the hold fails position (`any_pos` 898 over 50 seeds) and at 60 s more so (`any_pos`
+4898, `over_pos` 0.15), where the filter without the hold passes both; attitude passes
+throughout (`any_att` 0), and `Validity` reports the position invalid. The 3° bar is what keeps
+the 20 s gap passing: at 2.5° it fails all three blocks. No scenario pins the longer gap.
+
+Where one fusion pulls the tilt σ back under 3°, the hold anchors, fuses once and releases, and
+a hold fused on the step it anchors has zero innovation: it narrows the covariance and corrects
+nothing. `gnss_outage`'s 6 holds, `2c42096b`'s 4 and `7ce66f0d`'s 1 are all of that kind, so
+`attitude_lost` moving to `never` on those is the covariance narrowed, not a tilt held. Not
+measured: an engagement that anchors and waits an interval before it fuses.
+
+ A vehicle that keeps moving without GNSS, a car or a
 fixed-wing, should set `Config::hold = None`: under it the position covariance narrows around a
 place the vehicle has left. A multirotor that flies on through the hold reads partly as tilt
 error and has its velocity pulled toward zero; the gate and (24′) bound that rather than remove

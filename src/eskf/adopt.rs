@@ -30,6 +30,11 @@ impl Eskf {
     /// here: this writes `noise` straight onto the covariance diagonal, with no gate and
     /// no innovation to dilute it. See [`Fusion::NotFinite`](crate::Fusion::NotFinite) and
     /// [`Fusion::InvalidNoise`](crate::Fusion::InvalidNoise).
+    ///
+    /// A reset is not aiding. While the position hold of [`Config::hold`](crate::Config::hold)
+    /// is engaged it fuses again within 0.2 s, about the position set here, and
+    /// [`Validity`](crate::Validity) reads the quantity invalid again: a position that is to
+    /// stay valid without a sensor wants the hold off.
     #[must_use = "a refused reset leaves the estimate where it was, still dead-reckoning"]
     pub fn reset_position_to(
         &mut self,

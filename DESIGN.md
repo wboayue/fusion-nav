@@ -233,7 +233,7 @@ Two observations make their `z` from an assumption, and both reuse a GNSS model 
 adding one: (28″) is (28)'s horizontal rows against an anchor, (29″) is (29) against zero.
 
 * **The position hold** has no caller. `predict` runs it after a committed step, once no GNSS
-  position or velocity has been judged for `dead_reckoning_after` and the tilt σ has passed 3°,
+  position or velocity has been judged within `dead_reckoning_after` and the tilt σ has passed 3°,
   which is why it lives beside `fuse_stationary` in `eskf/hold.rs` and not in `fuse.rs`. Its
   verdicts reach `Diagnostics::position_hold` as any source's do, and the replay harness reads
   them back after each step, there being no call to hang a row on.
@@ -504,9 +504,9 @@ GNSS over the circuit's fastest turns), `hover_outage` (90 s without GNSS in a h
 27 m) and the corpus's two logs with no GNSS, `f16771dd` (EKF2's reference, which runs PX4's hold)
 and `7592c9b2` (LPE's). Scenario figures are one seed's `score` line; ANEES is 50 seeds.
 
-The tables hold two builds. The shipped rows (no hold; the gate with (24′) at 2 s; `τ` 2 s; σ
-10 m; UrbanNav's first two columns) and the white hold behind the gate are measured on the hold
-as it ships. Every other row was measured on the build before its review, which kept the 0.2 s
+The tables hold two builds. The shipped rows (no hold; the gate with (24′) at 2 s; `τ` 2 s;
+UrbanNav's first two columns), the white hold behind the gate and the whole σ table are measured
+on the hold as it ships. Every other row was measured on the build before its review, which kept the 0.2 s
 interval across a release and latched validity and recovery per quantity, and on which the
 shipped rows read within 1.5 % of these, UrbanNav's F9P `nees_pos` excepted: 27 there, 32.01
 here. Compare a rejected row with the shipped one for its direction, not its last digit.

@@ -112,10 +112,13 @@
 # than 10.32: the hold slows the tilt's growth, at (24')'s tau of 2 s, rather
 # than claiming it. 2c42096b holds 4 times, three in the GNSS gap at 3425 s
 # where it lost its attitude at 3424.02, and one at 6427 s; it now never
-# loses it. 7ce66f0d holds once; its receiver is turned down for seconds at a
-# time, which holding on acceptance rather than on silence read as unaided,
-# taking recoveries from 27 to 62. Every other log reads holds=0 and nothing
-# else moved; with --hold off every log reproduces main byte for byte.
+# loses it, which is the covariance narrowed and not a tilt held: each of the
+# 4 fused on the step it anchored, at zero innovation. 7ce66f0d holds once,
+# the same way; its receiver is turned down for seconds at a
+# time, which a white hold on acceptance rather than on silence read as
+# unaided, taking recoveries from 27 to 62. Every other log reads holds=0 and
+# nothing else moved; with --hold off every log reproduces main in every
+# column and key main writes.
 #
 # rejected= is the gate's verdict and discarded= is everything that never
 # reached it -- a variance of zero or less, a NaN, an altitude with no

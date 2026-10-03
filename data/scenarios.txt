@@ -198,7 +198,9 @@ flight           8  pos_h<=1.556 pos_v<=0.351 vel<=0.433 pos_h_max<=3.605  tilt<
 # The position hold of (28'') bounds tilt where nothing aids it. It engages once the tilt sigma
 # passes 3 deg, PX4's bar, and is fused at (24')'s tau of 2 s rather than as white. `gnss_outage`
 # holds 6 times in its 20 s gap and moves within noise (`pos_h` 1.677 to 1.680, `nees_att` 0.0234
-# to 0.0240); held from the first unaided step and white it read `false_valid_att`=3092 and
+# to 0.0240), each hold fused on the step it anchored, at zero innovation, so the line cannot
+# fail on the observation and a longer gap is where it would (GOALS.md, "Holding tilt without
+# aiding", Costs); held from the first unaided step and white it read `false_valid_att`=3092 and
 # `tilt` 2.68 deg. `bench` is still with no GNSS and told so, which (29'') answers, and the hold
 # never engages. The standstill keeps tilt valid there, not more accurate: `tilt` reads 0.425
 # deg, against 0.276 with neither it nor the hold (valid only to 10.29 s) and 0.376 under the

@@ -371,15 +371,17 @@ are integrated over their own intervals. The result is `#[must_use]`:
 | `NotInitialized` | no state to propagate |
 
 Without horizontal aiding nothing observes tilt, so it grows on the schedule `ImuNoise` sets. Once
-no GNSS position or velocity has been judged for `Timeouts::dead_reckoning_after`, and the tilt σ
-has passed 3°, a committed step also fuses a **position hold**: the estimate's own position from
+no GNSS position or velocity has been judged within `Timeouts::dead_reckoning_after`, which a
+start that has heard none meets from its first step, and the tilt σ has passed 3°, a committed
+step also fuses a **position hold**: the estimate's own position from
 when the hold engaged, at `Config::hold`'s σ (10 m), five times a second
 ([equation (28″)](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#holding-tilt-without-aiding)).
 Bounding position bounds velocity, which is what lets the accelerometer level the filter. It is an
-assumption, not a sensor: `Status` stays `DeadReckoning`, horizontal position and velocity stay
-invalid, and the first GNSS fix the gate turns down after it is adopted at once.
-`Config::hold = None` turns it off. PX4's fake position and ArduPilot's `AID_NONE` do the same;
-this one is fused as correlated, (24′), so the covariance it leaves stays honest.
+assumption, not a sensor: `Status` stays `DeadReckoning`, horizontal position and velocity each
+stay invalid until measured again, and the first GNSS fix the gate turns down after it is adopted
+at once. `Config::hold = None` turns it off. PX4's fake position and ArduPilot's `AID_NONE` do
+the same; this one is fused as correlated, (24′), which keeps the covariance honest for a vehicle
+that stays put. One that flies on is among the [limitations](#limitations).
 
 ### Measurements
 
@@ -807,7 +809,9 @@ issue that removes them, where one is open.
   without GNSS, should set `Config::hold = None`. While it holds, a multirotor that keeps
   flying reads partly as tilt error, which the 3° gate and (24′) keep small, and the position it
   reports is pulled toward where the hold engaged. That is why position stays invalid
-  until a fix is accepted or adopted after it. See
+  until a fix is accepted or adopted after it. A long outage flown through also leaves the
+  position covariance overconfident: the simulated circuit passes its consistency bound through
+  a 20 s gap and fails it at 40 s, where the filter without the hold passes. See
   [holding tilt without aiding](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#holding-tilt-without-aiding).
 * **Local tangent plane.** Position is Cartesian NED about a fixed origin. The geodetic
   conversion is exact at any range

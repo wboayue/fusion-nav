@@ -598,7 +598,9 @@ fn seconds(value: Seconds) -> Fixed {
 /// [`Config::accuracy`](crate::Config::accuracy), plus the requirement that the quantity
 /// was ever established at all — a coarse start has no position until a fix arrives, a
 /// window with no magnetometer has no heading until a heading source is fused, and a tight prior on a
-/// number nobody set is not validity.
+/// number nobody set is not validity. Nor is a covariance the position hold bounded: horizontal
+/// position and velocity stay invalid after one until measured again; see
+/// [`Hold`](crate::Hold).
 ///
 /// Horizontal and vertical are separate because sources are: a vehicle with a barometer and no GNSS
 /// has a usable height and no horizontal position at all, as one log in the replay corpus does.
