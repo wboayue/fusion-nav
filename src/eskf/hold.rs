@@ -74,8 +74,9 @@ impl Eskf {
     /// Equation (29″).
     ///
     /// Without horizontal aiding nothing observes tilt, so a vehicle on the bench with no GNSS
-    /// loses its tilt on the schedule [`ImuNoise`](crate::ImuNoise) sets: [`Validity::tilt`]
-    /// goes false about 10 s into an unaided start. A zero velocity is what holds it: tilt
+    /// loses its tilt on the schedule [`ImuNoise`](crate::ImuNoise) sets: with the position hold
+    /// off, [`Validity::tilt`] goes false 4.84 to 10.3 s into an unaided start, and the hold only
+    /// slows that. A zero velocity is what holds it: tilt
     /// error times gravity lands in velocity at once, and the update takes it back out. PX4 and
     /// ArduPilot hold the attitude on the ground the same way.
     ///

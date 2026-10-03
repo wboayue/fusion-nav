@@ -159,7 +159,8 @@ impl Eskf {
     /// [`ImuNoise`](crate::ImuNoise)'s defaults an unaided start holds tilt for 10.3 s from a
     /// window that measured its gyroscope and 4.84 s from one whose gyroscope never scattered,
     /// so a horizon under that arms and one over it does not, which the current value alone
-    /// cannot say.
+    /// cannot say. The projection is of propagation alone: the position hold of
+    /// [`Config::hold`](crate::Config::hold), which engages at that bar, is not projected.
     ///
     /// The projection reads slightly optimistic and the amount is measured: a first-order
     /// step understates growth, and `propagate.rs`'s `PROJECTION_STEP` holds that within

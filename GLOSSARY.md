@@ -216,7 +216,7 @@ the difference is the kind that costs a day.
   `Config::correlation` holds one `τ` per source.
   [Correlated measurements](EQUATIONS.md#correlated-measurements).
 * **Position hold**: a position the filter fuses as if measured while nothing aids it, its own
-  estimate from when aiding stopped, so that bounding position bounds velocity and the
+  estimate from when the hold engaged, so that bounding position bounds velocity and the
   accelerometer can level the filter. An assumption rather than a sensor, so never aiding,
   [equation (28″)](EQUATIONS.md#holding-tilt-without-aiding) and
   [the decision](GOALS.md#holding-tilt-without-aiding); `Config::hold`.

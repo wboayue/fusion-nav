@@ -573,27 +573,29 @@ impl Default for Coast {
 ///
 /// Without horizontal aiding nothing observes tilt, so a vehicle that loses GNSS in flight loses
 /// its attitude on the schedule [`ImuNoise`] sets while the true error may still be small. Past
-/// [`Timeouts::dead_reckoning_after`] with no horizontal source accepted, and no
-/// [`Eskf::fuse_stationary`](crate::Eskf::fuse_stationary) either, the filter fuses its own
-/// position as it stood when aiding stopped, every 0.2 s at `sigma`. Bounding position bounds
-/// velocity, so a velocity error can no longer hide a tilt error, and the accelerometer levels the
-/// filter. PX4's fake position (`fake_pos_control.cpp:47-82` at `c4e4ef98`) and ArduPilot's
-/// `AID_NONE` (`AP_NavEKF3_Control.cpp:416-420` at `368dc0c4`) do the same.
+/// [`Timeouts::dead_reckoning_after`] with no horizontal measurement judged, no
+/// [`Eskf::fuse_stationary`](crate::Eskf::fuse_stationary) accepted, and the tilt σ past 3°, the
+/// filter fuses its own position estimate from the step the hold engaged, every 0.2 s at `sigma`.
+/// Bounding position bounds velocity, so a velocity error can no longer hide a tilt error, and the
+/// accelerometer levels the filter. PX4's fake position (`fake_pos_control.cpp:47-82` at
+/// `c4e4ef98`) and ArduPilot's `AID_NONE` (`AP_NavEKF3_Control.cpp:416-420` at `368dc0c4`) do the
+/// same.
 ///
-/// It assumes the vehicle stays near where aiding stopped. A hover meets that; a sustained
+/// It assumes the vehicle stays near where the hold engaged. A hover meets that; a sustained
 /// acceleration reads as tilt error, and `sigma` is the trade between the two, which is the
 /// mission's: how far a vehicle flies on without aiding is what it is flying for. A vehicle that
 /// keeps moving without GNSS, a car or a fixed-wing, should turn it off: on UrbanNav's car the
 /// hold took the F9P's position NEES from 1.02 to 27 ([decision]).
 ///
-/// [decision]: https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#holding-tilt-without-aiding
-///
 /// The hold is an assumption, not a sensor: [`Status`](crate::Status) stays `DeadReckoning`,
-/// horizontal position and velocity stay invalid in [`Validity`](crate::Validity) however tight
-/// the covariance it leaves, and the first GNSS fix or velocity after it that the gate turns down
-/// is adopted at once rather than after [`Config::recovery`]'s timeout, since what the gate would
-/// be judging it against is the hold. A source whose recovery is off is never adopted. On by default, as [`Coast`] is; `Config::hold = None` is the
-/// opt-out.
+/// horizontal position and velocity stay invalid in [`Validity`](crate::Validity) for the rest of
+/// the outage however tight the covariance it leaves, and the first GNSS fix or velocity after it
+/// that the gate turns down is adopted at once rather than after [`Config::recovery`]'s timeout,
+/// since what the gate would be judging it against is the hold. A source whose recovery is off is
+/// never adopted. A caller's `reset_position_to` or `reset_velocity_to` ends it. On by default,
+/// as [`Coast`] is; `Config::hold = None` is the opt-out.
+///
+/// [decision]: https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#holding-tilt-without-aiding
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Hold {
     /// The σ of the held position on each horizontal axis.
@@ -776,8 +778,10 @@ impl Default for Accuracy {
     /// (`an_unaided_start_holds_its_attitude_for_the_margin_the_defaults_buy`). The window sets
     /// them: the gyroscope-bias prior enters attitude through equation (20)'s `−I Δt` and grows
     /// as `σ_βg² t²`, and only a window that measured the bias makes that prior small (see
-    /// [`Initialization::sigma_gyro_bias`]). [`Config::hold`]'s position hold engages at the same
-    /// 3° and slows what follows, so these stay where tilt first leaves the bar.
+    /// [`Initialization::sigma_gyro_bias`]). They are the schedule with [`Config::hold`] off. The
+    /// position hold engages at the same 3° and pulls tilt back toward the bar each fusion, so
+    /// with it on tilt stays valid until one fusion every 0.2 s is no longer enough: 16.73 s on
+    /// `f16771dd` rather than 9.83, which is not a better attitude.
     ///
     /// What those two times move is [`Validity`](crate::Validity), and nothing else.
     /// [`Status`](crate::Status) is already answering on the aiding timers by then — an unaided

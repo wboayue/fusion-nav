@@ -8,8 +8,9 @@
 //! until it has a name here.
 //!
 //! What a log cannot derive is left out on purpose: `accuracy`, `timeouts` and `hold` are the
-//! mission's (`--hold` is the switch for the last), `init`'s tolerances are the window's policy, and `gates` take a percentile, not a
-//! number. `--recovery off` stays the switch for `Recovery::OFF` as a whole.
+//! mission's (`--hold` is the switch for the last), `init`'s tolerances are the window's policy,
+//! and `gates` take a percentile, not a number. `--recovery off` stays the switch for
+//! `Recovery::OFF` as a whole.
 
 use fusion_nav::Seconds;
 use fusion_nav::prelude::*;

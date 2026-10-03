@@ -490,10 +490,10 @@ Three questions, three answers:
 
 | `Status` | meaning |
 | -------- | ------- |
-| `DeadReckoning` | neither GNSS position nor velocity has been accepted for `Config::timeouts.dead_reckoning_after`; horizontal position drifts without bound, whatever the barometer and magnetometer still hold |
+| `DeadReckoning` | neither GNSS position nor velocity has been accepted for `Config::timeouts.dead_reckoning_after`; horizontal position is dead reckoned or held by the position hold, unusable either way, whatever the barometer and magnetometer still hold |
 | `Aligning` | running and aided, but attitude has not converged: a coarse start still learning, or a heading no magnetometer has observed yet |
 | `Degraded` | a source has timed out; horizontal position is still aided |
-| `Healthy` | every source that has been fused is still accepted, and attitude has converged; the course constraint, which reads no sensor, is not counted |
+| `Healthy` | every source that has been fused is still accepted, and attitude has converged; the course constraint, the standstill and the position hold, which read no sensor, are not counted |
 
 When several apply the most severe wins, in the order of the table: `DeadReckoning` > `Aligning` >
 `Degraded` > `Healthy`. So a vehicle waiting for its first GNSS fix reads `DeadReckoning`, not
@@ -542,8 +542,8 @@ position to propagate, and that fixes are arriving is the whole answer.
 Tilt is where it matters most, because nothing aids it: a static window brings it in, and the
 gyroscope's noise and bias uncertainty take it back out on a schedule only the covariance knows.
 At default noise an unaided start keeps valid tilt for 10.3 s after a 2 s window that measured
-its gyroscope, and 4.84 s after one whose gyroscope never scattered; the position hold engages
-there and slows what follows. A horizon shorter than that arms; a longer one does not.
+its gyroscope, and 4.84 s after one whose gyroscope never scattered, with the position hold off.
+The hold engages at that bar and is not projected. A horizon shorter than that arms; a longer one does not.
 
 `Accuracy::horizon` is the one number in the crate no data could settle: how long after arming
 you need the estimate. It defaults to 1 s. At zero nothing is projected, leaving the aiding clause
