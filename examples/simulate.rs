@@ -955,6 +955,9 @@ struct Scenario {
     /// rad: the sideslip σ the harness fuses the course constraint at, written as the log's
     /// `# Course sideslip` line, or `None` for a vehicle that does not point where it goes.
     course: Option<f64>,
+    /// m/s: the σ of a `still` row, written at the GNSS rate while the truth is exactly at rest,
+    /// or `None` for a vehicle whose application claims nothing.
+    still: Option<f64>,
 }
 
 /// Sitting on the ground, pointing somewhere unremarkable.
@@ -972,6 +975,47 @@ fn at_rest() -> Trajectory {
         pitch: STILL,
         yaw: Wave {
             offset: 0.6,
+            ..STILL
+        },
+        sideslip: None,
+    }
+}
+
+/// A hover that wanders: a 3 m sway north, a 0.3 m/s drift east, a slow bob, and the small tilts
+/// a multirotor holds station with, released after five seconds on the ground.
+///
+/// The drift is the point: the position hold of (28″) assumes the vehicle stays where aiding
+/// stopped, and over a 90 s outage this one leaves by 27 m, past the hold's 10 m. An overconfident
+/// hold reads that as tilt.
+fn hover() -> Trajectory {
+    Trajectory {
+        hold: 5.0,
+        ramp: 4.0,
+        north: Wave {
+            amplitude: 3.0,
+            period: 40.0,
+            ..STILL
+        },
+        east: Wave { rate: 0.3, ..STILL },
+        down: Wave {
+            amplitude: -2.0,
+            period: 60.0,
+            ..STILL
+        },
+        roll: Wave {
+            amplitude: 0.03,
+            period: 25.0,
+            ..STILL
+        },
+        pitch: Wave {
+            amplitude: 0.04,
+            period: 35.0,
+            ..STILL
+        },
+        yaw: Wave {
+            offset: 0.6,
+            amplitude: 0.1,
+            period: 50.0,
             ..STILL
         },
         sideslip: None,
@@ -1175,8 +1219,8 @@ fn orbit() -> Trajectory {
 /// nothing else. Differing seeds would have left every sensor differing everywhere, which is the
 /// attribution this whole arrangement exists to buy.
 ///
-/// The four that are not departures — `static`, `moving_start`, `no_mag`, `flight` — carry their own
-/// seeds, so a statistic aggregated across the set still has independent draws to work with.
+/// The six that are not departures — `static`, `bench`, `hover_outage`, `moving_start`, `no_mag`,
+/// `flight` — carry their own seeds, so a statistic aggregated across the set still has independent draws to work with.
 fn scenarios() -> Vec<Scenario> {
     /// The seed the baseline and its departures share. See above: this is the pairing.
     const PAIRED: u64 = 2;
@@ -1196,6 +1240,7 @@ fn scenarios() -> Vec<Scenario> {
         mag: MAG,
         dropout: None,
         course: None,
+        still: None,
     };
 
     vec![
@@ -1224,6 +1269,39 @@ fn scenarios() -> Vec<Scenario> {
             covers: "the baseline flown on a badly isolated IMU: ten times the white noise and \
                      twenty times the bias walk of every other scenario",
             imu: HARSH_IMU,
+            ..base
+        },
+        // A bench with no aiding at all, whose application says it is still: the standstill of
+        // (29″) holding a tilt nothing else observes.
+        Scenario {
+            name: "bench",
+            covers: "120 s still with no GNSS, told it is still: the standstill of (29″) holding tilt",
+            seed: 9,
+            duration: 120.0,
+            trajectory: at_rest(),
+            gnss: GnssErrors {
+                available: Window::NEVER,
+                ..GNSS
+            },
+            still: Some(0.1),
+            ..base
+        },
+        // A long unaided hover that wanders past the hold's assumption: GNSS gone for 90 s while
+        // the vehicle drifts 27 m, then back.
+        Scenario {
+            name: "hover_outage",
+            covers: "90 s without GNSS in a drifting hover: the position hold of (28″) against a \
+                     vehicle that leaves it, and the return",
+            seed: 10,
+            duration: 150.0,
+            trajectory: hover(),
+            gnss: GnssErrors {
+                outage: Some(Window {
+                    start: 20.0,
+                    end: 110.0,
+                }),
+                ..GNSS
+            },
             ..base
         },
         // Dead reckoning: 20 s with no fixes at all, over the fastest part of the circuit, and
@@ -1613,6 +1691,17 @@ fn generate(
                 log.row(t, "gnss_yaw", &[heading], &[variance], taken)?;
             }
         }
+        // Exactly at rest, which the trajectories make true before release and throughout
+        // `at_rest`: a claim the truth does not bear out is a different experiment.
+        if epoch % gnss_every == 0
+            && let Some(sigma) = scenario.still
+            && state.velocity == [0.0; 3]
+            && state.acceleration == [0.0; 3]
+            && state.euler_rate == [0.0; 3]
+            && logged
+        {
+            log.row(t, "still", &[], &[sigma * sigma; 3], None)?;
+        }
         if epoch % baro_every == 0
             && let Some(altitude) = baro.sample(t, &state)
             && logged
@@ -1825,6 +1914,7 @@ fn write_log_header(
          #   baro      v0     altitude m (up)     var0      m^2\n\
          #   mag       v0..v2 field, calibrated   var0      heading rad^2\n\
          #   gnss_yaw  v0     heading rad, 2 ant  var0      rad^2\n\
+         #   still     a claim of standstill      var0..var2 m^2/s^2\n\
          #   t_meas_s  when a fix was taken, t_s less the receiver's latency",
         name = scenario.name,
         seed = scenario.seed,

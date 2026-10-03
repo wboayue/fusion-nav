@@ -49,6 +49,8 @@ fusion_nav::Config {
     max_predict_dt: fusion_nav::Seconds::from_secs(0.1),
     // The default: the log has no gap to coast.
     coast: Some(fusion_nav::Coast { acceleration: 2.0, rotation: 0.1 }),
+    // The mission's: how far the vehicle flies on unaided. Not derived.
+    hold: Some(fusion_nav::Hold { sigma: fusion_nav::Meters::from_meters(10.0) }),
     // The default: under 1800 s of barometer beside GNSS height, too short to read a drift.
     // GNSS height / barometer rejections at each walk: 0: 0/0, 0.02: 0/0, 0.05: 0/0, 0.13: 0/0.
     baro_offset_walk: 0.13,

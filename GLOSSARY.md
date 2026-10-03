@@ -215,6 +215,13 @@ the difference is the kind that costs a day.
   white noise that would carry the same information, larger than the reading's own `R`;
   `Config::correlation` holds one `τ` per source.
   [Correlated measurements](EQUATIONS.md#correlated-measurements).
+* **Position hold**: a position the filter fuses as if measured while nothing aids it, its own
+  estimate from when the hold engaged, so that bounding position bounds velocity and the
+  accelerometer can level the filter. An assumption rather than a sensor, so never aiding,
+  [equation (28″)](EQUATIONS.md#holding-tilt-without-aiding) and
+  [the decision](GOALS.md#holding-tilt-without-aiding); `Config::hold`.
+* **Standstill**: the caller's claim that the vehicle is still, fused as zero velocity by
+  `fuse_stationary`, [equation (29″)](EQUATIONS.md#holding-tilt-without-aiding).
 * **Lever arm**, **antenna offset**: where the GNSS antenna sits relative to the IMU, in body
   axes. A rotating vehicle moves its antenna even when the IMU is still, so the offset enters
   `H`, [equations (28′) and (29′)](EQUATIONS.md#gnss-position). Passed per call, since a second
@@ -322,6 +329,11 @@ document, the entry points there instead of repeating it.
   `Status::Aligning`. `ALIGNED_TILT` takes the stricter of the two tilt-variance bars they
   publish. `ALIGNED_HEADING` has none to take: both latch yaw on the magnetometer reset rather
   than on a variance, so its doc comment says what the 30° is chosen against instead.
+* **Fake position**, **`AID_NONE`**: PX4's and ArduPilot's names for the **position hold**,
+  which both fuse as white noise from when aiding stops; PX4's only past a 3° tilt σ
+  (`src/modules/ekf2/EKF/aid_sources/fake_pos_control.cpp:79-82`), as this crate's is. PX4's
+  `EKF2_POS_LOCK` is the **standstill**'s neighbor: a constant position, set rather than called.
+  [Holding tilt](GOALS.md#holding-tilt-without-aiding) says where this one differs.
 * **GSF yaw estimator**: a Gaussian Sum Filter recovering yaw from IMU and GNSS velocity, which
   is how both fly without a magnetometer. Not built here: #165; the README's limitations say
   what its absence costs a multirotor.

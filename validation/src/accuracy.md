@@ -22,6 +22,8 @@ Each scenario exists to test one thing no other scenario covers:
 - `static`: 60 s sitting on the ground.
 - `mission`: the **baseline**. 5 s still, then a 180 s circuit with turns and climbs.
 - `moving_start`: a different flight, in the air and turning from the first sample.
+- `bench`: 120 s still with no GNSS, the application telling the filter it is still.
+- `hover_outage`: a hover drifting 27 m, with no GNSS for 90 s of it.
 - The rest (`harsh_imu`, `gnss_outage`, `baro_drift`, `gnss_latency`, `correlated`,
   `mag_disturbance`, `logging_dropout`): the baseline circuit with one thing changed, each
   described below.
@@ -46,6 +48,11 @@ for. Against `mission`:
 - `gnss_outage` loses GNSS for 20 s, and position drifts to {{score gnss_outage pos_h_max}} m
   at worst. With nothing to correct it, the filter is integrating acceleration, and the
   [robustness page](robustness.md#gnss-outage) shows the drift staying inside the band.
+- `hover_outage` is not a departure but the case `gnss_outage` cannot be: a long outage with
+  the vehicle hardly moving. Nothing aids tilt for 90 s, and the position hold
+  ([GOALS.md](../GOALS.md#holding-tilt-without-aiding)) keeps it at {{score hover_outage tilt}}°
+  RMS, with position {{score hover_outage pos_h}} m RMS. `bench` holds tilt to
+  {{score bench tilt}}° with no GNSS at all, from the application's word that it is still.
 - `moving_start` starts in the air, turning, with no still moment to level from. That costs
   attitude at the start; [below](#a-start-in-motion), it converges.
 - `baro_drift` has a barometer whose zero drifts. Height suffers:

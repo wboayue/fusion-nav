@@ -2,10 +2,10 @@
 # Cost on a target
 
 **What does the filter cost a microcontroller?** The whole filter, `Eskf`, is
-3776 bytes on a Cortex-M0 and allocates nothing
+4112 bytes on a Cortex-M0 and allocates nothing
 else, so that is the RAM to plan for beyond the stack. The deepest stack is a GNSS velocity
-update, 11508 bytes, and linking every entry point takes
-108474 bytes of flash at `opt-level = "s"`. Execution time on
+update, 11540 bytes, and linking every entry point takes
+112002 bytes of flash at `opt-level = "s"`. Execution time on
 hardware is not measured yet (#41).
 
 Every figure on this page is pinned exactly in `data/footprint.txt`, which CI measures on
@@ -42,13 +42,13 @@ host timings, which are taken on one machine and pinned nowhere.
 
 | type | `thumbv6m` | `thumbv7em` |
 | --- | --- | --- |
-| `Eskf`, the filter | 3776 | 3776 |
+| `Eskf`, the filter | 4112 | 4112 |
 | of which the state history of (23′) | 1544 | 1544 |
 | of which the covariance `P` | 900 | 900 |
-| of which `Diagnostics` | 768 | 768 |
+| of which `Diagnostics` | 1048 | 1048 |
 | of which the barometric offset of (30′) | 64 | 64 |
 | `State`, the estimate `state()` returns | 72 | 72 |
-| `Config` | 244 | 244 |
+| `Config` | 260 | 260 |
 | `StaticWindow`, at any rate and length | 912 | 912 |
 | `StaticSample` | 80 | 80 |
 | `Startup`, a start worked out and checked before it commits, on a start's stack | 1088 | 1088 |
@@ -61,19 +61,20 @@ The deepest stack a call into each entry point takes, in bytes, before the calle
 
 | entry point | `thumbv6m` | `thumbv7em` |
 | --- | --- | --- |
-| `predict` | 9164 | 8984 |
-| `fuse_gnss_position` | 10780 | 10576 |
-| `fuse_gnss_geodetic` | 11124 | 10904 |
-| `fuse_gnss_velocity` | 11508 | 11288 |
-| `fuse_baro_altitude` | 9644 | 9392 |
-| `fuse_mag_heading` | 9716 | 9480 |
-| `fuse_gnss_heading` | 9836 | 9616 |
-| `fuse_course` | 9852 | 9624 |
-| `predicted_validity` | 8644 | 8448 |
-| `initialize` | 5476 | 5312 |
-| `initialize_coarse` | 6212 | 6048 |
-| `initialize_from` | 2984 | 2896 |
-| **the deepest of them** | **11508** | **11288** |
+| `predict` | 10748 | 10576 |
+| `fuse_gnss_position` | 10804 | 10600 |
+| `fuse_gnss_geodetic` | 11140 | 10928 |
+| `fuse_gnss_velocity` | 11540 | 11328 |
+| `fuse_baro_altitude` | 9652 | 9416 |
+| `fuse_mag_heading` | 9732 | 9496 |
+| `fuse_gnss_heading` | 9852 | 9640 |
+| `fuse_course` | 9868 | 9648 |
+| `fuse_stationary` | 11484 | 11264 |
+| `predicted_validity` | 8652 | 8448 |
+| `initialize` | 5484 | 5312 |
+| `initialize_coarse` | 6220 | 6048 |
+| `initialize_from` | 3016 | 2896 |
+| **the deepest of them** | **11540** | **11328** |
 
 The deepest path is `fuse_gnss_velocity` calling the three-measurement update, which calls
 `nalgebra`'s 15 × 15 matrix product, which calls the soft-float multiply on `thumbv6m` and
@@ -83,24 +84,27 @@ Each entry point's own frame, and the frames beneath it that set its depth:
 
 | function | `thumbv6m` | `thumbv7em` |
 | --- | --- | --- |
-| `predict` | 2176 | 2160 |
+| `predict` | 16 | 16 |
+| `propagate_or_coast`, the step it calls | 2176 | 2160 |
+| `hold_if_unaided`, the hold it calls beside the step | 1304 | 1296 |
 | `fuse_gnss_position` | 1376 | 1336 |
-| `fuse_gnss_geodetic` | 344 | 328 |
+| `fuse_gnss_geodetic` | 336 | 328 |
 | `fuse_gnss_velocity` | 1416 | 1408 |
-| `fuse_baro_altitude` | 1272 | 1256 |
+| `fuse_baro_altitude` | 1264 | 1256 |
 | `fuse_mag_heading` | 112 | 104 |
 | `fuse_gnss_heading` | 248 | 256 |
 | `fuse_course` | 256 | 264 |
-| `predicted_validity` | 1856 | 1832 |
+| `fuse_stationary` | 1360 | 1344 |
+| `predicted_validity` | 1864 | 1832 |
 | `initialize` | 2224 | 2216 |
 | `initialize_coarse` | 3504 | 3488 |
 | `initialize_from` | 1928 | 1856 |
-| beneath the three heading entry points: the heading update they share | 1232 | 1240 |
-| beneath `fuse_gnss_velocity`: the update of (23)–(27), three measurements | 8088 | 7960 |
-| beneath `fuse_gnss_position` (and so a geodetic fix): two, the horizontal pair | 7400 | 7320 |
-| beneath `fuse_gnss_position`'s height, `fuse_baro_altitude` and the heading update: one | 6368 | 6216 |
+| beneath the three heading entry points: the heading update they share | 1232 | 1232 |
+| beneath `fuse_gnss_velocity`: the update of (23)–(27), three measurements | 8120 | 8000 |
+| beneath `fuse_gnss_position` (and so a geodetic fix): two, the horizontal pair | 7424 | 7344 |
+| beneath `fuse_gnss_position`'s height, `fuse_baro_altitude` and the heading update: one | 6384 | 6240 |
 | beside the update: the observation formed at the measurement's time, (23′) | 1464 | 1440 |
-| beside the update: committing its result, or handing it to an adoption | 1120 | 1064 |
+| beside the update: committing its result, or handing it to an adoption | 1120 | 1072 |
 | beside the update: adopting a position, from `fuse_gnss_position` | 1976 | 1992 |
 | beside the update: adopting a velocity, from `fuse_gnss_velocity` | 1904 | 1904 |
 | beneath the update: the attitude reset of (41) | 456 | 448 |
@@ -116,11 +120,11 @@ Each entry point's own frame, and the frames beneath it that set its depth:
 
 | bytes | `thumbv6m` `3` | `thumbv6m` `s` | `thumbv7em` `3` | `thumbv7em` `s` |
 | --- | --- | --- | --- | --- |
-| `.text` | 168758 | 108474 | 183636 | 114684 |
-| of which `libm` | 19532 | 10432 | 20752 | 12064 |
-| of which `compiler_builtins` | 10288 | 10334 | 7558 | 7674 |
-| of which `nalgebra`, out of line | 15256 | 2056 | 4202 | 1080 |
-| `.rodata` | 4383 | 4455 | 4527 | 4599 |
+| `.text` | 173122 | 112002 | 194820 | 118684 |
+| of which `libm` | 19532 | 10432 | 20752 | 12620 |
+| of which `compiler_builtins` | 10334 | 10334 | 7674 | 7674 |
+| of which `nalgebra`, out of line | 15256 | 1900 | 3956 | 924 |
+| `.rodata` | 4415 | 4487 | 4559 | 4631 |
 
 The column heads are target and `opt-level`. `compiler_builtins` is software floating point on
 `thumbv6m`; on `thumbv7em` it is the `f64` arithmetic a single-precision FPU lacks, beside

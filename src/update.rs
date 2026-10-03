@@ -232,8 +232,17 @@ pub(crate) fn update<const M: usize>(
 
 /// `ε = yᵀ S⁻¹ y`, the normalized innovation squared of equation (37), through the Cholesky
 /// factor of `S` rather than its inverse.
+///
+/// A NaN is an `ε` past f32's range: `S` factored and `y` is finite, so only overflow makes one,
+/// two terms of the sum reaching +∞ and −∞. It reads as +∞, because the gate's `ratio > 1.0`
+/// would read NaN as a pass and accept an innovation too large to represent.
 fn nis<const M: usize>(y: &SVector<f32, M>, s_factor: &Cholesky<f32, Const<M>>) -> f32 {
-    y.dot(&s_factor.solve(y))
+    let epsilon = y.dot(&s_factor.solve(y));
+    if epsilon.is_nan() {
+        f32::INFINITY
+    } else {
+        epsilon
+    }
 }
 
 /// `r = ε / γ`, the test ratio of equation (38): 1 at the threshold whatever the dimension.
@@ -588,6 +597,28 @@ mod tests {
             update(&State::default(), &prior, &Offset::default(), &vector, gate::<3>(8.99)),
             Update::Rejected { ratio, .. } if ratio > 1.0
         ));
+    }
+
+    #[test]
+    fn an_innovation_whose_test_overflows_is_rejected_at_an_infinite_ratio() {
+        // Finite inputs whose `ε` is not: across a strong correlation `S⁻¹ y` turns one
+        // component against its `y`, so the two terms of `yᵀ S⁻¹ y` overflow to +∞ and −∞ and
+        // sum to NaN, which `ratio > 1.0` reads as a pass.
+        let mut p = *diagonal(1.0).as_matrix();
+        p[(0, 1)] = 0.9;
+        p[(1, 0)] = 0.9;
+        let prior = Covariance::from_matrix(p);
+        let outcome = update(
+            &State::default(),
+            &prior,
+            &Offset::default(),
+            &position([3.0e19, 1.0e19, 0.0], 0.1),
+            gate(7.8),
+        );
+        assert!(
+            matches!(outcome, Update::Rejected { ratio, .. } if ratio == f32::INFINITY),
+            "accepted or rejected at a ratio that is not infinite"
+        );
     }
 
     #[test]

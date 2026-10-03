@@ -107,6 +107,14 @@ on its IMU for {{summary urbannav-f9p/raw dead_reckoning_s}} s, reaching
 {{score urbannav-f9p/raw pos_h_max}} m of error, and its reported uncertainty grew with it
 (position NEES {{score urbannav-f9p/raw nees_pos}} over the drive, where near 1 is honest).
 
+Every run here is a car's configuration, with the position hold off. The hold assumes a vehicle
+that stays where aiding stopped, which a hovering multirotor does and a car does not. Under the
+default hold the F9P's gap reads {{score urbannav-f9p/raw-hold pos_h}} m RMS rather than
+{{score urbannav-f9p/raw pos_h}}, but its position NEES is
+{{score urbannav-f9p/raw-hold nees_pos}}: the covariance narrows around a place the car has
+driven away from
+([GOALS.md, "Holding tilt without aiding"](../GOALS.md#holding-tilt-without-aiding)).
+
 **The hostile receiver.** A single-frequency u-blox M8T reports an accuracy of 5 to 25 m while
 it is tens to hundreds of meters out, for a minute at a time.
 {{score urbannav-m8t/raw bad_gnss_pos}} of its {{score urbannav-m8t/raw offered_gnss_pos}}

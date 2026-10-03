@@ -57,7 +57,10 @@ mkdir -p "$out"
 
 # Each receiver under both R policies, and the M8T once more with `Recovery::OFF`: the filter
 # that only reports, which is what recovery's worth on a hostile receiver is measured against.
-runs="m8t:raw m8t:px4 m8t:raw-norecovery f9p:raw f9p:px4"
+# Every run is a car's configuration, `--hold off`: a vehicle that keeps moving without GNSS
+# breaks the position hold's assumption (GOALS.md, "Holding tilt without aiding"). `raw-hold`
+# is the F9P under the default hold, pinned so that cost is a measured line.
+runs="m8t:raw m8t:px4 m8t:raw-norecovery f9p:raw f9p:px4 f9p:raw-hold"
 
 for receiver in m8t f9p; do
     uv run --quiet "$root/tools/urbannav2replay.py" "$data" --receiver "$receiver" \
@@ -66,8 +69,11 @@ for receiver in m8t f9p; do
 done
 for entry in $runs; do
     receiver=${entry%%:*} policy=${entry#*:}
-    options="--r-policy ${policy%-norecovery}"
+    base=${policy%-norecovery}
+    base=${base%-hold}
+    options="--r-policy $base"
     [ "$policy" = "${policy%-norecovery}" ] || options="$options --recovery off"
+    [ "$policy" != "${policy%-hold}" ] || options="$options --hold off"
     # shellcheck disable=SC2086 # two flags, split on purpose
     pinned_run "$receiver" "$policy" "$out/$receiver.$policy" "$out/$receiver.csv" \
         "$out/$receiver.truth.csv" $options
