@@ -455,11 +455,13 @@ mod tests {
         assert_eq!(filter.hold, super::HoldState::default());
     }
 
-    /// Survives the reset leaving the hold alone: the stale anchor pulls the estimate back to
-    /// where the hold engaged, 100 m from where the caller put it.
+    /// Survives the reset leaving the hold alone: forty seconds unaided widen the covariance
+    /// enough that the stale anchor passes the gate and pulls the estimate back to 2.4 m, from
+    /// the 100 the caller set. Right after an engagement it would not: the anchor is rejected.
     #[test]
     fn a_reset_ends_the_hold_rather_than_being_pulled_back_by_it() {
-        let mut filter = engaged();
+        let mut filter = initialized();
+        hold(&mut filter, 40.0, 1, |_| {});
         let there = Position::ned(100.0, 0.0, 0.0);
         assert!(filter.reset_position_to(there, one_metre()));
         hold(&mut filter, 20.0, 1, |_| {});
