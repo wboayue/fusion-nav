@@ -45,6 +45,10 @@ NOPS = 256
 # the host does not know here, so calibration reads no digest flag.
 NOP_FRAME = struct.pack("<HBHQ", 1, 0, 0, 0)
 
+# The calls `Machine::execute` makes through an out-of-line arm, whose frame sits between the
+# dispatcher's and the entry point's (`onboard/src/machine.rs`, `renew`, `new_window`, `seed`).
+ARMS = {"new": "renew", "window_new": "new_window", "initialize_from": "seed"}
+
 OUTCOME_MATCH, DIGEST_MATCH, DENORMAL, OVERFLOW, UNDECODED = 1, 2, 4, 8, 16
 
 
@@ -224,41 +228,48 @@ def fmodf(board, out_dir):
 # --- statistics ------------------------------------------------------------------------------
 
 
+def pairs(text):
+    """`{key: int}` for the `key=value` tokens of `text`."""
+    return {k: int(v) for k, v in (t.split("=", 1) for t in text.split() if "=" in t)}
+
+
 def slug(text):
     return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
 
 
-def summarize(rows, frame):
+def summarize(rows, frames):
     """Keys for one run's per-call rows: per call, per call and outcome, per label.
 
-    Cycles are net of the least a `nop` took, and stack of `frame`, the dispatcher's. Under LTO
-    the dispatcher's frame holds whatever entry point it inlined, so `stack_raw` keeps it.
+    Cycles are net of the least a `nop` took, and stack of the dispatcher's frame and the arm's
+    a call goes through (`frames`, by function, from `dispatch.txt`). Under LTO the dispatcher's
+    frame holds whatever entry point it inlined, so `stack_raw` keeps it.
     """
     nops = [r for r in rows if r["call"] == "nop"]
     if not nops:
         raise ValueError("no calibration rows")
     overhead = min(int(r["cycles"]) for r in nops)
-    keys = {"nop_cycles": overhead, "dispatch_stack": frame}
+    keys = {"nop_cycles": overhead, "dispatch_stack": frames["execute"]}
     groups = {}
     for r in rows:
         if r["call"] == "nop":
             continue
         outcome = r["outcome"] + (f"_{r['height']}" if r["height"] else "")
-        cycles, stack = int(r["cycles"]) - overhead, int(r["stack"])
+        beneath = frames["execute"] + (frames[ARMS[r["call"]]] if r["call"] in ARMS else 0)
+        cycles, raw = int(r["cycles"]) - overhead, int(r["stack"])
         names = [r["call"], f"{r['call']}.{outcome}"]
         if r["label"]:
             names.append(f"label.{slug(r['label'])}")
         for name in names:
-            groups.setdefault(name, []).append((cycles, stack, int(r["flags"])))
+            groups.setdefault(name, []).append((cycles, raw - beneath, int(r["flags"]), raw))
     for name, members in groups.items():
-        cycles = [c for c, _, _ in members]
+        cycles = [c for c, _, _, _ in members]
         keys[f"{name}.n"] = len(members)
         keys[f"{name}.min"] = min(cycles)
         keys[f"{name}.mean"] = round(sum(cycles) / len(cycles))
         keys[f"{name}.max"] = max(cycles)
-        keys[f"{name}.stack"] = max(s for _, s, _ in members) - frame
-        keys[f"{name}.stack_raw"] = max(s for _, s, _ in members)
-        keys[f"{name}.denormal"] = sum(1 for _, _, f in members if f & DENORMAL)
+        keys[f"{name}.stack"] = max(s for _, s, _, _ in members)
+        keys[f"{name}.stack_raw"] = max(raw for _, _, _, raw in members)
+        keys[f"{name}.denormal"] = sum(1 for _, _, f, _ in members if f & DENORMAL)
     return keys
 
 
@@ -284,8 +295,8 @@ def pin(dirs):
         for f in sorted(d.glob("*.csv")):
             if f.name == "fmodf.csv":
                 continue
-            frame = int((d / "dispatch.txt").read_text())
-            runs[f.stem] = summarize(list(csv.DictReader(open(f, newline=""))), frame)
+            frames = pairs((d / "dispatch.txt").read_text())
+            runs[f.stem] = summarize(list(csv.DictReader(open(f, newline=""))), frames)
         keep = ("commit", "rustc", "opt", "lto", "cpu", "fpu", "sysclk", "cache", "fz")
         lines.append(f"{tag} " + " ".join(f"{k}={meta[k]}" for k in keep if k in meta))
         sweep = d / "fmodf.csv"
@@ -338,8 +349,8 @@ def self_test():
     assert "outcome" in refusal(DIGEST_MATCH)
     assert "painted" in refusal(OUTCOME_MATCH | DIGEST_MATCH | OVERFLOW)
 
-    # The overhead is the least nop, so a slow nop raises nothing; the frame is the dispatcher's,
-    # passed in, and a nop's own stack (shallower: no prologue) is not it. The worst predict is in
+    # The overhead is the least nop, so a slow nop raises nothing; the frames are passed in, and
+    # a nop's own stack (shallower: no prologue) is not the dispatcher's. The worst predict is in
     # the middle, so a reader that takes the first or the last row misses it.
     ok = OUTCOME_MATCH | DIGEST_MATCH
     rows = [
@@ -349,8 +360,12 @@ def self_test():
         {"call": "predict", "outcome": "coasted", "height": "", "label": "a coast", "cycles": "64020", "stack": "7000", "flags": str(ok | DENORMAL)},
         {"call": "predict", "outcome": "propagated", "height": "", "label": "", "cycles": "1220", "stack": "5004", "flags": str(ok)},
         {"call": "fuse_gnss_position", "outcome": "accepted", "height": "rejected", "label": "", "cycles": "3020", "stack": "9000", "flags": str(ok)},
+        {"call": "initialize_from", "outcome": "seeded", "height": "", "label": "", "cycles": "9020", "stack": "4000", "flags": str(ok)},
     ]
-    keys = summarize(rows, 160)
+    keys = summarize(rows, pairs("execute=160 renew=5000 new_window=900 seed=1000"))
+    # A seed's stack is beneath its arm's frame as well as the dispatcher's.
+    assert keys["initialize_from.stack"] == 4000 - 160 - 1000
+    assert keys["initialize_from.stack_raw"] == 4000
     assert keys["nop_cycles"] == 20 and keys["dispatch_stack"] == 160
     assert keys["predict.n"] == 3
     assert keys["predict.min"] == 1000 and keys["predict.max"] == 64000
