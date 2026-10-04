@@ -185,3 +185,232 @@ impl Eskf {
         true
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use nalgebra::{UnitQuaternion, Vector3};
+
+    use super::super::fixtures::*;
+    use crate::config::{Config, GRAVITY, Recovery};
+    use crate::eskf::Eskf;
+    use crate::gsf::tests::legs;
+    use crate::gsf::{YawEstimator, yaw_of};
+    use crate::health::{Fusion, Propagation, Status};
+    use crate::math::wrap_pi;
+    use crate::propagate::ImuSample;
+    use crate::units::{
+        Acceleration, AngularRate, HeadingNoise, MagField, Position, Seconds, Velocity,
+        VelocityNoise,
+    };
+
+    /// A vehicle held level at a true `yaw`, flown under `acceleration(t)`, the filter handed
+    /// what its sensors read: the IMU every step, and every 0.2 s a GNSS velocity at `sigma`
+    /// and whatever `also` offers.
+    struct Flight {
+        yaw: f32,
+        velocity: Vector3<f32>,
+        sigma: f32,
+        /// The last velocity's outcome, and how many were adopted.
+        last: Option<Fusion>,
+    }
+
+    impl Flight {
+        fn heading(yaw: f32) -> Self {
+            Self {
+                yaw,
+                velocity: Vector3::zeros(),
+                sigma: 0.1,
+                last: None,
+            }
+        }
+
+        fn fly(
+            &mut self,
+            filter: &mut Eskf,
+            seconds: f32,
+            acceleration: impl Fn(f32) -> Vector3<f32>,
+            mut also: impl FnMut(&mut Eskf),
+        ) {
+            let attitude = UnitQuaternion::from_euler_angles(0.0, 0.0, self.yaw);
+            let dt = DT.as_secs();
+            for k in 0..(seconds / dt).round() as u32 {
+                let a = acceleration(k as f32 * dt);
+                let force = attitude.inverse() * (a - Vector3::z() * GRAVITY);
+                let imu = ImuSample::reading(AngularRate::zero(), Acceleration::from_vector(force));
+                assert_eq!(filter.step(imu, DT), Propagation::Propagated);
+                self.velocity += a * dt;
+                if k % 20 == 19 {
+                    self.last = Some(filter.fuse_gnss_velocity(
+                        filter.now(),
+                        Velocity::from_vector(self.velocity),
+                        VelocityNoise::from_speed_accuracy(self.sigma),
+                        Position::zero(),
+                    ));
+                    also(filter);
+                }
+            }
+        }
+
+        fn error(&self, filter: &Eskf) -> f32 {
+            wrap_pi(yaw_of(filter.state().attitude.quaternion()) - self.yaw).abs()
+        }
+    }
+
+    fn still(_: f32) -> Vector3<f32> {
+        Vector3::zeros()
+    }
+
+    /// A magnetometer reading heading zero whatever the vehicle does: right for a vehicle
+    /// pointing north, and the fault for any other.
+    fn north(filter: &mut Eskf) {
+        let _ = filter.fuse_mag_heading(
+            filter.now(),
+            MagField::body(0.22, 0.0, 0.44),
+            HeadingNoise::from_sigma(0.1),
+        );
+    }
+
+    /// A static start whose window's magnetometer read north.
+    fn pointing_north(config: Config) -> Eskf {
+        let mut filter = Eskf::new(config).unwrap();
+        let _ = filter
+            .initialize_over(&window_with_mag(), Seconds::from_secs(0.25))
+            .unwrap();
+        assert!(filter.state().validity.heading);
+        filter
+    }
+
+    #[test]
+    fn a_multirotor_with_no_heading_sensor_takes_its_heading_from_its_legs() {
+        let mut filter = initialized();
+        let mut flight = Flight::heading(2.2);
+        flight.fly(&mut filter, 2.0, still, |_| {});
+        assert_eq!(filter.state().status, Status::Aligning);
+        assert_eq!(filter.diagnostics().yaw_estimator.adopted, 0);
+
+        flight.fly(&mut filter, 12.0, legs, |_| {});
+        let yaw = filter.diagnostics().yaw_estimator;
+        assert_eq!((yaw.adopted, yaw.recovered), (1, 0));
+        assert!(filter.state().validity.heading);
+        assert_eq!(filter.state().status, Status::Healthy);
+        assert!(flight.error(&filter) < 0.05, "{}", flight.error(&filter));
+        assert!(flight.last.is_some_and(|fusion| fusion.is_accepted()));
+    }
+
+    #[test]
+    fn a_cruise_with_no_acceleration_establishes_nothing() {
+        let mut filter = initialized();
+        let mut flight = Flight::heading(2.2);
+        flight.fly(&mut filter, 2.0, still, |_| {});
+        // At speed with no acceleration to get there: every hypothesis predicts the same
+        // velocity, so the estimator fuses for twenty seconds and separates nothing.
+        flight.velocity = Vector3::new(2.0, 0.0, 0.0);
+        let noise = VelocityNoise::from_speed_accuracy(0.1);
+        assert!(filter.reset_velocity_to(Velocity::from_vector(flight.velocity), noise));
+        flight.fly(&mut filter, 20.0, still, |_| {});
+        assert!(filter.yaw_estimator.yaw().is_some());
+        assert_eq!(filter.diagnostics().yaw_estimator.adopted, 0);
+        assert_eq!(filter.state().status, Status::Aligning);
+    }
+
+    #[test]
+    fn with_the_estimator_off_nothing_is_stepped_weighed_or_adopted() {
+        let mut filter = Eskf::new(Config {
+            yaw_estimator: false,
+            ..Config::default()
+        })
+        .unwrap();
+        let _ = filter
+            .initialize_over(&[crate::init::tests::still(); 8], Seconds::from_secs(0.25))
+            .unwrap();
+        let mut flight = Flight::heading(2.2);
+        flight.fly(&mut filter, 2.0, still, |_| {});
+        flight.fly(&mut filter, 12.0, legs, |_| {});
+        assert_eq!(filter.yaw_estimator, YawEstimator::default());
+        assert_eq!(filter.diagnostics().yaw_estimator, Default::default());
+        assert!(!filter.state().validity.heading);
+    }
+
+    #[test]
+    fn a_velocity_at_half_a_meter_a_second_of_sigma_is_not_weighed() {
+        let mut filter = initialized();
+        let mut flight = Flight::heading(2.2);
+        flight.sigma = 0.5;
+        flight.fly(&mut filter, 2.0, still, |_| {});
+        flight.fly(&mut filter, 12.0, legs, |_| {});
+        assert_eq!(filter.diagnostics().yaw_estimator.period(), None);
+        assert_eq!(filter.yaw_estimator.yaw(), None);
+    }
+
+    #[test]
+    fn a_heading_gnss_contradicts_is_replaced_and_the_velocity_adopted_with_it() {
+        let mut filter = pointing_north(Config::default());
+        let mut flight = Flight::heading(1.4);
+        flight.fly(&mut filter, 2.0, still, north);
+        assert!(flight.error(&filter) > 1.3);
+
+        flight.fly(&mut filter, 12.0, legs, north);
+        let d = filter.diagnostics();
+        assert_eq!((d.yaw_estimator.adopted, d.yaw_estimator.recovered), (1, 1));
+        // The velocity that tripped it is adopted on the spot, not after its 7 s.
+        assert_eq!(d.gnss_velocity.recovered, 1);
+        assert!(flight.error(&filter) < 0.05, "{}", flight.error(&filter));
+        // The magnetometer goes on reading north, and is turned down for it.
+        assert!(d.mag_heading.consecutive_rejections > 10);
+        assert!(flight.last.is_some_and(|fusion| fusion.is_accepted()));
+    }
+
+    #[test]
+    fn a_heading_that_agrees_is_left_alone() {
+        let mut filter = pointing_north(Config::default());
+        let mut flight = Flight::heading(0.3);
+        flight.fly(&mut filter, 2.0, still, north);
+        flight.fly(&mut filter, 12.0, legs, north);
+        // 17° off: inside `YAW_FAILURE`, so whatever GNSS makes of it, the yaw stays.
+        assert_eq!(filter.diagnostics().yaw_estimator.adopted, 0);
+        assert!(filter.yaw_estimator.yaw().is_some());
+    }
+
+    #[test]
+    fn with_its_recovery_off_a_wrong_heading_is_reported_and_kept() {
+        let mut filter = pointing_north(Config {
+            recovery: Recovery {
+                yaw_estimator: None,
+                ..Recovery::default()
+            },
+            ..Config::default()
+        });
+        let mut flight = Flight::heading(1.4);
+        flight.fly(&mut filter, 2.0, still, north);
+        flight.fly(&mut filter, 6.0, legs, north);
+        assert_eq!(filter.diagnostics().yaw_estimator.adopted, 0);
+        assert!(filter.diagnostics().gnss_velocity.rejected > 0);
+        assert!(flight.error(&filter) > 1.0);
+    }
+
+    #[test]
+    fn a_coasted_gap_starts_the_estimator_over_and_it_must_settle_again() {
+        let mut filter = pointing_north(Config::default());
+        let mut flight = Flight::heading(0.0);
+        flight.fly(&mut filter, 2.0, still, north);
+        flight.fly(&mut filter, 6.0, legs, north);
+        assert!(filter.yaw_estimator.yaw().is_some());
+        let gap = filter.step(crate::init::tests::still().imu, Seconds::from_secs(0.5));
+        assert!(matches!(gap, Propagation::Coasted { .. }));
+        assert_eq!(filter.yaw_estimator.yaw(), None);
+        assert!(!filter.yaw_estimator.is_settled());
+    }
+
+    #[test]
+    fn a_new_start_forgets_the_estimator() {
+        let mut filter = initialized();
+        let mut flight = Flight::heading(2.2);
+        flight.fly(&mut filter, 2.0, still, |_| {});
+        flight.fly(&mut filter, 12.0, legs, |_| {});
+        let _ = filter
+            .initialize_over(&[crate::init::tests::still(); 8], Seconds::from_secs(0.25))
+            .unwrap();
+        assert_eq!(filter.yaw_estimator, YawEstimator::default());
+        assert_eq!(filter.yaw_replaced, super::YawReplaced::default());
+    }
+}

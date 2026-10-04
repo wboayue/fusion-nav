@@ -411,7 +411,7 @@ fn condition(p: &mut Matrix3<f32>) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::config::GRAVITY;
     use crate::frames::Body;
@@ -488,7 +488,7 @@ mod tests {
 
     /// A multirotor's legs: two seconds of dash and two of brake at 2 m/s², each leg a
     /// quarter turn from the last.
-    fn legs(t: f32) -> Vector3<f32> {
+    pub(crate) fn legs(t: f32) -> Vector3<f32> {
         let leg = (t / 4.0) as u32;
         let sign = if t - leg as f32 * 4.0 < 2.0 {
             1.0
