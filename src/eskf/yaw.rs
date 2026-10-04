@@ -386,17 +386,12 @@ mod tests {
         // Three seconds of velocities 30 m/s out, too unsure of themselves for the estimator
         // to weigh: rejected for longer than the delay, with the two yaws in agreement.
         // Survives dropping the `YAW_FAILURE` test, which would turn the yaw here.
-        let (noise, now) = (VelocityNoise::from_speed_accuracy(0.6), filter.now());
+        let noise = VelocityNoise::from_speed_accuracy(0.6);
         let wild = Velocity::from_vector(flight.velocity + Vector3::new(30.0, 0.0, 0.0));
-        for step in 1..=15 {
-            let taken = now.after(Seconds::from_secs(0.2 * step as f32));
-            assert_eq!(
-                filter.step(crate::init::tests::still().imu.timed(taken, DT), DT),
-                Propagation::Propagated
-            );
+        hold(&mut filter, 3.0, 20, |filter| {
             let fusion = filter.fuse_gnss_velocity(filter.now(), wild, noise, Position::zero());
             assert!(matches!(fusion, Fusion::Rejected { .. }), "{fusion:?}");
-        }
+        });
         assert_eq!(filter.diagnostics().yaw_estimator.adopted, 0);
         assert!(filter.yaw_estimator.yaw().is_some());
     }
