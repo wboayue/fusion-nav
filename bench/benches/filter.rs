@@ -127,6 +127,20 @@ fn hot_path(c: &mut Criterion) {
         |f| f.fuse_course(now(), HeadingNoise::from_sigma(0.05)),
         accepted,
     );
+    // On a still start rather than the flight, which a stationary claim would rightly be rejected
+    // against.
+    let mut still = Eskf::default();
+    assert!(still.initialize(&window()).is_ok());
+    bench_fusion(
+        c,
+        "fuse_stationary",
+        &still,
+        |f| {
+            let time = f.time().unwrap_or_default();
+            f.fuse_stationary(time, VelocityNoise::from_speed_accuracy(0.1))
+        },
+        accepted,
+    );
 }
 
 fn start(c: &mut Criterion) {

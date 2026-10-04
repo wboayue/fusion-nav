@@ -458,6 +458,7 @@ live with the decision.
 | [declination](#magnetic-declination-from-a-table-read-where-the-origin-is-placed) | a WMM table read where the origin is placed | zero until the caller sets it, or a dated lookup |
 | [sensor offsets](#sensor-offsets-as-per-call-arguments) | the antenna as an argument to each GNSS call, in `H` | a `Config` field, or correcting the measurement alone |
 | [rejection handling](#rejection-handling-recover-by-default-opt-out-per-source) | recover by adoption, switched per source | report and leave recovery to the application |
+| [holding tilt](#holding-tilt-without-aiding) | a position hold behind a 3° gate, fused at (24′), and a caller's stationary claim | no hold, PX4's and ArduPilot's white hold |
 | [ecosystem coherence](#ecosystem-coherence-dropped) | dropped as a differentiator | one convention across sibling crates |
 
 ### Per-quantity validity, not one ladder
@@ -946,6 +947,98 @@ vehicle carrying no barometer; only the 35575 `NoReference` refusals beside it t
 
 See [gate lockout](EQUATIONS.md#gate-lockout) and
 [measurement rejection](DESIGN.md#measurement-rejection).
+
+### Holding tilt without aiding
+
+Without horizontal aiding nothing observes tilt, so a filter that loses GNSS loses its attitude
+on the schedule `ImuNoise` sets while the true error may still be small: `gnss_outage` lost its
+tilt 5.8 s into a 20 s gap, and the corpus's two logs with no GNSS lost theirs at 9.83 s and
+10.32 s. A multirotor flies on its tilt. Both production estimators fuse a synthetic position
+while unaided: PX4's fake position (`fake_pos_control.cpp:47-82` at `c4e4ef98`) and ArduPilot's
+`AID_NONE` (`AP_NavEKF3_Control.cpp:416-420` at `368dc0c4`), each at 10 m.
+
+**Decided:** two observations from an assumption, equations (28″) and (29″).
+
+- **The position hold**, filter-driven, `Config::hold`. Once no GNSS position or velocity has been
+  judged within `Timeouts::dead_reckoning_after` (a start that has heard none meets that from its
+  first step) and the tilt σ has passed 3°, `predict` fuses the
+  position estimate from when the hold engaged, every 0.2 s at 10 m, at (24′)'s `τ` of 2 s. It
+  releases below 3° and re-anchors when it next engages. It is not aiding: `Status` stays
+  `DeadReckoning`, horizontal position and velocity each stay invalid until a measurement of that
+  quantity is accepted or adopted, and the first GNSS fix or velocity the gate turns down after
+  it is adopted at once. `Config::hold = None` turns it off,
+  as rejection handling turns its corrections off.
+- **The stationary claim**, caller-driven, `Eskf::fuse_stationary`: zero velocity on all three axes at
+  the caller's `R`, for a vehicle it knows is still. Zero velocity rather than PX4's constant
+  position (`EKF2_POS_LOCK`), because velocity is what the caller knows and it observes tilt one
+  integration nearer. Never adopted.
+
+**Measured against** the hold PX4 and ArduPilot fuse, and the parts of it taken one at a time, on
+`gnss_outage` (a 20 s gap over the circuit's fastest turns), `hover_outage` (a 90 s gap in a hover
+drifting 27 m) and the corpus. DESIGN.md, "Hold", has the tables.
+
+- **Held from the first unaided step and white**, ArduPilot's form: `gnss_outage` claimed tilt
+  valid while wrong for 3092 epochs at 10 m (2707 at 3, 2561 at 30), tilt 0.340° → 2.68° RMS. PX4's 3°
+  gate is what spares a vehicle that is still flying: behind it the hold engages 6 times there.
+  PX4's other half, resetting velocity to zero when the hold starts, read 112 such epochs where
+  the gate alone read none.
+- **White behind the gate**, PX4's form: attitude held valid through `hover_outage`, by a
+  covariance overconfident on every block over 50 seeds (`anees_pos` 61, `over_vel` 0.24, and
+  attitude at GNSS's return). One assumption read five times a second is one error, which
+  (24) cannot represent and (24′) can. At 2 s every block passes; at 1 s `anees_pos` reads 46. The
+  estimate improves too: `pos_h` 36.4 m → 7.67 against no hold, where white read 38.0, and
+  attitude holds to 35.72 s rather than 25.32.
+- **Latched** rather than released below 3°: `gnss_outage` failed every block.
+- **σ** at 3, 10 and 30 m under the gate and (24′): only 10 passes both scenarios' ANEES. 3 m is
+  overconfident on `hover_outage`, and 30 m too weak to pull tilt back under 3°, so it stays
+  engaged through `gnss_outage`'s turns (59 holds, `pos_h` 12.8 m).
+- **Engaging on acceptance** rather than on silence: `7ce66f0d`, whose receiver the gate turns down
+  for seconds at a time, went from 27 recoveries to 62. A receiver the gate rejects is
+  `Recovery`'s.
+- **Corpus:** `f16771dd`, whose EKF2 ran its own fake position, agrees with it on tilt at 0.92° RMS
+  against 1.73° with no hold and 0.67° white, and on east velocity at 0.56 m/s against 2.42.
+  `7592c9b2`, against LPE, 0.75° → 0.25°. Every other log reads `holds=0` save `2c42096b`'s 4 and
+  `7ce66f0d`'s 1, and with the hold off every log reproduces the filter without it byte for byte.
+
+- **A car**, UrbanNav's, which keeps driving through GNSS gaps: the F9P's 131 s gap reads `pos_h`
+  334 m → 124 under the hold, but `nees_pos` 1.02 → 32 and tilt 1.40° → 1.70°; the M8T without
+  recovery 408 m → 945, no fix after a gap ever adopted. Engaging only while the estimated velocity
+  was consistent with zero, read from its own covariance, left the simulator and corpus unmoved
+  and the car no better: the F9P's `nees_pos` 17.9 to 87.6 across four variants, against the
+  hold's 27 on that build, and the M8T without recovery 0.6 to 9.8 km against 408 m with no
+  hold.
+  So UrbanNav is pinned under `--hold off`, a car's configuration, with the F9P under the default
+  hold beside it.
+
+**Costs:** the hold is a hover assumption, and in motion it holds for a short gap only.
+`gnss_outage`'s circuit passes every ANEES block through its 20 s gap. With the gap lengthened
+to 40 s the hold fails position (`any_pos` 898 over 50 seeds) and at 60 s more so (`any_pos`
+4898, `over_pos` 0.15), where the filter without the hold passes both; attitude passes
+throughout (`any_att` 0), and `Validity` reports the position invalid. The 3° bar is what keeps
+the 20 s gap passing: at 2.5° it fails all three blocks. `long_outage` pins the 60 s gap, with
+`pos_h` 16.0 m against 7.38 without the hold, and `data/anees.txt` asserts its failure (#214).
+
+Where one fusion pulls the tilt σ back under 3°, the hold anchors, fuses once and releases, and
+a hold fused on the step it anchors has zero innovation: it narrows the covariance and corrects
+nothing. `gnss_outage`'s 6 holds, `2c42096b`'s 4 and `7ce66f0d`'s 1 are all of that kind, so
+`attitude_lost` moving to `never` on those is the covariance narrowed, not a tilt held. Not
+measured: an engagement that anchors and waits an interval before it fuses (#214).
+
+ A vehicle that keeps moving without GNSS, a car or a
+fixed-wing, should set `Config::hold = None`: under it the position covariance narrows around a
+place the vehicle has left. A multirotor that flies on through the hold reads partly as tilt
+error and has its velocity pulled toward zero; the gate and (24′) bound that rather than remove
+it. Attitude goes
+invalid when its honest σ crosses `Accuracy::tilt`, sooner than the white hold claims. `f16771dd`
+agrees with EKF2 less than the white hold does, which is the form EKF2 itself runs. `predict`
+grows a branch and, while held, a 2-D update every 0.2 s, so its worst case is an update's
+(#41), and its deepest stack is the hold's, still under the crate's peak
+([validation/cost.md](validation/cost.md)). The stationary claim is only as true as the caller making it, and one made in
+motion reads as tilt until the gate turns it down.
+
+Not built: a corpus source for the stationary claim. PX4 logs `vehicle_land_detected.at_rest`, and
+reading it is a converter change, batched with the next. EKF2's verdict on its own fake
+position, `estimator_aid_src_fake_pos`, joins the comparison in the same batch.
 
 ### Ecosystem coherence, dropped
 

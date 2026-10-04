@@ -303,6 +303,12 @@ real moving-baseline yaw within 0.010 rad of EKF2's at rest; it logs no `heading
 variance is PX4's 0.1 rad floor, the value its EKF2 fused at, and a header line says so. It is
 dated by the GNSS delay, as its fix is.
 
+A `stationary` row carries no value, only `var0` to `var2`, the velocity variance of the application's
+claim that the vehicle is at rest, and the harness hands it to `fuse_stationary`. The simulator's
+`bench` scenario writes one at the GNSS rate; the converter writes none, so no corpus log has one.
+The position hold has no input row: the filter fuses it itself, and the harness reads each hold
+back from `Diagnostics` after the step, as a `hold` row of the fusion CSV.
+
 Every fix is the antenna's, and a `# GNSS antenna <forward> <right> <down> m` header line says where
 the antenna sat relative to the IMU, as the log's own EKF2 applied it: `SENS_GPS0_OFF*` (or
 `EKF2_GPS_POS_*` before the rename) less `EKF2_IMU_POS_*`, or the per-message `antenna_offset_*`
@@ -604,7 +610,9 @@ floor; `px4` under `--r-policy px4`, which only `data/ekf2.txt` pins), `course=`
 (choices too: the sideslip in degrees the course constraint was fused at after each `gnss_vel`
 row, from `--course` or a `# Course sideslip` header line, or `off`; and the input source
 `--without` dropped, or `none`; `off` and `none` on every manifest entry, so a figure from a log
-replayed as a vehicle without its magnetometer says so), `rejected=` and `discarded=` (the gate's verdict, and everything that never reached it — a
+replayed as a vehicle without its magnetometer says so), `hold=` and `holds=` (the position
+hold's σ in meters, the default unless `--hold <σ>` set another, or `off` under `--hold off`; and
+how many holds the filter fused or turned down), `rejected=` and `discarded=` (the gate's verdict, and everything that never reached it — a
 variance of zero or less, a NaN, an altitude with no reference; both count verdicts, so a GNSS
 fix judged or refused whole counts once per half), `refused=` and `invalid=` (steps
 refused as too long or as not a step at all — propagation, not measurements), `floored=`
@@ -805,7 +813,8 @@ harness checks as it checks a scenario's seed.
 What a fix's `bad` verdict means is `Judged`'s doc comment in `examples/replay/main.rs`: the gate a
 perfect state would run, at P999 on the fix's own variance, fixed whatever `Config::gates` or
 `--r-policy` the replay used. `data/urbannav-pins.txt` pins what each receiver did under both
-policies, and the M8T under `--recovery off`, and says what the lines show. Only these scalars are published
+policies, and the M8T under `--recovery off`, every run under `--hold off`, a car's
+configuration, with the F9P under the default hold beside them, and says what the lines show. Only these scalars are published
 ([robustness page](../validation/robustness.md#gnss-in-a-city)); no figure of the data is.
 
 ## INSANE

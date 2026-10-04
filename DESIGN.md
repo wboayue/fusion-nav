@@ -55,12 +55,12 @@ with its time and its uncertainty.
 | module | holds |
 | ------ | ----- |
 | `src/eskf.rs` | `Eskf`, the whole public filter: its fields, `state`, the floor of (42′) every covariance passes through, and `Status` |
-| `src/eskf/` | `Eskf`'s methods by topic, one `impl Eskf` each: `start` (`initialize*`), `site` (origin, declination, barometric reference), `predict`, `fuse` (the shared update path, GNSS and barometer), `heading`, `adopt` (`reset_*_to`, and the writers an adoption or a recovery commits), `validity`; `estimate`, the state and its history; `fixtures`, what the modules' tests share |
+| `src/eskf/` | `Eskf`'s methods by topic, one `impl Eskf` each: `start` (`initialize*`), `site` (origin, declination, barometric reference), `predict`, `fuse` (the shared update path, GNSS and barometer), `heading`, `hold` (the stationary claim, and the position hold `predict` runs while unaided), `adopt` (`reset_*_to`, and the writers an adoption or a recovery commits), `validity`; `estimate`, the state and its history; `fixtures`, what the modules' tests share |
 | `src/init.rs` | initialization types (`StaticSample`, `StaticWindow`, `Alignment`, `Coarse`, `InitError`) and the pure functions the `initialize*` methods commit |
 | `src/propagate.rs` | `ImuSample`; equations (9)–(22), the coast of (22′), and `error_dynamics`, the `A` that (23′) carries `H` through |
 | `src/history.rs` | the recent past of the nominal state, which a measurement is fused against at the time it was taken, equation (23′) |
 | `src/update.rs` | the update every observation shares: (23)–(27) in Joseph form, the gate of (37)–(38), the injection and reset of (39)–(41) |
-| `src/observation/` | one module per sensor forming `y`, `H` and `R_m`: `gnss.rs` (28)–(29) at the antenna, `baro.rs` (30), `mag.rs` (34)–(35) and (36′), `heading.rs` (36), (35′) and (35″) |
+| `src/observation/` | one module per sensor forming `y`, `H` and `R_m`: `gnss.rs` (28)–(29) at the antenna, `baro.rs` (30), `mag.rs` (34)–(35) and (36′), `heading.rs` (36), (35′) and (35″); and `hold.rs`, the assumed (28″) and (29″) |
 | `src/math.rs` | the primitives the equations share: `skew`, `exp_quat`, `wrap_pi`, and the symmetry enforcement of (42) |
 | `src/state.rs` | `State`, `Covariance`, and `ErrorState`, whose order defines the covariance layout `[δp δv δθ δβa δβg]` |
 | `src/health.rs` | `Propagation`, `Fusion`, `Status`, `Validity`, per-source diagnostics |
@@ -227,6 +227,22 @@ trusted without looking like an observation of the tilt that spoiled it, which a
 
 See [magnetometer, heading only](EQUATIONS.md#magnetometer-heading-only).
 
+### Holding tilt without aiding
+
+Two observations make their `z` from an assumption, and both reuse a GNSS model rather than
+adding one: (28″) is (28)'s horizontal rows against an anchor, (29″) is (29) against zero.
+
+* **The position hold** has no caller. `predict` runs it after a committed step, once no GNSS
+  position or velocity has been judged within `dead_reckoning_after` and the tilt σ has passed 3°,
+  which is why it lives beside `fuse_stationary` in `eskf/hold.rs` and not in `fuse.rs`. Its
+  verdicts reach `Diagnostics::position_hold` as any source's do, and the replay harness reads
+  them back after each step, there being no call to hang a row on.
+* **The stationary claim** is `fuse_stationary`, an ordinary `fuse_*` the application calls.
+
+Neither counts toward `Status`, neither is adopted, and the hold keeps horizontal position and
+velocity invalid, each until a measurement of it is accepted or adopted. See [holding tilt without aiding](EQUATIONS.md#holding-tilt-without-aiding),
+and [the decision](GOALS.md#holding-tilt-without-aiding) for what it was measured against.
+
 ## Innovation Gating
 
 Each source has its own gate, a chi-square test in the observation's degrees of freedom. One
@@ -297,6 +313,7 @@ was measured together, at the commit named where the code has moved since.
 | `update::<1>` | the second factor costs 320 (64) |
 | `reparameterize` (in `update`) | the full `G P Gᵀ` cost 864 more of `update`'s frame |
 | `fuse_gnss_velocity` → `update::<3>` | the crate's deepest path; `apply_or_recover` out of line sits beside `update` rather than above it. Inlined, it cost `fuse_gnss_velocity`'s frame 984 (2384 against 1400, a434a30); walked through the call graph at 9e3fcca, it costs `fuse_gnss_position`'s 1024 and moves the peak to a geodetic fix, 12272 against 11408 |
+| `predict` → `hold_if_unaided` | run by `predict` after the step returns, with the step out of line in `propagate_or_coast`, so the hold's update sits beside propagation's frame rather than above it. Called inside `commit_step` instead, the chain went `predict` 2160, `commit_step` 984, `hold_if_unaided` 2304, `update::<2>` 7344: 14712 on `thumbv7em`, the crate's peak by 3.4 KB. Beside it, `predict`'s chain was 10584 (#210, measured together). The hold commits through `apply_or_recover` out of line: inlined `apply` was most of its 2304 |
 | `Eskf::observe::<3>` | `Observation::delayed` 752 and `error_dynamics` 400 beneath it; inlined into `fuse_gnss_velocity` it put the high-water mark at 10800 against 9520 (a434a30), and walked at 9e3fcca at 11760 against 11408 |
 | `Eskf::fuse_heading` | one frame for every heading source, its largest instance the magnetometer's; read by hand, the course's path through it peaked at 7872 against 7624 with `fuse_mag_heading` doing the work in a frame of its own (eaf3b81) |
 | `Eskf::adopt_position`, `adopt_velocity` | inlined, +976 on `fuse_gnss_position` and +952 on `fuse_gnss_velocity`; out of line they follow `update` rather than stacking on it |
@@ -478,6 +495,74 @@ the default `acceleration`; 3.12 s at 954 s all of it and a quarter of the `rota
 prints 4.0 and 0.05 there: by its 10 s test the default `acceleration` has no margin on its own
 log, and the default `rotation` is twice what it prints. `2b2ad123`'s gaps need neither field;
 `f16771dd` has no GNSS after its gaps to say. Both keep the default.
+
+### `Hold`
+
+The position hold of (28″): σ 10 m, PX4's and ArduPilot's default; engaged past the 3° tilt σ PX4
+reads; fused at (24′) with `τ` = 2 s. Each choice was measured on `gnss_outage` (20 s without
+GNSS over the circuit's fastest turns), `hover_outage` (90 s without GNSS in a hover drifting
+27 m) and the corpus's two logs with no GNSS, `f16771dd` (EKF2's reference, which runs PX4's hold)
+and `7592c9b2` (LPE's). Scenario figures are one seed's `score` line; ANEES is 50 seeds.
+
+The tables hold two builds. The shipped rows (no hold; the gate with (24′) at 2 s; `τ` 2 s;
+UrbanNav's first two columns), the white hold behind the gate and the whole σ table are measured
+on the hold as it ships. Every other row was measured on the build before its review, which kept the 0.2 s
+interval across a release and latched validity and recovery per quantity, and on which the
+shipped rows read within 1.5 % of these, UrbanNav's F9P `nees_pos` excepted: 27 there, 32.01
+here. Compare a rejected row with the shipped one for its direction, not its last digit.
+
+The forms, at 10 m, on one seed:
+
+| form | `gnss_outage` tilt | `false_valid_att` | `hover_outage` `pos_h` | attitude lost |
+| --- | --- | --- | --- | --- |
+| no hold | 0.340° | 0 | 36.42 m | 25.32 s |
+| white, from the first unaided step | 2.682° | 3092 | 11.23 m | never |
+| white, PX4's gate and velocity reset | 0.936° | 112 | 10.50 m | never |
+| white, PX4's gate | 0.344° | 0 | 37.97 m | never |
+| PX4's gate, (24′) at 2 s | 0.342° | 0 | 7.670 m | 35.72 s |
+
+The white forms are overconfident where it matters. Behind the gate, 50 seeds of `hover_outage`
+read `anees_pos` 61.00, `over_vel` 0.24 and `any_att` 40, the last at GNSS's return, against
+bounds every block of the no-hold filter meets. (24′) prices one assumption read five times a
+second as one error:
+
+| `τ` | `hover_outage` `anees_pos` | attitude lost | `f16771dd` tilt to EKF2 | `7592c9b2` tilt to LPE |
+| --- | --- | --- | --- | --- |
+| white | 61.00 (fails) | never | 0.668° | 0.749° |
+| 1 s | 46.06 (fails) | never | 0.749° | 0.749° |
+| 2 s | 0.41 | 35.72 s | 0.922° | 0.252° |
+| 5 s | 0.24 | 30.72 s | 0.984° | 0.287° |
+| 60 s | passes | 27.95 s | 1.184° | 0.398° |
+
+With no hold the two logs read 1.729° and 0.750°. 2 s is the shortest `τ` measured that passes,
+and the most accurate that does. At 1 s the hold is strong enough to pull tilt σ back under 3°
+and release, 106 holds against 382 at 2 s on that build; why that leaves the ensemble overconfident is not
+established. Latched instead, held until aiding returns, `gnss_outage` failed every block
+(`any_pos` 1794 at 2 s).
+
+σ under the gate and (24′):
+
+| σ | `hover_outage` `pos_h` | `gnss_outage` holds, `pos_h` | ANEES | `f16771dd` tilt | `7592c9b2` tilt |
+| --- | --- | --- | --- | --- | --- |
+| 3 m | 38.56 m | 3, 1.787 m | `hover_outage` fails (`over_pos` 0.47) | 0.676° | 0.749° |
+| 10 m | 7.670 m | 6, 1.680 m | passes | 0.922° | 0.252° |
+| 30 m | 10.68 m | 59, 12.76 m | `gnss_outage` fails (`any_pos` 734) | 1.084° | 0.342° |
+
+On UrbanNav's car, which keeps driving through its gaps, the hold is the wrong assumption. Engaging
+only while `v̂ᵀ P_vv⁻¹ v̂` read the horizontal velocity as consistent with zero moved nothing on the
+simulator or the corpus, whose unaided vehicles are near still, and worsened the car:
+
+| run | no hold | the hold | velocity at P95, engagement | velocity at P999, every fusion |
+| --- | --- | --- | --- | --- |
+| F9P `pos_h` | 334.2 m | 123.8 m | 105.0 m | 334.2 m |
+| F9P `nees_pos` | 1.016 | 32.01 | 17.86 | 87.58 |
+| F9P tilt | 1.398° | 1.702° | 2.127° | 1.404° |
+| M8T `pos_h` | 254.5 m | 212.6 m | 278.8 m | 249.1 m |
+| M8T without recovery, `pos_h` | 407.6 m | 945.4 m | 9583 m | 9811 m |
+
+Engaged on acceptance rather than on silence, the hold ran through `7ce66f0d`'s rejection runs
+and recoveries went from 27 to 62 (white, from the first unaided step), with tilt to EKF2
+3.61° → 5.75°. Read on silence it holds there once and moves nothing.
 
 ### `Correlation`
 

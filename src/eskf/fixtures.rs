@@ -68,6 +68,21 @@ pub(super) fn initialized() -> Eskf {
     filter
 }
 
+/// [`initialized`] with the position hold off: for a test of what an unaided filter does
+/// without it, which the default hold would otherwise bound.
+pub(super) fn unheld() -> Eskf {
+    let mut filter = Eskf::new(Config {
+        hold: None,
+        ..Config::default()
+    })
+    .unwrap();
+    let alignment = filter
+        .initialize_over(&[still(); 8], Seconds::from_secs(0.25))
+        .expect("a 2 s window of stillness");
+    assert_eq!(alignment, Alignment::Static);
+    filter
+}
+
 /// The same window with a barometer reading on every sample, scattered about `altitude`
 /// as a real one is. Eight identical readings are one reading held, which sets no
 /// reference. The offsets are exact in binary, so the mean is exactly `altitude`.

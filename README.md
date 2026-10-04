@@ -370,6 +370,19 @@ are integrated over their own intervals. The result is `#[must_use]`:
 | `StateNotFinite` | the propagated **state** did, so it was discarded; a finite sample can still overflow f32 through (11)–(14) |
 | `NotInitialized` | no state to propagate |
 
+Without horizontal aiding nothing observes tilt, so it grows on the schedule `ImuNoise` sets. Once
+no GNSS position or velocity has been judged within `Timeouts::dead_reckoning_after`, which a
+start that has heard none meets from its first step, and the tilt σ has passed 3°, a committed
+step also fuses a **position hold**: the estimate's own position from
+when the hold engaged, at `Config::hold`'s σ (10 m), five times a second
+([equation (28″)](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#holding-tilt-without-aiding)).
+Bounding position bounds velocity, which is what lets the accelerometer level the filter. It is an
+assumption, not a sensor: `Status` stays `DeadReckoning`, horizontal position and velocity each
+stay invalid until measured again, and the first GNSS fix the gate turns down after it is adopted
+at once. `Config::hold = None` turns it off. PX4's fake position and ArduPilot's `AID_NONE` do
+the same; this one is fused as correlated, (24′), which keeps the covariance honest for a vehicle
+that stays put. One that flies on is among the [limitations](#limitations).
+
 ### Measurements
 
 | method | measurement |
@@ -381,6 +394,7 @@ are integrated over their own intervals. The result is `#[must_use]`:
 | `fuse_mag_heading(time, field, noise)` | body-frame field, reduced to a heading and fused as one scalar |
 | `fuse_gnss_heading(time, heading, noise)` | true heading from a dual-antenna receiver, the mounting angle already removed |
 | `fuse_course(time, sideslip)` | a constraint rather than a reading: the nose points along the estimated velocity, to within `sideslip`. Call it after `fuse_gnss_velocity`, with that fix's `time`. Fixed-wing and ground vehicles; never a multirotor |
+| `fuse_stationary(time, noise)` | a claim rather than a reading: the vehicle is still, so velocity is zero on every axis. Call it while a landed detector or the application knows it; it holds tilt on a bench with no GNSS, and a claim the gate turns down is never adopted |
 
 Both GNSS position calls return a `GnssFusion`, a `Fusion` for each half of the fix, `horizontal`
 and `height`, because the two are gated apart. A height the estimate disagrees with is rejected
@@ -478,10 +492,10 @@ Three questions, three answers:
 
 | `Status` | meaning |
 | -------- | ------- |
-| `DeadReckoning` | neither GNSS position nor velocity has been accepted for `Config::timeouts.dead_reckoning_after`; horizontal position drifts without bound, whatever the barometer and magnetometer still hold |
+| `DeadReckoning` | neither GNSS position nor velocity has been accepted for `Config::timeouts.dead_reckoning_after`; horizontal position is dead reckoned or held by the position hold, unusable either way, whatever the barometer and magnetometer still hold |
 | `Aligning` | running and aided, but attitude has not converged: a coarse start still learning, or a heading no magnetometer has observed yet |
 | `Degraded` | a source has timed out; horizontal position is still aided |
-| `Healthy` | every source that has been fused is still accepted, and attitude has converged; the course constraint, which reads no sensor, is not counted |
+| `Healthy` | every source that has been fused is still accepted, and attitude has converged; the course constraint, the stationary claim and the position hold, which read no sensor, are not counted |
 
 When several apply the most severe wins, in the order of the table: `DeadReckoning` > `Aligning` >
 `Degraded` > `Healthy`. So a vehicle waiting for its first GNSS fix reads `DeadReckoning`, not
@@ -530,8 +544,8 @@ position to propagate, and that fixes are arriving is the whole answer.
 Tilt is where it matters most, because nothing aids it: a static window brings it in, and the
 gyroscope's noise and bias uncertainty take it back out on a schedule only the covariance knows.
 At default noise an unaided start keeps valid tilt for 10.3 s after a 2 s window that measured
-its gyroscope, and 4.84 s after one whose gyroscope never scattered. A horizon shorter than that
-arms; a longer one does not.
+its gyroscope, and 4.84 s after one whose gyroscope never scattered, with the position hold off.
+The hold engages at that bar and is not projected. A horizon shorter than that arms; a longer one does not.
 
 `Accuracy::horizon` is the one number in the crate no data could settle: how long after arming
 you need the estimate. It defaults to 1 s. At zero nothing is projected, leaving the aiding clause
@@ -716,6 +730,7 @@ What is not a rename:
 | `recovery.*` | none; constants | none; constants |
 | `correlation.*` | none; neither models a source's error as correlated in time | none |
 | `coast` | none | none |
+| `hold` | `EKF2_NOAID_NOISE`; the fake position, fused as white | `EK3_NOAID_M_NSE`; `AID_NONE`'s synthetic position, fused as white |
 | `init.sigma_tilt` | `EKF2_ANGERR_INIT` | none; 0.1 rad, a constant |
 | `init.sigma_accel_bias`, `init.sigma_gyro_bias` | `EKF2_ABIAS_INIT`, `EKF2_GBIAS_INIT` | `EK3_ACC_BIAS_LIM` × 0.2; a per-sensor constant |
 | `init.sigma_position`, `init.sigma_velocity` | the GNSS noise parameters, reused as a prior | the same |
@@ -735,10 +750,10 @@ What is left out:
   `EKF2_SENS_EN` and `EK3_SRC*` select sources, which here is which `fuse_*` the caller calls.
   Magnetic-field states, airspeed, range, flow, wind, drag and multiple lanes are
   [non-goals](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#non-goals).
-* **Candidates, each needing evidence first,** neither refused nor built: a stationary or
-  zero-velocity observation (`EKF2_POS_LOCK`, `EK3_NOAID_M_NSE`), a magnetometer disturbance check
-  (`EKF2_MAG_CHECK`), and bad vertical-accelerometer detection (PX4's `bad_acc_vertical`,
-  ArduPilot's `badIMUdata`), reported through `Diagnostics`.
+* **Candidates, each needing evidence first,** neither refused nor built: a magnetometer
+  disturbance check (`EKF2_MAG_CHECK`) and bad vertical-accelerometer detection (PX4's
+  `bad_acc_vertical`, ArduPilot's `badIMUdata`), reported through `Diagnostics`. PX4's
+  `EKF2_POS_LOCK` is `fuse_stationary` here, called by the application rather than set.
 * **Declined until a log shows need:** a barometer ground-effect dead zone (`EKF2_GND_EFF_DZ`,
   `EK3_GND_EFF_DZ`) and inhibiting accelerometer-bias learning under hard maneuvers
   (`EKF2_ABL_ACCLIM`). Each is a threshold on the airframe, a knob data could settle.
@@ -790,6 +805,14 @@ issue that removes them, where one is open.
   until `Config::recovery` adopts a fix. `cargo run --example replay -- --derive <log>` prints
   the densities a vehicle's own logged gaps need, among the rest of a `Config` derived from the
   log ([deriving a `Config`](https://github.com/wboayue/fusion-nav/blob/main/data/README.md#deriving-a-config)).
+* **The position hold assumes the vehicle stays put.** A car or a fixed-wing, which keeps moving
+  without GNSS, should set `Config::hold = None`. While it holds, a multirotor that keeps
+  flying reads partly as tilt error, which the 3° gate and (24′) keep small, and the position it
+  reports is pulled toward where the hold engaged. That is why position stays invalid
+  until a fix is accepted or adopted after it. A long outage flown through also leaves the
+  position covariance overconfident: the simulated circuit passes its consistency bound through
+  a 20 s gap and fails it at 40 s, where the filter without the hold passes (#214). See
+  [holding tilt without aiding](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#holding-tilt-without-aiding).
 * **Local tangent plane.** Position is Cartesian NED about a fixed origin. The geodetic
   conversion is exact at any range
   ([equation (43)](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#geodetic-origin)),

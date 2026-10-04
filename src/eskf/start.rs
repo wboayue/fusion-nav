@@ -14,6 +14,7 @@ use crate::propagate::ImuSample;
 use crate::state::{Covariance, Offset, State};
 use crate::units::{Altitude, Timestamp};
 
+use super::hold::HoldState;
 use super::{Eskf, Unestablished};
 
 impl Eskf {
@@ -366,6 +367,8 @@ impl Eskf {
         // A fresh start is unaligned until its own covariance says otherwise, which
         // `note_alignment` reads at the end of each entry point.
         self.aligned = false;
+        // A hold belongs to the life it held; the next outage anchors afresh.
+        self.hold = HoldState::default();
     }
 }
 

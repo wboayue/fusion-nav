@@ -30,6 +30,11 @@ impl Eskf {
     /// here: this writes `noise` straight onto the covariance diagonal, with no gate and
     /// no innovation to dilute it. See [`Fusion::NotFinite`](crate::Fusion::NotFinite) and
     /// [`Fusion::InvalidNoise`](crate::Fusion::InvalidNoise).
+    ///
+    /// A reset is not aiding. While the position hold of [`Config::hold`](crate::Config::hold)
+    /// is engaged it fuses again within 0.2 s, about the position set here, and
+    /// [`Validity`](crate::Validity) reads the quantity invalid again: a position that is to
+    /// stay valid without a sensor wants the hold off.
     #[must_use = "a refused reset leaves the estimate where it was, still dead-reckoning"]
     pub fn reset_position_to(
         &mut self,
@@ -92,6 +97,9 @@ impl Eskf {
             ..*self.estimate.state()
         });
         self.reset_block(axes, variances);
+        if axes.contains(&ErrorState::PositionNorth) {
+            self.hold.end_position();
+        }
     }
 
     /// Recover GNSS height: adopt the down axis, and let the barometer read its reference
@@ -127,6 +135,7 @@ impl Eskf {
             ],
             noise.variance(),
         );
+        self.hold.end_velocity();
     }
 
     /// Read `α₀` from the estimate at one altitude, `α̂₀ = α + p̂_D` — (30) solved for α₀ with
@@ -500,7 +509,7 @@ mod tests {
 
     #[test]
     fn a_fix_rejected_past_the_timeout_is_adopted_and_its_height_is_left_to_its_own_gate() {
-        let mut filter = initialized();
+        let mut filter = unheld();
         // Rejected for everything short of `Recovery::gnss_position`, counted from
         // initialization since nothing was ever accepted.
         hold(&mut filter, 6.9, 100, |filter| {
@@ -667,7 +676,7 @@ mod tests {
 
     #[test]
     fn a_locked_out_velocity_is_adopted() {
-        let mut filter = initialized();
+        let mut filter = unheld();
         let velocity = Velocity::ned(20.0, 0.0, 0.0);
         let noise = VelocityNoise::from_speed_accuracy(0.3);
         hold(&mut filter, 6.9, 100, |filter| {

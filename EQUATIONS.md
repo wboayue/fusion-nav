@@ -955,6 +955,8 @@ time, (23′), reaches further through $`A`$.
 | (30′) with the offset | down | | | | | ● |
 | (36) heading: magnetometer (34)–(35), dual antenna (35′) | | | ● | | | |
 | (35″) course | | ● | ● | | | |
+| (28″) position hold | north, east | | | | | |
+| (29″) stationary claim | | ● | | | | |
 
 No observation touches $`\delta\beta_a`$: the accelerometer bias is learned only through (17)'s
 coupling, and at rest that coupling cannot separate its horizontal part from tilt.
@@ -1292,6 +1294,38 @@ speed threshold is the velocity's own accuracy rather than a parameter. An adopt
 $`\sigma_\beta^2 + \sigma_\chi^2`$. The sideslip persists as long as the wind and the trim do,
 which (24′) prices. (24′) cannot observe it, though, so the heading is no better than $`\beta`$.
 
+### Holding tilt without aiding
+
+Two observations whose $`z`$ comes from an assumption rather than a sensor. Without horizontal
+aiding nothing above observes tilt: it reaches (28) and (29) only through (17)'s
+$`-R(\hat{q})[a_b]_\times`$, and with neither fused its variance grows on (21)'s schedule.
+Bounding velocity is what lets the specific force level the filter again.
+
+**(28″)** The position hold: (28)'s horizontal rows with no arm, against the position estimate
+$`\hat{p}_0`$ at the step the hold engaged, at a variance $`\sigma_h^2`$ per axis:
+
+```math
+z = \hat{p}_{0,NE}, \qquad h(x) = p_{NE}, \qquad R_m = \sigma_h^2 I_2
+```
+
+The filter fuses it itself, every 0.2 s, once no horizontal source has been judged within
+`Timeouts::dead_reckoning_after` and the tilt σ has passed 3°, and it releases it below 3°. Its
+error is where the vehicle went since $`\hat{p}_0`$, one error for the whole outage rather than one
+per reading, so it is fused at (24′) with $`\tau = 2`$ s rather than as white. PX4 and ArduPilot
+fuse theirs as white; measured against that, the covariance white leaves is
+[overconfident on every block](GOALS.md#holding-tilt-without-aiding).
+
+**(29″)** A stationary claim the caller asserts: (29) with no arm and $`z = 0`$ on all three axes, at
+the caller's $`R_m`$:
+
+```math
+z = 0, \qquad h(x) = v, \qquad H = \begin{bmatrix} 0 & I_3 & 0 & 0 & 0 \end{bmatrix}
+```
+
+Tilt error times gravity lands in velocity within one step, so (29″) observes tilt one
+integration nearer than (28″) does. Neither is ever [adopted](#adoption): a rejected assumption
+is a wrong one.
+
 ### Magnetometer, three-axis
 
 With $`m_n`$ the reference field in the navigation frame, the predicted body-frame measurement is
@@ -1448,6 +1482,8 @@ Each implementing function cites its equation numbers in a doc comment.
 | (28′) | GNSS position at the antenna | `observation/gnss.rs`, `eskf/fuse.rs` | `arm`, within `horizontal_observation` and `height_observation`; `Eskf::carried_position` for an adoption |
 | (29) | GNSS velocity | `observation/gnss.rs` | `velocity_jacobian`, `velocity_observation` |
 | (29′) | GNSS velocity at the antenna | `observation/gnss.rs`, `eskf/fuse.rs` | `velocity_observation`; `Eskf::mean_rate` for `ω`, `Eskf::carried_velocity` for an adoption |
+| (28″) | position hold | `observation/hold.rs`, `eskf/hold.rs` | `position_hold`; fused by `Eskf::hold_if_unaided`, which `Eskf::predict` calls |
+| (29″) | stationary claim | `observation/hold.rs`, `eskf/hold.rs` | `zero_velocity`; fused by `Eskf::fuse_stationary` |
 | (30) | barometric altitude | `observation/baro.rs` | `altitude_jacobian`, `altitude_observation` |
 | (30′) | barometric offset | `state.rs`, `update.rs`, `propagate.rs`, `eskf/site.rs` | `Offset`; `update`'s blocks; `propagate_offset`; `Eskf::establish_reference` |
 | (31)–(33) | magnetometer, three-axis | — | unbuilt and [out of scope](GOALS.md#magnetometer-without-magnetic-field-states); no `field_jacobian` exists |

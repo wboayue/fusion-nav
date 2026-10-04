@@ -68,6 +68,7 @@ The deepest stack a call into each entry point takes, in bytes, before the calle
 | `fuse_mag_heading` | {{footprint thumbv6m-none-eabi chain.eskf.Eskf.fuse_mag_heading}} | {{footprint thumbv7em-none-eabihf chain.eskf.Eskf.fuse_mag_heading}} |
 | `fuse_gnss_heading` | {{footprint thumbv6m-none-eabi chain.eskf.Eskf.fuse_gnss_heading}} | {{footprint thumbv7em-none-eabihf chain.eskf.Eskf.fuse_gnss_heading}} |
 | `fuse_course` | {{footprint thumbv6m-none-eabi chain.eskf.Eskf.fuse_course}} | {{footprint thumbv7em-none-eabihf chain.eskf.Eskf.fuse_course}} |
+| `fuse_stationary` | {{footprint thumbv6m-none-eabi chain.eskf.Eskf.fuse_stationary}} | {{footprint thumbv7em-none-eabihf chain.eskf.Eskf.fuse_stationary}} |
 | `predicted_validity` | {{footprint thumbv6m-none-eabi chain.eskf.Eskf.predicted_validity}} | {{footprint thumbv7em-none-eabihf chain.eskf.Eskf.predicted_validity}} |
 | `initialize` | {{footprint thumbv6m-none-eabi chain.eskf.Eskf.initialize}} | {{footprint thumbv7em-none-eabihf chain.eskf.Eskf.initialize}} |
 | `initialize_coarse` | {{footprint thumbv6m-none-eabi chain.eskf.Eskf.initialize_coarse}} | {{footprint thumbv7em-none-eabihf chain.eskf.Eskf.initialize_coarse}} |
@@ -83,6 +84,8 @@ Each entry point's own frame, and the frames beneath it that set its depth:
 | function | `thumbv6m` | `thumbv7em` |
 | --- | --- | --- |
 | `predict` | {{footprint thumbv6m-none-eabi frame.eskf.Eskf.predict}} | {{footprint thumbv7em-none-eabihf frame.eskf.Eskf.predict}} |
+| `propagate_or_coast`, the step it calls | {{footprint thumbv6m-none-eabi frame.eskf.Eskf.propagate_or_coast}} | {{footprint thumbv7em-none-eabihf frame.eskf.Eskf.propagate_or_coast}} |
+| `hold_if_unaided`, the hold it calls beside the step | {{footprint thumbv6m-none-eabi frame.eskf.Eskf.hold_if_unaided}} | {{footprint thumbv7em-none-eabihf frame.eskf.Eskf.hold_if_unaided}} |
 | `fuse_gnss_position` | {{footprint thumbv6m-none-eabi frame.eskf.Eskf.fuse_gnss_position}} | {{footprint thumbv7em-none-eabihf frame.eskf.Eskf.fuse_gnss_position}} |
 | `fuse_gnss_geodetic` | {{footprint thumbv6m-none-eabi frame.eskf.Eskf.fuse_gnss_geodetic}} | {{footprint thumbv7em-none-eabihf frame.eskf.Eskf.fuse_gnss_geodetic}} |
 | `fuse_gnss_velocity` | {{footprint thumbv6m-none-eabi frame.eskf.Eskf.fuse_gnss_velocity}} | {{footprint thumbv7em-none-eabihf frame.eskf.Eskf.fuse_gnss_velocity}} |
@@ -90,6 +93,7 @@ Each entry point's own frame, and the frames beneath it that set its depth:
 | `fuse_mag_heading` | {{footprint thumbv6m-none-eabi frame.eskf.Eskf.fuse_mag_heading}} | {{footprint thumbv7em-none-eabihf frame.eskf.Eskf.fuse_mag_heading}} |
 | `fuse_gnss_heading` | {{footprint thumbv6m-none-eabi frame.eskf.Eskf.fuse_gnss_heading}} | {{footprint thumbv7em-none-eabihf frame.eskf.Eskf.fuse_gnss_heading}} |
 | `fuse_course` | {{footprint thumbv6m-none-eabi frame.eskf.Eskf.fuse_course}} | {{footprint thumbv7em-none-eabihf frame.eskf.Eskf.fuse_course}} |
+| `fuse_stationary` | {{footprint thumbv6m-none-eabi frame.eskf.Eskf.fuse_stationary}} | {{footprint thumbv7em-none-eabihf frame.eskf.Eskf.fuse_stationary}} |
 | `predicted_validity` | {{footprint thumbv6m-none-eabi frame.eskf.Eskf.predicted_validity}} | {{footprint thumbv7em-none-eabihf frame.eskf.Eskf.predicted_validity}} |
 | `initialize` | {{footprint thumbv6m-none-eabi frame.eskf.Eskf.initialize}} | {{footprint thumbv7em-none-eabihf frame.eskf.Eskf.initialize}} |
 | `initialize_coarse` | {{footprint thumbv6m-none-eabi frame.eskf.Eskf.initialize_coarse}} | {{footprint thumbv7em-none-eabihf frame.eskf.Eskf.initialize_coarse}} |

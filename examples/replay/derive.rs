@@ -839,6 +839,7 @@ impl Derived {
             gravity,
             max_predict_dt,
             coast,
+            hold,
             baro_offset_walk,
             baro_reference_from_estimate,
         } = self.config;
@@ -1075,6 +1076,17 @@ impl Derived {
                 ),
             }
         ));
+        line("    // The mission's: how far the vehicle flies on unaided. Not derived.".into());
+        line(format!(
+            "    hold: {},",
+            match hold {
+                None => "None".to_string(),
+                Some(Hold { sigma }) => format!(
+                    "Some(fusion_nav::Hold {{ sigma: fusion_nav::Meters::from_meters({}) }})",
+                    literal(sigma.as_meters())
+                ),
+            }
+        ));
 
         line(match &self.drift {
             Some(Drift {
@@ -1289,10 +1301,13 @@ mod tests {
     fn the_per_source_names_are_the_diagnostics_order() {
         // `render` pairs `correlation.fields()` and `recovery.fields()` with `SOURCES` by
         // position; this is what makes the position mean the source.
+        // The stationary claim and the hold come last and carry neither: an assumption has no error
+        // persisting from a receiver and nothing to adopt.
         let names: Vec<&str> = (0..SOURCES.len()).map(field).collect();
         let of = |fields: [(&'static str, Option<Seconds>); 7]| fields.map(|(n, _)| n).to_vec();
-        assert_eq!(of(Correlation::default().fields()), names);
-        assert_eq!(of(Recovery::default().fields()), names);
+        assert_eq!(of(Correlation::default().fields()), names[..7]);
+        assert_eq!(of(Recovery::default().fields()), names[..7]);
+        assert_eq!(names[7..], ["stationary", "position_hold"]);
     }
 
     #[test]

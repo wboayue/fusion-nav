@@ -93,12 +93,15 @@ impl Eskf {
             heading: self.heading_within(p, accuracy.heading),
             // A quantity nothing ever established is not valid however tight the prior on
             // it looks: nobody set that number.
+            // Nor one the position hold bounds: the assumption tightened it, not a sensor.
             horizontal_position: !self.unestablished.position
+                && !self.hold.holds_position()
                 && within(p, ErrorState::PositionNorth, position)
                 && within(p, ErrorState::PositionEast, position),
             vertical_position: !self.unestablished.position
                 && within(p, ErrorState::PositionDown, position),
             horizontal_velocity: !self.unestablished.velocity
+                && !self.hold.holds_velocity()
                 && within(p, ErrorState::VelocityNorth, velocity)
                 && within(p, ErrorState::VelocityEast, velocity),
             vertical_velocity: !self.unestablished.velocity
@@ -113,7 +116,7 @@ impl Eskf {
     /// different bars; one definition is what keeps the two claims the same shape. Read on
     /// navigation axes through [`AttitudeVariance`], not off `δθ_x` and `δθ_y`, which are
     /// tilt only while the vehicle is level.
-    fn tilt_within(&self, p: &Covariance, bar: Radians) -> bool {
+    pub(super) fn tilt_within(&self, p: &Covariance, bar: Radians) -> bool {
         let sigma = bar.as_radians();
         let variance = AttitudeVariance::of(&self.estimate.state().attitude, p);
         variance.tilt_north <= sigma * sigma && variance.tilt_east <= sigma * sigma
@@ -156,7 +159,8 @@ impl Eskf {
     /// [`ImuNoise`](crate::ImuNoise)'s defaults an unaided start holds tilt for 10.3 s from a
     /// window that measured its gyroscope and 4.84 s from one whose gyroscope never scattered,
     /// so a horizon under that arms and one over it does not, which the current value alone
-    /// cannot say.
+    /// cannot say. The projection is of propagation alone: the position hold of
+    /// [`Config::hold`](crate::Config::hold), which engages at that bar, is not projected.
     ///
     /// The projection reads slightly optimistic and the amount is measured: a first-order
     /// step understates growth, and `propagate.rs`'s `PROJECTION_STEP` holds that within
@@ -261,7 +265,12 @@ mod tests {
 
     /// How long a static start from `window` holds tilt and heading unaided.
     fn held(window: &[StaticSample], dt: Seconds) -> (f32, f32) {
-        let mut filter = Eskf::default();
+        // Without the position hold, which exists to take this schedule away.
+        let mut filter = Eskf::new(Config {
+            hold: None,
+            ..Config::default()
+        })
+        .unwrap();
         assert_eq!(filter.initialize_over(window, dt), Ok(Alignment::Static));
 
         let dt = Seconds::from_secs(0.005);

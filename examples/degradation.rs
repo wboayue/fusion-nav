@@ -11,7 +11,9 @@
 //! 20 Hz barometer is missed within 125 ms rather than on a 1 Hz receiver's schedule. And the
 //! status reads `DeadReckoning` once GNSS has been gone for
 //! [`Timeouts::dead_reckoning_after`], with the barometer and magnetometer still arriving:
-//! height and heading are held, and horizontal position drifts regardless.
+//! height and heading are held, and horizontal position is no longer measured. Once the tilt σ
+//! passes 3° the position hold of `Config::hold` bounds its covariance, and `Validity` keeps
+//! it invalid, the application's own reset included, until a fix returns.
 //!
 //! Run with `cargo run --example degradation`. For the loop itself, see `basic.rs`.
 

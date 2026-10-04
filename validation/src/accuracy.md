@@ -22,7 +22,9 @@ Each scenario exists to test one thing no other scenario covers:
 - `static`: 60 s sitting on the ground.
 - `mission`: the **baseline**. 5 s still, then a 180 s circuit with turns and climbs.
 - `moving_start`: a different flight, in the air and turning from the first sample.
-- The rest (`harsh_imu`, `gnss_outage`, `baro_drift`, `gnss_latency`, `correlated`,
+- `bench`: 120 s still with no GNSS, the application telling the filter it is still.
+- `hover_outage`: a hover drifting 27 m, with no GNSS for 90 s of it.
+- The rest (`harsh_imu`, `gnss_outage`, `long_outage`, `baro_drift`, `gnss_latency`, `correlated`,
   `mag_disturbance`, `logging_dropout`): the baseline circuit with one thing changed, each
   described below.
 - `flight`: 14 s at 50 Hz, with sensors appearing and dropping out. It is the log CI replays.
@@ -46,6 +48,19 @@ for. Against `mission`:
 - `gnss_outage` loses GNSS for 20 s, and position drifts to {{score gnss_outage pos_h_max}} m
   at worst. With nothing to correct it, the filter is integrating acceleration, and the
   [robustness page](robustness.md#gnss-outage) shows the drift staying inside the band.
+- `long_outage` loses it for 60 s, long enough for the position hold to engage on a vehicle
+  that keeps flying. Position is off by {{score long_outage pos_h}} m RMS, worse than the same
+  flight without the hold, and the [honesty page](honesty.md#overconfident-a-hold-the-vehicle-flies-away-from)
+  shows the filter not knowing it.
+- `hover_outage` is not a departure but the case `gnss_outage` cannot be: a long outage with
+  the vehicle hardly moving. Nothing aids tilt for 90 s, and the position hold
+  ([GOALS.md](../GOALS.md#holding-tilt-without-aiding)) bounds its σ near 3°: tilt reads
+  {{score hover_outage tilt}}° RMS and position {{score hover_outage pos_h}} m RMS. What the
+  hold buys is position and a bounded covariance, not a better tilt, and `Validity::tilt` still
+  goes false during the outage (`attitude_lost={{summary hover_outage attitude_lost}}`). `bench` has no GNSS at all, and the
+  application's word that it is still keeps its attitude valid throughout
+  (`attitude_lost={{summary bench attitude_lost}}`), at {{score bench tilt}}° RMS; the claim
+  buys validity, not accuracy.
 - `moving_start` starts in the air, turning, with no still moment to level from. That costs
   attitude at the start; [below](#a-start-in-motion), it converges.
 - `baro_drift` has a barometer whose zero drifts. Height suffers:
