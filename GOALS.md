@@ -328,7 +328,7 @@ The options, in the order they are worth doing:
 
    **Tilt can be left to the ordinary gate, which is what the data says.** The corpus answers
    half of it (`data/manifest.txt` carries the counts). The gate turns down two headings on
-   `eb799954`, two consecutive samples 1.1 rad out. It turns down 1584 on `7ce66f0d`, a hand
+   `eb799954`, two consecutive samples 1.1 rad out. It turns down 1658 on `7ce66f0d`, a hand
    launch leveled 12° wrong whose heading was never established, where the leveling fails and
    not the gate. The tailsitter `285ee2e7` fuses every heading through 125° of tilt, so nothing is
    locked out at any tilt those vehicles reach. The simulator answers the other half, because only
