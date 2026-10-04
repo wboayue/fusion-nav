@@ -124,24 +124,25 @@
 # under 0.5 m/s of sigma and pinned yaw_estimator=, yaw_adopted= and
 # yaw_recovered= on every entry. Twelve logs read 0 and 0 and reproduce main in
 # every column and key main writes: each has a heading from its window or its
-# first magnetometer reading, and none has a velocity rejected for a second
-# while the estimator sits 25 deg from the filter. 7ce66f0d reads
-# yaw_recovered=14, and its entry has the measurement. The first form, PX4's
-# as written, replaced 093e806a's heading 31 times: a tilt leveled against
-# gravity alone reads a fixed-wing's turns as tilt, and its yaw sat a median
-# 31.9 deg from EKF2's. Leveled against the acceleration GNSS velocity
-# measures it is 3.0 deg, and that log reproduces main (DESIGN.md,
-# "YawEstimator").
+# first magnetometer reading, and on none does the estimator replace it.
+# 7ce66f0d reads yaw_recovered=14, and its entry has the measurement. A first
+# form leveled each hypothesis against gravity alone, which reads a
+# fixed-wing's turns as tilt: on 093e806a its yaw sat a median 31.9 deg from
+# EKF2's and replaced a good magnetic heading 31 times. Leveled against the
+# acceleration GNSS velocity measures it is 3.0 deg, and that log reproduces
+# main (DESIGN.md, "YawEstimator").
 #
-# Replayed --without mag, where every log but the two with no GNSS never left
-# Aligning, the seven with a GNSS velocity and no second antenna adopt the
-# estimator's yaw (yaw_adopted=1) and end Healthy, at these medians from
-# EKF2's heading, which flew on its magnetometer (tools/agreement.py's
-# heading_diff_med, raw, with the magnetometer and without): 89a498ce 0.76 deg
-# and 0.954, 285ee2e7 0.65 and 1.145, 2b2ad123 1.14 and 1.861, eb799954 4.69
-# and 2.859, cd7e0001 0.38 and 6.213, the VTOL 4b473e91 2.66 and 1.542, the
-# fixed-wing 093e806a 1.61 and 1.198. GNSS rejections are the with-magnetometer
-# run's on six and one position more on 093e806a.
+# Replayed --without mag and --yaw-estimator off, no log without a second
+# antenna leaves Aligning. With the estimator, the nine that carry a GNSS
+# velocity and move adopt its yaw (yaw_adopted=1) and end Healthy; 2c42096b,
+# which never moves, adopts nothing, as it should. Their medians from EKF2's
+# heading, which flew on its magnetometer (tools/agreement.py's
+# heading_diff_med, raw, with the magnetometer and without), on the seven
+# compared: 89a498ce 0.76 deg and 0.954, 285ee2e7 0.65 and 1.145, 2b2ad123 1.14
+# and 1.861, eb799954 4.69 and 2.859, cd7e0001 0.38 and 6.213, the VTOL
+# 4b473e91 2.66 and 1.542, the fixed-wing 093e806a 1.61 and 1.198. GNSS
+# rejections on those are the with-magnetometer run's, and one position more
+# on 093e806a. 7ce66f0d adopts at 16.94 s and is replaced twice after.
 #
 # rejected= is the gate's verdict and discarded= is everything that never
 # reached it -- a variance of zero or less, a NaN, an altitude with no
