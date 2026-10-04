@@ -332,7 +332,7 @@ was measured together, at the commit named where the code has moved since.
 | `reparameterize` (in `update`) | the full `G P Gᵀ` cost 864 more of `update`'s frame |
 | `fuse_gnss_velocity` → `update::<3>` | the crate's deepest path; `apply_or_recover` out of line sits beside `update` rather than above it. Inlined, it cost `fuse_gnss_velocity`'s frame 984 (2384 against 1400, a434a30); walked through the call graph at 9e3fcca, it costs `fuse_gnss_position`'s 1024 and moves the peak to a geodetic fix, 12272 against 11408 |
 | `predict` → `hold_if_unaided` | run by `predict` after the step returns, with the step out of line in `propagate_or_coast`, so the hold's update sits beside propagation's frame rather than above it. Called inside `commit_step` instead, the chain went `predict` 2160, `commit_step` 984, `hold_if_unaided` 2304, `update::<2>` 7344: 14712 on `thumbv7em`, the crate's peak by 3.4 KB. Beside it, `predict`'s chain was 10584 (#210, measured together). The hold commits through `apply_or_recover` out of line: inlined `apply` was most of its 2304 |
-| `predict` → `step_yaw_estimator` | beside the step, as the hold is, and far below it: its chain is 1404 (1328) against `propagate_or_coast`'s. Restarting the bank by assigning a fresh one put a 440-byte temporary in `predict`'s own frame, 504, and one in a start's, `initialize_from`'s chain 3400; reset in place by `YawEstimator::clear`, the next commit read 112 and 3016 |
+| `predict` → `step_yaw_estimator` | beside the step, as the hold is, and far below it: its chain is 1356 (1336) against `propagate_or_coast`'s. Restarting the bank by assigning a fresh one put a bank-sized temporary in `predict`'s own frame, 504, and one in a start's, `initialize_from`'s chain 3400; reset in place by `YawEstimator::clear`, the next commit read 112 and 3016 |
 | `Eskf::observe::<3>` | `Observation::delayed` 752 and `error_dynamics` 400 beneath it; inlined into `fuse_gnss_velocity` it put the high-water mark at 10800 against 9520 (a434a30), and walked at 9e3fcca at 11760 against 11408 |
 | `Eskf::fuse_heading` | one frame for every heading source, its largest instance the magnetometer's; read by hand, the course's path through it peaked at 7872 against 7624 with `fuse_mag_heading` doing the work in a frame of its own (eaf3b81) |
 | `Eskf::adopt_position`, `adopt_velocity` | inlined, +976 on `fuse_gnss_position` and +952 on `fuse_gnss_velocity`; out of line they follow `update` rather than stacking on it |
@@ -360,7 +360,7 @@ say a target needs them:
 
 #### Sizes
 
-The yaw estimator is 440 bytes of `Eskf`'s 4672, five hypotheses of 76, held whether or not
+The yaw estimator is 456 bytes of `Eskf`'s 4688, five hypotheses of 76, held whether or not
 `Config::yaw_estimator` runs it: an `Option` would save nothing, and a feature would make the
 type's size depend on a flag. With its source in `Diagnostics` (112) and its switch in `Config`
 (8) it took `Eskf` from 4112.
@@ -378,10 +378,10 @@ table is 1408 bytes of `.rodata` and its lookup 1204 of `.text` (1704), about 2.
 `opt-level = "s"`. The same lookup in `f64` linked 4496 bytes of `.text` in software doubles,
 against 1096 for the `f32` one measured with it (14a668b).
 
-The yaw estimator cost 10.5 KB of `.text` on `thumbv6m` at `opt-level = 3`, 173070 to 183574,
-and 7.5 KB at `"s"`, 112082 to 119538 (the commit that added it, #165, against its parent, c7f3ecf, measured together): five
-hypotheses are one loop, and most of it is the `f32` trigonometry and 3 × 3 products that loop
-inlines.
+The yaw estimator cost 10.9 KB of `.text` on `thumbv6m` at `opt-level = 3`, 173070 to 183954,
+and 9.2 KB at `"s"`, 112082 to 121326 (the commit that added it, #165, against its parent,
+c7f3ecf, measured together): five hypotheses are one loop, and most of it is the `f32`
+trigonometry and 3 × 3 arithmetic that loop inlines.
 
 #### Host timings
 
@@ -393,10 +393,17 @@ Apple M3 Max at the commit that added them, `predict` is 0.71 µs, a GNSS positi
 latitude and longitude), a GNSS velocity 1.2 µs, each one-dimensional update 0.99 to 1.04 µs,
 `StaticWindow::push` 34 ns and `initialize` 0.37 µs.
 
-The yaw estimator, fusing, adds 0.17 µs to `predict`, 0.772 µs to 0.941, and 0.29 µs to a GNSS
-velocity, 1.262 µs to 1.549 (#165 against its parent, c7f3ecf, the same machine and session). On a
-core with no FPU the ratio will be worse than the host's 22 %: each hypothesis is a quaternion
+The yaw estimator, fusing, adds 0.18 µs to `predict`, 0.781 µs to 0.965, and 0.25 µs to a GNSS
+velocity, 1.272 µs to 1.525 (#165 against its parent, c7f3ecf, the same machine and session). On a
+core with no FPU the ratio will be worse than the host's 24 %: each hypothesis is a quaternion
 product and a rotation per sample. That figure is #41's.
+
+Its covariance step, (48), is written as the shear it is rather than as `F P Fᵀ`. On the host
+the two time alike, 0.965 µs against 0.972. On `thumbv6m` the dense form calls `nalgebra`'s
+3 × 3 product twice per hypothesis, 54 multiplications and 36 additions, where the shear adds
+19 multiplications and 15 additions inline (call sites in `YawEstimator::predict`, 79 and 48
+against 60 and 33 with the two products out of line). Before fusion begins the five hypotheses
+are one attitude, and one is stepped.
 
 #### Arithmetic
 
@@ -613,15 +620,15 @@ carrying `yaw_estimator_status` into `--reference`).
 | log | vehicle | shipped | tilt against gravity alone | no σ floor | PX4's own |
 | --- | --- | --- | --- | --- | --- |
 | `89a498ce` | quadrotor | 0.9, 2.2, 3.9 | 2.5, 5.1, 7.5 | 0.8, 2.0, 12.1 | 2.9, 7.6, 11.7 |
-| `285ee2e7` | quadrotor | 1.7, 4.3, 10.2 | 2.2, 5.2, 14.1 | 1.8, 5.7, 12.8 | 1.0, 3.7, 22.4 |
-| `2b2ad123` | quadrotor | 3.4, 10.5, 19.9 | 5.4, 17.1, 144.3 | 5.4, 25.3, 45.4 | 7.7, 16.0, 21.6 |
+| `285ee2e7` | quadrotor | 1.7, 4.3, 10.2 | 2.2, 5.2, 14.1 | 1.8, 5.8, 12.8 | 1.0, 3.7, 22.4 |
+| `2b2ad123` | quadrotor | 3.4, 10.5, 19.8 | 5.4, 17.1, 144.3 | 5.4, 25.3, 45.4 | 7.7, 16.0, 21.6 |
 | `eb799954` | quadrotor | 2.6, 7.1, 11.3 | 3.4, 10.1, 15.1 | 2.5, 7.2, 10.7 | 3.3, 9.3, 15.6 |
 | `cd7e0001` | quadrotor | 10.5, 14.8, 18.2 | 31.6, 40.8, 45.6 | 12.0, 17.8, 20.9 | 25.4, 33.9, 40.7 |
 | `3949f175` | quadrotor, SITL | 1.3, 4.5, 11.4 | 1.3, 4.6, 10.0 | 1.3, 4.5, 11.4 | 1.2, 3.8, 10.1 |
-| `4b473e91` | VTOL | 2.4, 18.0, 47.8 | 8.3, 24.3, 65.0 | 2.7, 10.7, 41.1 | 2.3, 5.4, 24.5 |
-| `093e806a` | fixed-wing | 3.1, 16.6, 39.9 | 31.9, 88.3, 170.6 | 3.2, 22.9, 51.0 | 3.2, 6.8, 10.1 |
-| `7ce66f0d` | flying wing | 3.9, 9.8, 158.7 | 7.2, 17.7, 170.9 | 3.8, 9.7, 156.2 | 3.6, 11.3, 21.2 |
-| `a299e722` | quadrotor | 26.5, 42.8, 81.9 | 27.9, 61.7, 166.1 | 63.7, 101.0, 159.0 | 1.7, 8.2, 8.5 |
+| `4b473e91` | VTOL | 2.4, 18.0, 47.8 | 8.3, 24.3, 65.0 | 2.7, 10.7, 41.2 | 2.3, 5.4, 24.5 |
+| `093e806a` | fixed-wing | 3.1, 16.6, 40.7 | 31.9, 88.3, 170.6 | 3.2, 23.5, 52.3 | 3.2, 6.8, 10.1 |
+| `7ce66f0d` | flying wing | 3.9, 9.8, 158.6 | 7.2, 17.7, 170.9 | 3.8, 9.7, 156.2 | 3.6, 11.3, 21.2 |
+| `a299e722` | quadrotor | 26.5, 43.0, 82.1 | 27.9, 61.7, 166.1 | 63.7, 101.0, 159.0 | 1.7, 8.2, 8.5 |
 
 `a299e722` cannot judge an estimator that integrates the IMU alone: its log holds 50 samples a
 second, each averaging 2.5 ms of the 20 between them, where PX4's ran on every sample. The other
@@ -647,6 +654,21 @@ three logs carry no GNSS velocity the estimator weighs.
 * **A second antenna overrules it.** `a299e722` carries one, and in the first form, before
   the guard, the estimator, wrong for the reason above, replaced its heading 7 times: 227 GNSS
   headings rejected where there had been none.
+* **Two velocities in a row turned down**, not one. PX4's delay is met by a single rejection
+  from a 1 Hz receiver, and one outlier is not a yaw.
+* **A magnetometer overruled is not adopted back** until one of its headings passes the gate.
+  PX4 declares it faulty for the flight. Without either, a GNSS outage lifts the guard on the
+  magnetometer's recovery and the replaced heading returns seven seconds later.
+* **A bank the filter starts with is settled, at rest or not**, as PX4's is. Made to settle
+  for 10 s after a start in motion, `7ce66f0d` had its first replacement that much later: 8
+  over the flight against 14, and its position 72 m RMS from EKF2's over the first minute
+  against 14 m, 126 m with no estimator. A bank begun again after time it did not integrate
+  does settle, for the first heading as for a replacement, where PX4 asks it only of the
+  replacement.
+* **A slow receiver.** `ā` is a slope held until the next velocity. On the simulated steady
+  circle the yaw is within 0.02 rad from 2 Hz up and 0.07 rad out at 1 Hz, against 0.22 rad
+  leveled on gravity alone. Every corpus receiver the estimator weighs reports at 4.9 Hz or
+  faster, so the corpus says nothing of 1 Hz.
 * **Left as PX4 has them**, unmeasured here: five hypotheses, the 15° bar, the 25° disagreement,
   the 1 s delay, the 10 s a restarted bank settles for, and the complementary filter's gains.
 

@@ -38,9 +38,9 @@ What the filter does, and where each decision's evidence lives:
   aiding, and horizontal position and velocity each stay invalid after it until measured again.
   `fuse_stationary` is the caller's claim of zero velocity. `GOALS.md`, "Holding tilt without
   aiding"; `DESIGN.md`, "`Hold`".
-- **Yaw without a heading sensor.** `src/gsf.rs`, PX4's and ArduPilot's `EKFGSF_yaw` with three
+- **Yaw without a heading sensor.** `src/gsf.rs`, PX4's and ArduPilot's `EKFGSF_yaw` with
   departures the corpus forced: tilt read against the acceleration GNSS velocity measures, a
-  0.3 m/s floor on the velocity σ, and a rejected velocity as the only trigger. `predict` steps
+  0.3 m/s floor on the velocity σ, and a second rejected velocity as the only trigger. `predict` steps
   it and `fuse_gnss_velocity` weighs it (`src/eskf/yaw.rs`); its yaw is adopted where heading
   was never established, and replaces one GNSS velocity contradicts
   (`Recovery::yaw_estimator`), never while a dual-antenna heading is accepted. `GOALS.md`,
@@ -655,6 +655,13 @@ offset, and on `093e806a` that trigger replaced a good heading. A wrong yaw corr
 within a second and position only through it, so velocity alone is the trigger. When porting a
 trigger, ask which of its conditions the fault causes and which merely coincide with it under
 the original's input conditioning.
+
+**A reviewer's suspicion is a hypothesis.** The review of #165 suspected a yaw estimator begun
+at a start in motion should settle for 10 s as a restarted one does. Applied unmeasured, it
+took `7ce66f0d` from 14 m RMS against EKF2 over the first minute to 72 m, and nothing in the
+simulator moved. Its verified findings each came with a failing fixture; the suspected ones
+are replayed on the corpus before they land, and one that the corpus contradicts is recorded
+as measured and rejected (DESIGN.md, "`YawEstimator`").
 
 **Measure a claim on the rows the code reads.** A figure taken on a convenient proxy, "the first
 500 rows", is a claim about the proxy. On #50 two of them ran past a still window into flight

@@ -221,7 +221,7 @@ long_outage      2  pos_h<=16.164 pos_v<=0.267 vel<=0.707 pos_h_max<=60.056  til
 # on a schedule of its own, 126 deg from where a window with no magnetometer leaves the yaw.
 # `multirotor_no_mag` has no heading sensor: the estimator's yaw is adopted 4.81 s after the
 # window (`aligned_at=`), 1.9 s after the vehicle leaves the ground, 9 deg out under a 14 deg
-# sigma, and `yaw_valid`, the heading error from then on, reads 1.073 deg against `moving_start`'s
+# sigma, and `yaw_valid`, the heading error from then on, reads 1.074 deg against `moving_start`'s
 # 1.494 with a magnetometer. `yaw` is that wait: 126 deg for 4.9 s of 118. With the estimator
 # off (`--yaw-estimator off`) no heading is ever established, and `tilt` 1.145 deg, `vel` 0.206
 # and `false_valid`=543 are what GNSS velocity fused under an unknown yaw does to the rest. The

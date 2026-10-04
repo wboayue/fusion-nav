@@ -1064,23 +1064,25 @@ default.
   replaces the yaw and the rejected velocity is adopted with it.
 - **Derived, not generated.** `EQUATIONS.md` writes out what PX4 generates symbolically; the
   3 × 3 covariance step is one matrix with two entries that are not zero or one.
-- **Three departures from `EKFGSF_yaw`**, each the corpus's: tilt is read against the
-  acceleration GNSS velocity measures rather than against gravity alone, the velocity σ is
-  floored at 0.3 m/s inside the estimator, and only a rejected velocity triggers the
-  replacement, never a rejected position, and never while a second antenna is being accepted.
+- **Departures from `EKFGSF_yaw`**, each measured: tilt is read against the acceleration GNSS
+  velocity measures rather than against gravity alone, the velocity σ is floored at 0.3 m/s
+  inside the estimator, and only a second rejected velocity in a row triggers the replacement,
+  never a rejected position, and never while a second antenna is being accepted. A
+  magnetometer overruled is not adopted back until it agrees, and a bank begun again after an
+  IMU gap settles before its yaw is taken.
 
 **Measured against** the filter without it, PX4's form, and PX4's own estimator on the same
 flights. DESIGN.md, "`YawEstimator`", has the table.
 
 - **The vehicle it is for.** `multirotor_no_mag`, shuttling with its nose turning and its yaw
   126° from where the window left it: the heading is adopted 1.9 s after the vehicle leaves the
-  ground, 9° out under a 14° σ, and from then on reads 1.073° RMS (`yaw_valid`), against
+  ground, 9° out under a 14° σ, and from then on reads 1.074° RMS (`yaw_valid`), against
   `moving_start`'s 1.494° with a magnetometer. Without the estimator no heading is ever
   established, and GNSS velocity fused under the unknown yaw reads tilt 1.145° against 0.614°.
 - **The corpus without its magnetometers.** Nine logs carry a GNSS velocity, no second antenna,
   and move; all nine adopt a heading and end `Healthy`, where none left `Aligning`. On the
   five real quadrotors the median distance from EKF2's heading, which flew on its
-  magnetometer, is 0.954° to 6.213°, against 0.38° to 4.69° with the magnetometer, and GNSS
+  magnetometer, is 0.955° to 6.252°, against 0.38° to 4.69° with the magnetometer, and GNSS
   rejections are unchanged.
 - **PX4's form, on a fixed-wing.** The first build leveled against gravity alone, and on
   `093e806a` it replaced a good magnetic heading 31 times: 339 headings rejected where there
@@ -1103,8 +1105,8 @@ flights. DESIGN.md, "`YawEstimator`", has the table.
 
 **Costs:**
 
-- 440 bytes of `Eskf` whether it runs or not, 10.5 KB of flash on `thumbv6m`, and 0.17 µs of a
-  0.94 µs `predict` on the host, as it landed; `validation/cost.md` has the current figures,
+- 456 bytes of `Eskf` whether it runs or not, 10.9 KB of flash on `thumbv6m`, and 0.18 µs of a
+  0.97 µs `predict` on the host, as it landed; `validation/cost.md` has the current figures,
   and a core with no FPU pays more in time than the host does (#41).
 - A hover establishes nothing. Yaw is observed through acceleration, so a vehicle that takes
   off and holds station stays `Aligning` until it moves.
@@ -1115,6 +1117,8 @@ flights. DESIGN.md, "`YawEstimator`", has the table.
   velocity is rejected for it: `yaw_fault` is 80° out for 8 s, 15 s on one seed of 50, and its
   covariance cannot say so.
 - The fixed-wing tails. A fixed-wing's heading is the course constraint's.
+- A 1 Hz receiver. The acceleration it measures is a second old by the time the next arrives,
+  and on a steady circle the yaw is 0.07 rad out where a faster receiver's is within 0.02.
 
 ### Ecosystem coherence, dropped
 
