@@ -193,7 +193,7 @@ mod tests {
     use super::super::fixtures::*;
     use crate::config::{Config, GRAVITY, Recovery};
     use crate::eskf::Eskf;
-    use crate::gsf::tests::legs;
+    use crate::gsf::tests::{circling, legs};
     use crate::gsf::{YawEstimator, yaw_of};
     use crate::health::{Fusion, Propagation, Status};
     use crate::math::wrap_pi;
@@ -210,7 +210,9 @@ mod tests {
         yaw: f32,
         velocity: Vector3<f32>,
         sigma: f32,
-        /// The last velocity's outcome, and how many were adopted.
+        /// How old each velocity is when it is fused, in steps.
+        age: usize,
+        /// The last velocity's outcome.
         last: Option<Fusion>,
     }
 
@@ -220,6 +222,7 @@ mod tests {
                 yaw,
                 velocity: Vector3::zeros(),
                 sigma: 0.1,
+                age: 0,
                 last: None,
             }
         }
@@ -233,16 +236,24 @@ mod tests {
         ) {
             let attitude = UnitQuaternion::from_euler_angles(0.0, 0.0, self.yaw);
             let dt = DT.as_secs();
+            let mut past = std::collections::VecDeque::from([self.velocity]);
             for k in 0..(seconds / dt).round() as u32 {
                 let a = acceleration(k as f32 * dt);
                 let force = attitude.inverse() * (a - Vector3::z() * GRAVITY);
                 let imu = ImuSample::reading(AngularRate::zero(), Acceleration::from_vector(force));
                 assert_eq!(filter.step(imu, DT), Propagation::Propagated);
                 self.velocity += a * dt;
+                past.push_back(self.velocity);
+                if past.len() > self.age + 1 {
+                    past.pop_front();
+                }
                 if k % 20 == 19 {
+                    let taken = filter
+                        .now()
+                        .before(Seconds::from_secs(self.age as f32 * dt));
                     self.last = Some(filter.fuse_gnss_velocity(
-                        filter.now(),
-                        Velocity::from_vector(self.velocity),
+                        taken,
+                        Velocity::from_vector(past[0]),
                         VelocityNoise::from_speed_accuracy(self.sigma),
                         Position::zero(),
                     ));
@@ -352,6 +363,12 @@ mod tests {
         flight.fly(&mut filter, 12.0, legs, north);
         let d = filter.diagnostics();
         assert_eq!((d.yaw_estimator.adopted, d.yaw_estimator.recovered), (1, 1));
+        // Not on the first rejection: after a second of them, five at this rate.
+        assert!(
+            d.gnss_velocity.rejected >= 4,
+            "{}",
+            d.gnss_velocity.rejected
+        );
         // The velocity that tripped it is adopted on the spot, not after its 7 s.
         assert_eq!(d.gnss_velocity.recovered, 1);
         assert!(flight.error(&filter) < 0.05, "{}", flight.error(&filter));
@@ -361,14 +378,95 @@ mod tests {
     }
 
     #[test]
-    fn a_heading_that_agrees_is_left_alone() {
+    fn a_receiver_fault_under_a_good_heading_leaves_the_yaw_alone() {
         let mut filter = pointing_north(Config::default());
-        let mut flight = Flight::heading(0.3);
+        let mut flight = Flight::heading(0.0);
         flight.fly(&mut filter, 2.0, still, north);
         flight.fly(&mut filter, 12.0, legs, north);
-        // 17° off: inside `YAW_FAILURE`, so whatever GNSS makes of it, the yaw stays.
+        // Three seconds of velocities 30 m/s out, too unsure of themselves for the estimator
+        // to weigh: rejected for longer than the delay, with the two yaws in agreement.
+        // Survives dropping the `YAW_FAILURE` test, which would turn the yaw here.
+        let (noise, now) = (VelocityNoise::from_speed_accuracy(0.6), filter.now());
+        let wild = Velocity::from_vector(flight.velocity + Vector3::new(30.0, 0.0, 0.0));
+        for step in 1..=15 {
+            let taken = now.after(Seconds::from_secs(0.2 * step as f32));
+            assert_eq!(
+                filter.step(crate::init::tests::still().imu.timed(taken, DT), DT),
+                Propagation::Propagated
+            );
+            let fusion = filter.fuse_gnss_velocity(filter.now(), wild, noise, Position::zero());
+            assert!(matches!(fusion, Fusion::Rejected { .. }), "{fusion:?}");
+        }
         assert_eq!(filter.diagnostics().yaw_estimator.adopted, 0);
         assert!(filter.yaw_estimator.yaw().is_some());
+    }
+
+    #[test]
+    fn after_the_yaw_is_replaced_the_first_fix_the_gate_turns_down_is_adopted() {
+        // A position recovery far past the flight, so only the latch can adopt.
+        let mut filter = pointing_north(Config {
+            recovery: Recovery {
+                gnss_position: Some(Seconds::from_secs(1000.0)),
+                ..Recovery::default()
+            },
+            ..Config::default()
+        });
+        let mut flight = Flight::heading(1.4);
+        flight.fly(&mut filter, 2.0, still, north);
+        flight.fly(&mut filter, 12.0, legs, north);
+        assert_eq!(filter.diagnostics().yaw_estimator.recovered, 1);
+        let far =
+            Position::from_vector(filter.state().position.vector() + Vector3::new(500.0, 0.0, 0.0));
+        let fix = |filter: &mut Eskf| {
+            filter.fuse_gnss_position(filter.now(), far, one_metre(), Position::zero())
+        };
+        assert_eq!(fix(&mut filter).horizontal, Fusion::Reset);
+        // Once: the next one the gate turns down waits out its own timeout.
+        let _ = filter.reset_position_to(Position::zero(), one_metre());
+        assert!(matches!(
+            fix(&mut filter).horizontal,
+            Fusion::Rejected { .. }
+        ));
+
+        // And a new start forgets a latch still set.
+        let mut filter = pointing_north(Config::default());
+        let mut flight = Flight::heading(1.4);
+        flight.fly(&mut filter, 2.0, still, north);
+        flight.fly(&mut filter, 12.0, legs, north);
+        assert!(filter.yaw_replaced.position);
+        let _ = filter.initialize_over(&window_with_mag(), Seconds::from_secs(0.25));
+        assert_eq!(filter.yaw_replaced, super::YawReplaced::default());
+    }
+
+    #[test]
+    fn an_estimator_begun_again_in_flight_does_not_overrule_until_it_settles() {
+        // The fault of `a_heading_gnss_contradicts...`, which that test sees replaced within
+        // twelve seconds, behind a coasted gap: eight seconds in, the estimator has converged
+        // and GNSS is being rejected, and the yaw is still the magnetometer's.
+        let mut filter = pointing_north(Config::default());
+        let mut flight = Flight::heading(1.4);
+        flight.fly(&mut filter, 2.0, still, north);
+        let gap = filter.step(crate::init::tests::still().imu, Seconds::from_secs(0.5));
+        assert!(matches!(gap, Propagation::Coasted { .. }));
+        flight.fly(&mut filter, 8.0, legs, north);
+        assert!(filter.yaw_estimator.yaw().is_some_and(|(_, v)| v < 0.01));
+        assert!(filter.diagnostics().gnss_velocity.rejected > 5);
+        assert_eq!(filter.diagnostics().yaw_estimator.recovered, 0);
+    }
+
+    #[test]
+    fn an_old_velocity_reaches_the_estimator_carried_to_now() {
+        // Fixes 0.2 s old on a steady circle, where a velocity not carried lags the
+        // acceleration by `ω τ`, 0.16 rad of yaw, on top of the circle's own bias
+        // (`gsf.rs` pins both). Survives handing the estimator a zero carry.
+        let mut filter = initialized();
+        let mut flight = Flight::heading(0.9);
+        flight.age = 20;
+        flight.fly(&mut filter, 2.0, still, |_| {});
+        flight.fly(&mut filter, 15.0, circling, |_| {});
+        let (yaw, _) = filter.yaw_estimator.yaw().unwrap();
+        let error = wrap_pi(yaw - 0.9);
+        assert!((-0.27..-0.15).contains(&error), "{error}");
     }
 
     #[test]

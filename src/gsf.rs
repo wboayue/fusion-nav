@@ -428,6 +428,8 @@ pub(crate) mod tests {
         step: u64,
         /// A deterministic velocity error, so the fixture's measurement is not the truth.
         ripple: f32,
+        /// What the gyroscope reads with the vehicle not turning.
+        gyro_bias: Vector3<f32>,
     }
 
     impl Flight {
@@ -438,6 +440,7 @@ pub(crate) mod tests {
                 velocity: Vector3::zeros(),
                 step: 0,
                 ripple: 0.05,
+                gyro_bias: Vector3::zeros(),
             }
         }
 
@@ -447,7 +450,7 @@ pub(crate) mod tests {
             self.step += 1;
             let imu = ImuSample::from_rates(
                 Timestamp::from_micros(10_000 * self.step),
-                AngularRate::<Body>::from_vector(rate),
+                AngularRate::<Body>::from_vector(rate + self.gyro_bias),
                 Acceleration::<Body>::from_vector(force),
                 Seconds::from_secs(DT),
             );
@@ -504,7 +507,7 @@ pub(crate) mod tests {
     }
 
     /// A steady circle: 2 m/s² turning at 0.8 rad/s.
-    fn circling(t: f32) -> Vector3<f32> {
+    pub(crate) fn circling(t: f32) -> Vector3<f32> {
         Vector3::new(
             2.0 * ComplexField::cos(0.8 * t),
             2.0 * ComplexField::sin(0.8 * t),
@@ -575,6 +578,75 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_gyroscope_bias_is_learned_and_the_tilt_stays_level() {
+        // A bias about a horizontal axis tilts an attitude the accelerometer then corrects;
+        // (47) integrates that correction until the two agree. With (47)'s sign reversed the
+        // bias runs to its limit the other way and the tilt with it.
+        let mut flight = Flight::airborne(0.4);
+        flight.velocity = Vector3::new(1.0, 0.0, 0.0);
+        flight.gyro_bias = Vector3::new(0.02, 0.0, 0.0);
+        flight.fly(150.0, |_| Vector3::zeros());
+        for model in &flight.estimator.models {
+            assert!(
+                (model.gyro_bias.x - 0.02).abs() < 0.004,
+                "{}",
+                model.gyro_bias
+            );
+            let down = model.attitude.inverse() * Vector3::z();
+            assert!(down.xy().norm() < 0.02, "down {down}");
+        }
+    }
+
+    #[test]
+    fn a_velocity_spike_moves_each_hypothesis_five_sigma_and_no_more() {
+        let mut flight = Flight::airborne(0.4);
+        flight.fly(6.0, legs);
+        let before = flight.estimator.models.map(|model| model.velocity);
+        let spike = flight.velocity.xy() + Vector2::new(100.0, 0.0);
+        flight
+            .estimator
+            .fuse_velocity(spike, 0.01, Vector2::zeros(), 0.0);
+        for (model, before) in flight.estimator.models.iter().zip(before) {
+            // 5σ of an innovation whose σ is a few tenths of a meter per second.
+            let moved = (model.velocity - before).norm();
+            assert!(moved < 3.0, "moved {moved}");
+        }
+    }
+
+    #[test]
+    fn unobserved_the_variances_grow_at_the_densities() {
+        let mut flight = Flight::airborne(0.4);
+        flight.velocity = Vector3::new(1.0, 0.0, 0.0);
+        flight.fix();
+        let before = flight.estimator.models[0].covariance;
+        for _ in 0..200 {
+            flight.step(Vector3::zeros(), Vector3::zeros());
+        }
+        let grown = flight.estimator.models[0].covariance - before;
+        // Two seconds at rest: `σ_ω² t` on yaw and `σ_a² t` on each velocity, (48). The yaw
+        // sum is looser because each step adds 1e-6 to a prior of 0.39, 34 ulp in `f32`.
+        let (yaw, velocity) = (
+            GYRO_NOISE * GYRO_NOISE * 2.0,
+            ACCEL_NOISE * ACCEL_NOISE * 2.0,
+        );
+        assert!((grown.m33 / yaw - 1.0).abs() < 0.03, "{}", grown.m33);
+        assert!((grown.m11 / velocity - 1.0).abs() < 0.01, "{}", grown.m11);
+        assert!((grown.m22 / velocity - 1.0).abs() < 0.01, "{}", grown.m22);
+    }
+
+    #[test]
+    fn a_bank_begun_again_is_settled_after_ten_seconds_of_fusion() {
+        let mut flight = Flight::airborne(0.4);
+        assert!(flight.estimator.is_settled());
+        flight.estimator.restart();
+        flight.fly(2.0, |_| Vector3::zeros());
+        flight.fly(9.0, legs);
+        assert!(flight.estimator.yaw().is_some() && !flight.estimator.is_settled());
+        flight.fly(2.0, legs);
+        assert!(flight.estimator.is_settled());
+    }
+
+    #[test]
     fn a_turn_carries_every_hypothesis_with_it() {
         let mut flight = Flight::airborne(0.5);
         flight.fly(12.0, legs);
@@ -594,9 +666,10 @@ pub(crate) mod tests {
 
     #[test]
     fn an_old_velocity_is_carried_to_now_in_each_hypothesis_own_axes() {
-        // Fixes 0.2 s old. The main filter here holds the true velocity history but a heading
-        // 2 rad off, so its carry is in axes turned by that much. Fused as if current, the
-        // same flight misses the bar this one meets.
+        // Fixes 0.2 s old on a circle turning at 0.8 rad/s. The main filter here holds the true
+        // velocity history but a heading 2 rad off, so its carry is in axes turned by that
+        // much. Carried, the yaw sits in the band the circle's own bias puts it in; fused as
+        // if current it is a further `ω τ`, 0.16 rad, behind.
         let fly = |carry: bool| {
             let (yaw, wrong) = (0.9_f32, 2.0_f32);
             let mut flight = Flight::airborne(yaw);
@@ -619,7 +692,6 @@ pub(crate) mod tests {
             let (estimate, _) = flight.estimator.yaw().unwrap();
             wrap_pi(estimate - yaw)
         };
-        std::println!("{} {}", fly(true), fly(false));
         assert!((-0.26..-0.16).contains(&fly(true)), "carried {}", fly(true));
         assert!(fly(false) < -0.3, "not carried {}", fly(false));
     }
