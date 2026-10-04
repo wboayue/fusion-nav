@@ -1155,6 +1155,55 @@ fn short_hop() -> Trajectory {
     }
 }
 
+/// A multirotor's survey: on the ground, then shuttling north and east on two periods that
+/// share no multiple, so the acceleration swings through every direction and settles into no
+/// steady rotation, while the nose turns on a schedule of its own.
+///
+/// Nose and track are unrelated, which is the vehicle the course constraint is not for. The
+/// acceleration peaks near 2 m/s² north and 1.4 m/s² east, a multirotor's ordinary legs. A
+/// steady circle would be the wrong test: the yaw estimator's tilt filter reads a specific
+/// force that keeps turning as a tilt (`src/gsf.rs` pins the bias), where these legs reverse.
+fn shuttle() -> Trajectory {
+    Trajectory {
+        hold: 5.0,
+        ramp: 4.0,
+        north: Wave {
+            amplitude: 3.2,
+            period: 8.0,
+            ..STILL
+        },
+        east: Wave {
+            amplitude: 6.0,
+            period: 13.0,
+            ..STILL
+        },
+        down: Wave {
+            offset: 0.0,
+            amplitude: -3.0,
+            period: 45.0,
+            ..STILL
+        },
+        roll: Wave {
+            amplitude: 0.06,
+            period: 13.0,
+            ..STILL
+        },
+        pitch: Wave {
+            amplitude: 0.08,
+            period: 8.0,
+            ..STILL
+        },
+        yaw: Wave {
+            offset: 2.2,
+            rate: 0.05,
+            amplitude: 0.8,
+            period: 30.0,
+            ..STILL
+        },
+        sideslip: None,
+    }
+}
+
 /// A fixed-wing's orbit: on the ground pointing along its track, then a 150 m circle at 18 m/s,
 /// climbing gently, with the nose a few degrees off the track as a crosswind would put it.
 ///
@@ -1465,6 +1514,45 @@ fn scenarios() -> Vec<Scenario> {
                 ..MAG
             },
             course: Some(0.05),
+            ..base
+        },
+        // A multirotor with no magnetometer and no second antenna: nothing observes yaw at rest,
+        // its nose and track are unrelated so no course does either, and only the yaw estimator
+        // of (45)–(52) can establish a heading, once the vehicle accelerates.
+        Scenario {
+            name: "multirotor_no_mag",
+            covers: "a multirotor with no magnetometer, still and then shuttling with its nose \
+                     turning: heading from the yaw estimator alone",
+            seed: 7,
+            duration: 120.0,
+            trajectory: shuttle(),
+            mag: MagErrors {
+                available: Window::NEVER,
+                ..MAG
+            },
+            ..base
+        },
+        // The same multirotor with a magnetometer that is wrong: 80° off from the first sample,
+        // as one mounted beside a power lead is, so the window levels a heading the first
+        // acceleration contradicts. GNSS is then judged against a yaw that turns its velocity
+        // the wrong way, and the yaw estimator is what says so.
+        Scenario {
+            name: "yaw_fault",
+            covers: "a multirotor whose magnetometer is 80 degrees wrong from the start: the yaw \
+                     estimator replacing a heading GNSS keeps turning down",
+            seed: 11,
+            duration: 120.0,
+            trajectory: shuttle(),
+            mag: MagErrors {
+                disturbance: Some(Disturbance {
+                    window: Window {
+                        start: 0.0,
+                        end: f64::INFINITY,
+                    },
+                    rotation: 80.0_f64.to_radians(),
+                }),
+                ..MAG
+            },
             ..base
         },
         // An IMU gap at speed, and the one scenario that reaches (22′). The logger loses 1.2 s at

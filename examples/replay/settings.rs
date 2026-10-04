@@ -130,7 +130,7 @@ pub trait PerSource {
 }
 
 macro_rules! per_source_impl {
-    ($type:ty) => {
+    ($type:ty $(, $apart:ident)?) => {
         impl PerSource for $type {
             fn fields(&self) -> [(&'static str, Option<Seconds>); 7] {
                 let Self {
@@ -141,6 +141,7 @@ macro_rules! per_source_impl {
                     mag_heading,
                     gnss_heading,
                     course,
+                    $($apart: _,)?
                 } = *self;
                 [
                     ("gnss_position", gnss_position),
@@ -169,7 +170,8 @@ macro_rules! per_source_impl {
     };
 }
 per_source_impl!(Correlation);
-per_source_impl!(Recovery);
+// The yaw estimator's delay times another source's rejections, so it is no source's field.
+per_source_impl!(Recovery, yaw_estimator);
 
 fn per_source<'a>(
     of: &'a mut impl PerSource,
@@ -230,6 +232,7 @@ mod tests {
             mag_heading: Some(Seconds::from_secs(9.5)),
             gnss_heading: Some(Seconds::from_secs(10.5)),
             course: Some(Seconds::from_secs(11.5)),
+            ..Recovery::default()
         };
         config
     }

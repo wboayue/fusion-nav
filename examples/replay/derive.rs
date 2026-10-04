@@ -952,6 +952,10 @@ impl Derived {
                 self.recovered[source]
             ));
         }
+        line(format!(
+            "        yaw_estimator: {}, // PX4's delay: a log cannot derive it",
+            seconds(recovery.yaw_estimator)
+        ));
         line("    },".into());
 
         line("    correlation: fusion_nav::Correlation {".into());

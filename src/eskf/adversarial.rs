@@ -362,6 +362,7 @@ fn config() -> impl Strategy<Value = Config> {
                 mag_heading: quick,
                 gnss_heading: quick,
                 course: quick,
+                yaw_estimator: quick,
             },
             ..Config::default()
         },

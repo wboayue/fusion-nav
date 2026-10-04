@@ -7,6 +7,7 @@
 use crate::config::{ALIGNED_HEADING, Config};
 use crate::frames::{Body, Ned};
 use crate::gsf::yaw_of;
+use crate::health::{Diagnostics, SourceHealth};
 use crate::math::wrap_pi;
 use crate::observation::heading::has_heading;
 use crate::propagate::ImuSample;
@@ -26,6 +27,23 @@ const YAW_SIGMA_MAX: Radians = Radians::from_degrees(15.0);
 /// unsure of its velocity separates no hypotheses, and its error is not the white one (51)
 /// takes it for.
 const SPEED_SIGMA_MAX: f32 = 0.5;
+
+/// How far the filter's yaw must sit from the estimator's before GNSS rejections are put down
+/// to the heading: 25° (`isYawFailure`, `gps_control.cpp:561` at `c4e4ef98e9`).
+const YAW_FAILURE: Radians = Radians::from_degrees(25.0);
+
+/// Which GNSS horizontal sources have yet to be judged since the yaw they were being judged
+/// against was replaced: each one's first measurement the gate turns down is adopted at once,
+/// as after a position hold ([`recovery_after`](super::hold::recovery_after)).
+///
+/// PX4 resets velocity and position to GNSS with the yaw (`do_vel_pos_reset`,
+/// `gps_control.cpp:124-128`): both were integrated through the wrong heading, and a gate
+/// built on that covariance would hold the next fix off for its whole timeout.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct YawReplaced {
+    pub(super) position: bool,
+    pub(super) velocity: bool,
+}
 
 // The bar an adoption has to clear is inside the one alignment asks of heading.
 const _: () = assert!(YAW_SIGMA_MAX.as_radians() < ALIGNED_HEADING.as_radians());
@@ -100,16 +118,57 @@ impl Eskf {
             carried.vector().xy(),
             heading,
         );
-        if self.unestablished.heading && self.adopt_estimated_yaw() {
+        if self.unestablished.heading && self.turn_to_estimated_yaw(|_| true) {
             self.diagnostics.yaw_estimator.record_adopted();
             self.note_alignment();
             self.magnetic_north = false;
         }
     }
 
-    /// Turn the estimate to the yaw estimator's answer, if it has one good enough and the
-    /// vehicle's forward axis names a heading. Returns whether it did.
-    fn adopt_estimated_yaw(&mut self) -> bool {
+    /// Replace a heading GNSS contradicts with the yaw estimator's. Called with a GNSS
+    /// horizontal position or velocity the gate has just turned down, `source` naming which.
+    ///
+    /// A yaw that is wrong turns every acceleration the wrong way, so velocity and position
+    /// leave the truth and GNSS is rejected for it, while the heading source that put the yaw
+    /// there goes on agreeing with it. Recovering the GNSS source alone, after its own
+    /// timeout, adopts a fix and leaves the cause. The estimator never read that heading:
+    /// where it has converged more than [`YAW_FAILURE`] from the filter's yaw, and `source` has
+    /// gone unaccepted for [`Recovery::yaw_estimator`](crate::Recovery::yaw_estimator), the
+    /// yaw is the estimator's from here (`tryYawEmergencyReset`, `gps_control.cpp:426-444` at
+    /// `c4e4ef98e9`). Counted in
+    /// [`Diagnostics::yaw_estimator`](crate::Diagnostics::yaw_estimator) as recovered.
+    ///
+    /// PX4 also resets the variance of the gyroscope bias about body z
+    /// (`resetGyroBiasZCov`, `gps_control.cpp:440`). Not done here: [`reset_heading_by`]
+    /// drops the heading's correlation with the bias, and `yaw_fault` settles without it.
+    ///
+    /// [`reset_heading_by`]: Self::reset_heading_by
+    #[inline(never)]
+    pub(super) fn replace_failed_yaw(&mut self, source: fn(&Diagnostics) -> &SourceHealth) {
+        if !self.config.yaw_estimator || !self.yaw_estimator.is_settled() {
+            return;
+        }
+        let after = self.config.recovery.yaw_estimator;
+        let since_initialized = self.diagnostics.since_initialized;
+        if !source(&self.diagnostics).locked_out(after, since_initialized) {
+            return;
+        }
+        let disagrees = |y: f32| y.abs() > YAW_FAILURE.as_radians();
+        if self.turn_to_estimated_yaw(disagrees) {
+            self.diagnostics.yaw_estimator.record_recovered();
+            self.note_alignment();
+            self.magnetic_north = false;
+            self.yaw_replaced = YawReplaced {
+                position: true,
+                velocity: true,
+            };
+        }
+    }
+
+    /// Turn the estimate to the yaw estimator's answer, if it has one good enough, the
+    /// vehicle's forward axis names a heading, and `wanted` takes the turn it would make.
+    /// Returns whether it did.
+    fn turn_to_estimated_yaw(&mut self, wanted: impl FnOnce(f32) -> bool) -> bool {
         let Some((yaw, variance)) = self.yaw_estimator.yaw() else {
             return false;
         };
@@ -119,7 +178,7 @@ impl Eskf {
         }
         let attitude = self.estimate.state().attitude.quaternion();
         let y = wrap_pi(yaw - yaw_of(attitude));
-        if !y.is_finite() {
+        if !(y.is_finite() && wanted(y)) {
             return false;
         }
         self.reset_heading_by(y, variance, attitude.inverse() * Vector3::z());

@@ -179,6 +179,9 @@ pub struct Eskf {
     /// The yaw hypotheses of (45)–(52), stepped and weighed while
     /// [`Config::yaw_estimator`] is on; see [`weigh_yaw`](Self::weigh_yaw).
     yaw_estimator: YawEstimator,
+    /// What has yet to be judged against the yaw the estimator replaced; see
+    /// [`replace_failed_yaw`](Self::replace_failed_yaw).
+    yaw_replaced: yaw::YawReplaced,
     initialized: bool,
     /// The clock; see [`time`](Self::time). Meaningless until `initialized`.
     time: Timestamp,
@@ -236,6 +239,7 @@ impl Eskf {
             aligned: false,
             hold: hold::HoldState::default(),
             yaw_estimator: YawEstimator::default(),
+            yaw_replaced: yaw::YawReplaced::default(),
             initialized: false,
             time: Timestamp::ZERO,
         }

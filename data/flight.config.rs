@@ -29,6 +29,7 @@ fusion_nav::Config {
         mag_heading: Some(fusion_nav::Seconds::from_secs(7.0)), // no rejection resolved; recovered 0
         gnss_heading: Some(fusion_nav::Seconds::from_secs(7.0)), // no rejection resolved; recovered 0
         course: Some(fusion_nav::Seconds::from_secs(7.0)), // no rejection resolved; recovered 0
+        yaw_estimator: Some(fusion_nav::Seconds::from_secs(1.0)), // PX4's delay: a log cannot derive it
     },
     correlation: fusion_nav::Correlation {
         // τ = −T / ln ρ from each source's lag-one autocorrelation fused white, a lower bound since an innovation is whiter than the error behind it: printed only where it exceeds the default.

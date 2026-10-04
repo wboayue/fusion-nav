@@ -68,6 +68,11 @@ const NIS_MAX: f32 = 25.0;
 /// The least velocity σ (50) reads, m/s (`EKFGSF_yaw.cpp:302`).
 const SIGMA_MIN: f32 = 0.01;
 
+/// How long a bank begun again must fuse before its answer may replace a heading, seconds:
+/// `EKFGSF_min_active_time` (`common.h:397` at `c4e4ef98e9`). A bank that restarts in flight
+/// levels against whatever the vehicle is doing, and its first convergence can be on that.
+const RESTART_SETTLING: f32 = 10.0;
+
 /// One yaw hypothesis: an attitude kept level by the accelerometer, and the horizontal
 /// velocity and yaw error that attitude implies.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -139,6 +144,9 @@ pub(crate) struct YawEstimator {
     fusing: bool,
     /// Seconds of propagation since fusing began.
     active: f32,
+    /// Whether this bank is a second one: begun again by [`restart`](Self::restart), in what
+    /// may be mid-flight, rather than at the filter's start.
+    restarted: bool,
     /// `ψ̄` of (52).
     yaw: f32,
     /// `σ²_ψ̄` of (52).
@@ -153,6 +161,7 @@ impl Default for YawEstimator {
             leveled: false,
             fusing: false,
             active: 0.0,
+            restarted: false,
             yaw: 0.0,
             variance: f32::INFINITY,
         }
@@ -162,7 +171,10 @@ impl Default for YawEstimator {
 impl YawEstimator {
     /// Begin again: nothing leveled, nothing fused.
     pub(crate) fn restart(&mut self) {
-        *self = Self::default();
+        *self = Self {
+            restarted: true,
+            ..Self::default()
+        };
     }
 
     /// The composite yaw and its variance, (52), once velocity is being fused.
@@ -170,9 +182,10 @@ impl YawEstimator {
         self.fusing.then_some((self.yaw, self.variance))
     }
 
-    /// How long velocity has been fused, in seconds of propagation.
-    pub(crate) fn active(&self) -> f32 {
-        self.active
+    /// Whether the composite may overrule a heading the main filter holds: always for the
+    /// first bank, and for one begun again only after [`RESTART_SETTLING`] of fusion.
+    pub(crate) fn is_settled(&self) -> bool {
+        !self.restarted || self.active >= RESTART_SETTLING
     }
 
     /// Step every hypothesis across one IMU sample. Equations (46)–(48).
@@ -631,6 +644,6 @@ mod tests {
         flight.fly(3.0, circling);
         flight.estimator.models[2].covariance.m33 = f32::NAN;
         flight.estimator.compose();
-        assert_eq!(flight.estimator, YawEstimator::default());
+        assert!(flight.estimator.yaw().is_none() && !flight.estimator.is_settled());
     }
 }
