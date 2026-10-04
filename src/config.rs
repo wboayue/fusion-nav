@@ -478,6 +478,18 @@ pub struct Recovery {
     /// is sideslip the caller did not allow for,
     /// a crosswind or a multirotor crabbing, rather than a wrong heading.
     pub course: Option<Seconds>,
+    /// The yaw estimator's heading, adopted in place of one GNSS contradicts: once no GNSS
+    /// velocity has been accepted for this long and a second in a row is rejected, while the
+    /// estimator of [`Config::yaw_estimator`] has converged on a yaw more than 25° from the
+    /// filter's. A magnetometer is then not adopted back until one of its headings passes
+    /// the gate.
+    /// That velocity, and the first GNSS position the gate turns down after it, are then
+    /// adopted at once rather than after their own timeouts, since what they were judged
+    /// against was the wrong heading. Not while a dual-antenna
+    /// GNSS heading is fresh ([`SourceHealth::is_fresh`](crate::SourceHealth::is_fresh)): it
+    /// measures what the estimator infers. Unlike the fields above it times another source's
+    /// rejections: the estimator's answer is never gated.
+    pub yaw_estimator: Option<Seconds>,
 }
 
 impl Recovery {
@@ -490,6 +502,7 @@ impl Recovery {
         mag_heading: None,
         gnss_heading: None,
         course: None,
+        yaw_estimator: None,
     };
 }
 
@@ -516,6 +529,10 @@ impl Default for Recovery {
     /// after 10 s (`AP_NavEKF3_MagFusion.cpp:433-435` at `368dc0c4`). PX4 has no course
     /// constraint at all; ArduPilot's in-flight course realignment is itself a reset
     /// (`realignYawGPS`, `AP_NavEKF3_MagFusion.cpp:145-218`).
+    ///
+    /// The yaw estimator's is PX4's `EKFGSF_reset_delay`, 1 s (`common.h:395`), applied as PX4
+    /// applies it to a rejected velocity (`gps_control.cpp:113-125`, `isYawFailure` at
+    /// `:546-562`) less its in-air condition, which this filter is not told.
     fn default() -> Self {
         Self {
             gnss_position: Some(Seconds::from_secs(7.0)),
@@ -525,6 +542,7 @@ impl Default for Recovery {
             mag_heading: Some(Seconds::from_secs(7.0)),
             gnss_heading: Some(Seconds::from_secs(7.0)),
             course: Some(Seconds::from_secs(7.0)),
+            yaw_estimator: Some(Seconds::from_secs(1.0)),
         }
     }
 }
@@ -924,6 +942,21 @@ pub struct Config {
     /// [`Fusion::NoReference`](crate::Fusion::NoReference) until it does than referred to the
     /// estimate's height at whatever moment the first reading arrived.
     pub baro_reference_from_estimate: bool,
+    /// Whether the filter runs the yaw estimator of equations (45)–(52): a bank of yaw
+    /// hypotheses weighed by each GNSS velocity, whose answer is adopted as the first heading
+    /// where no heading source has established one.
+    ///
+    /// It is how a multirotor with no magnetometer and no second antenna gets a heading, which
+    /// [`Eskf::fuse_course`](crate::Eskf::fuse_course) cannot give a vehicle that flies in any
+    /// direction facing any other. PX4 and ArduPilot run the same estimator (`EKFGSF_yaw`).
+    /// It needs GNSS velocity and a horizontal acceleration: a hover separates no hypotheses.
+    ///
+    /// On by default, per [rejection
+    /// handling](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#rejection-handling-recover-by-default-opt-out-per-source).
+    /// Off, it is never stepped and costs no cycles, for a vehicle that always has a heading
+    /// source or a processor that cannot afford five small filters on every IMU sample
+    /// ([cost](https://github.com/wboayue/fusion-nav/blob/main/validation/cost.md)).
+    pub yaw_estimator: bool,
 }
 
 impl Default for Config {
@@ -944,6 +977,7 @@ impl Default for Config {
             hold: Some(Hold::default()),
             baro_offset_walk: 0.13,
             baro_reference_from_estimate: true,
+            yaw_estimator: true,
         }
     }
 }
@@ -1010,6 +1044,7 @@ impl Config {
             hold,
             baro_offset_walk,
             baro_reference_from_estimate: _,
+            yaw_estimator: _,
         } = *self;
         let check = |field, value: f32, bound: ConfigBound| {
             if bound.holds(value) {
@@ -1084,7 +1119,7 @@ impl Config {
 impl Recovery {
     /// Each source's timeout, named by its path from [`Config`]. Destructured without `..`,
     /// so a source added here is a compile error until [`Config::validate`] sees it.
-    fn named(self) -> [(&'static str, Option<Seconds>); 7] {
+    fn named(self) -> [(&'static str, Option<Seconds>); 8] {
         let Self {
             gnss_position,
             gnss_height,
@@ -1093,6 +1128,7 @@ impl Recovery {
             mag_heading,
             gnss_heading,
             course,
+            yaw_estimator,
         } = self;
         [
             ("recovery.gnss_position", gnss_position),
@@ -1102,6 +1138,7 @@ impl Recovery {
             ("recovery.mag_heading", mag_heading),
             ("recovery.gnss_heading", gnss_heading),
             ("recovery.course", course),
+            ("recovery.yaw_estimator", yaw_estimator),
         ]
     }
 }
@@ -1258,7 +1295,7 @@ mod tests {
     /// bound it must meet. Written out as the struct literal names them, so a path that
     /// `validate` misspells is a failure here rather than a message nobody can act on.
     #[allow(clippy::type_complexity)]
-    const FIELDS: [(&str, fn(&mut Config, f32), ConfigBound); 39] = {
+    const FIELDS: [(&str, fn(&mut Config, f32), ConfigBound); 40] = {
         use ConfigBound::{NonNegative, Positive};
         [
             ("imu.gyro_white", |c, v| c.imu.gyro_white = v, NonNegative),
@@ -1311,6 +1348,11 @@ mod tests {
             (
                 "recovery.course",
                 |c, v| c.recovery.course = Some(Seconds::from_secs(v)),
+                Positive,
+            ),
+            (
+                "recovery.yaw_estimator",
+                |c, v| c.recovery.yaw_estimator = Some(Seconds::from_secs(v)),
                 Positive,
             ),
             (

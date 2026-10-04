@@ -45,6 +45,7 @@ host timings, which are taken on one machine and pinned nowhere.
 | of which the state history of (23′) | {{footprint thumbv6m-none-eabi size.history.History}} | {{footprint thumbv7em-none-eabihf size.history.History}} |
 | of which the covariance `P` | {{footprint thumbv6m-none-eabi size.state.Covariance}} | {{footprint thumbv7em-none-eabihf size.state.Covariance}} |
 | of which `Diagnostics` | {{footprint thumbv6m-none-eabi size.health.Diagnostics}} | {{footprint thumbv7em-none-eabihf size.health.Diagnostics}} |
+| of which the yaw estimator of (45)–(52) | {{footprint thumbv6m-none-eabi size.gsf.YawEstimator}} | {{footprint thumbv7em-none-eabihf size.gsf.YawEstimator}} |
 | of which the barometric offset of (30′) | {{footprint thumbv6m-none-eabi size.state.Offset}} | {{footprint thumbv7em-none-eabihf size.state.Offset}} |
 | `State`, the estimate `state()` returns | {{footprint thumbv6m-none-eabi size.state.State}} | {{footprint thumbv7em-none-eabihf size.state.State}} |
 | `Config` | {{footprint thumbv6m-none-eabi size.config.Config}} | {{footprint thumbv7em-none-eabihf size.config.Config}} |
@@ -86,6 +87,7 @@ Each entry point's own frame, and the frames beneath it that set its depth:
 | `predict` | {{footprint thumbv6m-none-eabi frame.eskf.Eskf.predict}} | {{footprint thumbv7em-none-eabihf frame.eskf.Eskf.predict}} |
 | `propagate_or_coast`, the step it calls | {{footprint thumbv6m-none-eabi frame.eskf.Eskf.propagate_or_coast}} | {{footprint thumbv7em-none-eabihf frame.eskf.Eskf.propagate_or_coast}} |
 | `hold_if_unaided`, the hold it calls beside the step | {{footprint thumbv6m-none-eabi frame.eskf.Eskf.hold_if_unaided}} | {{footprint thumbv7em-none-eabihf frame.eskf.Eskf.hold_if_unaided}} |
+| `YawEstimator::predict`, the yaw estimator it steps beside both | {{footprint thumbv6m-none-eabi frame.gsf.YawEstimator.predict}} | {{footprint thumbv7em-none-eabihf frame.gsf.YawEstimator.predict}} |
 | `fuse_gnss_position` | {{footprint thumbv6m-none-eabi frame.eskf.Eskf.fuse_gnss_position}} | {{footprint thumbv7em-none-eabihf frame.eskf.Eskf.fuse_gnss_position}} |
 | `fuse_gnss_geodetic` | {{footprint thumbv6m-none-eabi frame.eskf.Eskf.fuse_gnss_geodetic}} | {{footprint thumbv7em-none-eabihf frame.eskf.Eskf.fuse_gnss_geodetic}} |
 | `fuse_gnss_velocity` | {{footprint thumbv6m-none-eabi frame.eskf.Eskf.fuse_gnss_velocity}} | {{footprint thumbv7em-none-eabihf frame.eskf.Eskf.fuse_gnss_velocity}} |

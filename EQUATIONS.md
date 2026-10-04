@@ -49,10 +49,11 @@ flowchart LR
 | the frame's origin | (43)–(44) | [geodetic origin](#geodetic-origin) |
 | what each sensor reads | (28)–(36′) | [observation models](#observation-models) |
 | when, and how often | (23′), (24′) | [measurement time and correlation](#measurement-time-and-correlation) |
+| yaw with no heading sensor | (45)–(52) | [yaw without a heading sensor](#yaw-without-a-heading-sensor) |
 
 The sections below follow that order. Equations keep the numbers the code cites, so the numbers
 jump: (27) is followed by (37)–(44), then (28)–(36) with the unbuilt (31)–(33) last, then (23′)
-and (24′). Within initialization, (5′) follows (8′).
+and (24′), then (45)–(52). Within initialization, (5′) follows (8′).
 
 ## Notation and conventions
 
@@ -1456,6 +1457,185 @@ per source and axis that would model the error exactly and grow the covariance p
 states. What it was measured against, a floor on $`P`$ and PX4's floor on $`R`$, is in
 [the decision](GOALS.md#correlated-measurement-error-as-equivalent-white-noise).
 
+## Yaw without a heading sensor
+
+A multirotor with no magnetometer and no second antenna has nothing above that observes yaw at
+rest, and no course to read it from in flight, since its nose and its track are unrelated. GNSS
+velocity observes yaw all the same, through (17): an acceleration rotated by the wrong yaw moves
+the velocity the wrong way. The main filter cannot use that from an unknown yaw, because (16)–(19)
+are linear in an error that may be half a circle. A bank of $`N = 5`$ small estimators can: each
+starts from its own yaw, close enough to linearize about, and the GNSS velocity says which one
+predicted it. This is the EKF-GSF yaw estimator of ArduPilot and PX4 (`EKFGSF_yaw`), and the
+numbered constants below are theirs, cited in `src/gsf.rs`.
+
+Hypothesis $`i`$ holds an attitude $`q_i`$ and a gyroscope bias $`\beta_i`$, kept level by the
+accelerometer alone, and a state $`x_i = [v_N\ v_E\ \psi]^\mathsf{T}`$ with covariance $`P_i`$ and
+weight $`w_i`$. Its yaw $`\psi_i`$ is the heading of $`q_i`$'s forward axis, as
+[$`\hat{\psi}`$](#heading-from-gnss) is the main filter's, and $`\delta\psi`$ is a rotation
+about navigation down. Nothing here reads the main filter's attitude, which is what lets the
+answer correct it.
+
+**Start.** At the first velocity $`z`$ of variance $`\sigma_v^2`$ per axis, the hypotheses are
+spread evenly, each one's 1σ interval meeting its neighbor's. $`\sigma_v`$ is the receiver's,
+never under 0.3 m/s (PX4's `EKF2_GPS_V_NOISE`): (51) multiplies likelihoods, and a receiver
+claiming centimeters per second sharpens them until noise picks the hypothesis.
+
+**(45)**
+
+```math
+\psi_i = -\pi + \big(i + \tfrac12\big)\frac{2\pi}{N}, \qquad v_i = z_i, \qquad
+P_i = \mathrm{diag}\Big(\sigma_v^2,\ \sigma_v^2,\ \big(\tfrac{\pi}{N}\big)^2\Big), \qquad w_i = \tfrac1N
+```
+
+for $`i = 0 \ldots N-1`$, with $`z_i`$ the velocity carried to the present by (49). Fusion
+begins once $`\lVert z \rVert > \sigma_v`$; until then each velocity spreads them again. PX4 also begins when told the vehicle is airborne, which this filter
+is not told.
+
+**Tilt.** Each IMU sample turns every $`q_i`$ by the gyroscope and pulls it toward the attitude
+that explains the measured specific force, low-passed to $`\bar f`$ with a 0.5 s time constant.
+A vehicle accelerating at $`\bar a`$ reads $`\bar a - \gamma e_3`$, so that is the direction
+the correction levels against, reversed:
+
+**(46)**
+
+```math
+e_i = k\,\frac{\big(R(q_i)^\mathsf{T} u\big) \times \bar f}{\lVert \bar f \rVert},
+\qquad u = \frac{\gamma e_3 - \bar a}{\lVert \gamma e_3 - \bar a \rVert},
+\qquad k = k_t \Big(1 - \min\big(2\,\big|\lVert \bar f \rVert - \gamma\big| / \gamma,\ 1\big)\Big)^2
+```
+
+$`\bar a`$ is horizontal and comes from outside the hypotheses: the difference of successive GNSS
+velocities over the time $`T`$ between them. That slope is the acceleration $`T/2`$ ago, so it is
+low-passed with what is left of $`\bar f`$'s time constant, $`\tau - T/2`$, and not at all from
+$`T = 2\tau`$, a 1 Hz receiver, so that the two lag alike. It is measured from the first
+velocity and used once fusion begins, since until then no hypothesis has a yaw to turn it by,
+and it starts again from zero after 2.5 s without a velocity. The velocities are the antenna's:
+its swing about the IMU is in $`\bar a`$, since taking it out needs the yaw being sought.
+
+**(47)**
+
+```math
+\beta_i \leftarrow \beta_i - k_\beta\, e_i\, \Delta t, \qquad
+q_i \leftarrow q_i \otimes \mathrm{Exp}\big(\Delta\theta + (e_i - \beta_i)\,\Delta t\big)
+```
+
+with $`k_t = 0.2\ \mathrm{s^{-1}}`$ and $`k_\beta = 0.04\ \mathrm{s^{-1}}`$, both taken from the
+two autopilots rather than derived: a complementary filter's crossover is a choice. $`\beta_i`$
+starts at the main filter's $`\hat\beta_g`$, is held within 0.05 rad/s and is left alone while
+the vehicle turns faster than 10°/s. The gain $`k`$ falls to zero half a $`g`$ either side of
+$`\gamma`$, so a hard maneuver is not read as a tilt.
+
+$`\bar a`$ is where this departs from both autopilots, which level against gravity alone,
+$`u = e_3`$. That form cannot tell a sustained acceleration from a tilt: a specific force that
+keeps turning, a steady circle or a fixed-wing's turn, drags every hypothesis's tilt a quarter
+cycle behind it, and the gravity that tilt leaks turns the acceleration (48) integrates, a yaw
+bias of about $`\mathrm{atan}(k_t / \omega)`$, 0.24 rad at 0.8 rad/s, under a variance that
+does not know it. PX4 subtracts a fixed-wing's centripetal acceleration with a measured or
+assumed airspeed; a velocity differenced needs neither the airspeed nor the vehicle to point
+where it goes. [What it measured](DESIGN.md#yawestimator) on a fixed-wing: a median 31.9° from
+EKF2's heading without $`\bar a`$, 3.1° with. A slope is held until the next velocity, which
+costs a slow receiver: on a steady circle at 0.8 rad/s the yaw is within 0.02 rad from 2 Hz up
+and 0.07 rad out at 1 Hz, against 0.22 rad with no $`\bar a`$.
+
+**Propagation.** The same sample moves each velocity by the specific force its own attitude
+rotates into the horizontal, $`\Delta v_i = \big[R(q_i)\,\Delta v\big]_{NE}`$. Gravity has no
+horizontal part, so none is added.
+
+**(48)**
+
+```math
+v_i \leftarrow v_i + \Delta v_i, \qquad P_i \leftarrow F_i P_i F_i^\mathsf{T} + Q, \qquad
+F_i = \begin{bmatrix} 1 & 0 & -\Delta v_{i,E} \\ 0 & 1 & \Delta v_{i,N} \\ 0 & 0 & 1 \end{bmatrix},
+\qquad Q = \mathrm{diag}\big(\sigma_a^2\,\Delta t,\ \sigma_a^2\,\Delta t,\ \sigma_\omega^2\,\Delta t\big)
+```
+
+The third column of $`F_i`$ is the increment turned a quarter circle: a yaw error
+$`\delta\psi`$ rotates what the accelerometer added, the (17) of this estimator. $`\sigma_a`$ is
+0.2 m s⁻²/√Hz and $`\sigma_\omega`$ 0.01 rad s⁻¹/√Hz. Both autopilots write per-step σ's of
+2 m/s² and 0.1 rad/s; these are the same figures as densities at PX4's 10 ms step, for
+[the reason (21) is in densities](#densities-not-per-sample-σ). $`\sigma_a`$ is far above an
+accelerometer's noise because it prices the tilt error of (46).
+
+**Measurement.** A velocity taken $`\tau`$ ago is carried to the present before it is compared,
+since the hypotheses hold no past. The main filter's [history](#delayed-measurements) gives how
+far its own horizontal velocity moved over $`\tau`$, less the antenna's swing of (29′), as a
+vector $`c`$ in axes whose heading is $`\hat\psi`$; hypothesis $`i`$'s axes are those turned by
+$`\psi_i - \hat\psi`$:
+
+**(49)**
+
+```math
+z_i = z + R_z\big(\psi_i - \hat\psi\big)\,c, \qquad
+c = \big[\hat v(t) - \hat v(t - \tau) - R\big(\hat q(t - \tau)\big)\,(\bar\omega \times r)\big]_{NE}
+```
+
+Only the difference of two of the main filter's velocities enters, which every correction to it
+shifts alike, so $`c`$ is what the IMU integrated and carries none of the main filter's yaw error
+once turned. PX4 needs no such step: its estimator runs at the delayed time the measurement was
+taken at.
+
+**(50)**
+
+```math
+\nu_i = v_i - z_i, \qquad S_i = [P_i]_{vv} + \sigma_v^2 I, \qquad K_i = P_i H^\mathsf{T} S_i^{-1},
+\qquad H = \begin{bmatrix} I_2 & 0 \end{bmatrix}
+```
+
+```math
+\begin{bmatrix} \delta v \\ \delta\psi \end{bmatrix} = -K_i \nu_i, \qquad v_i \leftarrow v_i + \delta v,
+\qquad q_i \leftarrow \mathrm{Exp}(\delta\psi\, e_3) \otimes q_i, \qquad P_i \leftarrow P_i - K_i S_i K_i^\mathsf{T}
+```
+
+The yaw correction is composed on the left, as [an adoption](#adoption) turns the main filter,
+so it leaves the tilt of (46) alone. An innovation past 5σ, $`\nu_i^\mathsf{T} S_i^{-1} \nu_i >
+25`$, is shortened to 5σ before it is applied, so one bad velocity moves each hypothesis a bounded
+amount. No gate: a hypothesis that disagrees is the information.
+
+**Weights.** Each weight is multiplied by the likelihood of its innovation, floored at
+$`10^{-5}`$ so that no hypothesis is ruled out for good, and the weights are normalized:
+
+**(51)**
+
+```math
+w_i \leftarrow \frac{w_i\, \ell_i}{\sum_j w_j\, \ell_j}, \qquad
+\ell_i = \frac{\exp\big(-\tfrac12\, \nu_i^\mathsf{T} S_i^{-1} \nu_i\big)}{2\pi \sqrt{\det S_i}}
+```
+
+**Composite.** The yaw is the weighted mean direction, summed as unit vectors so that hypotheses
+either side of ±π do not average to zero, and its variance is each hypothesis's own plus its
+distance from that mean:
+
+**(52)**
+
+```math
+\bar\psi = \mathrm{atan2}\Big(\sum_i w_i \sin\psi_i,\ \sum_i w_i \cos\psi_i\Big), \qquad
+\sigma_{\bar\psi}^2 = \sum_i w_i \Big([P_i]_{\psi\psi} + \mathrm{wrap}(\psi_i - \bar\psi)^2\Big)
+```
+
+In a hover every hypothesis predicts the same velocity, the weights stay equal, and the second
+term keeps $`\sigma_{\bar\psi}`$ near 1.9 rad however small each $`[P_i]_{\psi\psi}`$ is. An
+acceleration separates them.
+
+**What the main filter takes.** Never a measurement: the velocity is already fused by (29), and a
+yaw read from it and fused beside it would count it twice. Once
+$`\sigma_{\bar\psi} < 15°`$ (PX4's `EKFGSF_yaw_err_max`), $`\bar\psi`$ is taken by
+[adoption](#adoption), $`y = \mathrm{wrap}(\bar\psi - \hat\psi)`$ at variance
+$`\sigma_{\bar\psi}^2`$, in two cases:
+
+* **A heading never established.** The first heading, as a first magnetic heading is.
+* **A heading GNSS contradicts.** A second GNSS velocity in a row is rejected, none has been
+  accepted for 1 s, and $`|y| > 25°`$ ([gate lockout](#gate-lockout) with its cause named;
+  PX4's `isYawFailure`). That velocity is then adopted at once, and so is the first GNSS
+  position the gate turns down, since both were being judged against the wrong yaw. A
+  magnetometer is not adopted back until one of its headings passes the gate. A rejected
+  position alone is not the trigger, where it is PX4's: a wrong yaw reaches velocity first. Nor
+  does it fire while a dual-antenna heading, (35′), is being accepted.
+
+Either way the bank must be settled. The one the filter starts with is. One begun again, after
+time it did not integrate (a coasted gap, a refused step), leveled against whatever the vehicle
+was doing, and must first fuse for 10 s (PX4's `EKFGSF_min_active_time`, which PX4 asks only of
+the replacement).
+
 ## Equation-to-code mapping
 
 Each implementing function cites its equation numbers in a doc comment.
@@ -1491,6 +1671,8 @@ Each implementing function cites its equation numbers in a doc comment.
 | (36′) | leveling variance | `observation/mag.rs` | `leveling_variance`, with `tan δ` and `f̂_b` from `init.rs`'s `heading_sensitivity` |
 | (35′) | dual-antenna GNSS heading | `observation/heading.rs`, `eskf/heading.rs` | `gnss_observation`, `has_heading`; committed by `Eskf::fuse_gnss_heading` |
 | (35″) | course constraint | `observation/heading.rs`, `eskf/heading.rs` | `course_observation`, `course_variance`; committed by `Eskf::fuse_course` |
+| (45)–(52) | yaw estimator | `gsf.rs` | `YawEstimator::predict` for (46)–(48), `fuse_velocity` for (49)–(51), `spread` for (45), `compose` for (52) |
+| (49), (52) | yaw estimator, fed and adopted | `eskf/yaw.rs` | `Eskf::step_yaw_estimator` and `weigh_yaw`, called by `Eskf::predict` and `Eskf::fuse_gnss_velocity`; `Eskf::adopt_first_yaw` and `Eskf::replace_failed_yaw`; adopted through `Eskf::reset_heading_by` |
 | (37) `γ` | gate thresholds | `config.rs` | `Gate::at`, `Gate::new`, `Gates::at` |
 | (37)–(38) | innovation gating, test ratio | `update.rs` | `nis`, `test_ratio`, called by `update` |
 | — | per-source health tracking | `health.rs` | `SourceHealth`, `Status` |

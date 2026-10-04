@@ -227,7 +227,7 @@ impl Eskf {
                     outcome,
                     |diagnostics| &mut diagnostics.gnss_position,
                     recovery_after(
-                        self.hold.holds_position(),
+                        self.hold.holds_position() || self.yaw_replaced.owes_position(),
                         self.config.recovery.gnss_position,
                     ),
                     |filter| {
@@ -242,6 +242,9 @@ impl Eskf {
         // An adoption ended the hold's claim on position on its way. A fix the gate passes
         // measures position too, and one it passes against a position already measured since
         // the hold has checked the velocity that carried the estimate there.
+        if matches!(horizontal, Fusion::Accepted { .. }) {
+            self.yaw_replaced.settle_position();
+        }
         if matches!(horizontal, Fusion::Accepted { .. }) {
             if !self.hold.holds_position() {
                 self.hold.end_velocity();
@@ -407,7 +410,7 @@ impl Eskf {
     /// [`carried_position`](Self::carried_position) for a velocity, referred to the IMU by
     /// (29′) at the mean rate over the measurement's age, or the last sample's for one taken
     /// now.
-    fn carried_velocity(
+    pub(super) fn carried_velocity(
         &self,
         taken: Velocity<Ned>,
         antenna: Position<Body>,
@@ -564,6 +567,8 @@ impl Eskf {
         if !noise.is_positive() {
             return refuse(&mut self.diagnostics.gnss_velocity, Fusion::InvalidNoise);
         }
+        self.weigh_yaw(time, velocity, noise, antenna);
+        self.adopt_first_yaw();
         if self.unestablished.velocity {
             let Some(adopted) = self.carried_velocity(velocity, antenna, time) else {
                 return refuse(&mut self.diagnostics.gnss_velocity, Fusion::NotFinite);
@@ -588,11 +593,14 @@ impl Eskf {
             &observation,
             self.config.gates.gnss_velocity,
         );
+        if matches!(outcome, Update::Rejected { .. }) {
+            self.replace_failed_yaw();
+        }
         let fusion = self.apply_or_recover(
             outcome,
             |diagnostics| &mut diagnostics.gnss_velocity,
             recovery_after(
-                self.hold.holds_velocity(),
+                self.hold.holds_velocity() || self.yaw_replaced.owes_velocity(),
                 self.config.recovery.gnss_velocity,
             ),
             |filter| {
@@ -1614,9 +1622,12 @@ mod tests {
             let _ = filter.fuse_course(now, heading);
             let _ = filter.fuse_stationary(now, VelocityNoise::from_speed_accuracy(nan));
         });
-        // The hold offers nothing; the filter makes it, and `hold.rs` times it.
+        // The hold offers nothing; the filter makes it, and `hold.rs` times it. Nor does the
+        // yaw estimator, which weighs the velocities the filter screened: `yaw.rs` times it.
         let offered = filter.diagnostics().sources();
-        let offered = offered.iter().filter(|&&(name, _)| name != "position_hold");
+        let offered = offered
+            .iter()
+            .filter(|&&(name, _)| !matches!(name, "position_hold" | "yaw_estimator"));
         for &(name, source) in offered {
             assert_eq!(source.accepted, 0, "{name}");
             let period = source.period().map(Seconds::as_secs);

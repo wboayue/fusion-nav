@@ -29,6 +29,7 @@ fusion_nav::Config {
         mag_heading: Some(fusion_nav::Seconds::from_secs(7.0)), // no rejection resolved; recovered 0
         gnss_heading: Some(fusion_nav::Seconds::from_secs(7.0)), // no rejection resolved; recovered 0
         course: Some(fusion_nav::Seconds::from_secs(7.0)), // no rejection resolved; recovered 0
+        yaw_estimator: Some(fusion_nav::Seconds::from_secs(1.0)), // PX4's delay: a log cannot derive it
     },
     correlation: fusion_nav::Correlation {
         // τ = −T / ln ρ from each source's lag-one autocorrelation fused white, a lower bound since an innovation is whiter than the error behind it: printed only where it exceeds the default.
@@ -55,4 +56,5 @@ fusion_nav::Config {
     // GNSS height / barometer rejections at each walk: 0: 0/0, 0.02: 0/0, 0.05: 0/0, 0.13: 0/0.
     baro_offset_walk: 0.13,
     baro_reference_from_estimate: true, // policy
+    yaw_estimator: true, // policy
 }

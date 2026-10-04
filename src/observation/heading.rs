@@ -6,7 +6,7 @@
 //! see `mag.rs`. What it shares with these is (36), the row that reads yaw out of the error
 //! state.
 
-use nalgebra::{RealField, SMatrix, SVector, Vector3};
+use nalgebra::{RealField, SMatrix, SVector, UnitQuaternion, Vector3};
 
 use crate::math::wrap_pi;
 use crate::state::{Covariance, ErrorState, STATES, State};
@@ -68,7 +68,12 @@ pub(crate) fn has_heading(state: &State) -> bool {
 /// `Exp(y e₃) ⊗ q̂` is exactly that rotation, which is why an innovation formed against this
 /// angle is one the adoption removes whole.
 fn forward_heading(state: &State) -> f32 {
-    let f = forward(state);
+    heading_of(state.attitude.quaternion())
+}
+
+/// [`forward_heading`] of an attitude that is not a [`State`]'s: a yaw hypothesis's, (45)–(52).
+pub(crate) fn heading_of(attitude: UnitQuaternion<f32>) -> f32 {
+    let f = attitude * Vector3::x();
     RealField::atan2(f.y, f.x)
 }
 

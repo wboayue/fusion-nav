@@ -842,6 +842,7 @@ impl Derived {
             hold,
             baro_offset_walk,
             baro_reference_from_estimate,
+            yaw_estimator,
         } = self.config;
         let defaults = Config::default();
         let mut out = String::new();
@@ -951,6 +952,10 @@ impl Derived {
                 self.recovered[source]
             ));
         }
+        line(format!(
+            "        yaw_estimator: {}, // PX4's delay: a log cannot derive it",
+            seconds(recovery.yaw_estimator)
+        ));
         line("    },".into());
 
         line("    correlation: fusion_nav::Correlation {".into());
@@ -1127,6 +1132,7 @@ impl Derived {
         line(format!(
             "    baro_reference_from_estimate: {baro_reference_from_estimate}, // policy"
         ));
+        line(format!("    yaw_estimator: {yaw_estimator}, // policy"));
         line("}".into());
         out
     }

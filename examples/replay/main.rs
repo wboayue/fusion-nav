@@ -23,6 +23,8 @@
 //! `--antenna zero` fuses every GNSS row as the IMU's rather than at the header's antenna.
 //! `--recovery off` replays with `Recovery::OFF`, the filter that only reports, which is how a
 //! lockout recovery ends is priced (`recovery=` on the `summary` line says which ran).
+//! `--yaw-estimator off` replays without the yaw estimator of (45)–(52) (`yaw_estimator=` says
+//! which ran, `yaw_adopted=` and `yaw_recovered=` the headings taken from it).
 //! `--hold off` replays without the position hold an unaided filter fuses, and `--hold <σ>`
 //! with it at another σ in meters (`hold=` says which ran, `holds=` how many it fused).
 //! `--set <field>=<value>`, repeatable, sets one `Config` field by its path, `--set
@@ -110,6 +112,7 @@
 //! | `pos_h`, `pos_v`, `vel` | RMSE, m and m s⁻¹ |
 //! | `pos_h_max` | worst horizontal position error, m — the excursion an RMSE hides |
 //! | `tilt`, `yaw` | RMS attitude error about the horizontal axes and about down, degrees |
+//! | `yaw_valid` | `yaw` over the epochs the filter claimed its heading valid, or `none`: what a heading established late is worth once it is, which `yaw` buries under the wait |
 //! | `ba`, `bg` | RMS bias error, m s⁻² and rad s⁻¹ — the estimate against the bias applied |
 //! | `in3s` | fraction of axis-epochs within 3σ, over all 15 states |
 //! | `nees_pos`, `nees_vel`, `nees_att` | mean NEES per degree of freedom; ≈1 is consistent |
@@ -540,6 +543,12 @@ fn run() -> Result<(), Box<dyn Error>> {
                 Some("off") => false,
                 _ => return Err("--recovery wants `on` or `off`".into()),
             };
+        } else if arg == "--yaw-estimator" {
+            options.yaw_estimator = match args.next().as_deref() {
+                Some("on") => true,
+                Some("off") => false,
+                _ => return Err("--yaw-estimator wants `on` or `off`".into()),
+            };
         } else if arg == "--hold" {
             options.hold = Some(match args.next().as_deref() {
                 Some("off") => None,
@@ -658,6 +667,7 @@ struct Options {
     recovery: bool,
     /// `--hold`: `None` keeps `Config::hold`'s default, `Some(None)` turns it off.
     hold: Option<Option<Hold>>,
+    yaw_estimator: bool,
     sets: Vec<(String, String)>,
 }
 
@@ -671,6 +681,7 @@ impl Default for Options {
             antenna_from_header: true,
             recovery: true,
             hold: None,
+            yaw_estimator: true,
             sets: Vec::new(),
         }
     }
@@ -686,6 +697,7 @@ impl Options {
         if let Some(hold) = self.hold {
             config.hold = hold;
         }
+        config.yaw_estimator = self.yaw_estimator;
         // After `--recovery off`, so a source's own timeout can be put back on top of it.
         for (name, value) in &self.sets {
             settings::set(&mut config, name, value)?;
@@ -2294,7 +2306,7 @@ impl Replay {
         format!(
             "summary rate={:.0} window={} {} align={} an={} alpha0={} heading={} \
              roll0={roll0:.2} pitch0={pitch0:.2} yaw0={yaw0:.2} declination={:.2} declination_model={} antenna={} resets={} \
-             recovered={} aligned_at={} attitude_lost={} r_policy={} recovery={} hold={} holds={} course={} without={} set={} rejected={}{} discarded={} coasted={} refused={} \
+             recovered={} aligned_at={} attitude_lost={} r_policy={} recovery={} hold={} holds={} yaw_estimator={} yaw_adopted={} yaw_recovered={} course={} without={} set={} rejected={}{} discarded={} coasted={} refused={} \
              invalid={} floored={} epochs={}{} {} \
              degraded_s={:.2} dead_reckoning_s={:.2} transitions={} status={:?}",
             self.interval.map_or(0.0, |interval| 1.0 / interval),
@@ -2388,6 +2400,19 @@ impl Replay {
                 let hold = self.filter.diagnostics().position_hold;
                 hold.accepted + hold.rejected
             },
+            // Whether the yaw estimator of (45)–(52) ran, a choice as `recovery=` is, and the
+            // headings the filter took from it: the first one, and those that replaced a yaw
+            // GNSS kept turning down. Zero wherever a heading sensor is healthy.
+            if self.filter.config().yaw_estimator {
+                "on"
+            } else {
+                "off"
+            },
+            {
+                let yaw = self.filter.diagnostics().yaw_estimator;
+                yaw.adopted - yaw.recovered
+            },
+            self.filter.diagnostics().yaw_estimator.recovered,
             // Choices rather than counts, as `r_policy=` is: whether the course constraint was
             // fused and at what sideslip, and which input source was dropped, so a figure from
             // a vehicle replayed without its magnetometer names that it was.
@@ -3204,6 +3229,9 @@ struct Score {
     velocity: f64,
     tilt: f64,
     yaw: f64,
+    /// `yaw`'s sum over the epochs `Validity::heading` was claimed, and how many they were.
+    yaw_valid: f64,
+    yaw_valid_scored: u32,
     accel_bias: f64,
     gyro_bias: f64,
     /// Epochs whose truth knew each bias, the mean `ba` and `bg` are taken over: a truth file
@@ -3251,6 +3279,10 @@ impl Score {
         );
         self.tilt += f64::from(attitude_ned.x.hypot(attitude_ned.y)).powi(2);
         self.yaw += f64::from(attitude_ned.z).powi(2);
+        if state.validity.heading {
+            self.yaw_valid_scored += 1;
+            self.yaw_valid += f64::from(attitude_ned.z).powi(2);
+        }
         // Whole blocks, the way `velocity` is scored: a bias is estimated per axis but
         // wrong as one vector, and no part of `Accuracy` splits it.
         if truth.accel_bias.is_some() {
@@ -3379,7 +3411,7 @@ impl Score {
             .collect();
         format!(
             "score pos_h={:.3} pos_v={:.3} vel={:.3} pos_h_max={:.3} tilt={:.3} yaw={:.3} \
-             ba={} bg={} in3s={:.4} nees_pos={} nees_vel={} nees_att={} \
+             yaw_valid={} ba={} bg={} in3s={:.4} nees_pos={} nees_vel={} nees_att={} \
              false_valid={} false_valid_att={} scored={}{fixes}",
             self.rms(self.position_horizontal),
             self.rms(self.position_vertical),
@@ -3387,6 +3419,10 @@ impl Score {
             self.position_horizontal_max,
             self.rms(self.tilt).to_degrees(),
             self.rms(self.yaw).to_degrees(),
+            match self.yaw_valid_scored {
+                0 => "none".to_string(),
+                n => format!("{:.3}", (self.yaw_valid / f64::from(n)).sqrt().to_degrees()),
+            },
             Self::bias_text(self.accel_bias, self.accel_bias_scored, 5),
             Self::bias_text(self.gyro_bias, self.gyro_bias_scored, 6),
             self.in3s(),
@@ -5113,7 +5149,13 @@ mod tests {
                 "no rejected_{source}= on the line: {summary}"
             );
         }
-        assert_eq!(SOURCES.len(), Diagnostics::default().sources().len());
+        // All but the yaw estimator, last in `sources()`: its answer is adopted and never
+        // judged, so it has no ratio, gate or innovation to key, and `yaw_adopted=` and
+        // `yaw_recovered=` are its own.
+        let diagnostics = Diagnostics::default();
+        let sources = diagnostics.sources();
+        assert_eq!(SOURCES.len(), sources.len() - 1);
+        assert_eq!(sources[SOURCES.len()].0, "yaw_estimator");
     }
 
     #[test]
@@ -5745,6 +5787,32 @@ mod tests {
         for block in 0..3 {
             assert_eq!(score.nees_per_dof(block), Some(0.0));
         }
+    }
+
+    #[test]
+    fn yaw_valid_is_the_heading_error_over_the_epochs_that_claimed_one() {
+        // Two epochs 0.2 rad out: one claiming its heading and one not. `yaw` reads both;
+        // `yaw_valid` reads the one, and a third epoch on truth and claiming halves its square.
+        let truth = truth_at(0.0, 0.0, 0.0);
+        let covariance = Covariance::from_sigmas([0.5; STATES]);
+        let claimed = state_at(0.0, 0.0, 0.2);
+        let mut unclaimed = state_at(0.0, 0.0, 0.2);
+        unclaimed.validity.heading = false;
+        let mut score = Score::default();
+        assert_eq!(
+            key(
+                &score_one(&unclaimed, &covariance, &truth).line(),
+                "yaw_valid"
+            ),
+            "none"
+        );
+        for state in [&claimed, &unclaimed, &state_at(0.0, 0.0, 0.0)] {
+            score.epoch(state, &covariance, &truth, &Accuracy::default());
+        }
+        let degrees = 0.2_f64.to_degrees();
+        let expect = |mean_square: f64| format!("{:.3}", mean_square.sqrt() * degrees);
+        assert_eq!(key(&score.line(), "yaw"), expect(2.0 / 3.0));
+        assert_eq!(key(&score.line(), "yaw_valid"), expect(1.0 / 2.0));
     }
 
     #[test]

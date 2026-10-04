@@ -82,6 +82,8 @@ pub fn settings(config: &Config) -> Vec<(String, String)> {
         hold: _,
         baro_offset_walk,
         baro_reference_from_estimate: _,
+        // The vehicle's, as `hold` is: `--yaw-estimator off` sets it.
+        yaw_estimator: _,
     } = *config;
     // `{}` on an `f32` prints the shortest text that parses back to the same value.
     let mut out = vec![
@@ -117,6 +119,10 @@ pub fn settings(config: &Config) -> Vec<(String, String)> {
     for (field, value) in recovery.fields() {
         out.push((format!("recovery.{field}"), optional(value)));
     }
+    out.push((
+        "recovery.yaw_estimator".into(),
+        optional(recovery.yaw_estimator),
+    ));
     out
 }
 
@@ -128,7 +134,7 @@ pub trait PerSource {
 }
 
 macro_rules! per_source_impl {
-    ($type:ty) => {
+    ($type:ty $(, $apart:ident)?) => {
         impl PerSource for $type {
             fn fields(&self) -> [(&'static str, Option<Seconds>); 7] {
                 let Self {
@@ -139,6 +145,7 @@ macro_rules! per_source_impl {
                     mag_heading,
                     gnss_heading,
                     course,
+                    $($apart: _,)?
                 } = *self;
                 [
                     ("gnss_position", gnss_position),
@@ -160,6 +167,7 @@ macro_rules! per_source_impl {
                     "mag_heading" => &mut self.mag_heading,
                     "gnss_heading" => &mut self.gnss_heading,
                     "course" => &mut self.course,
+                    $(stringify!($apart) => &mut self.$apart,)?
                     _ => return None,
                 })
             }
@@ -167,7 +175,9 @@ macro_rules! per_source_impl {
     };
 }
 per_source_impl!(Correlation);
-per_source_impl!(Recovery);
+// The yaw estimator's delay times another source's rejections, so it is settable and no
+// source's field: `fields` pairs with `SOURCES` by position, and it has no place there.
+per_source_impl!(Recovery, yaw_estimator);
 
 fn per_source<'a>(
     of: &'a mut impl PerSource,
@@ -228,6 +238,7 @@ mod tests {
             mag_heading: Some(Seconds::from_secs(9.5)),
             gnss_heading: Some(Seconds::from_secs(10.5)),
             course: Some(Seconds::from_secs(11.5)),
+            yaw_estimator: Some(Seconds::from_secs(12.5)),
         };
         config
     }
@@ -248,9 +259,9 @@ mod tests {
     fn the_arguments_for_a_config_set_that_config() {
         let config = everything_moved();
         let arguments = arguments(&config);
-        // Every settable field moved, so every one is named: 7 scalars, the coast pair and
-        // two per-source tables.
-        assert_eq!(arguments.len(), 7 + 2 + 7 + 7, "{arguments:?}");
+        // Every settable field moved, so every one is named: 7 scalars, the coast pair, two
+        // per-source tables and the yaw estimator's delay.
+        assert_eq!(arguments.len(), 7 + 2 + 7 + 7 + 1, "{arguments:?}");
         assert_eq!(applied(&arguments), config);
     }
 

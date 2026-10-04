@@ -89,6 +89,9 @@ impl Eskf {
             self.config.recovery.mag_heading,
             &[&d.gnss_position, &d.gnss_velocity, &d.gnss_heading],
         );
+        // Nor after the yaw estimator replaced the heading, until a magnetic heading agrees
+        // with the new one: see `YawReplaced`.
+        let recovery = recovery.filter(|_| !self.yaw_replaced.overrules_magnetometer());
         let source = HeadingSource {
             health: |diagnostics| &mut diagnostics.mag_heading,
             gate: self.config.gates.mag_heading,
@@ -96,9 +99,13 @@ impl Eskf {
             recovery,
             magnetic: true,
         };
-        self.fuse_heading(time, source, 0.0, |past, covariance| {
+        let fusion = self.fuse_heading(time, source, 0.0, |past, covariance| {
             mag::heading_observation(past, covariance, field, declination, noise)
-        })
+        });
+        if matches!(fusion, Fusion::Accepted { .. }) {
+            self.yaw_replaced.settle_magnetometer();
+        }
+        fusion
     }
 
     /// Fuse a true heading from a dual-antenna (moving-baseline) GNSS receiver.
@@ -310,7 +317,7 @@ impl Eskf {
     /// `recovery`, unless any of `arbiters` was accepted recently: a source that disagrees
     /// with better aiding that is arriving is the one at fault, and adopting it would step the
     /// estimate away from what the others say.
-    fn unless_accepted(
+    pub(super) fn unless_accepted(
         &self,
         recovery: Option<Seconds>,
         arbiters: &[&SourceHealth],
@@ -390,7 +397,7 @@ impl Eskf {
     /// their correlations with attitude transform on one side only — left unrotated, a
     /// roll-error/gyro-bias-x correlation is read afterwards as roll-error/gyro-bias-y and
     /// the next velocity update pushes the correction into the wrong axis.
-    fn reset_heading_by(&mut self, y: f32, variance: f32, down: Vector3<f32>) {
+    pub(super) fn reset_heading_by(&mut self, y: f32, variance: f32, down: Vector3<f32>) {
         let before = self
             .estimate
             .state()

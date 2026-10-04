@@ -258,8 +258,8 @@ Inside that scope, one question is open.
 
 ## Open design questions
 
-Alignment is open in two options: in-motion leveling, option 4 (#59), and an EKF-GSF yaw
-estimator, option 6 (#165). The rest are built, and the decisions they rest on are settled.
+Alignment is open in one option: in-motion leveling, option 4 (#59). The rest are built, and the
+decisions they rest on are settled.
 
 ### Alignment beyond the static window
 
@@ -291,7 +291,7 @@ The options, in the order they are worth doing:
 | 3. gate policy while aligning | built: heading adopted, tilt left to the ordinary gate |
 | 4. in-motion leveling, (5′) | inputs carried, subtraction unbuilt (#59) |
 | 5. yaw from course over ground | built, `Eskf::fuse_course` |
-| 6. an EKF-GSF yaw estimator | not built (#165); the open case is a multirotor with neither a magnetometer nor a second antenna |
+| 6. an EKF-GSF yaw estimator | built, `Config::yaw_estimator`: the multirotor with neither a magnetometer nor a second antenna |
 
 1. **Seeded initialization.** Take the estimate from whatever the application already has: a
    companion AHRS, a survey, the previous flight's saved state. No new mathematics, no new
@@ -387,10 +387,9 @@ The options, in the order they are worth doing:
    multirotor with neither a magnetometer nor a second antenna remains its case.
 6. **An EKF-GSF yaw estimator.** A bank of small filters over yaw hypotheses weighted by GNSS
    velocity innovations: ArduPilot's invention, since ported into PX4, and the general answer to
-   aligning yaw while moving without a magnetometer. Effective, and genuinely a second estimator
-   inside a crate whose pitch is being small enough to read. Not built (#165), and only if 4
-   and 5 prove insufficient: 5 serves the vehicles that move along their heading, and 6 is for
-   the multirotor that does not.
+   aligning yaw while moving without a magnetometer. Built (#165), for the vehicle 5 does not
+   serve; [yaw without a heading sensor](#yaw-without-a-heading-sensor-a-second-estimator-inside)
+   is the decision and what it was measured against.
 
 Two API decisions shape the rest, and both are settled:
 
@@ -459,6 +458,7 @@ live with the decision.
 | [sensor offsets](#sensor-offsets-as-per-call-arguments) | the antenna as an argument to each GNSS call, in `H` | a `Config` field, or correcting the measurement alone |
 | [rejection handling](#rejection-handling-recover-by-default-opt-out-per-source) | recover by adoption, switched per source | report and leave recovery to the application |
 | [holding tilt](#holding-tilt-without-aiding) | a position hold behind a 3° gate, fused at (24′), and a caller's stationary claim | no hold, PX4's and ArduPilot's white hold |
+| [yaw without a heading sensor](#yaw-without-a-heading-sensor-a-second-estimator-inside) | a yaw estimator inside the crate, adopted and never fused | no heading for that vehicle, a separate type the caller wires, PX4's form unchanged |
 | [ecosystem coherence](#ecosystem-coherence-dropped) | dropped as a differentiator | one convention across sibling crates |
 
 ### Per-quantity validity, not one ladder
@@ -1039,6 +1039,86 @@ motion reads as tilt until the gate turns it down.
 Not built: #215, a corpus source for the stationary claim. PX4 logs `vehicle_land_detected.at_rest`, and
 reading it is a converter change, batched with the next. EKF2's verdict on its own fake
 position, `estimator_aid_src_fake_pos`, joins the comparison in the same batch.
+
+### Yaw without a heading sensor: a second estimator inside
+
+A multirotor with no magnetometer and no second antenna had no heading. It never left
+`Status::Aligning`, and the course constraint does not serve it: `4b473e91`'s multirotor phases
+read `nis_course` 4.38 and recovered three times under it. PX4 and ArduPilot fly that vehicle on
+one estimator, `EKFGSF_yaw`: five yaw hypotheses, each a small filter predicting the GNSS
+velocity, weighed by how well it does. The objection was
+[differentiator 3](#3-readable-mathematics): it is a second estimator in a crate whose pitch is
+being small enough to read.
+
+**Decided:** the estimator is in the crate, equations (45)–(52), `Config::yaw_estimator`, on by
+default.
+
+- **Inside, and private.** `src/gsf.rs` holds it, free of `Eskf`; the filter steps it in
+  `predict` and weighs it in `fuse_gnss_velocity`, so the vehicle it serves calls nothing new.
+  A public type the application runs and hands to a heading `fuse_*` keeps the filter one
+  estimator and lets the caller fuse a yaw beside the velocity it was read from, the double
+  count (35″) exists to avoid.
+- **Adopted, never fused.** Its yaw enters through the adoption every first heading takes, at
+  the composite variance, once that is under PX4's 15°. Two cases: a heading never
+  established, and a heading GNSS velocity contradicts (`Recovery::yaw_estimator`), where it
+  replaces the yaw and the rejected velocity is adopted with it.
+- **Derived, not generated.** `EQUATIONS.md` writes out what PX4 generates symbolically; the
+  3 × 3 covariance step is one matrix with two entries that are not zero or one.
+- **Departures from `EKFGSF_yaw`**, each measured: tilt is read against the acceleration GNSS
+  velocity measures rather than against gravity alone, the velocity σ is floored at 0.3 m/s
+  inside the estimator, and only a second rejected velocity in a row triggers the replacement,
+  never a rejected position, and never while a second antenna is being accepted. A
+  magnetometer overruled is not adopted back until it agrees, and a bank begun again after an
+  IMU gap settles before its yaw is taken.
+
+**Measured against** the filter without it, PX4's form, and PX4's own estimator on the same
+flights. DESIGN.md, "`YawEstimator`", has the table.
+
+- **The vehicle it is for.** `multirotor_no_mag`, shuttling with its nose turning and its yaw
+  126° from where the window left it: the heading is adopted 1.9 s after the vehicle leaves the
+  ground, 9° out under a 14° σ, and from then on reads 1.074° RMS (`yaw_valid`), against
+  `moving_start`'s 1.494° with a magnetometer. Without the estimator no heading is ever
+  established, and GNSS velocity fused under the unknown yaw reads tilt 1.145° against 0.614°.
+- **The corpus without its magnetometers.** Nine logs carry a GNSS velocity, no second antenna,
+  and move; all nine adopt a heading and end `Healthy`, where none left `Aligning`. On the
+  five real quadrotors the median distance from EKF2's heading, which flew on its
+  magnetometer, is 0.955° to 6.252°, against 0.38° to 4.69° with the magnetometer, and GNSS
+  rejections are unchanged.
+- **PX4's form, on a fixed-wing.** The first build leveled against gravity alone, and on
+  `093e806a` it replaced a good magnetic heading 31 times: 339 headings rejected where there
+  had been none. Leveled that way the estimator's yaw sits a median 31.9° from EKF2's there
+  while claiming under 15°. PX4 subtracts the turn with an airspeed. Leveled against the
+  measured acceleration it is 3.1°, on any vehicle, and that log is byte for byte the filter
+  without the estimator.
+- **Against PX4's own.** The same measure on `yaw_estimator_status`, the estimator PX4 flew:
+  under its median on four quadrotors and within a degree of it on the other two that can
+  judge. Its tails are tighter on the fixed-wings, 6.8° against 16.6° at the 90th percentile
+  on `093e806a`.
+- **A heading that is wrong.** `yaw_fault`, a magnetometer 80° out from the first sample: the
+  yaw is replaced 8.0 s in, a second after velocity is first rejected, and `pos_h` reads 0.953 m
+  against 26.837 without the estimator. Over 50 seeds, 49 are replaced within a second of that
+  and one 7 s later, its velocities having stayed just inside their gate. `7ce66f0d` is the corpus's case, a start leveled wrong:
+  14 replacements, and the distance from EKF2 falls on every position and velocity axis, raw
+  `pos_n_rms` 16.2 m to 1.504.
+- **With a heading sensor that is right**, twelve corpus logs and every scenario that existed
+  reproduce the filter without the estimator byte for byte.
+
+**Costs:**
+
+- 456 bytes of `Eskf` whether it runs or not, 10.9 KB of flash on `thumbv6m`, and 0.18 µs of a
+  0.97 µs `predict` on the host, as it landed; `validation/cost.md` has the current figures,
+  and a core with no FPU pays more in time than the host does (#41).
+- A hover establishes nothing. Yaw is observed through acceleration, so a vehicle that takes
+  off and holds station stays `Aligning` until it moves.
+- Before the adoption the start still claims `sigma_yaw` on a yaw nothing measured, and GNSS
+  velocity fused under it leaves tilt 3.2° out under a 1.8° σ for 0.8 s on `multirotor_no_mag`
+  (`data/anees.txt` asserts it). PX4 fuses no GNSS until yaw is aligned. #218.
+- A sensor that is wrong and says it is right is believed until the vehicle accelerates and a
+  velocity is rejected for it: `yaw_fault` is 80° out for 8 s, 15 s on one seed of 50, and its
+  covariance cannot say so.
+- The fixed-wing tails. A fixed-wing's heading is the course constraint's.
+- A 1 Hz receiver. The acceleration it measures is a second old by the time the next arrives,
+  and on a steady circle the yaw is 0.07 rad out where a faster receiver's is within 0.02.
 
 ### Ecosystem coherence, dropped
 

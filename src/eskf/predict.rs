@@ -57,12 +57,21 @@ impl Eskf {
         // the propagation's frame instead of above it ([measured]).
         //
         // [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function
-        if matches!(
-            outcome,
-            Propagation::Propagated | Propagation::Coasted { .. }
-        ) {
-            self.hold_if_unaided();
+        match outcome {
+            Propagation::Propagated => self.step_yaw_estimator(imu),
+            Propagation::Coasted { .. } => self.restart_yaw_estimator(),
+            // The clock did not move: nothing was missed.
+            Propagation::NotInitialized | Propagation::InvalidStep { .. } => return outcome,
+            // It did, and the yaw estimator integrated none of it.
+            Propagation::StepTooLong { .. }
+            | Propagation::NotFinite
+            | Propagation::InvalidInterval { .. }
+            | Propagation::StateNotFinite => {
+                self.restart_yaw_estimator();
+                return outcome;
+            }
         }
+        self.hold_if_unaided();
         outcome
     }
 

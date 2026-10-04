@@ -362,6 +362,7 @@ fn config() -> impl Strategy<Value = Config> {
                 mag_heading: quick,
                 gnss_heading: quick,
                 course: quick,
+                yaw_estimator: quick,
             },
             ..Config::default()
         },
@@ -507,6 +508,8 @@ struct Snapshot {
     unestablished: super::Unestablished,
     aligned: bool,
     hold: super::hold::HoldState,
+    yaw_estimator: crate::gsf::YawEstimator,
+    yaw_replaced: super::yaw::YawReplaced,
 }
 
 fn snapshot(filter: &Eskf) -> Snapshot {
@@ -527,6 +530,8 @@ fn snapshot(filter: &Eskf) -> Snapshot {
         unestablished: filter.unestablished,
         aligned: filter.aligned,
         hold: filter.hold,
+        yaw_estimator: filter.yaw_estimator.clone(),
+        yaw_replaced: filter.yaw_replaced,
     }
 }
 
@@ -694,6 +699,17 @@ fn apply(filter: &mut Eskf, op: &Op, project: bool) -> Result<(), TestCaseError>
                         "{:?} changed the estimate",
                         refused
                     );
+                    // Time the yaw estimator did not integrate: it starts over, unless off.
+                    let yaw = &filter.yaw_estimator;
+                    prop_assert!(
+                        if filter.config.yaw_estimator && filter.initialized {
+                            yaw.yaw().is_none() && !yaw.is_settled()
+                        } else {
+                            yaw == &before.yaw_estimator
+                        },
+                        "{:?} left the yaw estimator running",
+                        refused
+                    );
                     if filter.initialized {
                         prop_assert_eq!(
                             filter.time(),
@@ -765,7 +781,8 @@ fn apply(filter: &mut Eskf, op: &Op, project: bool) -> Result<(), TestCaseError>
             health_of(
                 filter,
                 &health,
-                &["gnss_velocity"],
+                // A velocity is also what the yaw estimator weighs.
+                &["gnss_velocity", "yaw_estimator"],
                 &[("gnss_velocity", is_refused(outcome))],
             )?;
         }

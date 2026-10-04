@@ -11,6 +11,7 @@ mod display;
 mod eskf;
 mod frames;
 mod geodetic;
+mod gsf;
 mod health;
 mod history;
 mod init;

@@ -1144,6 +1144,11 @@ pub struct Diagnostics {
     /// Position-hold updates the filter fuses itself while unaided; see
     /// [`Config::hold`](crate::Config::hold).
     pub position_hold: SourceHealth,
+    /// The yaw estimator of (45)–(52): each GNSS velocity it weighed is an arrival, and each
+    /// heading the filter took from it an adoption, counted in `adopted` and, as every
+    /// adoption is, in `accepted`. Never rejected, since its answer is not gated; see
+    /// [`Config::yaw_estimator`](crate::Config::yaw_estimator).
+    pub yaw_estimator: SourceHealth,
     /// What [`Eskf::predict`](crate::Eskf::predict) refused. Not a source, so not in
     /// [`sources`](Self::sources).
     pub propagation: PropagationHealth,
@@ -1173,7 +1178,7 @@ impl Diagnostics {
     /// By reference, since [`Status`] reads this on every
     /// [`Eskf::state`](crate::Eskf::state) and a copy of nine [`SourceHealth`]s is most of
     /// that call's stack frame.
-    pub const fn sources(&self) -> [(&'static str, &SourceHealth); 9] {
+    pub const fn sources(&self) -> [(&'static str, &SourceHealth); 10] {
         [
             ("gnss_position", &self.gnss_position),
             ("gnss_height", &self.gnss_height),
@@ -1184,13 +1189,14 @@ impl Diagnostics {
             ("course", &self.course),
             ("stationary", &self.stationary),
             ("position_hold", &self.position_hold),
+            ("yaw_estimator", &self.yaw_estimator),
         ]
     }
 
     /// The sources [`Status`] counts: every one but those no sensor measures. The course
     /// reads the filter's own velocity ([`Eskf::fuse_course`](crate::Eskf::fuse_course)), a
-    /// stationary claim is the caller's, and the position hold is the filter's assumption
-    /// while nothing aids it. Counting the hold would turn the dead reckoning it exists for
+    /// stationary claim is the caller's, the position hold is the filter's assumption
+    /// while nothing aids it, and the yaw estimator reads the GNSS velocity already counted. Counting the hold would turn the dead reckoning it exists for
     /// into `Healthy`.
     ///
     /// Taken from [`sources`](Self::sources) rather than listed again, so a source added there
@@ -1198,7 +1204,12 @@ impl Diagnostics {
     pub(crate) fn aiding(&self) -> impl Iterator<Item = &SourceHealth> {
         self.sources()
             .into_iter()
-            .filter(|&(name, _)| !matches!(name, "course" | "stationary" | "position_hold"))
+            .filter(|&(name, _)| {
+                !matches!(
+                    name,
+                    "course" | "stationary" | "position_hold" | "yaw_estimator"
+                )
+            })
             .map(|(_, health)| health)
     }
 
@@ -1222,6 +1233,7 @@ impl Diagnostics {
         self.course.advance(dt);
         self.stationary.advance(dt);
         self.position_hold.advance(dt);
+        self.yaw_estimator.advance(dt);
     }
 }
 
@@ -1291,6 +1303,7 @@ mod tests {
         diagnostics.course.record_accepted(0.0, None);
         diagnostics.stationary.record_accepted(0.0, None);
         diagnostics.position_hold.record_accepted(0.0, None);
+        diagnostics.yaw_estimator.record_accepted(0.0, None);
         diagnostics.advance(secs(0.5));
         for (name, source) in diagnostics.sources() {
             assert_eq!(source.time_since_accepted, Some(secs(0.5)), "{name}");
@@ -1356,7 +1369,7 @@ mod tests {
     fn status_counts_every_source_but_those_no_sensor_measures() {
         // `aiding` excludes by name, so a misspelling would count one silently.
         let diagnostics = Diagnostics::default();
-        let excluded = ["course", "stationary", "position_hold"];
+        let excluded = ["course", "stationary", "position_hold", "yaw_estimator"];
         assert_eq!(
             diagnostics.aiding().count(),
             diagnostics.sources().len() - excluded.len()

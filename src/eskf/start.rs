@@ -15,6 +15,7 @@ use crate::state::{Covariance, Offset, State};
 use crate::units::{Altitude, Timestamp};
 
 use super::hold::HoldState;
+use super::yaw::YawReplaced;
 use super::{Eskf, Unestablished};
 
 impl Eskf {
@@ -369,6 +370,10 @@ impl Eskf {
         self.aligned = false;
         // A hold belongs to the life it held; the next outage anchors afresh.
         self.hold = HoldState::default();
+        // Settled from the start, at rest or not, as PX4's first bank is: DESIGN.md,
+        // "`YawEstimator`", has what settling after a start in motion cost `7ce66f0d`.
+        self.yaw_estimator.clear();
+        self.yaw_replaced = YawReplaced::default();
     }
 }
 

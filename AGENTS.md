@@ -4,13 +4,14 @@ This file provides guidance to coding agents working with code in this repositor
 
 ## Status
 
-**`EQUATIONS.md` (1)–(44) is built**, except (31)–(33), the three-axis magnetometer, which is
+**`EQUATIONS.md` (1)–(52) is built**, except (31)–(33), the three-axis magnetometer, which is
 out of scope, and (5′)'s subtraction, in-motion leveling (#59). Those two carry the `**Stub.**`
 marker and nothing else does. Every source the crate publishes is fused: GNSS position, GNSS
 height (gated apart from horizontal), GNSS velocity, dual-antenna heading, course over ground,
 barometric altitude and magnetic heading, and two observations made from an assumption, the
-stationary claim (29″) and the position hold (28″). What remains is measurement and publication: #47, the
-release, and #41, cost on a board.
+stationary claim (29″) and the position hold (28″). Beside them runs the yaw estimator of
+(45)–(52), whose answer is adopted and never fused. What remains is measurement and
+publication: #47, the release, and #41, cost on a board.
 
 What the filter does, and where each decision's evidence lives:
 
@@ -37,6 +38,13 @@ What the filter does, and where each decision's evidence lives:
   aiding, and horizontal position and velocity each stay invalid after it until measured again.
   `fuse_stationary` is the caller's claim of zero velocity. `GOALS.md`, "Holding tilt without
   aiding"; `DESIGN.md`, "`Hold`".
+- **Yaw without a heading sensor.** `src/gsf.rs`, PX4's and ArduPilot's `EKFGSF_yaw` with
+  departures the corpus forced: tilt read against the acceleration GNSS velocity measures, a
+  0.3 m/s floor on the velocity σ, and a second rejected velocity as the only trigger. `predict` steps
+  it and `fuse_gnss_velocity` weighs it (`src/eskf/yaw.rs`); its yaw is adopted where heading
+  was never established, and replaces one GNSS velocity contradicts
+  (`Recovery::yaw_estimator`), never while a dual-antenna heading is accepted. `GOALS.md`,
+  "Yaw without a heading sensor"; `DESIGN.md`, "`YawEstimator`".
 - **Health.** `Status` times each source against its own measured period; `DeadReckoning` reads
   horizontal GNSS alone. `Validity` and `predicted_validity` answer per quantity.
 - **Boundary.** No public item names an `nalgebra` type. `Eskf::new` validates `Config`, a refused
@@ -62,6 +70,13 @@ Known losses, stated in the published pages:
 - A receiver that is persistently wrong while claiming accuracy captures the filter (UrbanNav's
   M8T); no gate percentile prevents it. Detecting it is #181, with `2b2ad123`'s offset epochs
   the case to fire on and `89a498ce` the one not to.
+- A start with no magnetometer claims `sigma_yaw` on a yaw nothing measured until the yaw
+  estimator supplies one, and GNSS velocity fused under it tilts the estimate
+  (`multirotor_no_mag`, `data/anees.txt` asserts the failure). PX4 fuses no GNSS until yaw is
+  aligned. #218. The estimator needs acceleration: a vehicle that hovers stays `Aligning`.
+- `a299e722` cannot judge the yaw estimator: its log holds 50 IMU samples a second, each
+  averaging 2.5 ms of 20. The estimator's fixed-wing tails are wider than PX4's own, by a
+  comparison no tool in the repository reproduces yet (#219).
 - On `2c42096b`, height disagrees with EKF2 because EKF2 follows its barometer and this filter
   follows GNSS height's low frequencies; horizontal agrees to 0.3 m RMS.
 
@@ -264,6 +279,7 @@ cargo run --example replay -- data/flight.csv target/replay.csv data/flight.trut
 cargo run --release --example replay -- --derive <log.csv> > config.rs   # a Config from a log; evidence on stderr
 cargo run --example replay -- --derive data/flight.csv > data/flight.config.rs  # regenerate the fixture a test pins
 cargo run --example replay -- --set correlation.gnss_height=29 <in.csv> <out.csv>   # any derivable field; `set=` names it
+cargo run --example replay -- --without mag --yaw-estimator off <in.csv> <out.csv>   # a vehicle with no magnetometer, and the filter without (45)-(52)
 REPLAY_ARGS="--set ..." data/anees.sh correlated   # the ANEES gate under a derived Config
 cargo test --example replay -- --ignored drift_scatter --nocapture   # the drift estimator's scatter DESIGN quotes
 
@@ -585,6 +601,20 @@ position and the filter without it passes, and half a degree off the 3° bar fai
 too (#213's reviews, #214). When a feature's evidence is a scenario passing, sweep the parameter
 the feature is sensitive to, and pin the point where it stops passing.
 
+A scenario's start is a parameter too, and so is its sensors' rate. Every scenario that began
+with heading unestablished started 0.6 rad from where the window leaves the yaw, inside
+`sigma_yaw`, and passed its attitude ANEES. `multirotor_no_mag` starts 2.2 rad out and fails it
+before any heading is measured (#218). Every simulated and corpus receiver the yaw estimator
+weighs reports at 4.9 Hz or faster, and its first form measured no acceleration at all from a
+1 Hz one: a review found it with a fixture swept from 10 Hz to 1 Hz (#165). Where code
+differences a stream or times one out, the fixture sweeps the rate.
+
+**An ensemble's mean can be one seed.** `yaw_fault`'s attitude ANEES sat on a plateau near 5 for
+seven seconds after the heading was replaced. It was not a slow convergence: 49 seeds were
+replaced by 10.6 s and one at 17.2 s, its velocities inside the gate at ratios up to 0.97, and
+that seed's NEES of 240 over 50 is the plateau. Before a step or a shelf in a mean is
+explained, split it by seed.
+
 **An update with zero innovation is not evidence of a correction.** The hold anchors at the
 estimate and, where one fusion pulls tilt σ back under its bar, fuses on that same step: `ν = 0`,
 `P` narrows and the state does not move. `attitude_lost` going to `never` on `gnss_outage` and
@@ -618,6 +648,39 @@ injected σ exactly and misread the corpus 6× high to 2.9× low, and the estima
 blocks halfway through the implementation. Before building on a statistic that assumes
 independent samples, compute the corpus's lag-one autocorrelation for it: one line of Python, and
 the cheapest point to learn the plan is wrong.
+
+**A port carries its caller's conditioning, or it is not the algorithm.** `EKFGSF_yaw.cpp` reads
+as self-contained, and built from it alone the yaw estimator failed three corpus logs (#165).
+What made PX4's work was at its call sites: `gps_control.cpp:320` floors the velocity σ at
+0.3 m/s before the estimator sees it, where the class's own floor is 0.01, and
+`airspeed_fusion.cpp` hands it an airspeed that takes a fixed-wing's turn out of its tilt. Read
+every caller of the class before porting it, and replay the port beside the original's logged
+output where a log carries one (`yaw_estimator_status`): on `89a498ce` that comparison read 1.6°
+median and on `093e806a` 27°, which named the vehicle type before any theory did.
+
+**A log that undersamples a sensor cannot judge an estimator that integrates it.** `a299e722`
+logs 50 IMU samples a second, each an average over 2.5 ms of the 20 between them (`# IMU
+averaging interval` against `rate=`). The yaw estimator read 26° from EKF2 there under every
+variant, PX4's own 1.7° on the full-rate data, and variants were compared on it before the
+header was read. Compare the averaging interval with the sample period before a log's figure
+argues for a change to anything that dead reckons.
+
+**Trigger a recovery on the quantity the fault reaches first.** PX4 replaces a failed yaw on a
+rejected velocity or position. Under raw `R` a position is rejected for a receiver's own
+offset, and on `093e806a` that trigger replaced a good heading. A wrong yaw corrupts velocity
+within a second and position only through it, so velocity alone is the trigger. When porting a
+trigger, ask which of its conditions the fault causes and which merely coincide with it under
+the original's input conditioning.
+
+**A reviewer's suspicion is a hypothesis.** The review of #165 suspected a yaw estimator begun
+at a start in motion should settle for 10 s as a restarted one does. Applied unmeasured, it
+took `7ce66f0d` from 14 m RMS against EKF2 over the first minute to 72 m, and nothing in the
+simulator moved. Its verified findings each came with a failing fixture; the suspected ones
+are replayed on the corpus before they land, and one that the corpus contradicts is recorded
+as measured and rejected (DESIGN.md, "`YawEstimator`"). A proposed guard is also checked for
+whether it can fire: an expiry on the latch a replaced yaw leaves was requested and would have
+been dead, since a debt older than the source's recovery timeout is one the ordinary lockout
+already adopts.
 
 **Measure a claim on the rows the code reads.** A figure taken on a convenient proxy, "the first
 500 rows", is a claim about the proxy. On #50 two of them ran past a still window into flight
@@ -811,6 +874,12 @@ the declination table, and CI builds and tests without it too.
   present, and shifted by every correction in navigation axes through `Estimate::commit`, one
   of the state's only writers (`DESIGN.md`, "Time and history"). `Eskf::observe` and `Eskf::past` are
   its only readers, and it costs 1.5 KB of `Eskf`.
+- `src/gsf.rs` — the yaw estimator, (45)–(52): five hypotheses of an accelerometer-leveled
+  attitude and a 3-state `[v_N v_E ψ]` filter, weighed by GNSS velocity. Free of `Eskf` and of
+  the main filter's attitude, which is what lets it overrule one. Its 3-state update is its own,
+  closed form at 2 × 2, not `update.rs`'s. `src/eskf/yaw.rs` feeds it and adopts its answer
+  through `reset_heading_by`. A source in `Diagnostics::sources()` that is never gated, so the
+  harness's `SOURCES` leaves it out and keys it as `yaw_adopted=` and `yaw_recovered=`.
 - `src/update.rs` — the update every observation shares: (23)–(27) in Joseph form, the gate of
   (37)–(38), the injection and reset of (39)–(41). Generic over `dim(z)` and free of `Eskf`, so it
   is tested against a synthetic `H`. One Cholesky factorization of `S` serves the gate and the
@@ -1004,7 +1073,9 @@ the declination table, and CI builds and tests without it too.
   `#[cfg(test)]`. On `thumbv6m` a panic is a `udf` and the vehicle is a brick, which is why bad
   input is reported through a typed outcome rather than asserted on. The matrix arithmetic the
   equations bring is where this gets broken — `try_inverse` returns an `Option` and `nalgebra`
-  indexing panics out of range. Refuse or saturate; never unwrap. `panic-check/run.sh` gates it
+  indexing panics out of range. So does a view taken by index: `p.column(2)` on a `Matrix3`
+  kept its bounds check at `opt-level = "s"` and failed the gate where `opt-level = 3` had
+  elided it (#165); name the entries (`p.m13`) instead. Refuse or saturate; never unwrap. `panic-check/run.sh` gates it
   in CI by linking the public API for both thumb targets and failing on a surviving
   `core::panicking` reference, which catches the indexing nobody wrote down as well as the
   `unwrap` somebody did. It also refuses to run if `panic-check/src/main.rs` is missing any
