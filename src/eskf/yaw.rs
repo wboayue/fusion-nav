@@ -7,7 +7,6 @@
 use crate::config::{ALIGNED_HEADING, Config};
 use crate::frames::{Body, Ned};
 use crate::gsf::yaw_of;
-use crate::health::{Diagnostics, SourceHealth};
 use crate::math::wrap_pi;
 use crate::observation::heading::has_heading;
 use crate::propagate::ImuSample;
@@ -113,6 +112,7 @@ impl Eskf {
         let heading = yaw_of(self.estimate.state().attitude.quaternion());
         self.diagnostics.yaw_estimator.note_arrival(time);
         self.yaw_estimator.fuse_velocity(
+            time,
             velocity.vector().xy(),
             variance,
             carried.vector().xy(),
@@ -125,18 +125,26 @@ impl Eskf {
         }
     }
 
-    /// Replace a heading GNSS contradicts with the yaw estimator's. Called with a GNSS
-    /// horizontal position or velocity the gate has just turned down, `source` naming which.
+    /// Replace a heading GNSS velocity contradicts with the yaw estimator's. Called by
+    /// [`fuse_gnss_velocity`](Self::fuse_gnss_velocity) with a velocity the gate has just
+    /// turned down.
     ///
-    /// A yaw that is wrong turns every acceleration the wrong way, so velocity and position
-    /// leave the truth and GNSS is rejected for it, while the heading source that put the yaw
-    /// there goes on agreeing with it. Recovering the GNSS source alone, after its own
+    /// A yaw that is wrong turns every acceleration the wrong way, so velocity leaves the
+    /// truth within a second and GNSS is rejected for it, while the heading source that put
+    /// the yaw there goes on agreeing with it. Recovering the velocity alone, after its own
     /// timeout, adopts a fix and leaves the cause. The estimator never read that heading:
-    /// where it has converged more than [`YAW_FAILURE`] from the filter's yaw, and `source` has
-    /// gone unaccepted for [`Recovery::yaw_estimator`](crate::Recovery::yaw_estimator), the
+    /// where it has converged more than [`YAW_FAILURE`] from the filter's yaw, and no velocity
+    /// has been accepted for [`Recovery::yaw_estimator`](crate::Recovery::yaw_estimator), the
     /// yaw is the estimator's from here (`tryYawEmergencyReset`, `gps_control.cpp:426-444` at
     /// `c4e4ef98e9`). Counted in
     /// [`Diagnostics::yaw_estimator`](crate::Diagnostics::yaw_estimator) as recovered.
+    ///
+    /// PX4 fires on a rejected position as well (`gps_control.cpp:113-125`). Not here: a
+    /// position turned down with velocity still accepted is a receiver's offset, not a yaw,
+    /// and on `093e806a`, whose receiver claims 0.37 m, the position trigger replaced a good
+    /// magnetic heading twice ([measured]).
+    ///
+    /// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#yawestimator
     ///
     /// PX4 also resets the variance of the gyroscope bias about body z
     /// (`resetGyroBiasZCov`, `gps_control.cpp:440`). Not done here: [`reset_heading_by`]
@@ -144,13 +152,19 @@ impl Eskf {
     ///
     /// [`reset_heading_by`]: Self::reset_heading_by
     #[inline(never)]
-    pub(super) fn replace_failed_yaw(&mut self, source: fn(&Diagnostics) -> &SourceHealth) {
+    pub(super) fn replace_failed_yaw(&mut self) {
         if !self.config.yaw_estimator || !self.yaw_estimator.is_settled() {
             return;
         }
-        let after = self.config.recovery.yaw_estimator;
+        // A second antenna measures heading directly and is the reference where a vehicle
+        // carries one: an estimator that disagrees with it is the one at fault.
+        let after = self.unless_accepted(
+            self.config.recovery.yaw_estimator,
+            &[&self.diagnostics.gnss_heading],
+        );
         let since_initialized = self.diagnostics.since_initialized;
-        if !source(&self.diagnostics).locked_out(after, since_initialized) {
+        let velocity = &self.diagnostics.gnss_velocity;
+        if !velocity.locked_out(after, since_initialized) {
             return;
         }
         let disagrees = |y: f32| y.abs() > YAW_FAILURE.as_radians();
@@ -452,8 +466,7 @@ mod tests {
     #[test]
     fn an_old_velocity_reaches_the_estimator_carried_to_now() {
         // Fixes 0.2 s old on a steady circle, where a velocity not carried lags the
-        // acceleration by `ω τ`, 0.16 rad of yaw, on top of the circle's own bias
-        // (`gsf.rs` pins both). Survives handing the estimator a zero carry.
+        // acceleration by `ω τ`, 0.16 rad of yaw. Survives handing the estimator a zero carry.
         let mut filter = initialized();
         let mut flight = Flight::heading(0.9);
         flight.age = 20;
@@ -461,7 +474,24 @@ mod tests {
         flight.fly(&mut filter, 15.0, circling, |_| {});
         let (yaw, _) = filter.yaw_estimator.yaw().unwrap();
         let error = wrap_pi(yaw - 0.9);
-        assert!((-0.27..-0.15).contains(&error), "{error}");
+        assert!(error.abs() < 0.03, "{error}");
+    }
+
+    #[test]
+    fn a_second_antenna_that_is_being_accepted_is_not_overruled() {
+        // The fault of `a_heading_gnss_contradicts...`, with a dual-antenna heading reading
+        // north beside the magnetometer: the reference, by definition, so the yaw stays.
+        let mut filter = pointing_north(Config::default());
+        let mut flight = Flight::heading(1.4);
+        let both = |filter: &mut Eskf| {
+            north(filter);
+            let zero = crate::units::Radians::from_radians(0.0);
+            let _ = filter.fuse_gnss_heading(filter.now(), zero, HeadingNoise::from_sigma(0.02));
+        };
+        flight.fly(&mut filter, 2.0, still, both);
+        flight.fly(&mut filter, 12.0, legs, both);
+        assert!(filter.diagnostics().gnss_velocity.rejected > 5);
+        assert_eq!(filter.diagnostics().yaw_estimator.adopted, 0);
     }
 
     #[test]

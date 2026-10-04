@@ -310,7 +310,7 @@ impl Eskf {
     /// `recovery`, unless any of `arbiters` was accepted recently: a source that disagrees
     /// with better aiding that is arriving is the one at fault, and adopting it would step the
     /// estimate away from what the others say.
-    fn unless_accepted(
+    pub(super) fn unless_accepted(
         &self,
         recovery: Option<Seconds>,
         arbiters: &[&SourceHealth],

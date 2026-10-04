@@ -14,6 +14,7 @@ use nalgebra::{
 
 use crate::math::{exp_quat, wrap_pi};
 use crate::propagate::ImuSample;
+use crate::units::Timestamp;
 
 /// Yaw hypotheses: `N_MODELS_EKFGSF` (`EKFGSF_yaw.h:40` at PX4 `c4e4ef98e9`;
 /// `AP_Nav_Common.h:123` at ArduPilot `368dc0c428`). Spaced 72° apart, each starts within 36°
@@ -40,6 +41,10 @@ const BIAS_RATE_MAX: f32 = 0.174_532_93;
 /// (`EKFGSF_yaw.cpp:71`), a 0.5 s time constant against vibration.
 const ACCEL_FILTER_RATIO: f32 = 10.0;
 
+/// The longest interval between two GNSS velocities that still measures an acceleration,
+/// seconds: past it the difference is an average over maneuvers (46) has already seen.
+const ACCELERATION_GAP: f32 = 1.0;
+
 /// Yaw-rate noise of (48), rad s⁻¹ / √Hz.
 ///
 /// PX4 and ArduPilot write a per-step σ of 0.1 rad/s, squared with the step (`_gyro_noise`,
@@ -65,8 +70,15 @@ const WEIGHT_MIN: f32 = 1.0e-5;
 /// spike moves each model by a bounded amount and cannot zero every weight at once.
 const NIS_MAX: f32 = 25.0;
 
-/// The least velocity σ (50) reads, m/s (`EKFGSF_yaw.cpp:302`).
-const SIGMA_MIN: f32 = 0.01;
+/// The least velocity σ (50) reads, m/s: PX4's `EKF2_GPS_V_NOISE` default, which floors the
+/// accuracy its estimator is handed (`gps_control.cpp:320` at `c4e4ef98e9`).
+///
+/// (51) multiplies likelihoods, so a receiver claiming centimeters per second makes them
+/// sharp enough for noise to pick the hypothesis. Without the floor `2b2ad123`'s composite
+/// sat under its 15° bar while 28° from EKF2's heading a tenth of the time ([measured]).
+///
+/// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#yawestimator
+const SIGMA_MIN: f32 = 0.3;
 
 /// How long a bank begun again must fuse before its answer may replace a heading, seconds:
 /// `EKFGSF_min_active_time` (`common.h:397` at `c4e4ef98e9`). A bank that restarts in flight
@@ -138,6 +150,11 @@ pub(crate) struct YawEstimator {
     models: [Model; MODELS],
     /// `f̄`, the low-passed specific force (46) levels against.
     accel: Vector3<f32>,
+    /// `ā`, the vehicle's horizontal acceleration as successive GNSS velocities measure it,
+    /// low-passed as `f̄` is: what (46) takes out of the specific force before reading tilt.
+    acceleration: Vector2<f32>,
+    /// The last velocity weighed and when it was taken, for `ā`.
+    last: Option<(Vector2<f32>, Timestamp)>,
     /// Whether the models' tilt has been set from the accelerometer.
     leveled: bool,
     /// Whether (45) has spread the hypotheses and velocity is being fused.
@@ -158,6 +175,8 @@ impl Default for YawEstimator {
         Self {
             models: [Model::default(); MODELS],
             accel: Vector3::zeros(),
+            acceleration: Vector2::zeros(),
+            last: None,
             leveled: false,
             fusing: false,
             active: 0.0,
@@ -226,16 +245,25 @@ impl YawEstimator {
         }
 
         let force = self.accel.norm();
+        // (46): where specific force points in navigation axes, reversed. Straight down for a
+        // vehicle not accelerating, and before fusion, while no hypothesis has a yaw to turn
+        // `ā` into its own axes with.
+        let reference = if self.fusing {
+            Vector3::new(-self.acceleration.x, -self.acceleration.y, gravity).normalize()
+        } else {
+            Vector3::z()
+        };
         // (46): unity at 1 g and zero a half g either side, squared so that vibration about
         // 1 g costs little (`ahrsCalcAccelGain`, `EKFGSF_yaw.cpp:417-435`).
         let attenuation = 1.0 - (2.0 * (force - gravity).abs() / gravity).min(1.0);
         let gain = TILT_GAIN * attenuation * attenuation;
 
         for model in &mut self.models {
-            // (46): the rotation that carries the model's down onto the measured one.
-            let down = model.attitude.inverse() * Vector3::z();
+            // (46): the rotation that carries the specific force the model expects onto the
+            // measured one.
+            let expected = model.attitude.inverse() * reference;
             let correction = if gain > 0.0 {
-                down.cross(&self.accel) * (gain / force)
+                expected.cross(&self.accel) * (gain / force)
             } else {
                 Vector3::zeros()
             };
@@ -287,6 +315,7 @@ impl YawEstimator {
     /// not told when it flies.
     pub(crate) fn fuse_velocity(
         &mut self,
+        taken: Timestamp,
         velocity: Vector2<f32>,
         variance: f32,
         carried: Vector2<f32>,
@@ -295,6 +324,7 @@ impl YawEstimator {
         if !self.leveled {
             return;
         }
+        self.measure_acceleration(taken, velocity);
         let variance = variance.max(SIGMA_MIN * SIGMA_MIN);
         if !self.fusing {
             self.spread(velocity, variance, carried, heading);
@@ -344,6 +374,28 @@ impl YawEstimator {
             }
         }
         self.compose();
+    }
+
+    /// `ā` of (46): the change between this velocity and the last, over the time between
+    /// them, low-passed with the time constant `f̄` has so that the two lag alike.
+    ///
+    /// From the measurements' own times, since a fix's arrival jitters by tens of
+    /// milliseconds on an interval of a couple of hundred. Velocities more than
+    /// [`ACCELERATION_GAP`] apart measure no acceleration, and `ā` starts again from zero.
+    fn measure_acceleration(&mut self, taken: Timestamp, velocity: Vector2<f32>) {
+        let interval = self
+            .last
+            .map(|(_, last)| taken.since(last).as_secs())
+            .filter(|interval| (0.0..ACCELERATION_GAP).contains(interval) && *interval > 0.0);
+        match (self.last, interval) {
+            (Some((last, _)), Some(interval)) => {
+                let measured = (velocity - last) / interval;
+                let coefficient = (ACCEL_FILTER_RATIO * interval * TILT_GAIN).min(1.0);
+                self.acceleration += (measured - self.acceleration) * coefficient;
+            }
+            _ => self.acceleration = Vector2::zeros(),
+        }
+        self.last = Some((velocity, taken));
     }
 
     /// (45): spread the hypotheses evenly over the circle, each at the measured velocity.
@@ -415,7 +467,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::config::GRAVITY;
     use crate::frames::Body;
-    use crate::units::{Acceleration, AngularRate, Seconds, Timestamp};
+    use crate::units::{Acceleration, AngularRate, Seconds};
 
     const DT: f32 = 0.01;
 
@@ -464,6 +516,7 @@ pub(crate) mod tests {
             let phase = self.step as f32 * 0.37;
             let error = Vector2::new(ComplexField::sin(phase), ComplexField::cos(1.7 * phase));
             self.estimator.fuse_velocity(
+                Timestamp::from_micros(10_000 * self.step),
                 self.velocity.xy() + error * self.ripple,
                 0.01,
                 Vector2::zeros(),
@@ -603,9 +656,10 @@ pub(crate) mod tests {
         flight.fly(6.0, legs);
         let before = flight.estimator.models.map(|model| model.velocity);
         let spike = flight.velocity.xy() + Vector2::new(100.0, 0.0);
+        let now = Timestamp::from_micros(10_000 * flight.step);
         flight
             .estimator
-            .fuse_velocity(spike, 0.01, Vector2::zeros(), 0.0);
+            .fuse_velocity(now, spike, 0.01, Vector2::zeros(), 0.0);
         for (model, before) in flight.estimator.models.iter().zip(before) {
             // 5σ of an innovation whose σ is a few tenths of a meter per second.
             let moved = (model.velocity - before).norm();
@@ -668,8 +722,7 @@ pub(crate) mod tests {
     fn an_old_velocity_is_carried_to_now_in_each_hypothesis_own_axes() {
         // Fixes 0.2 s old on a circle turning at 0.8 rad/s. The main filter here holds the true
         // velocity history but a heading 2 rad off, so its carry is in axes turned by that
-        // much. Carried, the yaw sits in the band the circle's own bias puts it in; fused as
-        // if current it is a further `ω τ`, 0.16 rad, behind.
+        // much. Carried, the yaw is found; fused as if current it is `ω τ`, 0.16 rad, behind.
         let fly = |carry: bool| {
             let (yaw, wrong) = (0.9_f32, 2.0_f32);
             let mut flight = Flight::airborne(yaw);
@@ -684,30 +737,35 @@ pub(crate) mod tests {
                     let then = past[0];
                     let moved = turned(flight.velocity.xy() - then, wrong);
                     let carried = if carry { moved } else { Vector2::zeros() };
-                    flight
-                        .estimator
-                        .fuse_velocity(then, 0.01, carried, wrap_pi(yaw + wrong));
+                    let taken = Timestamp::from_micros(10_000 * (flight.step - 20));
+                    flight.estimator.fuse_velocity(
+                        taken,
+                        then,
+                        0.01,
+                        carried,
+                        wrap_pi(yaw + wrong),
+                    );
                 }
             }
             let (estimate, _) = flight.estimator.yaw().unwrap();
             wrap_pi(estimate - yaw)
         };
-        assert!((-0.26..-0.16).contains(&fly(true)), "carried {}", fly(true));
-        assert!(fly(false) < -0.3, "not carried {}", fly(false));
+        assert!(fly(true).abs() < 0.03, "carried {}", fly(true));
+        assert!(fly(false) < -0.12, "not carried {}", fly(false));
     }
 
     #[test]
-    fn a_steady_circle_biases_the_yaw_by_the_tilt_filters_lag() {
-        // (46) reads a specific force that keeps turning as a tilt, a quarter cycle late, and
-        // the gravity that tilt leaks turns the acceleration every hypothesis sees: about
-        // `atan(k_t / ω)`, 0.24 rad at 0.8 rad/s, under a variance that does not know it.
-        // Asserted so that a tilt reference that removes it trips the line.
+    fn a_steady_circle_is_not_read_as_a_tilt() {
+        // A specific force that keeps turning is what a tilt filter leveling against gravity
+        // alone cannot survive: it lags a quarter cycle, and the gravity it leaks turns the
+        // acceleration every hypothesis sees by about `atan(k_t / ω)`, 0.22 rad here. Survives
+        // putting `e₃` back for (46)'s reference.
         let mut flight = Flight::airborne(0.3);
         flight.fly(20.0, circling);
         let (estimate, variance) = flight.estimator.yaw().unwrap();
         let error = wrap_pi(estimate - 0.3);
-        assert!((-0.26..-0.16).contains(&error), "error {error}");
-        assert!(variance < 0.05 * 0.05, "variance {variance}");
+        assert!(error.abs() < 0.03, "error {error}");
+        assert!(variance < 0.1 * 0.1, "variance {variance}");
     }
 
     #[test]

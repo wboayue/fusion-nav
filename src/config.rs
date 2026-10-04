@@ -478,13 +478,15 @@ pub struct Recovery {
     /// is sideslip the caller did not allow for,
     /// a crosswind or a multirotor crabbing, rather than a wrong heading.
     pub course: Option<Seconds>,
-    /// The yaw estimator's heading, adopted in place of one GNSS contradicts: once a GNSS
-    /// horizontal position or velocity has gone unaccepted this long and is rejected again,
-    /// while the estimator of [`Config::yaw_estimator`] has converged on a yaw more than 25°
-    /// from the filter's. The fix or velocity that triggered it, and the first of the other
-    /// the gate turns down, are then adopted at once rather than after their own timeouts,
-    /// since what they were judged against was the wrong heading. Unlike the fields above it
-    /// times another source's rejections: the estimator's answer is never gated.
+    /// The yaw estimator's heading, adopted in place of one GNSS contradicts: once no GNSS
+    /// velocity has been accepted for this long and another is rejected, while the estimator
+    /// of [`Config::yaw_estimator`] has converged on a yaw more than 25° from the filter's.
+    /// That velocity, and the first GNSS position the gate turns down after it, are then
+    /// adopted at once rather than after their own timeouts, since what they were judged
+    /// against was the wrong heading. Not while a dual-antenna
+    /// GNSS heading is fresh ([`SourceHealth::is_fresh`](crate::SourceHealth::is_fresh)): it
+    /// measures what the estimator infers. Unlike the fields above it times another source's
+    /// rejections: the estimator's answer is never gated.
     pub yaw_estimator: Option<Seconds>,
 }
 
@@ -527,8 +529,8 @@ impl Default for Recovery {
     /// (`realignYawGPS`, `AP_NavEKF3_MagFusion.cpp:145-218`).
     ///
     /// The yaw estimator's is PX4's `EKFGSF_reset_delay`, 1 s (`common.h:395`), applied as PX4
-    /// applies it (`gps_control.cpp:113-125`, `isYawFailure` at `:546-562`) less its in-air
-    /// condition, which this filter is not told.
+    /// applies it to a rejected velocity (`gps_control.cpp:113-125`, `isYawFailure` at
+    /// `:546-562`) less its in-air condition, which this filter is not told.
     fn default() -> Self {
         Self {
             gnss_position: Some(Seconds::from_secs(7.0)),

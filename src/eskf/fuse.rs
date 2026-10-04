@@ -223,9 +223,6 @@ impl Eskf {
                     &observation,
                     self.config.gates.gnss_position,
                 );
-                if matches!(outcome, Update::Rejected { .. }) {
-                    self.replace_failed_yaw(|diagnostics| &diagnostics.gnss_position);
-                }
                 self.apply_or_recover(
                     outcome,
                     |diagnostics| &mut diagnostics.gnss_position,
@@ -596,7 +593,7 @@ impl Eskf {
             self.config.gates.gnss_velocity,
         );
         if matches!(outcome, Update::Rejected { .. }) {
-            self.replace_failed_yaw(|diagnostics| &diagnostics.gnss_velocity);
+            self.replace_failed_yaw();
         }
         let fusion = self.apply_or_recover(
             outcome,
