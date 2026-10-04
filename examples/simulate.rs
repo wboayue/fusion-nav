@@ -1210,8 +1210,8 @@ fn orbit() -> Trajectory {
 
 /// The scenario table.
 ///
-/// Eight of them — `harsh_imu`, `gnss_outage`, `baro_drift`, `gnss_latency`, `correlated`,
-/// `mag_disturbance`, `gnss_heading`, `logging_dropout` — are one-variable departures from
+/// Nine of them — `harsh_imu`, `gnss_outage`, `long_outage`, `baro_drift`, `gnss_latency`,
+/// `correlated`, `mag_disturbance`, `gnss_heading`, `logging_dropout` — are one-variable departures from
 /// `mission`, and the pairing is by
 /// construction rather than by assertion: same trajectory, same duration, and **the same seed**.
 /// Streams are split per sensor, so a departure that leaves a sensor alone reproduces the
@@ -1316,6 +1316,22 @@ fn scenarios() -> Vec<Scenario> {
                 outage: Some(Window {
                     start: 60.0,
                     end: 80.0,
+                }),
+                ..GNSS
+            },
+            ..base
+        },
+        // `gnss_outage`'s gap three times as long, the circuit flown on through it: past the
+        // point where the position hold of (28″) stays engaged on a vehicle that has left its
+        // anchor. `gnss_outage` is where the hold barely engages; this is where it does.
+        Scenario {
+            name: "long_outage",
+            covers: "60 s without GNSS on the circuit: the position hold of (28″) engaged on a \
+                     vehicle that flies on",
+            gnss: GnssErrors {
+                outage: Some(Window {
+                    start: 60.0,
+                    end: 120.0,
                 }),
                 ..GNSS
             },

@@ -212,6 +212,11 @@ flight           8  pos_h<=1.556 pos_v<=0.351 vel<=0.433 pos_h_max<=3.605  tilt<
 # "Hold".
 bench            9  pos_h<=0.003 pos_v<=0.050 vel<=0.003 pos_h_max<=0.004  tilt<=0.430 yaw<=0.384 ba<=0.07699 bg<=0.000176 in3s>=0.9900 nees_pos<=0.0081   nees_vel<=0.0002 nees_att<=0.0255 false_valid<=0   false_valid_att<=0   scored>=23600  recovered=0 noise_gyro=0.000208..0.000338 noise_accel=0.001600..0.002600 noise_baro=0.2800..0.4400
 hover_outage     10 pos_h<=7.747 pos_v<=0.254 vel<=0.481 pos_h_max<=17.644  tilt<=0.529 yaw<=0.241 ba<=0.07607 bg<=0.000232 in3s>=0.9900 nees_pos<=0.2451   nees_vel<=0.0511 nees_att<=0.0190 false_valid<=0   false_valid_att<=0   scored>=29600  recovered=0 noise_gyro=0.000208..0.000338 noise_accel=0.001600..0.002600 noise_baro=0.2800..0.4400
+# `long_outage` is `gnss_outage` with the gap at 60 s, where the hold engages 37 times on a
+# vehicle that has left its anchors, and it pins what that costs: `pos_h` 16.003 against 7.380
+# under `--hold off`, `nees_pos` 0.6657 against 0.1075, and the fix that ends the gap adopted
+# (`recovered=1`). `data/anees.txt` asserts the overconfidence; the cause is #214.
+long_outage      2  pos_h<=16.164 pos_v<=0.267 vel<=0.707 pos_h_max<=60.056  tilt<=0.375 yaw<=0.482 ba<=0.03568 bg<=0.000503 in3s>=0.9900 nees_pos<=0.6724   nees_vel<=0.0955 nees_att<=0.0239 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=1
 
 # (34)-(36) are what `yaw` reads now, and what it buys depends entirely on what the start knew.
 # Where yaw was never observed the magnetometer is the whole estimate: `moving_start` goes 3.228

@@ -97,6 +97,19 @@ Measuring each sensor's correlation time from a log, without the filter's own bi
 
 {{figure correlated anees}}
 
+### Overconfident: a hold the vehicle flies away from
+
+In `long_outage` GNSS is gone for 60 s of the circuit. Once tilt uncertainty passes 3° the filter
+holds its position estimate as if measured, which bounds tilt for a vehicle that stays put
+([GOALS.md](../GOALS.md#holding-tilt-without-aiding)). This one keeps flying, so each hold
+narrows the position uncertainty around a place it has left. Position ANEES is
+{{anees long_outage anees_pos}}, a fraction {{anees long_outage over_pos}} of moments sits above
+the ordinary bound, and {{anees long_outage any_pos}} of {{anees long_outage epochs}} cross the
+strict one. Velocity and attitude stay within their bounds, and the filter reports the position
+as invalid throughout the gap. The 20 s gap of `gnss_outage` passes. Fixing the long one is #214.
+
+{{figure long_outage anees}}
+
 ## What this page cannot say
 
 The real PX4 logs have no truth, so on them the reported uncertainty can only be checked

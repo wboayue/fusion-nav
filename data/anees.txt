@@ -48,6 +48,8 @@
 #                    `tau` replay --derive prints for one seed (#51) does not remove it
 #                    (DESIGN.md, `Correlation`); an estimator the filter does not bias is
 #                    #195. #117.
+#   long_outage      position only: the position hold of (28'') on a 60 s gap flown through,
+#                    noted at its line below. #214.
 #
 # Three lines (24') rewrote from failing to passing, each on attitude, and only one of them for
 # its cause. `moving_start` (#150) was four magnetometer headings sharing one leveling tilt error
@@ -103,3 +105,9 @@ flight           50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10
 # passes; at 1 s anees_pos=46.06 (DESIGN.md, "Hold").
 bench            50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
 hover_outage     50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
+# `long_outage` asserts the hold's failure on a vehicle that flies on (#214): `gnss_outage`'s
+# gap at 60 s, the hold engaged 37 times around anchors the circuit has left. Position only:
+# anees_pos=0.966, over_pos=0.150, any_pos=4898, peak_pos=13.85 as the gap ends, where
+# `--hold off` passes every block. Velocity and attitude pass, and `Validity` reports the
+# position invalid throughout.
+long_outage      50  runs=50  any_pos>=1  any_vel=0   any_att=0   over_pos>=0.11 over_vel<=0.10 over_att<=0.10

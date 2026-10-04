@@ -1015,13 +1015,14 @@ drifting 27 m) and the corpus. DESIGN.md, "Hold", has the tables.
 to 40 s the hold fails position (`any_pos` 898 over 50 seeds) and at 60 s more so (`any_pos`
 4898, `over_pos` 0.15), where the filter without the hold passes both; attitude passes
 throughout (`any_att` 0), and `Validity` reports the position invalid. The 3° bar is what keeps
-the 20 s gap passing: at 2.5° it fails all three blocks. No scenario pins the longer gap.
+the 20 s gap passing: at 2.5° it fails all three blocks. `long_outage` pins the 60 s gap, with
+`pos_h` 16.0 m against 7.38 without the hold, and `data/anees.txt` asserts its failure (#214).
 
 Where one fusion pulls the tilt σ back under 3°, the hold anchors, fuses once and releases, and
 a hold fused on the step it anchors has zero innovation: it narrows the covariance and corrects
 nothing. `gnss_outage`'s 6 holds, `2c42096b`'s 4 and `7ce66f0d`'s 1 are all of that kind, so
 `attitude_lost` moving to `never` on those is the covariance narrowed, not a tilt held. Not
-measured: an engagement that anchors and waits an interval before it fuses.
+measured: an engagement that anchors and waits an interval before it fuses (#214).
 
  A vehicle that keeps moving without GNSS, a car or a
 fixed-wing, should set `Config::hold = None`: under it the position covariance narrows around a

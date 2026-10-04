@@ -811,7 +811,7 @@ issue that removes them, where one is open.
   reports is pulled toward where the hold engaged. That is why position stays invalid
   until a fix is accepted or adopted after it. A long outage flown through also leaves the
   position covariance overconfident: the simulated circuit passes its consistency bound through
-  a 20 s gap and fails it at 40 s, where the filter without the hold passes. See
+  a 20 s gap and fails it at 40 s, where the filter without the hold passes (#214). See
   [holding tilt without aiding](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#holding-tilt-without-aiding).
 * **Local tangent plane.** Position is Cartesian NED about a fixed origin. The geodetic
   conversion is exact at any range

@@ -24,7 +24,7 @@ Each scenario exists to test one thing no other scenario covers:
 - `moving_start`: a different flight, in the air and turning from the first sample.
 - `bench`: 120 s still with no GNSS, the application telling the filter it is still.
 - `hover_outage`: a hover drifting 27 m, with no GNSS for 90 s of it.
-- The rest (`harsh_imu`, `gnss_outage`, `baro_drift`, `gnss_latency`, `correlated`,
+- The rest (`harsh_imu`, `gnss_outage`, `long_outage`, `baro_drift`, `gnss_latency`, `correlated`,
   `mag_disturbance`, `logging_dropout`): the baseline circuit with one thing changed, each
   described below.
 - `flight`: 14 s at 50 Hz, with sensors appearing and dropping out. It is the log CI replays.
@@ -48,6 +48,10 @@ for. Against `mission`:
 - `gnss_outage` loses GNSS for 20 s, and position drifts to {{score gnss_outage pos_h_max}} m
   at worst. With nothing to correct it, the filter is integrating acceleration, and the
   [robustness page](robustness.md#gnss-outage) shows the drift staying inside the band.
+- `long_outage` loses it for 60 s, long enough for the position hold to engage on a vehicle
+  that keeps flying. Position is off by {{score long_outage pos_h}} m RMS, worse than the same
+  flight without the hold, and the [honesty page](honesty.md#overconfident-a-hold-the-vehicle-flies-away-from)
+  shows the filter not knowing it.
 - `hover_outage` is not a departure but the case `gnss_outage` cannot be: a long outage with
   the vehicle hardly moving. Nothing aids tilt for 90 s, and the position hold
   ([GOALS.md](../GOALS.md#holding-tilt-without-aiding)) bounds its σ near 3°: tilt reads
