@@ -21,6 +21,7 @@ run that produced it:
     {{seed mission}}                   the seed data/scenarios.txt pins for that scenario
     {{footprint thumbv6m-none-eabi size.eskf.Eskf}}   a figure data/footprint.txt pins for it
     {{footprint toolchain}}            the nightly tools/footprint.sh measures with
+    {{onboard primary/warm/bound predict.max}}   a figure data/onboard.txt pins off the board
     {{count scenarios}}                how many runs a list names (lists below)
     {{table score mission,static pos_h,pos_v}}   one row per run, one column per key
     {{figure mission error_position}}  a figure tools/replay_report.py drew, with its caption
@@ -40,7 +41,9 @@ that policy, each in its file's order.
 A `footprint` placeholder reads the repository, not a run: data/footprint.txt is what CI's
 footprint job measures and asserts exactly, so a page placing only those needs no replay, and
 `--only` renders or checks it alone (validation/README.md, "The cost page"). `--only` compares
-the page's text and nothing else; orphaned pages and figures are the whole run's to find.
+the page's text and nothing else; orphaned pages and figures are the whole run's to find. An
+`onboard` placeholder reads the repository too: data/onboard.txt is what a board measured
+(#41), pinned by `data/onboard.sh pin`, and its lines name the commit they were measured at.
 
 A placeholder naming a run, key or figure that does not exist is refused rather than rendered
 empty, and so is a `{{` left in the page because it was malformed: a missing key is how a
@@ -135,6 +138,11 @@ class Runs:
         if footprint.exists():
             for words in first_fields(footprint):
                 self.footprint.setdefault(words[0], {}).update(pairs(" ".join(words[1:])))
+        self.onboard = {}
+        onboard = self.root / "data/onboard.txt"
+        if onboard.exists():
+            for words in first_fields(onboard):
+                self.onboard.setdefault(words[0], {}).update(pairs(" ".join(words[1:])))
         script = self.root / "tools/footprint.sh"
         self.toolchain = None
         if script.exists():
@@ -238,6 +246,13 @@ def expand(kind, args, runs, page):
         if key not in runs.footprint[target]:
             raise ValueError(f"data/footprint.txt pins no `{key}` for `{target}`")
         return runs.footprint[target][key]
+    if kind == "onboard" and len(args) == 2:
+        run, key = args
+        if run not in runs.onboard:
+            raise ValueError(f"data/onboard.txt pins nothing for `{run}`")
+        if key not in runs.onboard[run]:
+            raise ValueError(f"data/onboard.txt pins no `{key}` for `{run}`")
+        return runs.onboard[run][key]
     if kind == "count" and len(args) == 1:
         return str(len(runs.names(args[0])))
     if kind == "table" and len(args) == 3:
@@ -417,6 +432,10 @@ def self_test():
             "# header\nthumbv6m-none-eabi size.eskf.Eskf=3776 text.3=167578\n"
             "thumbv6m-none-eabi frame.update.update.3=8088\n"
             "thumbv7em-none-eabihf size.eskf.Eskf=3784\n")
+        (root / "data/onboard.txt").write_text(
+            "# header\nprimary/warm commit=abc1234 fpu=single\n"
+            "primary/warm/bound predict.max=41230 predict.max_raw=41250\n"
+            "primary/warm/bound fuse_gnss_velocity.stack=9100\n")
         (root / "tools").mkdir()
         # Read as bash would: the last assignment wins, a comment naming the variable is not one,
         # and trailing blanks are not part of the name.
@@ -447,6 +466,10 @@ def self_test():
         expect("footprint, the other target",
                rendered("{{footprint thumbv7em-none-eabihf size.eskf.Eskf}}"), "3784")
         expect("toolchain", rendered("{{footprint toolchain}}"), "nightly-2026-08-06")
+        expect("onboard", rendered("{{onboard primary/warm/bound predict.max}}"), "41230")
+        expect("onboard, a run's second line",
+               rendered("{{onboard primary/warm/bound fuse_gnss_velocity.stack}}"), "9100")
+        expect("onboard, a build's own line", rendered("{{onboard primary/warm fpu}}"), "single")
         expect("count of a list", rendered("{{count @scenarios}}"), "2")
         expect("count of the corpus", rendered("{{count @corpus/raw}}"), "1")
         expect("table", rendered("{{table score mission pos_h}}"),
@@ -488,6 +511,8 @@ def self_test():
             ("a kind with a dash", "{{ score-x mission }}"),
             ("a key the target lacks", "{{footprint thumbv7em-none-eabihf text.3}}"),
             ("a target not pinned", "{{footprint thumbv8m size.eskf.Eskf}}"),
+            ("an onboard key the run lacks", "{{onboard primary/warm/bound predict.mean}}"),
+            ("an onboard run not pinned", "{{onboard shipped/warm/bound predict.max}}"),
         ]:
             refused(name, lambda text=text: render(text, runs, "validation/accuracy.md"))
         refused("drawing no scenario", lambda: runs.draw_command("hover", ["a"]))
