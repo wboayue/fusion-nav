@@ -645,7 +645,7 @@ median and on `093e806a` 27°, which named the vehicle type before any theory di
 **A log that undersamples a sensor cannot judge an estimator that integrates it.** `a299e722`
 logs 50 IMU samples a second, each an average over 2.5 ms of the 20 between them (`# IMU
 averaging interval` against `rate=`). The yaw estimator read 26° from EKF2 there under every
-variant, PX4's own 1.7° on the full-rate data, and three hours went to variants before the
+variant, PX4's own 1.7° on the full-rate data, and variants were compared on it before the
 header was read. Compare the averaging interval with the sample period before a log's figure
 argues for a change to anything that dead reckons.
 
