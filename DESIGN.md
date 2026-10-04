@@ -316,15 +316,14 @@ purpose (#41). Where the count varies, the bound is the path to time:
 
 | loop | runs | worst case |
 | --- | --- | --- |
-| `propagate::coast`, (22′) | `⌈gap / PROJECTION_STEP⌉`, at most `MAX_PROJECTION_STEPS` (64) | a gap of 6.4 s or more |
-| `propagate::project`, under `predicted_validity` | the same, over `Accuracy::horizon` | a horizon of 6.4 s or more |
 | `History::at`, (23′) | the entries newer than the measurement, at most `CAPACITY` (32) | the oldest age the history holds |
 | `History::shift`, on every committed correction | the entries held, `CAPACITY` once the history fills | any correction after the first 0.31 s |
 | `YawEstimator::predict`, (45)–(47) | one hypothesis before fusion begins, `MODELS` (5) after | fusion begun |
 | `StaticWindow::push` | a block closes every `BLOCK`; once all `BLOCKS` (8) are full, `halve` merges them | the push that fills the last block |
 | `predict`'s position hold, (28″) | one 2-D update while unaided with tilt σ past 3°, at most every 0.2 s | a coasted step that also holds |
 
-Beside them the counts are fixed: the geodetic inverse's `PASSES` (5), the symmetry sweep of (42)
+Beside them the counts are fixed: a coast and the arming query, one exact step of (22′) at any
+gap or horizon; the geodetic inverse's `PASSES` (5), the symmetry sweep of (42)
 and the floor of (42′) over fifteen states, the per-source lists in `Diagnostics`. The gate runs
 before the gain, so a rejected update exits early: cheaper than a fusion, never dearer.
 
@@ -380,13 +379,19 @@ crate's peak: `predict`, the arming query (`predicted_validity` over `project` o
 [validation/cost.md](validation/cost.md#stack); the peak is comfortable on the STM32H7 class
 above and more than the whole RAM of an 8 KB Cortex-M0 part.
 
-The block-wise forms that would cut it are each written as the equation reads until #41's figures
-say a target needs them:
+Two block-wise forms that would cut it stay written as the equation reads, because #41's figures
+on a 400 MHz Cortex-M7 say no target in that class needs them (validation/cost.md, "Time on a
+target"):
 
 * (22), where (20)'s identity and zero blocks make most of `F P Fᵀ` known;
-* a coast, whose `F` is a four-term polynomial in `Δt`, since `ω = 0` makes the error dynamics
-  nilpotent;
 * a runtime `M` for `update` in place of a type parameter.
+
+The coast was the third, and the figures took it: (22′) run as up to 64 steps of (22) cost a
+6.4 s gap 1.83 M cycles (4.58 ms, nearly two periods at 400 Hz) and the arming query over a 6.4 s
+horizon 1.59 M (3.97 ms), measured together at 7cb8d36 on the H743. With `ω = 0` the error
+dynamics are nilpotent and one exact step replaces the steps (`propagate::unaccelerated_growth`).
+The steps also understated: with 0.1 s steps the position variance reached 0.938 of a 100 Hz
+propagation at 5 s and 0.902 at 120 s, which the 100 Hz propagation itself understates.
 
 #### Sizes
 
@@ -440,8 +445,7 @@ are one attitude, and one is stepped.
 | operation | cost |
 | --- | --- |
 | (22) as written, per IMU sample (up to 400 Hz) | of order 6750 multiplications and three 900-byte temporaries; a dense `Q` would add 900 bytes and 225 additions to add twelve numbers |
-| `project` | ten runs of (22) at the default 1 s horizon, up to 64 |
-| a coast | up to 64 runs landing on one step; 12 for a 1.2 s gap |
+| a coast, and `project` | one `Φ P Φᵀ`, (22)'s two 15 × 15 products, and twenty-one 3 × 3 noise blocks, at any gap or horizon |
 | `StaticWindow::push`, `f64` | 32 additions, 9 multiplications, 2 comparisons, a subtraction, 18 widenings (the barometer's share only on a fresh reading) |
 | `StaticWindow::push`, `f32` | 27 operations: 7 divisions, 6 multiplications, 5 additions, 4 comparisons, 2 maxima, 2 square roots, a conversion |
 | each `WindowNoise::BLOCK` closed | 7 additions, 6 multiplications and a division more, per sensor |
@@ -866,28 +870,6 @@ filter to. Across the thirteen logs of `data/manifest.txt` and every scenario in
 That is two to six decades of headroom, so `Diagnostics::floored` reads zero on all thirteen
 logs. That includes `cd7e0001`, whose receiver reports a 0.43 mm/s velocity after touchdown and
 is fused raw. Measured as σ² from the replay output's six-decimal σ columns.
-
-### `PROJECTION_STEP`
-
-Measured against the same horizon propagated at 100 Hz, as the fraction of the position
-*variance* the projection reaches:
-
-```text
- horizon    0.2 s step   0.1 s step   0.05 s step
-   1 s        0.989        0.994        0.997
-   2 s        0.953        0.977        0.989
-   5 s        0.873        0.938        0.953
-```
-
-0.1 s is where that stops buying much per step: it holds the projection within 6.5 % of the
-variance, 3.2 % of the sigma, out to a 5 s horizon.
-
-### `MAX_PROJECTION_STEPS`
-
-Past 64 steps of `PROJECTION_STEP`, 6.4 s, a horizon is projected in 64 longer steps. Position
-variance against the same 100 Hz reference: 0.950 at 6.4 s, 0.935 at 10 s, 0.913 at 30 s, 0.907
-at 60 s, 0.902 at 120 s. So a horizon of minutes is answered about 10 % optimistic in the
-variance, 5 % in the sigma, where a 5 s horizon at `PROJECTION_STEP` is 6.5 % and 3.2 %.
 
 ### `WindowNoise`
 

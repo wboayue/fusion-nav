@@ -162,10 +162,8 @@ impl Eskf {
     /// cannot say. The projection is of propagation alone: the position hold of
     /// [`Config::hold`](crate::Config::hold), which engages at that bar, is not projected.
     ///
-    /// The projection reads slightly optimistic and the amount is measured: a first-order
-    /// step understates growth, and `propagate.rs`'s `PROJECTION_STEP` holds that within
-    /// 3.2 % of the sigma out to a 5 s horizon. It costs one `F` and up to 64 covariance
-    /// propagations, which is an arming-rate query and not something to poll at IMU rate.
+    /// The projection is (22′) in one exact step, so it is neither optimistic nor longer for a
+    /// longer horizon: one `Φ P Φᵀ` and its noise, about an IMU epoch's arithmetic.
     pub fn predicted_validity(&self) -> Validity {
         if !self.initialized {
             return Validity::NONE;

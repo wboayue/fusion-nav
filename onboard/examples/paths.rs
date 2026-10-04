@@ -23,7 +23,7 @@ use onboard::{Recorder, TraceFile};
 
 type Filter = Recorder<TraceFile>;
 
-/// The most runs of (22) a coast or the arming query takes: `MAX_PROJECTION_STEPS` of 0.1 s.
+/// A long gap and a long horizon. (22′) takes one step at any, which the 10 s gap beside it shows.
 const LONGEST: f32 = 6.4;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -80,7 +80,7 @@ fn fix_at(origin: &LocalOrigin, t: f32) -> Geodetic {
 }
 
 /// Seeded and flown straight north with every source fused, then each source once at the
-/// oldest age the history holds, the arming query over its longest horizon, and a heading near
+/// oldest age the history holds, the arming query over a long horizon, and a heading near
 /// `f32::MAX`. The IMU sample index it ends on.
 fn aided(filter: &mut Filter, config: Config) -> Result<u32, Box<dyn std::error::Error>> {
     renew(filter, config)?;
@@ -155,7 +155,7 @@ fn aided(filter: &mut Filter, config: Config) -> Result<u32, Box<dyn std::error:
     ];
     assert!(checks.iter().all(|f| f.is_accepted()), "{checks:?}");
 
-    filter.label("predicted_validity: 64 steps of (22)");
+    filter.label("predicted_validity: a 6.4 s horizon");
     filter.predicted_validity();
 
     // `wrap_pi`'s `fmodf` loops on the exponent gap between the angle and 2π.
@@ -236,7 +236,7 @@ fn recoveries(filter: &mut Filter, from: u32) {
 }
 
 /// Seeded with tilt σ past the hold's 3° and never aided: every 0.2 s a step fuses the hold,
-/// then the longest coast, with a hold on the same step.
+/// then two long coasts, each with a hold on the same step.
 fn unaided(filter: &mut Filter, config: Config) -> Result<(), Box<dyn std::error::Error>> {
     renew(filter, config)?;
     let sigmas = [
@@ -272,8 +272,7 @@ fn unaided(filter: &mut Filter, config: Config) -> Result<(), Box<dyn std::error
     assert_eq!(holds as usize, holding.iter().filter(|h| **h).count());
     assert!(holds >= 9, "{holds} holds in 2 s");
 
-    // A step longer than the longest coast runs the same 64 steps; both land on a hold, the
-    // last having been 0.2 s or more before.
+    // Both coasts land on a hold, the last having been 0.2 s or more before.
     let mut time = sample_time(2 * IMU_HZ);
     for (label, gap) in [
         ("predict: coast of 6.4 s, and a hold", LONGEST),

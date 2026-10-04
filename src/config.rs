@@ -772,10 +772,8 @@ pub struct Accuracy {
     /// current answer widened by whatever source is being accepted — rather than reducing it
     /// to [`validity`](crate::Eskf::validity).
     ///
-    /// Out past 6.4 s the projection takes longer steps rather than more of them and drifts further
-    /// onto the optimistic side, about 5 % in σ at minutes ([measured]).
-    ///
-    /// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#max_projection_steps
+    /// The projection is (22′), exact at any horizon under its assumption of a vehicle that
+    /// stays put, and one step: a horizon of minutes costs what one of a second does.
     pub horizon: Seconds,
 }
 

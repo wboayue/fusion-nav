@@ -5,7 +5,7 @@
 4688 bytes on a Cortex-M0 and allocates nothing
 else, so that is the RAM to plan for beyond the stack. The deepest stack is a GNSS velocity
 update, 11580 bytes, and linking every entry point takes
-121230 bytes of flash at `opt-level = "s"`. Execution time on
+127526 bytes of flash at `opt-level = "s"`. Execution time on
 hardware is not measured yet (#41).
 
 Every figure on this page is pinned exactly in `data/footprint.txt`, which CI measures on
@@ -71,7 +71,7 @@ The deepest stack a call into each entry point takes, in bytes, before the calle
 | `fuse_gnss_heading` | 9892 | 9640 |
 | `fuse_course` | 9908 | 9648 |
 | `fuse_stationary` | 11484 | 11264 |
-| `predicted_validity` | 8652 | 8448 |
+| `predicted_validity` | 8868 | 8488 |
 | `initialize` | 5476 | 5312 |
 | `initialize_coarse` | 6212 | 6048 |
 | `initialize_from` | 3024 | 2896 |
@@ -97,7 +97,7 @@ Each entry point's own frame, and the frames beneath it that set its depth:
 | `fuse_gnss_heading` | 248 | 248 |
 | `fuse_course` | 256 | 256 |
 | `fuse_stationary` | 1360 | 1344 |
-| `predicted_validity` | 1864 | 1832 |
+| `predicted_validity` | 2784 | 2744 |
 | `initialize` | 2224 | 2216 |
 | `initialize_coarse` | 3504 | 3488 |
 | `initialize_from` | 1928 | 1856 |
@@ -111,18 +111,18 @@ Each entry point's own frame, and the frames beneath it that set its depth:
 | beside the update: adopting a velocity, from `fuse_gnss_velocity` | 1904 | 1896 |
 | beneath the update: the attitude reset of (41) | 456 | 448 |
 | beneath the update: the injection of (39)–(40) | 168 | 88 |
-| beneath `predict`: one sample, (9)–(22) | 1088 | 1096 |
+| beneath `predict`: one sample, (9)–(22) | 1648 | 1440 |
 | beneath that: the covariance step of (22) | 2832 | 2760 |
 | beneath that and the reset of (41): symmetry, (42) | 128 | 8 |
-| beneath `predict`, across a gap: the coast of (22′) | 2152 | 2144 |
-| beneath `predicted_validity`: the covariance carried over the horizon | 1952 | 1936 |
+| beneath `predict`, across a gap: the coast of (22′) | 1960 | 1920 |
+| beneath `predicted_validity`: the covariance carried over the horizon | 1864 | 1840 |
 | beneath `initialize` and `initialize_coarse`: the initial covariance | 1120 | 1080 |
 
 ## Flash
 
 | bytes | `thumbv6m` `3` | `thumbv6m` `s` | `thumbv7em` `3` | `thumbv7em` `s` |
 | --- | --- | --- | --- | --- |
-| `.text` | 183954 | 121230 | 205244 | 129588 |
+| `.text` | 188334 | 127526 | 208020 | 134108 |
 | of which `libm` | 19532 | 11196 | 20752 | 12620 |
 | of which `compiler_builtins` | 10334 | 11630 | 7674 | 9096 |
 | of which `nalgebra`, out of line | 15486 | 2130 | 3956 | 924 |
