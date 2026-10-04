@@ -1,5 +1,6 @@
 //! Yaw without a heading sensor: the estimator of (45)–(52) fed from `predict` and
-//! `fuse_gnss_velocity`, and its answer adopted as a first heading.
+//! `fuse_gnss_velocity`, and its answer adopted, as a first heading or in place of one GNSS
+//! velocity contradicts.
 //!
 //! No entry point: [`Config::yaw_estimator`](crate::Config::yaw_estimator) turns it on, and a
 //! multirotor with no magnetometer and no second antenna calls nothing new.
@@ -144,13 +145,12 @@ impl Eskf {
     /// and on `093e806a`, whose receiver claims 0.37 m, the position trigger replaced a good
     /// magnetic heading twice ([measured]).
     ///
-    /// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#yawestimator
-    ///
     /// PX4 also resets the variance of the gyroscope bias about body z
     /// (`resetGyroBiasZCov`, `gps_control.cpp:440`). Not done here: [`reset_heading_by`]
     /// drops the heading's correlation with the bias, and `yaw_fault` settles without it.
     ///
     /// [`reset_heading_by`]: Self::reset_heading_by
+    /// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#yawestimator
     #[inline(never)]
     pub(super) fn replace_failed_yaw(&mut self) {
         if !self.config.yaw_estimator || !self.yaw_estimator.is_settled() {
