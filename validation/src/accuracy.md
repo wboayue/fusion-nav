@@ -27,6 +27,8 @@ Each scenario exists to test one thing no other scenario covers:
 - The rest (`harsh_imu`, `gnss_outage`, `long_outage`, `baro_drift`, `gnss_latency`, `correlated`,
   `mag_disturbance`, `logging_dropout`): the baseline circuit with one thing changed, each
   described below.
+- `multirotor_no_mag` and `yaw_fault`: a multirotor shuttling north and east with its nose
+  turning, the first with no magnetometer and the second with one that is 80° wrong.
 - `flight`: 14 s at 50 Hz, with sensors appearing and dropping out. It is the log CI replays.
 
 ## Every scenario
@@ -104,6 +106,32 @@ that start, tilt is off by {{score moving_start tilt}}° RMS and heading by
 {{score moving_start yaw}}°.
 
 {{figure moving_start error_attitude}}
+
+## No heading sensor, and a wrong one
+
+A multirotor with no magnetometer has nothing that measures heading, and its nose need not point
+where it flies. `multirotor_no_mag` is that vehicle. The filter runs five guesses at the heading
+side by side, each predicting the GNSS velocity from the IMU, and takes the one the velocity
+agrees with once the vehicle accelerates
+([GOALS.md](../GOALS.md#yaw-without-a-heading-sensor-a-second-estimator-inside)). It reports
+itself aligned {{summary multirotor_no_mag aligned_at}} s after its still start ends. Over the
+whole flight heading is off by {{score multirotor_no_mag yaw}}° RMS, nearly all of it that
+wait, when the filter says it has no heading. Counting only the time it claims one, heading is
+off by {{score multirotor_no_mag yaw_valid}}° RMS, against {{score moving_start yaw_valid}}° for
+`moving_start`, which has a magnetometer.
+
+{{figure multirotor_no_mag error_attitude}}
+
+`yaw_fault` gives the same vehicle a magnetometer that reads 80° wrong from the first sample.
+The filter believes it, since nothing contradicts it on the ground. Once the vehicle accelerates,
+GNSS velocity disagrees, and the filter replaces the heading with the one its five guesses
+found: {{summary yaw_fault yaw_recovered}} replacement, after which the magnetometer is refused
+({{summary yaw_fault rejected_mag}} readings). Position is off by {{score yaw_fault pos_h}} m
+RMS over the flight, all of it from the seconds before the replacement, and those seconds are
+why the [honesty page](honesty.md#overconfident-a-heading-nothing-measured-and-one-measured-wrong)
+lists the scenario as overconfident.
+
+{{figure yaw_fault error_attitude}}
 
 ## A real quadcopter against RTK
 

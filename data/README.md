@@ -612,7 +612,10 @@ row, from `--course` or a `# Course sideslip` header line, or `off`; and the inp
 `--without` dropped, or `none`; `off` and `none` on every manifest entry, so a figure from a log
 replayed as a vehicle without its magnetometer says so), `hold=` and `holds=` (the position
 hold's σ in meters, the default unless `--hold <σ>` set another, or `off` under `--hold off`; and
-how many holds the filter fused or turned down), `rejected=` and `discarded=` (the gate's verdict, and everything that never reached it — a
+how many holds the filter fused or turned down), `yaw_estimator=`, `yaw_adopted=` and
+`yaw_recovered=` (whether the yaw estimator of (45)–(52) ran, `on` unless `--yaw-estimator off`;
+the first headings the filter took from it, 0 or 1; and the headings it replaced because GNSS
+velocity contradicted them, 0 on every entry whose heading sensor is right), `rejected=` and `discarded=` (the gate's verdict, and everything that never reached it — a
 variance of zero or less, a NaN, an altitude with no reference; both count verdicts, so a GNSS
 fix judged or refused whole counts once per half), `refused=` and `invalid=` (steps
 refused as too long or as not a step at all — propagation, not measurements), `floored=`

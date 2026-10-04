@@ -110,6 +110,29 @@ as invalid throughout the gap. The 20 s gap of `gnss_outage` passes. Fixing the 
 
 {{figure long_outage anees}}
 
+### Overconfident: a heading nothing measured, and one measured wrong
+
+`multirotor_no_mag` has no heading sensor, and starts from a still window that cannot see
+heading. Until the vehicle accelerates and the yaw estimator supplies one
+([accuracy](accuracy.md#no-heading-sensor-and-a-wrong-one)), the filter holds a heading that is
+a guess under an uncertainty that says otherwise. It tells the application so, reporting the
+heading invalid, but the uncertainty itself is wrong: attitude ANEES crosses the strict bound at
+{{anees multirotor_no_mag any_att}} of {{anees multirotor_no_mag epochs}} moments, all before
+the heading is taken, and velocity at {{anees multirotor_no_mag any_vel}}, where GNSS velocity
+was being read through that guess. Over the whole flight attitude ANEES is
+{{anees multirotor_no_mag anees_att}}.
+
+{{figure multirotor_no_mag anees}}
+
+`yaw_fault` is worse in kind. Its magnetometer is 80° wrong and says it is right, so the filter
+reports a confident, valid heading that is wrong until GNSS velocity contradicts it and the
+heading is replaced. Attitude ANEES is {{anees yaw_fault anees_att}} and position
+{{anees yaw_fault anees_pos}}, with {{anees yaw_fault any_att}} moments past the strict bound.
+No uncertainty can describe a sensor that is wrong and reports itself good; what the filter can
+do is stop believing it, which it does.
+
+{{figure yaw_fault anees}}
+
 ## What this page cannot say
 
 The real PX4 logs have no truth, so on them the reported uncertainty can only be checked
