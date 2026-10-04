@@ -769,6 +769,56 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_receiver_claiming_millimeters_is_read_at_the_floor() {
+        let mut flight = Flight::airborne(0.4);
+        let now = Timestamp::from_micros(10_000 * flight.step);
+        let velocity = Vector2::new(1.0, 0.0);
+        flight
+            .estimator
+            .fuse_velocity(now, velocity, 1.0e-6, Vector2::zeros(), 0.0);
+        let p = flight.estimator.models[0].covariance;
+        assert_eq!(
+            (p.m11, p.m22),
+            (SIGMA_MIN * SIGMA_MIN, SIGMA_MIN * SIGMA_MIN)
+        );
+    }
+
+    #[test]
+    fn the_measured_acceleration_is_the_velocities_slope_and_a_gap_forgets_it() {
+        let mut flight = Flight::airborne(0.4);
+        flight.ripple = 0.0;
+        // Five time constants at a steady 2 m/s² north.
+        flight.fly(2.5, |_| Vector3::new(2.0, 0.0, 0.0));
+        let measured = flight.estimator.acceleration;
+        assert!(
+            (measured - Vector2::new(2.0, 0.0)).norm() < 0.05,
+            "{measured}"
+        );
+        // The next velocity arrives two seconds on: its slope is no acceleration.
+        for _ in 0..200 {
+            flight.step(Vector3::zeros(), Vector3::zeros());
+        }
+        flight.fix();
+        assert_eq!(flight.estimator.acceleration, Vector2::zeros());
+    }
+
+    #[test]
+    fn before_fusion_tilt_is_read_against_gravity_alone() {
+        // No hypothesis has a yaw yet, so an acceleration measured in navigation axes has no
+        // body axes to be turned into: used anyway, this one tilts every model 0.3 rad.
+        let mut flight = Flight::airborne(1.3);
+        flight.estimator.acceleration = Vector2::new(3.0, 0.0);
+        for _ in 0..3000 {
+            flight.step(Vector3::zeros(), Vector3::zeros());
+        }
+        assert!(flight.estimator.yaw().is_none());
+        for model in &flight.estimator.models {
+            let down = model.attitude.inverse() * Vector3::z();
+            assert!(down.xy().norm() < 0.01, "down {down}");
+        }
+    }
+
+    #[test]
     fn a_bank_that_stops_producing_numbers_starts_over() {
         let mut flight = Flight::airborne(0.0);
         flight.fly(3.0, circling);
