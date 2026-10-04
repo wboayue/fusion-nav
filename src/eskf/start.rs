@@ -17,7 +17,6 @@ use crate::units::{Altitude, Timestamp};
 use super::hold::HoldState;
 use super::yaw::YawReplaced;
 use super::{Eskf, Unestablished};
-use crate::gsf::YawEstimator;
 
 impl Eskf {
     /// Align from a window of samples taken while the vehicle was, ideally, still.
@@ -371,7 +370,7 @@ impl Eskf {
         self.aligned = false;
         // A hold belongs to the life it held; the next outage anchors afresh.
         self.hold = HoldState::default();
-        self.yaw_estimator = YawEstimator::default();
+        self.yaw_estimator.clear();
         self.yaw_replaced = YawReplaced::default();
     }
 }

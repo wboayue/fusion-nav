@@ -188,12 +188,31 @@ impl Default for YawEstimator {
 }
 
 impl YawEstimator {
-    /// Begin again: nothing leveled, nothing fused.
+    /// Begin again in what may be mid-flight: nothing leveled, nothing fused.
     pub(crate) fn restart(&mut self) {
-        *self = Self {
-            restarted: true,
-            ..Self::default()
-        };
+        self.clear();
+        self.restarted = true;
+    }
+
+    /// Forget everything, as a new start does.
+    ///
+    /// Field by field and model by model: assigning a fresh bank builds one on the caller's
+    /// stack first, 0.5 KB in `predict`'s frame ([measured]).
+    ///
+    /// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function
+    pub(crate) fn clear(&mut self) {
+        for model in &mut self.models {
+            *model = Model::default();
+        }
+        self.accel = Vector3::zeros();
+        self.acceleration = Vector2::zeros();
+        self.last = None;
+        self.leveled = false;
+        self.fusing = false;
+        self.active = 0.0;
+        self.restarted = false;
+        self.yaw = 0.0;
+        self.variance = f32::INFINITY;
     }
 
     /// The composite yaw and its variance, (52), once velocity is being fused.
