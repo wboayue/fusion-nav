@@ -508,6 +508,8 @@ struct Snapshot {
     unestablished: super::Unestablished,
     aligned: bool,
     hold: super::hold::HoldState,
+    yaw_estimator: crate::gsf::YawEstimator,
+    yaw_replaced: super::yaw::YawReplaced,
 }
 
 fn snapshot(filter: &Eskf) -> Snapshot {
@@ -528,6 +530,8 @@ fn snapshot(filter: &Eskf) -> Snapshot {
         unestablished: filter.unestablished,
         aligned: filter.aligned,
         hold: filter.hold,
+        yaw_estimator: filter.yaw_estimator.clone(),
+        yaw_replaced: filter.yaw_replaced,
     }
 }
 
@@ -693,6 +697,12 @@ fn apply(filter: &mut Eskf, op: &Op, project: bool) -> Result<(), TestCaseError>
                         ),
                         (before.state, before.covariance, before.offset, before.hold),
                         "{:?} changed the estimate",
+                        refused
+                    );
+                    prop_assert_eq!(
+                        &filter.yaw_estimator,
+                        &before.yaw_estimator,
+                        "{:?} stepped the yaw estimator",
                         refused
                     );
                     if filter.initialized {

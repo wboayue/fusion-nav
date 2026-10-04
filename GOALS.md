@@ -1094,7 +1094,8 @@ flights. DESIGN.md, "`YawEstimator`", has the table.
   on `093e806a`.
 - **A heading that is wrong.** `yaw_fault`, a magnetometer 80° out from the first sample: the
   yaw is replaced 8.0 s in, a second after velocity is first rejected, and `pos_h` reads 0.953 m
-  against 26.837 without the estimator. `7ce66f0d` is the corpus's case, a start leveled wrong:
+  against 26.837 without the estimator. Over 50 seeds, 49 are replaced within a second of that
+  and one 7 s later, its velocities having stayed just inside their gate. `7ce66f0d` is the corpus's case, a start leveled wrong:
   14 replacements, and the distance from EKF2 falls on every position and velocity axis, raw
   `pos_n_rms` 16.2 m to 1.504.
 - **With a heading sensor that is right**, twelve corpus logs and every scenario that existed
@@ -1110,8 +1111,9 @@ flights. DESIGN.md, "`YawEstimator`", has the table.
 - Before the adoption the start still claims `sigma_yaw` on a yaw nothing measured, and GNSS
   velocity fused under it leaves tilt 3.2° out under a 1.8° σ for 0.8 s on `multirotor_no_mag`
   (`data/anees.txt` asserts it). PX4 fuses no GNSS until yaw is aligned.
-- A sensor that is wrong and says it is right is believed until the vehicle accelerates:
-  `yaw_fault` is 80° out for 8 s, and its covariance cannot say so.
+- A sensor that is wrong and says it is right is believed until the vehicle accelerates and a
+  velocity is rejected for it: `yaw_fault` is 80° out for 8 s, 15 s on one seed of 50, and its
+  covariance cannot say so.
 - The fixed-wing tails. A fixed-wing's heading is the course constraint's.
 
 ### Ecosystem coherence, dropped

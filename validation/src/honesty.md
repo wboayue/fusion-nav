@@ -129,7 +129,9 @@ reports a confident, valid heading that is wrong until GNSS velocity contradicts
 heading is replaced. Attitude ANEES is {{anees yaw_fault anees_att}} and position
 {{anees yaw_fault anees_pos}}, with {{anees yaw_fault any_att}} moments past the strict bound.
 No uncertainty can describe a sensor that is wrong and reports itself good; what the filter can
-do is stop believing it, which it does.
+do is stop believing it, which it does once a GNSS velocity is refused for it. On one flight of
+the fifty that took seven seconds longer than on the rest, which is the step in the attitude
+panel.
 
 {{figure yaw_fault anees}}
 

@@ -3,8 +3,9 @@
 //!
 //! The estimator PX4 and ArduPilot run for a vehicle with no magnetometer and no second
 //! antenna (`EKFGSF_yaw`). It is free of [`Eskf`](crate::Eskf), which feeds it and reads
-//! [`YawEstimator::yaw`]; nothing here reads the main filter's attitude, which is what lets its
-//! answer correct a main filter whose yaw is wrong.
+//! [`YawEstimator::yaw`]. No hypothesis is leveled or turned by the main filter's attitude,
+//! which is what lets its answer correct a main filter whose yaw is wrong: the main filter
+//! lends its gyroscope bias at the start, and the axes a velocity's age is carried in, (49).
 
 use core::f32::consts::PI;
 
@@ -12,9 +13,11 @@ use nalgebra::{
     ComplexField, Matrix2, Matrix3, Matrix3x2, RealField, UnitQuaternion, Vector2, Vector3,
 };
 
+use crate::frames::Body;
+use crate::init::level_from_accel;
 use crate::math::{exp_quat, wrap_pi};
 use crate::propagate::ImuSample;
-use crate::units::Timestamp;
+use crate::units::{Acceleration, Timestamp};
 
 /// Yaw hypotheses: `N_MODELS_EKFGSF` (`EKFGSF_yaw.h:40` at PX4 `c4e4ef98e9`;
 /// `AP_Nav_Common.h:123` at ArduPilot `368dc0c428`). Spaced 72° apart, each starts within 36°
@@ -471,8 +474,7 @@ impl YawEstimator {
 /// The attitude with zero heading whose down is where the accelerometer says it is: (5)'s
 /// roll and pitch, as [`level_from_accel`](crate::init::level_from_accel) reads them.
 fn level(specific_force: Vector3<f32>) -> UnitQuaternion<f32> {
-    let (roll, pitch) =
-        crate::init::level_from_accel(crate::units::Acceleration::from_vector(specific_force));
+    let (roll, pitch) = level_from_accel(Acceleration::<Body>::from_vector(specific_force));
     UnitQuaternion::from_euler_angles(roll.as_radians(), pitch.as_radians(), 0.0)
 }
 

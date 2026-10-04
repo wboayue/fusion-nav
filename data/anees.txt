@@ -121,5 +121,8 @@ multirotor_no_mag 50 runs=50  any_pos=0   any_vel>=1  any_att>=1  over_pos<=0.10
 # `yaw_fault` asserts a filter told a wrong heading by its own magnetometer: 80 deg out under
 # a 3 deg sigma until the yaw estimator replaces it 8 s in. anees_att=16.45, peak_att=273.5 at
 # 9.6 s, anees_pos=0.537 with over_pos=0.139, peak_vel=15.74. No covariance prices a sensor
-# that is wrong and says it is right; what the line holds is that it ends.
+# that is wrong and says it is right; what the line holds is that it ends. On 49 seeds the
+# replacement comes between 9.6 s and 10.6 s. On seed 35 the velocities stay inside their gate,
+# at test ratios up to 0.97, until 16.2 s, and it comes at 17.2 s: the trigger is a rejection,
+# and a wrong yaw does not always earn one promptly.
 yaw_fault        50  runs=50  any_pos>=1  any_vel>=1  any_att>=1  over_pos>=0.11 over_vel<=0.10 over_att>=0.11
