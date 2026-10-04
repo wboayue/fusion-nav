@@ -60,6 +60,18 @@ case "${1:-}" in
         if [ $# -eq 0 ]; then
             set -- "$traces"/*.trace
         fi
+        # The dispatcher's frame, off the ELF the board runs: a painted stack is measured from
+        # the call into `Machine::execute`, and the published figure starts beneath it.
+        toolchain=$(sed -n 's/^TOOLCHAIN=//p' tools/footprint.sh)
+        host=$(rustc "+$toolchain" -vV | sed -n 's/^host: //p')
+        readobj="$(rustc "+$toolchain" --print sysroot)/lib/rustlib/$host/bin/llvm-readobj"
+        elf="$root/target/onboard/$build/thumbv7em-none-eabihf/release/onboard"
+        mkdir -p "$out"
+        frame=$("$readobj" --stack-sizes --demangle "$elf" | awk '
+            /Functions: \[<onboard::machine::Machine>::execute\]/ { found = 1; next }
+            found && /Size:/ { print $2; exit }')
+        [ -n "$frame" ] || die "no frame for Machine::execute in $elf"
+        printf '%d\n' "$frame" > "$out/dispatch.txt"
         python3 tools/onboard.py run --out "$out" "${cold[@]}" "$@"
         python3 tools/onboard.py fmodf --out "$out" "${cold[@]}"
         ;;

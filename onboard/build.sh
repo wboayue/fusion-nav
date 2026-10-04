@@ -43,7 +43,10 @@ objcopy="$(rustc "+$toolchain" --print sysroot)/lib/rustlib/$host/bin/llvm-objco
 export CARGO_TARGET_DIR="$root/target/onboard/$build"
 export CARGO_PROFILE_RELEASE_OPT_LEVEL=$opt
 export CARGO_PROFILE_RELEASE_LTO=$lto
-export RUSTFLAGS=$rustflags
+# The frame table goes in every build: it moves no code (the flashed image is byte-identical
+# without it), and `data/onboard.sh` reads `Machine::execute`'s frame off it, which every
+# painted stack includes.
+export RUSTFLAGS="$rustflags -Zemit-stack-sizes"
 export ONBOARD_BUILD=$build
 export ONBOARD_LTO=$lto
 cargo "+$toolchain" build --quiet --release -p onboard --bin onboard --features firmware \

@@ -15,9 +15,11 @@ in which any call's outcome or digest differs from the host's, naming the first,
 for a call the board made differently is a figure for another run.
 
 Every run is preceded by calls that do nothing (`Record::Nop`), timed the same way: their least
-cycles and their stack are what the measurement itself costs, the two cycle-counter reads and
-`Machine::execute`'s frame, and `pin` subtracts them. It is the one place the board's raw figures
-become published ones (AGENTS.md, "one statistic, one implementation").
+cycles are what the measurement itself costs, the two cycle-counter reads and the dispatch, and
+`pin` subtracts them. A stack is painted from the call into `Machine::execute`, whose frame
+`data/onboard.sh` reads off the ELF into `dispatch.txt` (a nop does not show it: LLVM sets up
+the frame only on the paths that need it), and `pin` subtracts that. It is the one place the
+board's raw figures become published ones (AGENTS.md, "one statistic, one implementation").
 
 Standard library only, as `tools/anees.py` is: the port is a CDC device opened raw through
 `termios`, so the tool has nothing to pin.
@@ -226,19 +228,17 @@ def slug(text):
     return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
 
 
-def summarize(rows):
+def summarize(rows, frame):
     """Keys for one run's per-call rows: per call, per call and outcome, per label.
 
-    Cycles and stack are net of the run's calibration: the least cycles and the largest stack
-    a `nop` measured. `stack_raw` keeps the dispatcher's frame, which under LTO holds whatever
-    entry point it inlined.
+    Cycles are net of the least a `nop` took, and stack of `frame`, the dispatcher's. Under LTO
+    the dispatcher's frame holds whatever entry point it inlined, so `stack_raw` keeps it.
     """
     nops = [r for r in rows if r["call"] == "nop"]
     if not nops:
         raise ValueError("no calibration rows")
     overhead = min(int(r["cycles"]) for r in nops)
-    frame = max(int(r["stack"]) for r in nops)
-    keys = {"nop_cycles": overhead, "nop_stack": frame}
+    keys = {"nop_cycles": overhead, "dispatch_stack": frame}
     groups = {}
     for r in rows:
         if r["call"] == "nop":
@@ -284,7 +284,8 @@ def pin(dirs):
         for f in sorted(d.glob("*.csv")):
             if f.name == "fmodf.csv":
                 continue
-            runs[f.stem] = summarize(list(csv.DictReader(open(f, newline=""))))
+            frame = int((d / "dispatch.txt").read_text())
+            runs[f.stem] = summarize(list(csv.DictReader(open(f, newline=""))), frame)
         keep = ("commit", "rustc", "opt", "lto", "cpu", "fpu", "sysclk", "cache", "fz")
         lines.append(f"{tag} " + " ".join(f"{k}={meta[k]}" for k in keep if k in meta))
         sweep = d / "fmodf.csv"
@@ -337,9 +338,9 @@ def self_test():
     assert "outcome" in refusal(DIGEST_MATCH)
     assert "painted" in refusal(OUTCOME_MATCH | DIGEST_MATCH | OVERFLOW)
 
-    # The overhead is the least nop and the frame the largest, so a slow nop raises nothing
-    # and a deep one lowers every stack. The worst predict is in the middle, so a reader that
-    # takes the first or the last row misses it.
+    # The overhead is the least nop, so a slow nop raises nothing; the frame is the dispatcher's,
+    # passed in, and a nop's own stack (shallower: no prologue) is not it. The worst predict is in
+    # the middle, so a reader that takes the first or the last row misses it.
     ok = OUTCOME_MATCH | DIGEST_MATCH
     rows = [
         {"call": "nop", "outcome": "nothing", "height": "", "label": "", "cycles": "20", "stack": "96", "flags": "1"},
@@ -349,12 +350,12 @@ def self_test():
         {"call": "predict", "outcome": "propagated", "height": "", "label": "", "cycles": "1220", "stack": "5004", "flags": str(ok)},
         {"call": "fuse_gnss_position", "outcome": "accepted", "height": "rejected", "label": "", "cycles": "3020", "stack": "9000", "flags": str(ok)},
     ]
-    keys = summarize(rows)
-    assert keys["nop_cycles"] == 20 and keys["nop_stack"] == 104
+    keys = summarize(rows, 160)
+    assert keys["nop_cycles"] == 20 and keys["dispatch_stack"] == 160
     assert keys["predict.n"] == 3
     assert keys["predict.min"] == 1000 and keys["predict.max"] == 64000
     assert keys["predict.mean"] == round((1000 + 64000 + 1200) / 3)
-    assert keys["predict.stack"] == 7000 - 104 and keys["predict.stack_raw"] == 7000
+    assert keys["predict.stack"] == 7000 - 160 and keys["predict.stack_raw"] == 7000
     assert keys["predict.propagated.max"] == 1200
     assert keys["predict.coasted.denormal"] == 1 and keys["predict.propagated.denormal"] == 0
     assert keys["label.a_coast.max"] == 64000
@@ -362,7 +363,7 @@ def self_test():
 
     other = dict(keys, **{"predict.max": 70000, "predict.stack": 10})
     worst = bound([keys, other])
-    assert worst["predict.max"] == 70000 and worst["predict.stack"] == 7000 - 104
+    assert worst["predict.max"] == 70000 and worst["predict.stack"] == 7000 - 160
     assert "predict.mean" not in worst
     print("onboard self-test: ok")
 

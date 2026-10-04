@@ -22,7 +22,6 @@ use core::sync::atomic::{Ordering, compiler_fence};
 
 use cortex_m::peripheral::{CPUID, DWT, SCB};
 use cortex_m_rt::entry;
-use panic_halt as _;
 use stm32h7xx_hal::{
     pac,
     prelude::*,
@@ -48,10 +47,10 @@ const MAX_CALLS: usize = BATCH / (1 + FRAME_OVERHEAD);
 const PAINTED: usize = 32 * 1024;
 const PAINT: u32 = 0x5AA5_C33C;
 
-#[unsafe(link_section = ".axisram.batch")]
-static mut BATCH_BUFFER: MaybeUninit<[u8; BATCH]> = MaybeUninit::uninit();
-#[unsafe(link_section = ".axisram.results")]
-static mut RESULTS: MaybeUninit<[u8; MAX_CALLS * RESULT]> = MaybeUninit::uninit();
+/// AXI SRAM, 512 KB that nothing else on this firmware uses: the batch, then its results.
+const AXI_SRAM: usize = 0x2400_0000;
+const AXI_SRAM_SIZE: usize = 512 * 1024;
+const _: () = assert!(BATCH + MAX_CALLS * RESULT <= AXI_SRAM_SIZE);
 static mut EP_MEMORY: MaybeUninit<[u32; 1024]> = MaybeUninit::uninit();
 
 unsafe extern "C" {
@@ -317,6 +316,52 @@ fn info(link: &mut Link, cold: bool) {
     link.write_all(&line.bytes[..length]);
 }
 
+// --- Status LEDs ---------------------------------------------------------------------------
+//
+// With no probe, the LEDs are the only report from before USB enumerates: red at `main`, green
+// once the clocks run, blue once USB is built, white on a hard fault, yellow on a panic. Red
+// `PE3`, green `PE4`, blue `PE5`, active low (ark-fpv-discovery's `docs/ark-fpv-board.md`).
+// Raw registers rather than the HAL's pins, so the fault handlers can reach them.
+
+const RCC_AHB4ENR: *mut u32 = 0x5802_44E0 as *mut u32;
+const GPIOE_MODER: *mut u32 = 0x5802_1000 as *mut u32;
+const GPIOE_BSRR: *mut u32 = 0x5802_1018 as *mut u32;
+
+fn leds_init() {
+    unsafe {
+        write_volatile(RCC_AHB4ENR, read_volatile(RCC_AHB4ENR) | 1 << 4);
+        let _ = read_volatile(RCC_AHB4ENR);
+        let moder = read_volatile(GPIOE_MODER) & !(0b11_11_11 << 6);
+        write_volatile(GPIOE_MODER, moder | 0b01_01_01 << 6);
+    }
+    leds(false, false, false);
+}
+
+fn leds(red: bool, green: bool, blue: bool) {
+    let mut bsrr = 0u32;
+    for (pin, on) in [(3, red), (4, green), (5, blue)] {
+        // Low lights: reset bit to turn on, set bit to turn off.
+        bsrr |= if on { 1 << (pin + 16) } else { 1 << pin };
+    }
+    unsafe { write_volatile(GPIOE_BSRR, bsrr) };
+}
+
+#[cortex_m_rt::exception]
+unsafe fn HardFault(_: &cortex_m_rt::ExceptionFrame) -> ! {
+    leds(true, true, true);
+    loop {
+        cortex_m::asm::nop();
+    }
+}
+
+#[panic_handler]
+fn panic(_: &core::panic::PanicInfo) -> ! {
+    leds(true, true, false);
+    loop {
+        cortex_m::asm::nop();
+    }
+}
+
 /// Bring-up failed: nothing to report it over, so stop.
 fn halt() -> ! {
     loop {
@@ -325,7 +370,7 @@ fn halt() -> ! {
 }
 
 /// Zero a buffer in place and hand it out: `MaybeUninit::write([0; N])` may build the array on
-/// the stack first, and the batch alone is twice DTCM.
+/// the stack first.
 ///
 /// # Safety
 ///
@@ -340,6 +385,8 @@ unsafe fn zeroed<T, const N: usize>(slot: *mut MaybeUninit<[T; N]>) -> &'static 
 #[entry]
 fn main() -> ! {
     maybe_enter_bootloader();
+    leds_init();
+    leds(true, false, false);
     let (Some(mut cp), Some(dp)) = (cortex_m::Peripherals::take(), pac::Peripherals::take()) else {
         halt()
     };
@@ -350,6 +397,7 @@ fn main() -> ! {
     let mut ccdr = rcc.sys_ck(SYSCLK.Hz()).freeze(vos, &dp.SYSCFG);
     let _ = ccdr.clocks.hsi48_ck();
     ccdr.peripheral.kernel_usb_clk_mux(UsbClkSel::Hsi48);
+    leds(false, true, false);
 
     cp.SCB.enable_icache();
     cp.SCB.enable_dcache(&mut cp.CPUID);
@@ -384,9 +432,17 @@ fn main() -> ! {
     };
     let device = builder.device_class(usbd_serial::USB_CLASS_CDC).build();
     let mut link = Link { device, serial };
+    leds(false, false, true);
 
-    let batch = unsafe { zeroed(addr_of_mut!(BATCH_BUFFER)) };
-    let results = unsafe { zeroed(addr_of_mut!(RESULTS)) };
+    // Taken once, here: no other code names AXI SRAM, and the two do not overlap.
+    let (batch, results) = unsafe {
+        let base = AXI_SRAM as *mut u8;
+        base.write_bytes(0, BATCH + MAX_CALLS * RESULT);
+        (
+            core::slice::from_raw_parts_mut(base, BATCH),
+            core::slice::from_raw_parts_mut(base.add(BATCH), MAX_CALLS * RESULT),
+        )
+    };
     let mut machine = Machine::default();
     let mut cold = false;
 

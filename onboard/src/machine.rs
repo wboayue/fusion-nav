@@ -43,7 +43,7 @@ impl Machine {
         let filter = &mut self.filter;
         match *record {
             Record::Nop => Returned::Nothing,
-            Record::New(config) => Returned::New(Eskf::new(config).map(|new| *filter = new)),
+            Record::New(ref config) => self.renew(config),
             Record::SetOrigin(origin) => Returned::Bool(filter.set_origin(origin)),
             Record::SetMagneticDeclination(declination) => {
                 Returned::Bool(filter.set_magnetic_declination(declination))
@@ -57,16 +57,11 @@ impl Machine {
             Record::ResetVelocityTo(velocity, noise) => {
                 Returned::Bool(filter.reset_velocity_to(velocity, noise))
             }
-            Record::WindowNew => {
-                self.window = StaticWindow::new();
-                Returned::Nothing
-            }
+            Record::WindowNew => self.new_window(),
             Record::WindowPush(sample) => Returned::Push(self.window.push(sample)),
             Record::Initialize => Returned::Start(filter.initialize(&self.window)),
             Record::InitializeCoarse(imu) => Returned::Start(filter.initialize_coarse(imu)),
-            Record::InitializeFrom(state, covariance, time) => {
-                Returned::Start(filter.initialize_from(state, covariance, time))
-            }
+            Record::InitializeFrom(..) => self.seed(record),
             Record::Predict(imu) => Returned::Propagation(filter.predict(imu)),
             Record::FuseGnssPosition(time, position, noise, antenna) => {
                 Returned::Gnss(filter.fuse_gnss_position(time, position, noise, antenna))
@@ -93,6 +88,31 @@ impl Machine {
                 Returned::Fusion(filter.fuse_stationary(time, noise))
             }
             Record::PredictedValidity => self.query(record),
+        }
+    }
+
+    // The three arms that hold a large value -- a filter, a window, a seed's covariance -- are
+    // out of line, so that `execute`'s own frame, which the board measures every call's stack
+    // beneath, is the few bytes a call's arguments take rather than a whole `Eskf`.
+
+    #[inline(never)]
+    fn renew(&mut self, config: &Config) -> Returned {
+        Returned::New(Eskf::new(*config).map(|new| self.filter = new))
+    }
+
+    #[inline(never)]
+    fn new_window(&mut self) -> Returned {
+        self.window = StaticWindow::new();
+        Returned::Nothing
+    }
+
+    #[inline(never)]
+    fn seed(&mut self, record: &Record) -> Returned {
+        match *record {
+            Record::InitializeFrom(state, covariance, time) => {
+                Returned::Start(self.filter.initialize_from(state, covariance, time))
+            }
+            _ => Returned::Nothing,
         }
     }
 
