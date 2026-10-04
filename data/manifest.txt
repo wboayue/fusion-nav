@@ -188,10 +188,11 @@
 # a moved total attributable. On the nine multirotor and SITL logs it is 515:
 # a299e722's 324 velocity solutions and 70 positions, 2b2ad123's 118
 # positions inside and just after its receiver's offset episodes, eb799954's 2
-# headings and cd7e0001's one velocity. The four airframe logs add 6194, and
+# headings and cd7e0001's one velocity. The four airframe logs add 4708, and
 # their split names their causes -- 093e806a's 1164 positions a receiver
-# claiming 0.37 m, 7ce66f0d's 894 positions, 2161 velocities and 1584 headings
-# an attitude leveled wrong during a hand launch, 285ee2e7's 10 altitudes and
+# claiming 0.37 m, 7ce66f0d's 72 positions, 1527 velocities and 1658 headings
+# an attitude leveled wrong during a hand launch (894, 2161 and 1584 before
+# the yaw estimator replaced the heading that leveling turns, #165), 285ee2e7's 10 altitudes and
 # 17 of its 18 velocities a tailsitter's transitions, its 49 heights two runs
 # its barometer held the estimate away through (38-43 s, the (24') paragraph
 # below, and 116-121 s into the first transition), and its 29 positions one
