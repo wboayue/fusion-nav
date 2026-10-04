@@ -293,6 +293,10 @@ data/expect.sh --self-test        # the comparator both bench.sh and the manifes
 cargo test -p onboard            # the trace #41's board replays: codec, executor, digests
 cargo run --release -p onboard --example paths -- target/onboard/paths.trace   # the worst paths the corpus misses
 cargo run --release -p onboard --example verify -- <trace> ...   # every call again on the host, digests checked
+onboard/build.sh primary|shipped|fp64   # the firmware #41 times with, to target/onboard/<build>.bin for dfu-util
+data/onboard.sh traces [LOGDIR]   # every manifest log, hover_outage and paths, traced and verified on the host
+data/onboard.sh time <build> [--cold]   # every trace timed on the board running <build>; then `pin`
+python3 tools/onboard.py --self-test   # the frame reader's, the batcher's and the statistics' fixtures
 cargo test --lib adversarial      # the proptest suite of #44, seeded; ~6 s in debug
 data/anees.sh                     # every scenario on 50 seeds against data/anees.txt; a CI gate
 python3 tools/anees.py --self-test   # the ensemble aggregator's fixtures (stdlib, no uv)

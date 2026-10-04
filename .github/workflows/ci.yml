@@ -47,6 +47,9 @@ jobs:
       # local, but a broken lookup, log reader or drift maximum would misreport `--drift` with
       # nothing else to notice.
       - run: python3 tools/declination.py --self-test
+      # #41's statistics over the board's figures, stdlib only: the board is local, but the
+      # numbers it publishes are computed here.
+      - run: python3 tools/onboard.py --self-test
 
   test:
     name: test
