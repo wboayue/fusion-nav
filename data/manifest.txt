@@ -166,7 +166,7 @@
 # positions inside and just after its receiver's offset episodes, eb799954's 2
 # headings and cd7e0001's one velocity. The four airframe logs add 6194, and
 # their split names their causes -- 093e806a's 1164 positions a receiver
-# claiming 0.37 m, 7ce66f0d's 894 positions, 2160 velocities and 1584 headings
+# claiming 0.37 m, 7ce66f0d's 894 positions, 2161 velocities and 1584 headings
 # an attitude leveled wrong during a hand launch, 285ee2e7's 10 altitudes and
 # 17 of its 18 velocities a tailsitter's transitions, its 49 heights two runs
 # its barometer held the estimate away through (38-43 s, the (24') paragraph

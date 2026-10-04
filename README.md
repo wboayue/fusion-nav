@@ -751,8 +751,10 @@ What is left out:
   Magnetic-field states, airspeed, range, flow, wind, drag and multiple lanes are
   [non-goals](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#non-goals).
 * **Candidates, each needing evidence first,** neither refused nor built: a magnetometer
-  disturbance check (`EKF2_MAG_CHECK`) and bad vertical-accelerometer detection (PX4's
-  `bad_acc_vertical`, ArduPilot's `badIMUdata`), reported through `Diagnostics`. PX4's
+  disturbance check (`EKF2_MAG_CHECK`,
+  [#172](https://github.com/wboayue/fusion-nav/issues/172)) and bad vertical-accelerometer
+  detection (PX4's `bad_acc_vertical`, ArduPilot's `badIMUdata`,
+  [#174](https://github.com/wboayue/fusion-nav/issues/174)), reported through `Diagnostics`. PX4's
   `EKF2_POS_LOCK` is `fuse_stationary` here, called by the application rather than set.
 * **Declined until a log shows need:** a barometer ground-effect dead zone (`EKF2_GND_EFF_DZ`,
   `EK3_GND_EFF_DZ`) and inhibiting accelerometer-bias learning under hard maneuvers

@@ -1036,7 +1036,7 @@ grows a branch and, while held, a 2-D update every 0.2 s, so its worst case is a
 ([validation/cost.md](validation/cost.md)). The stationary claim is only as true as the caller making it, and one made in
 motion reads as tilt until the gate turns it down.
 
-Not built: a corpus source for the stationary claim. PX4 logs `vehicle_land_detected.at_rest`, and
+Not built: #215, a corpus source for the stationary claim. PX4 logs `vehicle_land_detected.at_rest`, and
 reading it is a converter change, batched with the next. EKF2's verdict on its own fake
 position, `estimator_aid_src_fake_pos`, joins the comparison in the same batch.
 
