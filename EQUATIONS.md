@@ -1476,7 +1476,9 @@ about navigation down. Nothing here reads the main filter's attitude, which is w
 answer correct it.
 
 **Start.** At the first velocity $`z`$ of variance $`\sigma_v^2`$ per axis, the hypotheses are
-spread evenly, each one's 1σ interval meeting its neighbor's:
+spread evenly, each one's 1σ interval meeting its neighbor's. $`\sigma_v`$ is the receiver's,
+never under 0.3 m/s (PX4's `EKF2_GPS_V_NOISE`): (51) multiplies likelihoods, and a receiver
+claiming centimeters per second sharpens them until noise picks the hypothesis.
 
 **(45)**
 
@@ -1489,15 +1491,22 @@ for $`i = 0 \ldots N-1`$. Fusion begins once $`\lVert z \rVert > \sigma_v`$; unt
 velocity spreads them again. PX4 also begins when told the vehicle is airborne, which this filter
 is not told.
 
-**Tilt.** Each IMU sample turns every $`q_i`$ by the gyroscope and pulls its down axis toward
-the measured specific force, low-passed to $`\bar f`$ with a 0.5 s time constant:
+**Tilt.** Each IMU sample turns every $`q_i`$ by the gyroscope and pulls it toward the attitude
+that explains the measured specific force, low-passed to $`\bar f`$ with a 0.5 s time constant.
+A vehicle accelerating at $`\bar a`$ reads $`\bar a - \gamma e_3`$, so that is the direction
+the correction levels against, reversed:
 
 **(46)**
 
 ```math
-e_i = k\,\frac{\big(R(q_i)^\mathsf{T} e_3\big) \times \bar f}{\lVert \bar f \rVert},
+e_i = k\,\frac{\big(R(q_i)^\mathsf{T} u\big) \times \bar f}{\lVert \bar f \rVert},
+\qquad u = \frac{\gamma e_3 - \bar a}{\lVert \gamma e_3 - \bar a \rVert},
 \qquad k = k_t \Big(1 - \min\big(2\,\big|\lVert \bar f \rVert - \gamma\big| / \gamma,\ 1\big)\Big)^2
 ```
+
+$`\bar a`$ is horizontal and comes from outside the hypotheses: the difference of successive GNSS
+velocities over the time between them, low-passed as $`\bar f`$ is so that the two lag alike. It
+is zero before fusion begins and after a gap of a second between velocities.
 
 **(47)**
 
@@ -1512,12 +1521,15 @@ starts at the main filter's $`\hat\beta_g`$, is held within 0.05 rad/s and is le
 the vehicle turns faster than 10°/s. The gain $`k`$ falls to zero half a $`g`$ either side of
 $`\gamma`$, so a hard maneuver is not read as a tilt.
 
-A gentle one is. (46) cannot tell a sustained acceleration from a tilt, so a specific force that
-keeps turning, a steady circle, drags every hypothesis's tilt a quarter cycle behind it, and the
-gravity that tilt leaks turns the acceleration (48) integrates: a yaw bias of about
-$`\mathrm{atan}(k_t / \omega)`$, 0.24 rad at 0.8 rad/s, under a variance that does not know it
-(a test in `src/gsf.rs` pins it). Legs that start and stop average it out. PX4 removes it for a
-fixed-wing with an assumed airspeed; here that vehicle has (35″).
+$`\bar a`$ is where this departs from both autopilots, which level against gravity alone,
+$`u = e_3`$. That form cannot tell a sustained acceleration from a tilt: a specific force that
+keeps turning, a steady circle or a fixed-wing's turn, drags every hypothesis's tilt a quarter
+cycle behind it, and the gravity that tilt leaks turns the acceleration (48) integrates, a yaw
+bias of about $`\mathrm{atan}(k_t / \omega)`$, 0.24 rad at 0.8 rad/s, under a variance that
+does not know it. PX4 subtracts a fixed-wing's centripetal acceleration with a measured or
+assumed airspeed; a velocity differenced needs neither the airspeed nor the vehicle to point
+where it goes. [What it measured](DESIGN.md#yawestimator) on a fixed-wing: a median 31.9° from
+EKF2's heading without $`\bar a`$, 3.1° with.
 
 **Propagation.** The same sample moves each velocity by the specific force its own attitude
 rotates into the horizontal, $`\Delta v_i = \big[R(q_i)\,\Delta v\big]_{NE}`$. Gravity has no
@@ -1605,11 +1617,13 @@ $`\sigma_{\bar\psi} < 15°`$ (PX4's `EKFGSF_yaw_err_max`), $`\bar\psi`$ is taken
 $`\sigma_{\bar\psi}^2`$, in two cases:
 
 * **A heading never established.** The first heading, as a first magnetic heading is.
-* **A heading GNSS contradicts.** A GNSS horizontal position or velocity is rejected, none has
-  been accepted for 1 s, and $`|y| > 25°`$ ([gate lockout](#gate-lockout) with its cause named;
-  PX4's `isYawFailure`). The rejected measurement is then adopted at once, and so is the first of
-  the other kind the gate turns down, since both were being judged against the wrong yaw. A
-  bank that restarted, after a coasted gap, must first fuse for 10 s.
+* **A heading GNSS contradicts.** A GNSS velocity is rejected, none has been accepted for 1 s,
+  and $`|y| > 25°`$ ([gate lockout](#gate-lockout) with its cause named; PX4's `isYawFailure`).
+  That velocity is then adopted at once, and so is the first GNSS position the gate turns down,
+  since both were being judged against the wrong yaw. A rejected position alone is not the
+  trigger, where it is PX4's: a wrong yaw reaches velocity first. Nor does it fire while a
+  dual-antenna heading, (35′), is being accepted, and a bank that restarted, after a coasted
+  gap, must first fuse for 10 s.
 
 ## Equation-to-code mapping
 

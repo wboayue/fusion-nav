@@ -334,9 +334,12 @@ document, the entry points there instead of repeating it.
   (`src/modules/ekf2/EKF/aid_sources/fake_pos_control.cpp:79-82`), as this crate's is. PX4's
   `EKF2_POS_LOCK` is the **stationary claim**'s neighbor: a constant position, set rather than called.
   [Holding tilt](GOALS.md#holding-tilt-without-aiding) says where this one differs.
-* **GSF yaw estimator**: a Gaussian Sum Filter recovering yaw from IMU and GNSS velocity, which
-  is how both fly without a magnetometer. Not built here: #165; the README's limitations say
-  what its absence costs a multirotor.
+* **GSF yaw estimator**, **EKF-GSF**: a Gaussian Sum Filter recovering yaw from IMU and GNSS
+  velocity, which is how both fly without a magnetometer (`EKFGSF_yaw`). Here it is the **yaw
+  estimator**, [equations (45)–(52)](EQUATIONS.md#yaw-without-a-heading-sensor), and
+  [the decision](GOALS.md#yaw-without-a-heading-sensor-a-second-estimator-inside) says where it
+  departs from theirs. PX4's **emergency yaw reset** is its second use, a heading replaced
+  under `Recovery::yaw_estimator`.
 * **Lane**, **core**: ArduPilot runs several EKF3 instances on different IMUs and switches
   between them on relative error (`libraries/AP_NavEKF3/AP_NavEKF3.h:329-337`). `Eskf` is one
   instance and does no such selection; running several and choosing is the application's.

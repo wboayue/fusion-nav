@@ -75,7 +75,8 @@ const NIS_MAX: f32 = 25.0;
 ///
 /// (51) multiplies likelihoods, so a receiver claiming centimeters per second makes them
 /// sharp enough for noise to pick the hypothesis. Without the floor `2b2ad123`'s composite
-/// sat under its 15° bar while 28° from EKF2's heading a tenth of the time ([measured]).
+/// sat under its 15° bar while 25° from EKF2's heading a tenth of the time, 10.5° with it
+/// ([measured]).
 ///
 /// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#yawestimator
 const SIGMA_MIN: f32 = 0.3;

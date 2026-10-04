@@ -281,7 +281,8 @@ uninitialized rather than poisoned.
 
 After a coarse start the first GNSS position and first GNSS velocity are **adopted rather than
 fused**, reported as `Fusion::Reset`: a vehicle that initialized while moving has no position or
-velocity for the gate to judge a fix against. The first heading, magnetic, GNSS or course, is
+velocity for the gate to judge a fix against. The first heading, magnetic, GNSS, course or the
+[yaw estimator](#yaw-without-a-heading-sensor)'s, is
 adopted the same way whenever initialization left yaw unobserved: after any coarse start, and
 after a static window with no magnetometer, since stillness observes tilt and never yaw. A prior
 on a yaw nobody measured (`Initialization::sigma_yaw`) looks to the covariance like a
@@ -382,6 +383,32 @@ stay invalid until measured again, and the first GNSS fix the gate turns down af
 at once. `Config::hold = None` turns it off. PX4's fake position and ArduPilot's `AID_NONE` do
 the same; this one is fused as correlated, (24′), which keeps the covariance honest for a vehicle
 that stays put. One that flies on is among the [limitations](#limitations).
+
+### Yaw without a heading sensor
+
+A multirotor with no magnetometer and no second antenna still gets a heading, and calls nothing
+for it. Beside the filter runs a **yaw estimator**
+([equations (45)–(52)](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#yaw-without-a-heading-sensor)):
+five yaw hypotheses, each predicting the GNSS velocity from the IMU, weighed by how well it
+does. `predict` steps it and `fuse_gnss_velocity` weighs it. PX4 and ArduPilot fly this vehicle
+the same way (`EKFGSF_yaw`).
+
+Its answer reaches the filter in two cases, both adoptions and both counted in
+`diagnostics().yaw_estimator`:
+
+* **No heading yet.** Once the hypotheses agree to within 15°, their yaw is adopted as the
+  first heading (`adopted`), and the filter leaves `Aligning`. That takes a horizontal
+  acceleration: a hover says nothing about yaw.
+* **A heading GNSS contradicts.** A magnetometer that is wrong turns every acceleration the
+  wrong way, and GNSS velocity is rejected for it. After a second of that, with the estimator
+  more than 25° from the filter's yaw, its yaw replaces the filter's and the velocity is adopted
+  (`recovered`). `Recovery::yaw_estimator` is that second, and `None` turns it off. A
+  dual-antenna heading that is being accepted is never overruled.
+
+`Config::yaw_estimator = false` turns the whole estimator off, for a vehicle that always has a
+heading source or a processor that would rather not run it: its state is part of `Eskf` either
+way, and it costs cycles only when on
+([cost](https://github.com/wboayue/fusion-nav/blob/main/validation/cost.md)).
 
 ### Measurements
 
@@ -493,9 +520,9 @@ Three questions, three answers:
 | `Status` | meaning |
 | -------- | ------- |
 | `DeadReckoning` | neither GNSS position nor velocity has been accepted for `Config::timeouts.dead_reckoning_after`; horizontal position is dead reckoned or held by the position hold, unusable either way, whatever the barometer and magnetometer still hold |
-| `Aligning` | running and aided, but attitude has not converged: a coarse start still learning, or a heading no magnetometer has observed yet |
+| `Aligning` | running and aided, but attitude has not converged: a coarse start still learning, or a heading nothing has observed yet |
 | `Degraded` | a source has timed out; horizontal position is still aided |
-| `Healthy` | every source that has been fused is still accepted, and attitude has converged; the course constraint, the stationary claim and the position hold, which read no sensor, are not counted |
+| `Healthy` | every source that has been fused is still accepted, and attitude has converged; the course constraint, the stationary claim, the position hold and the yaw estimator, which read no sensor of their own, are not counted |
 
 When several apply the most severe wins, in the order of the table: `DeadReckoning` > `Aligning` >
 `Degraded` > `Healthy`. So a vehicle waiting for its first GNSS fix reads `DeadReckoning`, not
@@ -518,8 +545,8 @@ instead, and go false again as an unaided covariance grows past `Config::accurac
 against `Config::accuracy`, plus the requirement that the quantity was ever established: a tight
 prior on a number nobody set is not validity. A coarse start with an adopted GNSS fix has valid
 position while its attitude is still `Aligning`, which `Status` alone cannot say. Heading follows
-the same rule: a vehicle with no magnetometer has valid `tilt` and never valid `heading`, until
-one is fused.
+the same rule: a vehicle with no magnetometer has valid `tilt` and no valid `heading` until
+one is fused, or the yaw estimator supplies one.
 
 `Config::accuracy` is the one group of numbers meant to be supplied rather than derived: a survey
 platform and a racing quadrotor disagree about what "good enough" means. It moves `validity` and
@@ -776,13 +803,18 @@ issue that removes them, where one is open.
   [barometric reference as an estimated offset](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#barometric-reference-as-an-estimated-offset).
 * **No magnetic-field states.** Hard- and soft-iron calibration is the application's job; an
   uncalibrated magnetometer gives a heading bias the filter cannot detect.
-* **Heading needs a magnetometer, a second antenna or forward flight.** A multirotor with neither
-  sensor has no heading source. It never leaves `Aligning` and never reports `validity.heading`,
-  however good the rest of the estimate is, and since `Aligning` hides `Degraded`, its source
-  timeouts have to be read from `diagnostics()`. The course constraint serves a vehicle that
-  points where it goes, and its heading is no better than the sideslip it is told to allow. A GSF
-  yaw estimator, the general answer, is unbuilt. See
-  [alignment beyond the static window](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#alignment-beyond-the-static-window).
+* **Heading with no heading sensor waits for the vehicle to accelerate.** A multirotor with
+  neither a magnetometer nor a second antenna gets its heading from the
+  [yaw estimator](#yaw-without-a-heading-sensor), which needs GNSS velocity and a horizontal
+  maneuver. Until then it reads `Aligning` with no `validity.heading`, and since `Aligning`
+  hides `Degraded`, its source timeouts have to be read from `diagnostics()`; one that takes
+  off and holds station stays there. The course constraint serves a vehicle that points where
+  it goes, and its heading is no better than the sideslip it is told to allow. See
+  [yaw without a heading sensor](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#yaw-without-a-heading-sensor-a-second-estimator-inside).
+* **A heading sensor that is wrong is believed until the vehicle accelerates.** The yaw
+  estimator replaces a heading GNSS velocity contradicts, a second after the contradiction
+  shows. Before that the filter flies on the sensor, and its covariance says the heading is
+  good.
 * **In-motion alignment is coarse.** A moving start runs and reports `Aligning`, but full
   alignment of a bare vehicle in motion is not built: leveling with the vehicle's own
   acceleration, equation (5′), is

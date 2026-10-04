@@ -55,10 +55,11 @@ with its time and its uncertainty.
 | module | holds |
 | ------ | ----- |
 | `src/eskf.rs` | `Eskf`, the whole public filter: its fields, `state`, the floor of (42′) every covariance passes through, and `Status` |
-| `src/eskf/` | `Eskf`'s methods by topic, one `impl Eskf` each: `start` (`initialize*`), `site` (origin, declination, barometric reference), `predict`, `fuse` (the shared update path, GNSS and barometer), `heading`, `hold` (the stationary claim, and the position hold `predict` runs while unaided), `adopt` (`reset_*_to`, and the writers an adoption or a recovery commits), `validity`; `estimate`, the state and its history; `fixtures`, what the modules' tests share |
+| `src/eskf/` | `Eskf`'s methods by topic, one `impl Eskf` each: `start` (`initialize*`), `site` (origin, declination, barometric reference), `predict`, `fuse` (the shared update path, GNSS and barometer), `heading`, `yaw` (the yaw estimator fed, and its answer adopted), `hold` (the stationary claim, and the position hold `predict` runs while unaided), `adopt` (`reset_*_to`, and the writers an adoption or a recovery commits), `validity`; `estimate`, the state and its history; `fixtures`, what the modules' tests share |
 | `src/init.rs` | initialization types (`StaticSample`, `StaticWindow`, `Alignment`, `Coarse`, `InitError`) and the pure functions the `initialize*` methods commit |
 | `src/propagate.rs` | `ImuSample`; equations (9)–(22), the coast of (22′), and `error_dynamics`, the `A` that (23′) carries `H` through |
 | `src/history.rs` | the recent past of the nominal state, which a measurement is fused against at the time it was taken, equation (23′) |
+| `src/gsf.rs` | the yaw estimator, (45)–(52): five yaw hypotheses weighed by GNSS velocity, free of `Eskf` and of the main filter's attitude |
 | `src/update.rs` | the update every observation shares: (23)–(27) in Joseph form, the gate of (37)–(38), the injection and reset of (39)–(41) |
 | `src/observation/` | one module per sensor forming `y`, `H` and `R_m`: `gnss.rs` (28)–(29) at the antenna, `baro.rs` (30), `mag.rs` (34)–(35) and (36′), `heading.rs` (36), (35′) and (35″); and `hold.rs`, the assumed (28″) and (29″) |
 | `src/math.rs` | the primitives the equations share: `skew`, `exp_quat`, `wrap_pi`, and the symmetry enforcement of (42) |
@@ -208,6 +209,23 @@ in `observation/heading.rs` under its own gate:
 
 See [heading from GNSS](EQUATIONS.md#heading-from-gnss).
 
+A vehicle with none of the three still has a heading once it accelerates. The **yaw estimator**,
+(45)–(52) in `gsf.rs`, is not a fourth source: it is a second, small estimator the filter runs
+beside itself, five yaw hypotheses each predicting the GNSS velocity, and the filter takes its
+answer only by adoption. `predict` steps it and `fuse_gnss_velocity` weighs it, so it has no
+entry point, and `Config::yaw_estimator` turns it off at no cost in cycles. Two things take its
+yaw, both in `eskf/yaw.rs` through the `reset_heading_by` every first heading uses:
+
+* a heading never established, which is how a multirotor with no magnetometer leaves `Aligning`;
+* a heading GNSS velocity contradicts, `Recovery::yaw_estimator`, with the velocity that showed
+  it adopted on the spot.
+
+It is kept apart from the main filter on purpose. Its hypotheses level themselves from the
+accelerometer and never read the main attitude, since the case it exists for is that attitude
+being wrong. Its velocity is the one (29) fuses, so its answer is never fused as a measurement
+beside it. See [yaw without a heading sensor](EQUATIONS.md#yaw-without-a-heading-sensor) and
+[its evidence](#yawestimator).
+
 #### The magnetometer
 
 Fusion is **heading only**. The field is reduced to one scalar heading, leaving roll and pitch to
@@ -314,6 +332,7 @@ was measured together, at the commit named where the code has moved since.
 | `reparameterize` (in `update`) | the full `G P Gᵀ` cost 864 more of `update`'s frame |
 | `fuse_gnss_velocity` → `update::<3>` | the crate's deepest path; `apply_or_recover` out of line sits beside `update` rather than above it. Inlined, it cost `fuse_gnss_velocity`'s frame 984 (2384 against 1400, a434a30); walked through the call graph at 9e3fcca, it costs `fuse_gnss_position`'s 1024 and moves the peak to a geodetic fix, 12272 against 11408 |
 | `predict` → `hold_if_unaided` | run by `predict` after the step returns, with the step out of line in `propagate_or_coast`, so the hold's update sits beside propagation's frame rather than above it. Called inside `commit_step` instead, the chain went `predict` 2160, `commit_step` 984, `hold_if_unaided` 2304, `update::<2>` 7344: 14712 on `thumbv7em`, the crate's peak by 3.4 KB. Beside it, `predict`'s chain was 10584 (#210, measured together). The hold commits through `apply_or_recover` out of line: inlined `apply` was most of its 2304 |
+| `predict` → `step_yaw_estimator` | beside the step, as the hold is, and far below it: its chain is 1404 (1328) against `propagate_or_coast`'s. Restarting the bank by assigning a fresh one put a 440-byte temporary in `predict`'s own frame, 504, and one in a start's, `initialize_from`'s chain 3400; reset in place by `YawEstimator::clear`, the next commit read 112 and 3016 |
 | `Eskf::observe::<3>` | `Observation::delayed` 752 and `error_dynamics` 400 beneath it; inlined into `fuse_gnss_velocity` it put the high-water mark at 10800 against 9520 (a434a30), and walked at 9e3fcca at 11760 against 11408 |
 | `Eskf::fuse_heading` | one frame for every heading source, its largest instance the magnetometer's; read by hand, the course's path through it peaked at 7872 against 7624 with `fuse_mag_heading` doing the work in a frame of its own (eaf3b81) |
 | `Eskf::adopt_position`, `adopt_velocity` | inlined, +976 on `fuse_gnss_position` and +952 on `fuse_gnss_velocity`; out of line they follow `update` rather than stacking on it |
@@ -341,6 +360,11 @@ say a target needs them:
 
 #### Sizes
 
+The yaw estimator is 440 bytes of `Eskf`'s 4672, five hypotheses of 76, held whether or not
+`Config::yaw_estimator` runs it: an `Option` would save nothing, and a feature would make the
+type's size depend on a flag. With its source in `Diagnostics` (112) and its switch in `Config`
+(8) it took `Eskf` from 4112.
+
 `P` is passed by reference for its size, and `Covariance::to_rows` is a copy of it on the
 caller's stack. `StaticWindow` is one size at any rate and length because it folds each sample in,
 where a buffered 2 s window at 400 Hz is 800 `StaticSample`s of 80 bytes, 64 KB.
@@ -354,6 +378,11 @@ table is 1408 bytes of `.rodata` and its lookup 1204 of `.text` (1704), about 2.
 `opt-level = "s"`. The same lookup in `f64` linked 4496 bytes of `.text` in software doubles,
 against 1096 for the `f32` one measured with it (14a668b).
 
+The yaw estimator cost 10.5 KB of `.text` on `thumbv6m` at `opt-level = 3`, 173070 to 183574,
+and 7.5 KB at `"s"`, 112082 to 119538 (f304717 against its merge base, measured together): five
+hypotheses are one loop, and most of it is the `f32` trigonometry and 3 × 3 products that loop
+inlines.
+
 #### Host timings
 
 `cargo bench -p bench` times `predict`, every `fuse_*` and a start on an aided filter, each call
@@ -363,6 +392,11 @@ machine. Each timed measurement arrives a period after its source's last: at the
 Apple M3 Max at the commit that added them, `predict` is 0.71 µs, a GNSS position 2.0 µs (2.2 µs as
 latitude and longitude), a GNSS velocity 1.2 µs, each one-dimensional update 0.99 to 1.04 µs,
 `StaticWindow::push` 34 ns and `initialize` 0.37 µs.
+
+The yaw estimator, fusing, adds 0.17 µs to `predict`, 0.772 µs to 0.941, and 0.29 µs to a GNSS
+velocity, 1.262 µs to 1.549 (f304717 against its merge base, the same machine and session). On a
+core with no FPU the ratio will be worse than the host's 22 %: each hypothesis is a quaternion
+product and a rotation per sample. That figure is #41's.
 
 #### Arithmetic
 
@@ -563,6 +597,64 @@ simulator or the corpus, whose unaided vehicles are near still, and worsened the
 Engaged on acceptance rather than on silence, the hold ran through `7ce66f0d`'s rejection runs
 and recoveries went from 27 to 62 (white, from the first unaided step), with tilt to EKF2
 3.61° → 5.75°. Read on silence it holds there once and moves nothing.
+
+### `YawEstimator`
+
+The yaw estimator of (45)–(52) follows PX4's and ArduPilot's `EKFGSF_yaw` except where the corpus
+said otherwise, and each departure is a row below. The measure is the angle between the
+estimator's composite yaw and EKF2's heading (`vehicle_local_position.heading`), taken at each
+GNSS velocity weighed while the composite σ was under its 15° bar: median, 90th and 99th
+percentile, in degrees. EKF2 flew on its magnetometer and is a reference, not truth. PX4's
+column is its own estimator on the same flight, `yaw_estimator_status`, under the same bar.
+The figures came from a build that printed the composite at each velocity, with the replacement
+of a failed yaw turned off, at f304717; no tool in the repository reproduces them (not built:
+carrying `yaw_estimator_status` into `--reference`).
+
+| log | vehicle | shipped | tilt against gravity alone | no σ floor | PX4's own |
+| --- | --- | --- | --- | --- | --- |
+| `89a498ce` | quadrotor | 0.9, 2.2, 3.9 | 2.5, 5.1, 7.5 | 0.8, 2.0, 12.1 | 2.9, 7.6, 11.7 |
+| `285ee2e7` | quadrotor | 1.7, 4.3, 10.2 | 2.2, 5.2, 14.1 | 1.8, 5.7, 12.8 | 1.0, 3.7, 22.4 |
+| `2b2ad123` | quadrotor | 3.4, 10.5, 19.9 | 5.4, 17.1, 144.3 | 5.4, 25.3, 45.4 | 7.7, 16.0, 21.6 |
+| `eb799954` | quadrotor | 2.6, 7.1, 11.3 | 3.4, 10.1, 15.1 | 2.5, 7.2, 10.7 | 3.3, 9.3, 15.6 |
+| `cd7e0001` | quadrotor | 10.5, 14.8, 18.2 | 31.6, 40.8, 45.6 | 12.0, 17.8, 20.9 | 25.4, 33.9, 40.7 |
+| `3949f175` | quadrotor, SITL | 1.3, 4.5, 11.4 | 1.3, 4.6, 10.0 | 1.3, 4.5, 11.4 | 1.2, 3.8, 10.1 |
+| `4b473e91` | VTOL | 2.4, 18.0, 47.8 | 8.3, 24.3, 65.0 | 2.7, 10.7, 41.1 | 2.3, 5.4, 24.5 |
+| `093e806a` | fixed-wing | 3.1, 16.6, 39.9 | 31.9, 88.3, 170.6 | 3.2, 22.9, 51.0 | 3.2, 6.8, 10.1 |
+| `7ce66f0d` | flying wing | 3.9, 9.8, 158.7 | 7.2, 17.7, 170.9 | 3.8, 9.7, 156.2 | 3.6, 11.3, 21.2 |
+| `a299e722` | quadrotor | 26.5, 42.8, 81.9 | 27.9, 61.7, 166.1 | 63.7, 101.0, 159.0 | 1.7, 8.2, 8.5 |
+
+`a299e722` cannot judge an estimator that integrates the IMU alone: its log holds 50 samples a
+second, each averaging 2.5 ms of the 20 between them, where PX4's ran on every sample. The other
+three logs carry no GNSS velocity the estimator weighs.
+
+* **Tilt read against the measured acceleration**, (46). PX4's hypotheses level against gravity
+  alone, and a specific force that keeps turning reads as a tilt: a median 31.9° out on the
+  fixed-wing, where PX4 subtracts the turn with an airspeed this crate is not given. The
+  difference of successive GNSS velocities is that acceleration, in navigation axes, for any
+  vehicle. It moved every log the right way but the simulated one, which it left alone. Leaving
+  `a299e722` out, the shipped median is under PX4's on four quadrotors and within a degree of
+  it on the other two.
+* **A floor of 0.3 m/s on the velocity σ**, PX4's `EKF2_GPS_V_NOISE`, which PX4 applies before
+  its estimator sees a velocity. The harness fuses receivers raw, and one claiming centimeters
+  per second sharpens (51) until noise picks the hypothesis: `2b2ad123`'s 90th percentile is
+  25.3° without it. `4b473e91`'s is better without, 10.7° against 18.0°, and was not chased.
+* **Velocity alone triggers the replacement.** With PX4's position trigger as well, `093e806a`,
+  whose receiver claims 0.37 m and is rejected for it, had a good magnetic heading replaced
+  twice, and the share of the flight more than 25° from EKF2's heading went from none to 1.6 %.
+  A wrong yaw reaches velocity first, and velocity is all the estimator reads. `7ce66f0d` is
+  the corpus's one log with a heading GNSS contradicts, and there the replacement fires 14
+  times either way; `data/manifest.txt` and `data/ekf2.txt` have what it moved.
+* **A second antenna overrules it.** `a299e722` carries one, and in the first form, before
+  the guard, the estimator, wrong for the reason above, replaced its heading 7 times: 227 GNSS
+  headings rejected where there had been none.
+* **Left as PX4 has them**, unmeasured here: five hypotheses, the 15° bar, the 25° disagreement,
+  the 1 s delay, the 10 s a restarted bank settles for, and the complementary filter's gains.
+
+The fixed-wing tails stay wider than PX4's, 16.6° against 6.8° at the 90th percentile on
+`093e806a`: an acceleration differenced from 5 Hz velocities lags a turn's entry, where an
+airspeed does not. A fixed-wing has the course constraint for its heading; the estimator's part
+there is the replacement, which the 25° bar and the velocity trigger hold to no firing on
+`093e806a` or the VTOL `4b473e91`, whose headings are good.
 
 ### `Correlation`
 
