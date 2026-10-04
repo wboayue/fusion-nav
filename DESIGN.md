@@ -332,7 +332,7 @@ was measured together, at the commit named where the code has moved since.
 | `reparameterize` (in `update`) | the full `G P Gᵀ` cost 864 more of `update`'s frame |
 | `fuse_gnss_velocity` → `update::<3>` | the crate's deepest path; `apply_or_recover` out of line sits beside `update` rather than above it. Inlined, it cost `fuse_gnss_velocity`'s frame 984 (2384 against 1400, a434a30); walked through the call graph at 9e3fcca, it costs `fuse_gnss_position`'s 1024 and moves the peak to a geodetic fix, 12272 against 11408 |
 | `predict` → `hold_if_unaided` | run by `predict` after the step returns, with the step out of line in `propagate_or_coast`, so the hold's update sits beside propagation's frame rather than above it. Called inside `commit_step` instead, the chain went `predict` 2160, `commit_step` 984, `hold_if_unaided` 2304, `update::<2>` 7344: 14712 on `thumbv7em`, the crate's peak by 3.4 KB. Beside it, `predict`'s chain was 10584 (#210, measured together). The hold commits through `apply_or_recover` out of line: inlined `apply` was most of its 2304 |
-| `predict` → `step_yaw_estimator` | beside the step, as the hold is, and far below it: its chain is 1356 (1336) against `propagate_or_coast`'s. Restarting the bank by assigning a fresh one put a bank-sized temporary in `predict`'s own frame, 504, and one in a start's, `initialize_from`'s chain 3400; reset in place by `YawEstimator::clear`, the next commit read 112 and 3016 |
+| `predict` → `step_yaw_estimator` | beside the step, as the hold is, and far below it: its chain is 1364 (1336) against `propagate_or_coast`'s. Restarting the bank by assigning a fresh one put a bank-sized temporary in `predict`'s own frame, 504, and one in a start's, `initialize_from`'s chain 3400; reset in place by `YawEstimator::clear`, the next commit read 112 and 3016 |
 | `Eskf::observe::<3>` | `Observation::delayed` 752 and `error_dynamics` 400 beneath it; inlined into `fuse_gnss_velocity` it put the high-water mark at 10800 against 9520 (a434a30), and walked at 9e3fcca at 11760 against 11408 |
 | `Eskf::fuse_heading` | one frame for every heading source, its largest instance the magnetometer's; read by hand, the course's path through it peaked at 7872 against 7624 with `fuse_mag_heading` doing the work in a frame of its own (eaf3b81) |
 | `Eskf::adopt_position`, `adopt_velocity` | inlined, +976 on `fuse_gnss_position` and +952 on `fuse_gnss_velocity`; out of line they follow `update` rather than stacking on it |
@@ -379,7 +379,7 @@ table is 1408 bytes of `.rodata` and its lookup 1204 of `.text` (1704), about 2.
 against 1096 for the `f32` one measured with it (14a668b).
 
 The yaw estimator cost 10.9 KB of `.text` on `thumbv6m` at `opt-level = 3`, 173070 to 183954,
-and 9.2 KB at `"s"`, 112082 to 121326 (the commit that added it, #165, against its parent,
+and 9.1 KB at `"s"`, 112082 to 121230 (the commit that added it, #165, against its parent,
 c7f3ecf, measured together): five hypotheses are one loop, and most of it is the `f32`
 trigonometry and 3 × 3 arithmetic that loop inlines.
 

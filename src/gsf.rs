@@ -342,7 +342,9 @@ impl YawEstimator {
             // on every sample, in software floats on a core with no FPU.
             let moved = (model.attitude * delta_velocity).xy();
             let f = Vector3::new(-moved.y, moved.x, 0.0);
-            let p3 = model.covariance.column(2).into_owned();
+            // By name: `column(2)` carries a bounds check, a panic path at `opt-level = "s"`.
+            let p = &model.covariance;
+            let p3 = Vector3::new(p.m13, p.m23, p.m33);
             let q_v = ACCEL_NOISE * ACCEL_NOISE * dt_v;
             let q_psi = GYRO_NOISE * GYRO_NOISE * dt_a;
             model.covariance += f * p3.transpose()
