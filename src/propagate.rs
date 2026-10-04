@@ -529,7 +529,8 @@ fn process_noise(noise: &ImuNoise, imu: Corrected) -> [f32; STATES] {
 /// temporaries per IMU sample, at up to 400 Hz. (20) is sparse enough (two identity blocks, two
 /// zero rows) that a block-wise form would cut them, at the cost of the one equation a reader of
 /// this crate is most likely to have come for. Its stack frame is [published], and its
-/// arithmetic [counted]. The block-wise form: not built, #41, until hardware figures ask for it.
+/// arithmetic [counted]. The block-wise form is not built: [timed] on a 400 MHz Cortex-M7, a step
+/// sits well inside a 400 Hz period.
 ///
 /// `Q` arrives as a diagonal and is added as one, which keeps those temporaries to three
 /// rather than four.
@@ -539,6 +540,7 @@ fn process_noise(noise: &ImuNoise, imu: Corrected) -> [f32; STATES] {
 ///
 /// [published]: https://github.com/wboayue/fusion-nav/blob/main/validation/cost.md#stack
 /// [counted]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#arithmetic
+/// [timed]: https://github.com/wboayue/fusion-nav/blob/main/validation/cost.md#time-on-a-target
 /// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#stack-frames
 #[inline(never)]
 fn propagate_covariance(p: Covariance, f: &Transition, q: [f32; STATES]) -> Covariance {

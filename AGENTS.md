@@ -10,8 +10,8 @@ marker and nothing else does. Every source the crate publishes is fused: GNSS po
 height (gated apart from horizontal), GNSS velocity, dual-antenna heading, course over ground,
 barometric altitude and magnetic heading, and two observations made from an assumption, the
 stationary claim (29″) and the position hold (28″). Beside them runs the yaw estimator of
-(45)–(52), whose answer is adopted and never fused. What remains is measurement and
-publication: #47, the release, and #41, cost on a board.
+(45)–(52), whose answer is adopted and never fused. What remains is publication: #47, the
+release.
 
 What the filter does, and where each decision's evidence lives:
 
@@ -47,6 +47,12 @@ What the filter does, and where each decision's evidence lives:
   "Yaw without a heading sensor"; `DESIGN.md`, "`YawEstimator`".
 - **Health.** `Status` times each source against its own measured period; `DeadReckoning` reads
   horizontal GNSS alone. `Validity` and `predicted_validity` answer per quantity.
+- **Cost.** `validation/cost.md` publishes memory, stack and flash, pinned in CI
+  (`data/footprint.txt`), and the time and painted stack of every call the corpus makes on an
+  STM32H743 (`onboard/`, #41), pinned off the board in `data/onboard.txt`. No hot-path loop runs
+  on the data (`DESIGN.md`, "Execution time bounded by constants"); a coast and the arming query
+  are (22′) in one exact step. A board figure is a measurement of the commit its build line
+  names: re-run `data/onboard.sh` when a change moves a pinned frame.
 - **Boundary.** No public item names an `nalgebra` type. `Eskf::new` validates `Config`, a refused
   call commits nothing, and `src/eskf/adversarial.rs` holds both. Declination comes from a WMM2025
   table `tools/declination.py` generates (`magnetic-model`) unless the caller sets one.
@@ -988,6 +994,23 @@ the declination table, and CI builds and tests without it too.
   member rather than a root dev-dependency because criterion turns on `num-traits/std`, which at
   the root would move every replay output (the dev-dependency rule under Replay corpus). Not a
   default member; `cargo bench -p bench` times it, and CI runs `cargo test -p bench --benches`.
+- `onboard/`: a fourth unpublished member, #41's cost on a board. Its library, `no_std`, is a
+  `Record` per public mutating call, `Machine::execute`, the one executor, and a digest of the
+  state and covariance; `Recorder`, host-only, is the filter `replay --trace` and `paths` drive,
+  which encodes, decodes and executes every call so the host runs exactly what the board will.
+  Its binary, behind the `firmware` feature so the root's bare-metal examples never build a HAL,
+  is the ARK FPV's firmware (`onboard/build.sh`), driven by `tools/onboard.py`. What the bring-up
+  taught, each found on the board and invisible to every host check:
+  - A section `memory.x` inserts after `.bss` is zeroed with it: cortex-m-rt's `__ebss` moved
+    into AXI SRAM and reset faulted clearing unmapped memory, with no LED lit. The buffers take
+    fixed addresses instead; check `__ebss` with `llvm-nm` after touching the link script.
+  - A `nop` does not measure the dispatcher's frame: LLVM sets up a frame only on the paths that
+    need it. `execute`'s frame, and each out-of-line arm's, is read off the ELF's
+    `-Zemit-stack-sizes` table, which every build carries (the flashed image is byte-identical
+    without it).
+  - A by-value argument holds stack in its caller: `execute` keeps a whole `Eskf` and a seed's
+    covariance in out-of-line arms, or every call's painted stack carries them.
+  - Every painted stack sat 52 bytes under its walked `chain.`, the bound the walk claims.
 
 ### Invariants worth knowing before editing
 

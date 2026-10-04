@@ -274,19 +274,51 @@ def summarize(rows, frames):
 
 
 def bound(runs):
-    """The largest `max`, `stack` and `stack_raw` over runs, per key present in any run."""
-    out = {}
+    """Every run taken together, per key present in any: the largest `max`, `stack` and
+    `stack_raw`, the least `min` and `nop_cycles`, the summed `n` and `denormal`, and `mean`
+    weighted by `n`."""
+    out, weighted = {}, {}
     for keys in runs:
         for key, value in keys.items():
-            if key.endswith((".max", ".stack", ".stack_raw")):
+            if key.endswith((".max", ".stack", ".stack_raw")) or key == "dispatch_stack":
                 out[key] = max(out.get(key, value), value)
+            elif key.endswith(".min") or key == "nop_cycles":
+                out[key] = min(out.get(key, value), value)
+            elif key.endswith((".n", ".denormal")):
+                out[key] = out.get(key, 0) + value
+            elif key.endswith(".mean"):
+                name = key[: -len(".mean")]
+                total, count = weighted.get(name, (0, 0))
+                weighted[name] = (total + value * keys[f"{name}.n"], count + keys[f"{name}.n"])
+    for name, (total, count) in weighted.items():
+        out[f"{name}.mean"] = round(total / count)
+    raw = [v for k, v in out.items() if k.endswith(".stack_raw")]
+    if raw:
+        out["stack_raw_max"] = max(raw)
+    return out
+
+
+def microseconds(keys, sysclk):
+    """`<name>.max_us` and `<name>.mean_us` beside each cycle count, at `sysclk` Hz, to 0.1 µs."""
+    out = dict(keys)
+    for key, value in keys.items():
+        for kind in (".max", ".mean"):
+            if key.endswith(kind):
+                out[f"{key}_us"] = f"{value / sysclk * 1e6:.1f}"
     return out
 
 
 def pin(dirs):
-    """data/onboard.txt's lines for result directories named `<build>-<warm|cold>`."""
+    """data/onboard.txt's lines for result directories named `<build>-<warm|cold>`.
+
+    Besides each run and the bound over a build's runs, `common` is the bound over the runs
+    every directory holds, so builds timed on fewer traces are compared on the same ones.
+    """
     lines = []
-    for d in map(Path, dirs):
+    dirs = list(map(Path, dirs))
+    names = [{f.stem for f in d.glob("*.csv")} - {"fmodf"} for d in dirs]
+    shared = set.intersection(*names) if names else set()
+    for d in dirs:
         info = (d / "info.txt").read_text().split()
         meta = dict(w.split("=", 1) for w in info[1:] if "=" in w)
         mode = "cold" if meta.get("cache") == "cold" else "warm"
@@ -303,12 +335,18 @@ def pin(dirs):
         if sweep.exists():
             rows = list(csv.DictReader(open(sweep, newline="")))
             cycles = [int(r["cycles"]) for r in rows]
-            lines.append(f"{tag}/fmodf min={min(cycles)} max={max(cycles)}")
+            # The angles the filter forms itself are inside (−4π, 4π), exponents up to 3.
+            own = [int(r["cycles"]) for r in rows if int(r["exponent"]) <= 3]
+            lines.append(f"{tag}/fmodf min={min(cycles)} max={max(cycles)} filter_range={max(own)}")
+        sysclk = int(meta["sysclk"])
         for name, keys in runs.items():
+            keys = microseconds(keys, sysclk)
             lines.append(f"{tag}/{name} " + " ".join(f"{k}={v}" for k, v in sorted(keys.items())))
         if runs:
-            lines.append(f"{tag}/bound " + " ".join(
-                f"{k}={v}" for k, v in sorted(bound(runs.values()).items())))
+            keys = microseconds(bound(runs.values()), sysclk)
+            lines.append(f"{tag}/bound " + " ".join(f"{k}={v}" for k, v in sorted(keys.items())))
+            keys = microseconds(bound(v for n, v in runs.items() if n in shared), sysclk)
+            lines.append(f"{tag}/common " + " ".join(f"{k}={v}" for k, v in sorted(keys.items())))
     return lines
 
 
@@ -376,10 +414,45 @@ def self_test():
     assert keys["label.a_coast.max"] == 64000
     assert keys["fuse_gnss_position.accepted_rejected.max"] == 3000
 
-    other = dict(keys, **{"predict.max": 70000, "predict.stack": 10})
+    other = dict(keys, **{"predict.max": 70000, "predict.stack": 10, "predict.min": 900,
+                          "predict.n": 1, "predict.mean": 900})
     worst = bound([keys, other])
     assert worst["predict.max"] == 70000 and worst["predict.stack"] == 7000 - 160
-    assert "predict.mean" not in worst
+    assert worst["predict.min"] == 900 and worst["predict.n"] == 4
+    # Weighted by count: three calls at their mean and one at 900, not the mean of two means.
+    assert worst["predict.mean"] == round((keys["predict.mean"] * 3 + 900) / 4)
+    assert worst["predict.coasted.denormal"] == 2
+    # The deepest raw stack of any call, not of the first or last key: fuse_gnss_position's.
+    assert worst["stack_raw_max"] == 9000
+    us = microseconds({"predict.max": 112304, "predict.mean": 48081, "predict.n": 3}, 400_000_000)
+    assert us["predict.max_us"] == "280.8" and us["predict.mean_us"] == "120.2"
+    assert "predict.n_us" not in us
+    # Two builds, one timed on a trace the other was not: `bound` is each build's own, and
+    # `common` the shared trace's alone, so the slow trace the second build lacks stays out of
+    # the first build's comparison line.
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        header = "index,call,outcome,height,label,cycles,stack,flags\n"
+        nop = "-1,nop,nothing,,,40,36,1\n"
+        for build, traces in (("primary", {"a": 1040, "b": 9040}), ("shipped", {"a": 2040})):
+            d = Path(tmp) / f"{build}-warm"
+            d.mkdir()
+            (d / "info.txt").write_text(
+                f"onboard proto=1 build={build} commit=c sysclk=400000000 cache=warm fz=0\n")
+            (d / "dispatch.txt").write_text("execute=160\nrenew=1\nnew_window=1\nseed=1\n")
+            for name, cycles in traces.items():
+                (d / f"{name}.csv").write_text(
+                    header + nop + f"0,predict,propagated,,,{cycles},5160,{ok}\n")
+        out = {}
+        for line in pin([Path(tmp) / "primary-warm", Path(tmp) / "shipped-warm"]):
+            run, *words = line.split()
+            out[run] = dict(w.split("=", 1) for w in words)
+        assert out["primary/warm/bound"]["predict.max"] == "9000"
+        assert out["primary/warm/common"]["predict.max"] == "1000"
+        assert out["shipped/warm/common"]["predict.max"] == "2000"
+        assert out["shipped/warm/common"]["predict.max_us"] == "5.0"
+        assert out["primary/warm/a"]["predict.stack"] == "5000"
+        assert out["primary/warm"]["sysclk"] == "400000000"
     print("onboard self-test: ok")
 
 

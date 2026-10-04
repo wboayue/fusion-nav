@@ -68,7 +68,8 @@ whose attitude this filter gets wrong at startup, a known gap (#59).
 
 Not a question about the estimate, and answered from the build rather than from a flight: the
 memory, stack and flash the filter needs on a Cortex-M0 and on a Cortex-M4 or M7, per entry
-point. It allocates nothing. Execution time on a real board is not measured yet (#41).
+point. It allocates nothing. On a 400 MHz Cortex-M7 board, the time and painted stack of every
+call the corpus makes.
 
 ## Where the numbers come from
 

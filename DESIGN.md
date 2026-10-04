@@ -343,7 +343,8 @@ What the code costs now (sizes, stack frames and flash on both thumb targets) is
 checked in CI. This section holds what decided each function's form: the form taken against those
 rejected, measured on builds that no longer exist, and figures nothing pins (host timings,
 operation counts, flash measured by hand). A doc comment links here and keeps the one sentence of
-why. Execution time and stack high-water on hardware are #41's, and land on the page.
+why. Execution time and the painted stack on a board are on the page too, pinned in
+`data/onboard.txt`.
 
 #### Stack frames
 
@@ -431,7 +432,7 @@ latitude and longitude), a GNSS velocity 1.2 µs, each one-dimensional update 0.
 The yaw estimator, fusing, adds 0.18 µs to `predict`, 0.781 µs to 0.965, and 0.25 µs to a GNSS
 velocity, 1.272 µs to 1.525 (#165 against its parent, c7f3ecf, the same machine and session). On a
 core with no FPU the ratio will be worse than the host's 24 %: each hypothesis is a quaternion
-product and a rotation per sample. That figure is #41's.
+product and a rotation per sample. No core without an FPU has been timed.
 
 Its covariance step, (48), is written as the shear it is rather than as `F P Fᵀ`. On the host
 the two time alike, 0.965 µs against 0.972. On `thumbv6m` the dense form calls `nalgebra`'s
