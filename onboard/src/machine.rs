@@ -5,6 +5,7 @@ use fusion_nav::prelude::*;
 use crate::record::{Record, status_code, validity_bits};
 
 /// What a trace runs against: the filter, and the window a start folds before it commits.
+#[derive(Clone)]
 pub struct Machine {
     pub filter: Eskf,
     pub window: StaticWindow,
@@ -91,7 +92,16 @@ impl Machine {
             Record::FuseStationary(time, noise) => {
                 Returned::Fusion(filter.fuse_stationary(time, noise))
             }
-            Record::PredictedValidity => Returned::Validity(filter.predicted_validity()),
+            Record::PredictedValidity => self.query(record),
+        }
+    }
+
+    /// The calls that only read, through `&self`: the host makes them where its caller holds a
+    /// shared reference. Anything else is [`Returned::Nothing`].
+    pub fn query(&self, record: &Record) -> Returned {
+        match record {
+            Record::PredictedValidity => Returned::Validity(self.filter.predicted_validity()),
+            _ => Returned::Nothing,
         }
     }
 

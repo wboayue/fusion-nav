@@ -1,8 +1,9 @@
 //! The host's half: a filter that writes down every call made into it, and the files it
 //! writes them to.
 
+use std::cell::RefCell;
 use std::fs::File;
-use std::io::{self, BufWriter, Write};
+use std::io::{self, BufWriter, Seek, Write};
 use std::path::Path;
 
 use fusion_nav::prelude::*;
@@ -13,7 +14,15 @@ use crate::record::{MAX_RECORD, Record};
 
 /// Where a [`Recorder`] puts each call: its encoded record, and what the host got from it.
 pub trait Sink {
+    /// Where the sink stands, for [`rewind`](Self::rewind) to return it to.
+    type Mark: Copy;
+
     fn call(&mut self, bytes: &[u8], record: &Record, outcome: Outcome, digest: u64, label: &str);
+
+    fn mark(&self) -> Self::Mark;
+
+    /// Forget every call after `mark`, which a rewound run never made.
+    fn rewind(&mut self, mark: Self::Mark) -> io::Result<()>;
 }
 
 /// The filter, behind every mutating call it offers.
@@ -21,10 +30,28 @@ pub trait Sink {
 /// Each call is encoded, decoded and made through [`Machine::execute`], with or without a
 /// sink, so the host runs exactly the record the board will. Reads go through `Deref`; there
 /// is no `DerefMut`, so a mutation that bypasses the trace does not compile.
-pub struct Recorder<S> {
+pub struct Recorder<S: Sink> {
     machine: Machine,
-    sink: Option<S>,
+    // A cell so that `predicted_validity`, which reads, is recorded through `&self` as
+    // `Eskf`'s is called.
+    sink: RefCell<Option<S>>,
     label: &'static str,
+    /// Where the sink stood when this recorder was cloned from one holding it.
+    mark: Option<S::Mark>,
+}
+
+/// A copy of the filter as it stands, without the sink, which a run has one of: the calls a
+/// copy makes are not recorded until [`resume`](Recorder::resume) hands it the sink, and the
+/// calls the original made since are then forgotten.
+impl<S: Sink> Clone for Recorder<S> {
+    fn clone(&self) -> Self {
+        Self {
+            machine: self.machine.clone(),
+            sink: RefCell::new(None),
+            label: self.label,
+            mark: self.sink.borrow().as_ref().map(Sink::mark).or(self.mark),
+        }
+    }
 }
 
 impl<S: Sink> core::ops::Deref for Recorder<S> {
@@ -40,8 +67,9 @@ impl<S: Sink> Recorder<S> {
     pub fn new(config: Config, sink: Option<S>) -> Result<Self, ConfigError> {
         let mut recorder = Self {
             machine: Machine::default(),
-            sink,
+            sink: RefCell::new(sink),
             label: "",
+            mark: None,
         };
         match recorder.call(Record::New(config)) {
             Returned::New(result) => result.map(|()| recorder),
@@ -60,26 +88,36 @@ impl<S: Sink> Recorder<S> {
         &self.machine.window
     }
 
-    /// The sink, to finish it.
-    pub fn into_sink(self) -> Option<S> {
-        self.sink
+    /// The sink, to finish it; the calls after this are made and not recorded.
+    pub fn take_sink(&mut self) -> Option<S> {
+        self.sink.get_mut().take()
+    }
+
+    /// Take over `sink` from the run this recorder was cloned from, rewinding it to where it
+    /// stood at the clone: this recorder never made the calls written since.
+    pub fn resume(&mut self, sink: Option<S>) -> io::Result<()> {
+        if let Some(mut sink) = sink {
+            if let Some(mark) = self.mark {
+                sink.rewind(mark)?;
+            }
+            *self.sink.get_mut() = Some(sink);
+        }
+        Ok(())
     }
 
     fn call(&mut self, record: Record) -> Returned {
-        let mut buffer = [0u8; MAX_RECORD];
-        let length = record
-            .encode(&mut buffer)
-            .unwrap_or_else(|| unreachable!("{} exceeds MAX_RECORD", record.name()));
-        let bytes = &buffer[..length];
-        let decoded = Record::decode(bytes)
-            .unwrap_or_else(|| unreachable!("{} does not decode", record.name()));
+        let (buffer, length, decoded) = encoded(&record);
         let returned = self.machine.execute(&decoded);
-        if let Some(sink) = &mut self.sink {
-            let outcome = Outcome::of(&returned);
-            let digest = self.machine.digest(outcome);
-            sink.call(bytes, &decoded, outcome, digest, self.label);
-        }
+        self.emit(&buffer[..length], &decoded, &returned);
         returned
+    }
+
+    fn emit(&self, bytes: &[u8], record: &Record, returned: &Returned) {
+        if let Some(sink) = self.sink.borrow_mut().as_mut() {
+            let outcome = Outcome::of(returned);
+            let digest = self.machine.digest(outcome);
+            sink.call(bytes, record, outcome, digest, self.label);
+        }
     }
 
     /// Fold `samples` into a new window and start on it: `StaticWindow::push` per sample, then
@@ -242,12 +280,26 @@ impl<S: Sink> Recorder<S> {
 
     /// `Eskf::predicted_validity`, recorded: it reads, but it is an entry point with a cost of
     /// its own, up to 64 runs of (22).
-    pub fn predicted_validity(&mut self) -> Validity {
-        match self.call(Record::PredictedValidity) {
+    pub fn predicted_validity(&self) -> Validity {
+        let (buffer, length, decoded) = encoded(&Record::PredictedValidity);
+        let returned = self.machine.query(&decoded);
+        self.emit(&buffer[..length], &decoded, &returned);
+        match returned {
             Returned::Validity(v) => v,
             other => unreachable!("predicted_validity returned {other:?}"),
         }
     }
+}
+
+/// `record` encoded, and decoded again: what the board will make of it.
+fn encoded(record: &Record) -> ([u8; MAX_RECORD], usize, Record) {
+    let mut buffer = [0u8; MAX_RECORD];
+    let length = record
+        .encode(&mut buffer)
+        .unwrap_or_else(|| unreachable!("{} exceeds MAX_RECORD", record.name()));
+    let decoded = Record::decode(&buffer[..length])
+        .unwrap_or_else(|| unreachable!("{} does not decode", record.name()));
+    (buffer, length, decoded)
 }
 
 /// A trace on disk, `<path>`, and its per-call CSV beside it, `<path>.csv`.
@@ -258,8 +310,16 @@ impl<S: Sink> Recorder<S> {
 pub struct TraceFile {
     trace: BufWriter<File>,
     calls: BufWriter<File>,
-    index: u64,
+    at: TraceMark,
     error: Option<io::Error>,
+}
+
+/// How far a [`TraceFile`] has written: calls, and bytes of each file.
+#[derive(Clone, Copy, Debug)]
+pub struct TraceMark {
+    calls: u64,
+    trace: u64,
+    csv: u64,
 }
 
 impl TraceFile {
@@ -267,11 +327,16 @@ impl TraceFile {
         let mut csv = path.as_os_str().to_owned();
         csv.push(".csv");
         let mut calls = BufWriter::new(File::create(csv)?);
-        writeln!(calls, "index,call,outcome,height,label")?;
+        let header = "index,call,outcome,height,label\n";
+        calls.write_all(header.as_bytes())?;
         Ok(Self {
             trace: BufWriter::new(File::create(path)?),
             calls,
-            index: 0,
+            at: TraceMark {
+                calls: 0,
+                trace: 0,
+                csv: header.len() as u64,
+            },
             error: None,
         })
     }
@@ -283,7 +348,7 @@ impl TraceFile {
         }
         self.trace.flush()?;
         self.calls.flush()?;
-        Ok(self.index)
+        Ok(self.at.calls)
     }
 
     fn write(
@@ -300,21 +365,35 @@ impl TraceFile {
             digest,
         }
         .write(&mut self.trace)?;
+        self.at.trace += (bytes.len() + crate::FRAME_OVERHEAD) as u64;
         let (kind, height) = outcome.names();
-        writeln!(
-            self.calls,
-            "{},{},{},{},{}",
-            self.index,
+        let line = format!(
+            "{},{},{},{},{}\n",
+            self.at.calls,
             record.name(),
             kind,
             height.unwrap_or(""),
             label
-        )
+        );
+        self.calls.write_all(line.as_bytes())?;
+        self.at.csv += line.len() as u64;
+        Ok(())
     }
 }
 
 /// A trace in memory, frames only.
 impl Sink for Vec<u8> {
+    type Mark = usize;
+
+    fn mark(&self) -> usize {
+        self.len()
+    }
+
+    fn rewind(&mut self, mark: usize) -> io::Result<()> {
+        self.truncate(mark);
+        Ok(())
+    }
+
     fn call(&mut self, bytes: &[u8], _: &Record, outcome: Outcome, digest: u64, _: &str) {
         let frame = Frame {
             record: bytes,
@@ -327,12 +406,28 @@ impl Sink for Vec<u8> {
 }
 
 impl Sink for TraceFile {
+    type Mark = TraceMark;
+
     fn call(&mut self, bytes: &[u8], record: &Record, outcome: Outcome, digest: u64, label: &str) {
         if self.error.is_none()
             && let Err(error) = self.write(bytes, record, outcome, digest, label)
         {
             self.error = Some(error);
         }
-        self.index += 1;
+        self.at.calls += 1;
+    }
+
+    fn mark(&self) -> TraceMark {
+        self.at
+    }
+
+    fn rewind(&mut self, mark: TraceMark) -> io::Result<()> {
+        for (file, length) in [(&mut self.trace, mark.trace), (&mut self.calls, mark.csv)] {
+            file.flush()?;
+            file.get_mut().set_len(length)?;
+            file.seek(io::SeekFrom::Start(length))?;
+        }
+        self.at = mark;
+        Ok(())
     }
 }

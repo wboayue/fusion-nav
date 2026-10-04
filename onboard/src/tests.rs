@@ -231,30 +231,12 @@ fn recorded_flight() -> Vec<u8> {
     }
     assert!(accepted > 50, "the flight fuses: {accepted}");
     filter.predicted_validity();
-    filter.into_sink().unwrap()
+    filter.take_sink().unwrap()
 }
 
 #[test]
 fn a_fresh_machine_makes_every_recorded_call_and_agrees_bit_for_bit() {
-    let trace = recorded_flight();
-    let mut machine = Machine::default();
-    let mut rest = trace.as_slice();
-    let mut calls = 0;
-    while !rest.is_empty() {
-        let (frame, after) = Frame::split(rest).expect("whole frames");
-        rest = after;
-        let record = Record::decode(frame.record).expect("decodes");
-        let outcome = Outcome::of(&machine.execute(&record));
-        assert_eq!(outcome, frame.outcome, "call {calls}, {}", record.name());
-        assert_eq!(
-            machine.digest(outcome),
-            frame.digest,
-            "call {calls}, {}",
-            record.name()
-        );
-        calls += 1;
-    }
-    assert!(calls > 1000, "{calls}");
+    assert!(replayed(&recorded_flight()) > 1000);
 }
 
 #[test]
@@ -301,4 +283,46 @@ fn outcomes_name_a_gnss_fix_by_both_halves() {
     assert_eq!(one.names(), ("reset", None));
     let valid = Outcome::of(&Returned::Validity(Validity::NONE));
     assert_eq!(valid.names(), ("validity", None));
+}
+
+/// Re-execute `trace` on a fresh machine, requiring every outcome and digest; the call count.
+fn replayed(trace: &[u8]) -> usize {
+    let mut machine = Machine::default();
+    let mut rest = trace;
+    let mut calls = 0;
+    while !rest.is_empty() {
+        let (frame, after) = Frame::split(rest).expect("whole frames");
+        rest = after;
+        let record = Record::decode(frame.record).expect("decodes");
+        let outcome = Outcome::of(&machine.execute(&record));
+        assert_eq!(outcome, frame.outcome, "call {calls}, {}", record.name());
+        assert_eq!(machine.digest(outcome), frame.digest, "call {calls}");
+        calls += 1;
+    }
+    calls
+}
+
+#[test]
+fn a_rewound_run_forgets_the_calls_it_never_made() {
+    let mut filter = Recorder::new(Config::default(), Some(Vec::new())).unwrap();
+    assert!(
+        filter
+            .initialize_on((0..800).map(stationary_sample))
+            .is_ok()
+    );
+    let snapshot = filter.clone();
+    // Calls the rewound run never makes: they move the state, so a trace that kept them
+    // would disagree with the machine replaying it.
+    for n in 801..=900 {
+        assert!(filter.predict(imu_sample(sample_time(n))).is_propagated());
+    }
+    let trace = filter.take_sink();
+    let mut filter = snapshot;
+    filter.resume(trace).unwrap();
+    for n in 801..=820 {
+        let still = imu_sample(sample_time(n));
+        assert!(filter.predict(still).is_propagated());
+    }
+    // `New`, a window of 800 pushes, its start, and the twenty predictions after the rewind.
+    assert_eq!(replayed(&filter.take_sink().unwrap()), 1 + 1 + 800 + 1 + 20);
 }

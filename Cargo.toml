@@ -49,6 +49,10 @@ magnetic-model = []
 # as the filter's transcendentals are. Already in the graph under nalgebra's `libm` feature.
 libm = "0.2.16"
 
+# The trace `replay --trace` writes for #41's board: a member, so a dev-dependency here only for
+# the harness. It depends on nothing but this crate, so it moves no feature of the graph.
+onboard = { path = "onboard" }
+
 # The adversarial suite (`src/eskf/adversarial.rs`, #44): generated hostile inputs, shrunk to
 # the shortest failing sequence. Test-only, so the `no_std` build and its one dependency are
 # untouched; hosted targets only, because examples take dev-dependencies too and

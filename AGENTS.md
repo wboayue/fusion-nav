@@ -280,6 +280,7 @@ cargo run --release --example replay -- --derive <log.csv> > config.rs   # a Con
 cargo run --example replay -- --derive data/flight.csv > data/flight.config.rs  # regenerate the fixture a test pins
 cargo run --example replay -- --set correlation.gnss_height=29 <in.csv> <out.csv>   # any derivable field; `set=` names it
 cargo run --example replay -- --without mag --yaw-estimator off <in.csv> <out.csv>   # a vehicle with no magnetometer, and the filter without (45)-(52)
+cargo run --release --example replay -- --trace target/onboard/<id>.trace <in.csv> <out.csv>   # every call, for the board (#41)
 REPLAY_ARGS="--set ..." data/anees.sh correlated   # the ANEES gate under a derived Config
 cargo test --example replay -- --ignored drift_scatter --nocapture   # the drift estimator's scatter DESIGN quotes
 

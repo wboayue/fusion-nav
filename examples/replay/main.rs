@@ -27,6 +27,9 @@
 //! which ran, `yaw_adopted=` and `yaw_recovered=` the headings taken from it).
 //! `--hold off` replays without the position hold an unaided filter fuses, and `--hold <σ>`
 //! with it at another σ in meters (`hold=` says which ran, `holds=` how many it fused).
+//! `--trace <file>` writes every call made into the filter to `<file>`, and one line per call
+//! to `<file>.csv`, for #41's board to make again and time (`onboard/`). The outputs are the same
+//! with or without it.
 //! `--set <field>=<value>`, repeatable, sets one `Config` field by its path, `--set
 //! correlation.gnss_position=2.5`; `settings.rs` lists the names, and `set=` on the `summary`
 //! line repeats them. `--derive` is the mode that works those values out from a log; see
@@ -214,6 +217,7 @@ use std::path::{Path, PathBuf};
 
 use fusion_nav::STATES;
 use fusion_nav::prelude::*;
+use onboard::{Recorder, TraceFile};
 
 mod derive;
 mod settings;
@@ -514,6 +518,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut policy = None;
     let mut options = Options::default();
     let mut derive = false;
+    let mut trace: Option<PathBuf> = None;
     let mut positional = Vec::new();
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -576,6 +581,11 @@ fn run() -> Result<(), Box<dyn Error>> {
             options.without = Some(name);
         } else if arg == "--derive" {
             derive = true;
+        } else if arg == "--trace" {
+            trace = Some(PathBuf::from(
+                args.next()
+                    .ok_or("--trace wants a file to write the trace to")?,
+            ));
         } else {
             positional.push(arg);
         }
@@ -594,10 +604,11 @@ fn run() -> Result<(), Box<dyn Error>> {
     };
     if derive {
         // Stdout is the `Config` alone, so `> file` captures Rust; the evidence is stderr's.
-        if args.next().is_some() || !options.sets.is_empty() || !options.recovery {
+        if args.next().is_some() || !options.sets.is_empty() || !options.recovery || trace.is_some()
+        {
             return Err(
                 "--derive takes one input and starts from Config::default(): \
-                        no output, truth, --set or --recovery"
+                        no output, truth, --set, --recovery or --trace"
                     .into(),
             );
         }
@@ -630,7 +641,8 @@ fn run() -> Result<(), Box<dyn Error>> {
     write_header(&mut epoch_out)?;
     write_fusion_header(&mut fusion_out, config.gates)?;
 
-    let mut replay = prepare(&text, config, &options, scoring)?;
+    let trace = trace.map(|path| TraceFile::create(&path)).transpose()?;
+    let mut replay = prepare(&text, config, &options, scoring, trace)?;
     drive(
         &mut replay,
         &text,
@@ -652,6 +664,11 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
 
     replay.report(&input, &output, &fusions);
+    // After the report, whose arming query is a call the board times too.
+    if let Some(trace) = replay.filter.take_sink() {
+        let calls = trace.finish()?;
+        eprintln!("trace: {calls} calls");
+    }
     Ok(())
 }
 
@@ -713,8 +730,9 @@ fn prepare(
     config: Config,
     options: &Options,
     scoring: Option<Scoring>,
+    trace: Option<TraceFile>,
 ) -> Result<Replay, Box<dyn Error>> {
-    let mut replay = Replay::new(config, options.policy, scoring)?;
+    let mut replay = Replay::new(config, options.policy, scoring, trace)?;
     replay.course = options.course.or_else(|| sideslip_of(text));
     if replay
         .course
@@ -1139,7 +1157,7 @@ struct Verdict {
 /// Everything the loop carries between rows.
 #[derive(Clone)]
 struct Replay {
-    filter: Eskf,
+    filter: Recorder<TraceFile>,
     /// Candidate static window, slid forward one sample at a time until `initialize`
     /// accepts it. A log that begins in motion simply initializes later.
     window: [Held; WINDOW],
@@ -1269,10 +1287,15 @@ struct Replay {
 }
 
 impl Replay {
-    fn new(config: Config, policy: RPolicy, scoring: Option<Scoring>) -> Result<Self, ConfigError> {
+    fn new(
+        config: Config,
+        policy: RPolicy,
+        scoring: Option<Scoring>,
+        trace: Option<TraceFile>,
+    ) -> Result<Self, ConfigError> {
         Ok(Self {
             consistency: Consistency::new(config.gates),
-            filter: Eskf::new(config)?,
+            filter: Recorder::new(config, trace)?,
             window: [Held::default(); WINDOW],
             filled: 0,
             still_since_start: true,
@@ -1549,7 +1572,9 @@ impl Replay {
             lines,
             ..
         } = fallback;
+        let trace = self.filter.take_sink();
         *self = *at;
+        self.filter.resume(trace)?;
         self.commit(t, 0..still, dt)?;
         // The sample that moved is the first the filter propagates.
         self.previous_imu = Some(t);
@@ -1578,9 +1603,13 @@ impl Replay {
         dt: Seconds,
     ) -> Result<(), Box<dyn Error>> {
         self.window_samples = range.len();
-        let window = self.window(range.clone(), dt)?;
-        let alignment = self.filter.initialize(&window)?;
-        self.noise = window
+        let samples = self.window[range.clone()]
+            .iter()
+            .map(|held| held.sample(dt));
+        let alignment = self.filter.initialize_on(samples)?;
+        self.noise = self
+            .filter
+            .window()
             .noise(self.filter.config())
             .map(|noise| match self.averaging {
                 Some(averaging) => scaled_by_averaging(noise, averaging, dt),
@@ -4063,7 +4092,7 @@ mod tests {
         policy: RPolicy,
         scoring: Option<Scoring>,
     ) -> Result<(Replay, String), String> {
-        let mut replay = Replay::new(config, policy, scoring).map_err(|e| e.to_string())?;
+        let mut replay = Replay::new(config, policy, scoring, None).map_err(|e| e.to_string())?;
         assert!(
             replay
                 .filter
@@ -4341,7 +4370,7 @@ mod tests {
             .noise
             .expect("and again");
         // `prepare` is where a file's header reaches the replay; `drive` repeats it for fixtures.
-        let prepared = prepare(header, Config::default(), &Options::default(), None)
+        let prepared = prepare(header, Config::default(), &Options::default(), None, None)
             .map_err(|e| e.to_string())
             .expect("prepares");
         assert_eq!(prepared.averaging, Some([5000e-6, 1250e-6]));
@@ -4351,7 +4380,7 @@ mod tests {
             "gyro -1 accel 1250",
         ] {
             let line = format!("# IMU averaging interval {refused} us\n");
-            assert!(prepare(&line, Config::default(), &Options::default(), None).is_err());
+            assert!(prepare(&line, Config::default(), &Options::default(), None, None).is_err());
         }
         let close = |a: f32, b: f32| (a - b).abs() <= 1e-6 * b.abs();
         for axis in 0..3 {
@@ -4594,8 +4623,8 @@ mod tests {
     #[test]
     fn a_source_named_by_without_is_never_offered() {
         let log = still_start().mag(2.0).mag(2.1);
-        let mut kept = Replay::new(Config::default(), RPolicy::Raw, None).unwrap();
-        let mut dropped = Replay::new(Config::default(), RPolicy::Raw, None).unwrap();
+        let mut kept = Replay::new(Config::default(), RPolicy::Raw, None, None).unwrap();
+        let mut dropped = Replay::new(Config::default(), RPolicy::Raw, None, None).unwrap();
         dropped.without = Some("mag".to_string());
         for replay in [&mut kept, &mut dropped] {
             let mut sinks = Sinks {
@@ -4628,8 +4657,14 @@ mod tests {
             sets: vec![("gravity".into(), "9.79".into())],
             ..Options::default()
         };
-        let mut set = prepare(&log.0, options.config().expect("a field"), &options, None)
-            .expect("a usable header");
+        let mut set = prepare(
+            &log.0,
+            options.config().expect("a field"),
+            &options,
+            None,
+            None,
+        )
+        .expect("a usable header");
         super::drive(
             &mut set,
             &log.0,
@@ -6580,7 +6615,7 @@ mod tests {
         // still do.
         let mut out = Vec::new();
         write_header(&mut out).expect("header");
-        let mut replay = Replay::new(Config::default(), RPolicy::Raw, None).unwrap();
+        let mut replay = Replay::new(Config::default(), RPolicy::Raw, None, None).unwrap();
         let log = still_start().run(2.0, 1, DT, STILL);
         {
             let mut sinks = Sinks {
