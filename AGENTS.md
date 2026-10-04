@@ -1069,6 +1069,12 @@ the declination table, and CI builds and tests without it too.
   adoption, a declination turn or an origin placement that could still refuse is asked first
   (`declination_at`, `carried_*` returning `None`). The adversarial suite holds both: a refused
   call must leave the estimate, clock, origin, declination, reference and latches bit-identical.
+- **No loop runs on the data.** A loop beneath `predict`, a `fuse_*`, a start or
+  `predicted_validity` runs a number of times a constant bounds, or its worst case is not a
+  bound and #41's cycle counts certify nothing. A new loop names its constant in `DESIGN.md`,
+  "Execution time bounded by constants", and the trace that times #41's worst paths gains the
+  input that reaches it. A count a caller's input sets beyond a constant is a finding, as
+  `fmodf`'s exponent gap was.
 - **Nothing in `src/` panics.** No `unwrap`, `expect`, `panic!` or `unreachable!` outside
   `#[cfg(test)]`. On `thumbv6m` a panic is a `udf` and the vehicle is a brick, which is why bad
   input is reported through a typed outcome rather than asserted on. The matrix arithmetic the

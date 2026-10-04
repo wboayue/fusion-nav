@@ -286,7 +286,7 @@ the reasoning is GOALS.md's
 * compile-time dimensions
 * stack allocation
 * no dynamic allocation
-* deterministic execution time
+* execution time bounded by constants, [never by the data](#execution-time-bounded-by-constants)
 * `no_std`
 * no panics, [checked in CI](README.md#the-library-cannot-panic)
 * explicit numerical types
@@ -306,6 +306,36 @@ the working set is kilobytes, set by how temporaries are reused. It is measured,
 [follows](#measured-cost-by-function). `state()` is small and `Copy` and `Status` carries no
 payload, so reading either in a control loop costs nothing. Timing detail lives in
 `diagnostics()`, off the hot path.
+
+### Execution time bounded by constants
+
+A worst-case cycle count is a bound only if no input can take a longer path than the ones
+measured. So every loop beneath `predict`, a `fuse_*`, a start or `predicted_validity` runs a
+number of times a constant bounds, and the worst case of each is a path a trace can reach on
+purpose (#41). Where the count varies, the bound is the path to time:
+
+| loop | runs | worst case |
+| --- | --- | --- |
+| `propagate::coast`, (22′) | `⌈gap / PROJECTION_STEP⌉`, at most `MAX_PROJECTION_STEPS` (64) | a gap of 6.4 s or more |
+| `propagate::project`, under `predicted_validity` | the same, over `Accuracy::horizon` | a horizon of 6.4 s or more |
+| `History::at`, (23′) | the entries newer than the measurement, at most `CAPACITY` (32) | the oldest age the history holds |
+| `History::shift`, on every committed correction | the entries held, `CAPACITY` once the history fills | any correction after the first 0.31 s |
+| `YawEstimator::predict`, (45)–(47) | one hypothesis before fusion begins, `MODELS` (5) after | fusion begun |
+| `StaticWindow::push` | a block closes every `BLOCK`; once all `BLOCKS` (8) are full, `halve` merges them | the push that fills the last block |
+| `predict`'s position hold, (28″) | one 2-D update while unaided with tilt σ past 3°, at most every 0.2 s | a coasted step that also holds |
+
+Beside them the counts are fixed: the geodetic inverse's `PASSES` (5), the symmetry sweep of (42)
+and the floor of (42′) over fifteen states, the per-source lists in `Diagnostics`. The gate runs
+before the gain, so a rejected update exits early: cheaper than a fusion, never dearer.
+
+`libm` carries the rest. `wrap_pi` reduces with `%`, which is `fmodf`, and its work grows with the
+exponent gap between the angle and 2π: one 64-bit division below a gap of 32, a reduction loop
+past it (`src/math/generic/fmod.rs:106-114`, libm 0.2.16). The filter's own angles reach it
+inside (−4π, 4π), but `fuse_gnss_heading` and a declination the caller sets are wrapped as given,
+so a heading of 1e30 rad takes the long path. The trigonometric functions switch to
+`rem_pio2_large` past |x| ≈ 2²⁸·π/2 (`src/math/rem_pio2f.rs:41`), which no angle the filter
+forms reaches: each is wrapped or bounded before anything rotates through it. Both paths are
+bounded, and #41 times the long `fmodf` rather than arguing it.
 
 ### Measured cost, by function
 
