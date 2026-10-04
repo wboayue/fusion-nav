@@ -434,7 +434,15 @@ const ATTITUDE_SIGMAS: [(&str, AttitudeColumn); 3] = [
 /// `hold` is the third: the position hold the filter fuses inside `predict` while unaided,
 /// which the harness reads back from `Diagnostics` after each step (`propagate`).
 const SOURCES: [&str; 9] = [
-    "gnss_pos", "gnss_hgt", "gnss_vel", "baro", "mag", "gnss_yaw", "course", "still", "hold",
+    "gnss_pos",
+    "gnss_hgt",
+    "gnss_vel",
+    "baro",
+    "mag",
+    "gnss_yaw",
+    "course",
+    "stationary",
+    "hold",
 ];
 
 /// What each source's innovation components are, in the order the filter publishes them, so a
@@ -461,7 +469,14 @@ const AXES: [&[&str]; 9] = [
 /// The row sources `--without` can drop: every aiding row an input carries. Not `SOURCES`,
 /// which names verdicts, two of which (`gnss_hgt`, `course`) no row carries, and a name that
 /// dropped nothing would still print on the `summary` line as if it had.
-const DROPPABLE: [&str; 6] = ["gnss_pos", "gnss_vel", "baro", "mag", "gnss_yaw", "still"];
+const DROPPABLE: [&str; 6] = [
+    "gnss_pos",
+    "gnss_vel",
+    "baro",
+    "mag",
+    "gnss_yaw",
+    "stationary",
+];
 
 /// Last test ratio per source, in `Diagnostics` order.
 const RATIOS: [&str; 9] = [
@@ -472,7 +487,7 @@ const RATIOS: [&str; 9] = [
     "r_mag",
     "r_gnss_yaw",
     "r_course",
-    "r_still",
+    "r_stationary",
     "r_hold",
 ];
 const GNSS_POS: usize = 0;
@@ -482,7 +497,7 @@ const BARO: usize = 3;
 const MAG: usize = 4;
 const GNSS_YAW: usize = 5;
 const COURSE: usize = 6;
-const STILL: usize = 7;
+const STATIONARY: usize = 7;
 const HOLD: usize = 8;
 
 fn main() {
@@ -1432,11 +1447,11 @@ impl Replay {
                 );
                 self.observe(r.t, GNSS_YAW, outcome, None, out)?;
             }
-            "still" => {
+            "stationary" => {
                 let noise =
                     VelocityNoise::from_variance(r.variance(0)?, r.variance(1)?, r.variance(2)?);
                 let outcome = self.filter.fuse_stationary(r.taken(), noise);
-                self.observe(r.t, STILL, outcome, None, out)?;
+                self.observe(r.t, STATIONARY, outcome, None, out)?;
             }
             other => return Err(format!("unknown source `{other}`").into()),
         }
@@ -3929,8 +3944,8 @@ mod tests {
         }
 
         /// A claim that the vehicle is still, at 0.1 m/s on every axis.
-        fn still(mut self, t: f64) -> Self {
-            self.0 += &format!("{t:.6},still,,,,,,,0.01,0.01,0.01\n");
+        fn stationary(mut self, t: f64) -> Self {
+            self.0 += &format!("{t:.6},stationary,,,,,,,0.01,0.01,0.01\n");
             self
         }
 
@@ -5144,7 +5159,7 @@ mod tests {
             .mag(2.1)
             .gnss_yaw(2.0, 0.0)
             .gnss_yaw(2.1, 0.0)
-            .still(2.0);
+            .stationary(2.0);
         let replay = replay(&log);
         let summary = replay.summary();
         for (source, spelling) in SOURCES.iter().enumerate() {

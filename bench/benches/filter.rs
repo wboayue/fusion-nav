@@ -127,7 +127,7 @@ fn hot_path(c: &mut Criterion) {
         |f| f.fuse_course(now(), HeadingNoise::from_sigma(0.05)),
         accepted,
     );
-    // On a still start rather than the flight, which a standstill would rightly be rejected
+    // On a still start rather than the flight, which a stationary claim would rightly be rejected
     // against.
     let mut still = Eskf::default();
     assert!(still.initialize(&window()).is_ok());

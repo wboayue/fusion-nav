@@ -1,4 +1,4 @@
-//! Holding tilt without aiding: the standstill a caller asserts, (29″), and the position hold
+//! Holding tilt without aiding: the stationary claim a caller asserts, (29″), and the position hold
 //! the filter fuses itself while nothing aids it, (28″).
 //!
 //! Entry point: [`Eskf::fuse_stationary`]. The hold has none; `predict` runs it.
@@ -64,10 +64,10 @@ pub(super) struct HoldState {
     /// Whether the hold has bounded horizontal position since anything measured it. Set by each
     /// hold the gate passes, and cleared only by a position the filter accepts or adopts, or a
     /// caller's reset: the end of the outage does not clear it, since a fix the gate turns down,
-    /// a velocity or a standstill leaves the position covariance the one the assumption shaped.
+    /// a velocity or a stationary claim leaves the position covariance the one the assumption shaped.
     position: bool,
     /// The same for horizontal velocity. Cleared by a velocity accepted, adopted or reset, by a
-    /// standstill accepted, and by a position the gate passes against a position already
+    /// stationary claim accepted, and by a position the gate passes against a position already
     /// measured since the hold: the estimate was carried between the two on the velocity, so
     /// the second fix has checked it, which is all a receiver reporting no velocity can offer.
     velocity: bool,
@@ -150,10 +150,10 @@ impl Eskf {
     ///
     /// A claim inconsistent with the estimate at [`Gates::stationary`](crate::Gates) is
     /// [`Fusion::Rejected`] and changes nothing. It is never adopted, whatever
-    /// [`Config::recovery`](crate::Config::recovery) says: a standstill the gate keeps turning down
+    /// [`Config::recovery`](crate::Config::recovery) says: a stationary claim the gate keeps turning down
     /// is a caller wrong about the vehicle, and adopting it would write that into the state. Nor
     /// does it establish velocity after a coarse start, which only a sensor does; it does end the
-    /// position hold's claim on velocity, whose covariance the standstill then bounds, and never
+    /// position hold's claim on velocity, whose covariance the stationary claim then bounds, and never
     /// its claim on position. No
     /// [`Config::correlation`](crate::Config::correlation) either: its error is vibration, not
     /// a receiver's error persisting from one solution to the next.
@@ -196,7 +196,7 @@ impl Eskf {
     /// Called by [`predict`](Self::predict) after each committed step, since nothing else is
     /// guaranteed to run while nothing aids the filter. Unaided is
     /// [`is_unaided`](Self::is_unaided): no horizontal measurement judged within
-    /// [`Timeouts::dead_reckoning_after`](crate::Timeouts), and no standstill accepted either, a
+    /// [`Timeouts::dead_reckoning_after`](crate::Timeouts), and no stationary claim accepted either, a
     /// caller's claim that the vehicle is still being the better constraint. The anchor is the
     /// estimate on the step the hold engages, re-taken after each release, as PX4 takes its
     /// `_last_known_gpos` from the estimate when its fake position starts
@@ -258,7 +258,7 @@ impl Eskf {
     }
 
     /// Whether nothing holds horizontal position or velocity: no horizontal measurement judged,
-    /// and no standstill accepted, within [`Timeouts::dead_reckoning_after`](crate::Timeouts).
+    /// and no stationary claim accepted, within [`Timeouts::dead_reckoning_after`](crate::Timeouts).
     ///
     /// Judged rather than accepted, as PX4 starts its fake position only once GNSS fusion has
     /// stopped rather than while its fixes fail the gate: a receiver the gate keeps turning down
@@ -298,7 +298,7 @@ mod tests {
         hold.accepted + hold.rejected
     }
 
-    fn standstill() -> VelocityNoise<crate::frames::Ned> {
+    fn stationary() -> VelocityNoise<crate::frames::Ned> {
         VelocityNoise::from_speed_accuracy(0.1)
     }
 
@@ -306,11 +306,11 @@ mod tests {
     /// tilt about 5 s in from a window whose gyroscope never scattered, and the same bench told
     /// it is still keeps it.
     #[test]
-    fn a_standstill_holds_tilt_on_a_bench_with_no_aiding() {
+    fn a_stationary_claim_holds_tilt_on_a_bench_with_no_aiding() {
         let (mut told, mut unaided) = (unheld(), unheld());
         let mut claims = 0;
         hold(&mut told, 30.0, 10, |filter| {
-            let outcome = filter.fuse_stationary(filter.now(), standstill());
+            let outcome = filter.fuse_stationary(filter.now(), stationary());
             assert!(outcome.is_accepted(), "{outcome:?}");
             claims += 1;
         });
@@ -325,7 +325,7 @@ mod tests {
     /// Survives `apply_or_recover` in place of `apply`: the default recovery adopts a horizontal
     /// source after 7 s of rejections, and these run for 8.
     #[test]
-    fn a_standstill_the_gate_turns_down_is_never_adopted() {
+    fn a_stationary_claim_the_gate_turns_down_is_never_adopted() {
         // The hold would pull an unaided 20 m/s toward zero and let a claim in.
         let mut filter = flying(Config {
             hold: None,
@@ -480,11 +480,11 @@ mod tests {
     }
 
     #[test]
-    fn a_standstill_stands_the_hold_down() {
+    fn a_stationary_claim_stands_the_hold_down() {
         let mut filter = engaged();
         let before = holds(&filter);
         hold(&mut filter, 10.0, 10, |filter| {
-            let _ = filter.fuse_stationary(filter.now(), standstill());
+            let _ = filter.fuse_stationary(filter.now(), stationary());
         });
         // The steps before the first claim are the only ones that could hold.
         assert!(holds(&filter) <= before + 1);
@@ -520,10 +520,10 @@ mod tests {
     /// bar would pass the hold's σ.
     #[test]
     fn the_end_of_an_outage_validates_only_what_was_measured() {
-        // A standstill bounds velocity and says nothing of position.
+        // A stationary claim bounds velocity and says nothing of position.
         let mut filter = held_under_loose_bars(Recovery::default());
         hold(&mut filter, 1.0, 10, |filter| {
-            let outcome = filter.fuse_stationary(filter.now(), standstill());
+            let outcome = filter.fuse_stationary(filter.now(), stationary());
             assert!(outcome.is_accepted(), "{outcome:?}");
         });
         assert_eq!(horizontal(&filter), (false, true));
@@ -622,11 +622,11 @@ mod tests {
         assert_eq!(horizontal(&filter), (false, false));
     }
 
-    /// Survives the standstill gated at another source's gate: at `Gates::default()` the two
-    /// three-axis gates are equal, so this one sets the standstill's apart, and a claim made at
+    /// Survives the stationary claim gated at another source's gate: at `Gates::default()` the two
+    /// three-axis gates are equal, so this one sets the stationary claim's apart, and a claim made at
     /// 20 m/s passes only its own.
     #[test]
-    fn a_standstill_is_gated_at_its_own_gate() {
+    fn a_stationary_claim_is_gated_at_its_own_gate() {
         let mut filter = flying(Config {
             hold: None,
             gates: crate::config::Gates {
@@ -635,19 +635,19 @@ mod tests {
             },
             ..Config::default()
         });
-        let outcome = filter.fuse_stationary(filter.now(), standstill());
+        let outcome = filter.fuse_stationary(filter.now(), stationary());
         assert!(outcome.is_accepted(), "{outcome:?}");
     }
 
     /// Survives `admit` removed: an update would otherwise run on a filter with no state.
     #[test]
-    fn a_standstill_before_a_start_or_from_the_future_is_refused() {
+    fn a_stationary_claim_before_a_start_or_from_the_future_is_refused() {
         let mut filter = Eskf::default();
-        let outcome = filter.fuse_stationary(crate::units::Timestamp::ZERO, standstill());
+        let outcome = filter.fuse_stationary(crate::units::Timestamp::ZERO, stationary());
         assert_eq!(outcome, Fusion::NotInitialized);
         let mut filter = initialized();
         hold(&mut filter, 10.0, 1, |_| {});
-        let outcome = filter.fuse_stationary(crate::units::Timestamp::ZERO, standstill());
+        let outcome = filter.fuse_stationary(crate::units::Timestamp::ZERO, stationary());
         assert!(
             matches!(outcome, Fusion::OutOfHorizon { .. }),
             "{outcome:?}"
@@ -731,7 +731,7 @@ mod tests {
     }
 
     #[test]
-    fn a_standstill_with_no_usable_noise_is_refused() {
+    fn a_stationary_claim_with_no_usable_noise_is_refused() {
         let mut filter = initialized();
         let now = filter.now();
         let nan = VelocityNoise::from_speed_accuracy(f32::NAN);

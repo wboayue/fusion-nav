@@ -1301,7 +1301,7 @@ mod tests {
     fn the_per_source_names_are_the_diagnostics_order() {
         // `render` pairs `correlation.fields()` and `recovery.fields()` with `SOURCES` by
         // position; this is what makes the position mean the source.
-        // The standstill and the hold come last and carry neither: an assumption has no error
+        // The stationary claim and the hold come last and carry neither: an assumption has no error
         // persisting from a receiver and nothing to adopt.
         let names: Vec<&str> = (0..SOURCES.len()).map(field).collect();
         let of = |fields: [(&'static str, Option<Seconds>); 7]| fields.map(|(n, _)| n).to_vec();

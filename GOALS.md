@@ -458,7 +458,7 @@ live with the decision.
 | [declination](#magnetic-declination-from-a-table-read-where-the-origin-is-placed) | a WMM table read where the origin is placed | zero until the caller sets it, or a dated lookup |
 | [sensor offsets](#sensor-offsets-as-per-call-arguments) | the antenna as an argument to each GNSS call, in `H` | a `Config` field, or correcting the measurement alone |
 | [rejection handling](#rejection-handling-recover-by-default-opt-out-per-source) | recover by adoption, switched per source | report and leave recovery to the application |
-| [holding tilt](#holding-tilt-without-aiding) | a position hold behind a 3° gate, fused at (24′), and a caller's standstill | no hold, PX4's and ArduPilot's white hold |
+| [holding tilt](#holding-tilt-without-aiding) | a position hold behind a 3° gate, fused at (24′), and a caller's stationary claim | no hold, PX4's and ArduPilot's white hold |
 | [ecosystem coherence](#ecosystem-coherence-dropped) | dropped as a differentiator | one convention across sibling crates |
 
 ### Per-quantity validity, not one ladder
@@ -968,7 +968,7 @@ while unaided: PX4's fake position (`fake_pos_control.cpp:47-82` at `c4e4ef98`) 
   quantity is accepted or adopted, and the first GNSS fix or velocity the gate turns down after
   it is adopted at once. `Config::hold = None` turns it off,
   as rejection handling turns its corrections off.
-- **The standstill**, caller-driven, `Eskf::fuse_stationary`: zero velocity on all three axes at
+- **The stationary claim**, caller-driven, `Eskf::fuse_stationary`: zero velocity on all three axes at
   the caller's `R`, for a vehicle it knows is still. Zero velocity rather than PX4's constant
   position (`EKF2_POS_LOCK`), because velocity is what the caller knows and it observes tilt one
   integration nearer. Never adopted.
@@ -1033,10 +1033,10 @@ invalid when its honest σ crosses `Accuracy::tilt`, sooner than the white hold 
 agrees with EKF2 less than the white hold does, which is the form EKF2 itself runs. `predict`
 grows a branch and, while held, a 2-D update every 0.2 s, so its worst case is an update's
 (#41), and its deepest stack is the hold's, still under the crate's peak
-([validation/cost.md](validation/cost.md)). The standstill is only as true as the caller's claim, and a claim made in
+([validation/cost.md](validation/cost.md)). The stationary claim is only as true as the caller making it, and one made in
 motion reads as tilt until the gate turns it down.
 
-Not built: a corpus source for the standstill. PX4 logs `vehicle_land_detected.at_rest`, and
+Not built: a corpus source for the stationary claim. PX4 logs `vehicle_land_detected.at_rest`, and
 reading it is a converter change, batched with the next. EKF2's verdict on its own fake
 position, `estimator_aid_src_fake_pos`, joins the comparison in the same batch.
 

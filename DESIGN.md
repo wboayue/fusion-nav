@@ -55,7 +55,7 @@ with its time and its uncertainty.
 | module | holds |
 | ------ | ----- |
 | `src/eskf.rs` | `Eskf`, the whole public filter: its fields, `state`, the floor of (42′) every covariance passes through, and `Status` |
-| `src/eskf/` | `Eskf`'s methods by topic, one `impl Eskf` each: `start` (`initialize*`), `site` (origin, declination, barometric reference), `predict`, `fuse` (the shared update path, GNSS and barometer), `heading`, `hold` (the standstill, and the position hold `predict` runs while unaided), `adopt` (`reset_*_to`, and the writers an adoption or a recovery commits), `validity`; `estimate`, the state and its history; `fixtures`, what the modules' tests share |
+| `src/eskf/` | `Eskf`'s methods by topic, one `impl Eskf` each: `start` (`initialize*`), `site` (origin, declination, barometric reference), `predict`, `fuse` (the shared update path, GNSS and barometer), `heading`, `hold` (the stationary claim, and the position hold `predict` runs while unaided), `adopt` (`reset_*_to`, and the writers an adoption or a recovery commits), `validity`; `estimate`, the state and its history; `fixtures`, what the modules' tests share |
 | `src/init.rs` | initialization types (`StaticSample`, `StaticWindow`, `Alignment`, `Coarse`, `InitError`) and the pure functions the `initialize*` methods commit |
 | `src/propagate.rs` | `ImuSample`; equations (9)–(22), the coast of (22′), and `error_dynamics`, the `A` that (23′) carries `H` through |
 | `src/history.rs` | the recent past of the nominal state, which a measurement is fused against at the time it was taken, equation (23′) |
@@ -237,7 +237,7 @@ adding one: (28″) is (28)'s horizontal rows against an anchor, (29″) is (29)
   which is why it lives beside `fuse_stationary` in `eskf/hold.rs` and not in `fuse.rs`. Its
   verdicts reach `Diagnostics::position_hold` as any source's do, and the replay harness reads
   them back after each step, there being no call to hang a row on.
-* **The standstill** is `fuse_stationary`, an ordinary `fuse_*` the application calls.
+* **The stationary claim** is `fuse_stationary`, an ordinary `fuse_*` the application calls.
 
 Neither counts toward `Status`, neither is adopted, and the hold keeps horizontal position and
 velocity invalid, each until a measurement of it is accepted or adopted. See [holding tilt without aiding](EQUATIONS.md#holding-tilt-without-aiding),

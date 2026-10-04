@@ -202,10 +202,10 @@ flight           8  pos_h<=1.556 pos_v<=0.351 vel<=0.433 pos_h_max<=3.605  tilt<
 # fail on the observation and a longer gap is where it would (GOALS.md, "Holding tilt without
 # aiding", Costs); held from the first unaided step and white it read `false_valid_att`=3092 and
 # `tilt` 2.68 deg. `bench` is still with no GNSS and told so, which (29'') answers, and the hold
-# never engages. The standstill keeps tilt valid there, not more accurate: `tilt` reads 0.425
+# never engages. The stationary claim keeps tilt valid there, not more accurate: `tilt` reads 0.425
 # deg, against 0.276 with neither it nor the hold (valid only to 10.29 s) and 0.376 under the
 # hold alone (to 19.27 s), the window's leveling being the best a still simulator gives. Why the
-# standstill's corrections leave it worse was not chased. `hover_outage` drifts 27 m through a 90 s gap: `pos_h` 36.42 to 7.670, `vel`
+# stationary claim's corrections leave it worse was not chased. `hover_outage` drifts 27 m through a 90 s gap: `pos_h` 36.42 to 7.670, `vel`
 # 1.181 to 0.476, `tilt` 0.582 to 0.523 deg against the same flight with the hold off, and
 # attitude stays valid to 35.72 s rather than 25.32. Fused white it held attitude valid
 # throughout at `nees_pos` 7.01, the hold's 10 m against a 100 m error. Measured in DESIGN.md,

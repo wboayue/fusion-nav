@@ -99,7 +99,7 @@ lever_arm        50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10
 no_mag           50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
 logging_dropout  50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
 flight           50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10 over_vel<=0.10 over_att<=0.10
-# `bench` and `hover_outage` are the position hold's and the standstill's (28'') and (29'').
+# `bench` and `hover_outage` are the position hold's and the stationary claim's (28'') and (29'').
 # The hold fused as white, as PX4 and ArduPilot fuse theirs, failed `hover_outage` on every block:
 # anees_pos=61.00, over_vel=0.24, and any_att=40 where GNSS returns. At (24')'s tau of 2 s it
 # passes; at 1 s anees_pos=46.06 (DESIGN.md, "Hold").

@@ -1189,7 +1189,7 @@ impl Diagnostics {
 
     /// The sources [`Status`] counts: every one but those no sensor measures. The course
     /// reads the filter's own velocity ([`Eskf::fuse_course`](crate::Eskf::fuse_course)), a
-    /// standstill is the caller's claim, and the position hold is the filter's assumption
+    /// stationary claim is the caller's, and the position hold is the filter's assumption
     /// while nothing aids it. Counting the hold would turn the dead reckoning it exists for
     /// into `Healthy`.
     ///

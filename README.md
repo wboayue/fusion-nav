@@ -495,7 +495,7 @@ Three questions, three answers:
 | `DeadReckoning` | neither GNSS position nor velocity has been accepted for `Config::timeouts.dead_reckoning_after`; horizontal position is dead reckoned or held by the position hold, unusable either way, whatever the barometer and magnetometer still hold |
 | `Aligning` | running and aided, but attitude has not converged: a coarse start still learning, or a heading no magnetometer has observed yet |
 | `Degraded` | a source has timed out; horizontal position is still aided |
-| `Healthy` | every source that has been fused is still accepted, and attitude has converged; the course constraint, the standstill and the position hold, which read no sensor, are not counted |
+| `Healthy` | every source that has been fused is still accepted, and attitude has converged; the course constraint, the stationary claim and the position hold, which read no sensor, are not counted |
 
 When several apply the most severe wins, in the order of the table: `DeadReckoning` > `Aligning` >
 `Degraded` > `Healthy`. So a vehicle waiting for its first GNSS fix reads `DeadReckoning`, not

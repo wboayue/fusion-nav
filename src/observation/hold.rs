@@ -31,7 +31,7 @@ pub(crate) fn position_hold(state: &State, anchor: Vector3<f32>, variance: f32) 
     }
 }
 
-/// A claimed standstill as the update reads it: `y = 0 − v̂`, (29) with `z = 0` and the caller's
+/// A stationary claim as the update reads it: `y = 0 − v̂`, (29) with `z = 0` and the caller's
 /// variances as `R_m`. Equation (29″).
 pub(crate) fn zero_velocity(state: &State, variance: Vector3<f32>) -> Observation<3> {
     Observation {
@@ -65,7 +65,7 @@ mod tests {
     }
 
     #[test]
-    fn a_standstill_observes_the_whole_velocity_against_zero() {
+    fn a_stationary_claim_observes_the_whole_velocity_against_zero() {
         let state = State {
             velocity: Velocity::ned(0.5, -0.25, 2.0),
             ..State::default()

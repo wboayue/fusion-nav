@@ -594,8 +594,8 @@ impl Default for Coast {
 /// The hold is an assumption, not a sensor: [`Status`](crate::Status) stays `DeadReckoning`, and
 /// horizontal position and velocity each stay invalid in [`Validity`](crate::Validity), however
 /// tight the covariance the hold leaves, until a measurement of that quantity is accepted or
-/// adopted. A standstill, a fix the gate turns down or a velocity does not validate position;
-/// a standstill does bound velocity, and so does the second position fix the gate passes, which
+/// adopted. A stationary claim, a fix the gate turns down or a velocity does not validate position;
+/// a stationary claim does bound velocity, and so does the second position fix the gate passes, which
 /// has checked the velocity that carried the estimate from the first. The
 /// first GNSS fix or velocity after it that the gate turns down is adopted at once rather than
 /// after [`Config::recovery`]'s timeout, since what the gate would be judging it against is the

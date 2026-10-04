@@ -955,9 +955,9 @@ struct Scenario {
     /// rad: the sideslip σ the harness fuses the course constraint at, written as the log's
     /// `# Course sideslip` line, or `None` for a vehicle that does not point where it goes.
     course: Option<f64>,
-    /// m/s: the σ of a `still` row, written at the GNSS rate while the truth is exactly at rest,
+    /// m/s: the σ of a `stationary` row, written at the GNSS rate while the truth is exactly at rest,
     /// or `None` for a vehicle whose application claims nothing.
-    still: Option<f64>,
+    stationary: Option<f64>,
 }
 
 /// Sitting on the ground, pointing somewhere unremarkable.
@@ -1240,7 +1240,7 @@ fn scenarios() -> Vec<Scenario> {
         mag: MAG,
         dropout: None,
         course: None,
-        still: None,
+        stationary: None,
     };
 
     vec![
@@ -1271,11 +1271,11 @@ fn scenarios() -> Vec<Scenario> {
             imu: HARSH_IMU,
             ..base
         },
-        // A bench with no aiding at all, whose application says it is still: the standstill of
+        // A bench with no aiding at all, whose application says it is still: the stationary claim of
         // (29″) holding a tilt nothing else observes.
         Scenario {
             name: "bench",
-            covers: "120 s still with no GNSS, told it is still: the standstill of (29″) holding tilt",
+            covers: "120 s still with no GNSS, told it is still: the stationary claim of (29″) holding tilt",
             seed: 9,
             duration: 120.0,
             trajectory: at_rest(),
@@ -1283,7 +1283,7 @@ fn scenarios() -> Vec<Scenario> {
                 available: Window::NEVER,
                 ..GNSS
             },
-            still: Some(0.1),
+            stationary: Some(0.1),
             ..base
         },
         // A long unaided hover that wanders past the hold's assumption: GNSS gone for 90 s while
@@ -1710,13 +1710,13 @@ fn generate(
         // Exactly at rest, which the trajectories make true before release and throughout
         // `at_rest`: a claim the truth does not bear out is a different experiment.
         if epoch % gnss_every == 0
-            && let Some(sigma) = scenario.still
+            && let Some(sigma) = scenario.stationary
             && state.velocity == [0.0; 3]
             && state.acceleration == [0.0; 3]
             && state.euler_rate == [0.0; 3]
             && logged
         {
-            log.row(t, "still", &[], &[sigma * sigma; 3], None)?;
+            log.row(t, "stationary", &[], &[sigma * sigma; 3], None)?;
         }
         if epoch % baro_every == 0
             && let Some(altitude) = baro.sample(t, &state)
@@ -1930,7 +1930,7 @@ fn write_log_header(
          #   baro      v0     altitude m (up)     var0      m^2\n\
          #   mag       v0..v2 field, calibrated   var0      heading rad^2\n\
          #   gnss_yaw  v0     heading rad, 2 ant  var0      rad^2\n\
-         #   still     a claim of standstill      var0..var2 m^2/s^2\n\
+         #   stationary a claim to be stationary  var0..var2 m^2/s^2\n\
          #   t_meas_s  when a fix was taken, t_s less the receiver's latency",
         name = scenario.name,
         seed = scenario.seed,

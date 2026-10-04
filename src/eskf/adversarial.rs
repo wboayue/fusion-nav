@@ -843,7 +843,7 @@ fn apply(filter: &mut Eskf, op: &Op, project: bool) -> Result<(), TestCaseError>
             let noise = VelocityNoise::from_speed_accuracy(sigma);
             let outcome = filter.fuse_stationary(at(now, age), noise);
             if !fused(outcome) {
-                untouched(filter, "an unfused standstill")?;
+                untouched(filter, "an unfused stationary claim")?;
             }
             health_of(
                 filter,

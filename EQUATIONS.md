@@ -956,7 +956,7 @@ time, (23′), reaches further through $`A`$.
 | (36) heading: magnetometer (34)–(35), dual antenna (35′) | | | ● | | | |
 | (35″) course | | ● | ● | | | |
 | (28″) position hold | north, east | | | | | |
-| (29″) standstill | | ● | | | | |
+| (29″) stationary claim | | ● | | | | |
 
 No observation touches $`\delta\beta_a`$: the accelerometer bias is learned only through (17)'s
 coupling, and at rest that coupling cannot separate its horizontal part from tilt.
@@ -1315,7 +1315,7 @@ per reading, so it is fused at (24′) with $`\tau = 2`$ s rather than as white.
 fuse theirs as white; measured against that, the covariance white leaves is
 [overconfident on every block](GOALS.md#holding-tilt-without-aiding).
 
-**(29″)** A standstill the caller asserts: (29) with no arm and $`z = 0`$ on all three axes, at
+**(29″)** A stationary claim the caller asserts: (29) with no arm and $`z = 0`$ on all three axes, at
 the caller's $`R_m`$:
 
 ```math
@@ -1483,7 +1483,7 @@ Each implementing function cites its equation numbers in a doc comment.
 | (29) | GNSS velocity | `observation/gnss.rs` | `velocity_jacobian`, `velocity_observation` |
 | (29′) | GNSS velocity at the antenna | `observation/gnss.rs`, `eskf/fuse.rs` | `velocity_observation`; `Eskf::mean_rate` for `ω`, `Eskf::carried_velocity` for an adoption |
 | (28″) | position hold | `observation/hold.rs`, `eskf/hold.rs` | `position_hold`; fused by `Eskf::hold_if_unaided`, which `Eskf::predict` calls |
-| (29″) | standstill | `observation/hold.rs`, `eskf/hold.rs` | `zero_velocity`; fused by `Eskf::fuse_stationary` |
+| (29″) | stationary claim | `observation/hold.rs`, `eskf/hold.rs` | `zero_velocity`; fused by `Eskf::fuse_stationary` |
 | (30) | barometric altitude | `observation/baro.rs` | `altitude_jacobian`, `altitude_observation` |
 | (30′) | barometric offset | `state.rs`, `update.rs`, `propagate.rs`, `eskf/site.rs` | `Offset`; `update`'s blocks; `propagate_offset`; `Eskf::establish_reference` |
 | (31)–(33) | magnetometer, three-axis | — | unbuilt and [out of scope](GOALS.md#magnetometer-without-magnetic-field-states); no `field_jacobian` exists |

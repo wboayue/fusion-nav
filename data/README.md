@@ -303,7 +303,7 @@ real moving-baseline yaw within 0.010 rad of EKF2's at rest; it logs no `heading
 variance is PX4's 0.1 rad floor, the value its EKF2 fused at, and a header line says so. It is
 dated by the GNSS delay, as its fix is.
 
-A `still` row carries no value, only `var0` to `var2`, the velocity variance of the application's
+A `stationary` row carries no value, only `var0` to `var2`, the velocity variance of the application's
 claim that the vehicle is at rest, and the harness hands it to `fuse_stationary`. The simulator's
 `bench` scenario writes one at the GNSS rate; the converter writes none, so no corpus log has one.
 The position hold has no input row: the filter fuses it itself, and the harness reads each hold
