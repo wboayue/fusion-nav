@@ -2,10 +2,10 @@
 # Cost on a target
 
 **What does the filter cost a microcontroller?** The whole filter, `Eskf`, is
-4672 bytes on a Cortex-M0 and allocates nothing
+4688 bytes on a Cortex-M0 and allocates nothing
 else, so that is the RAM to plan for beyond the stack. The deepest stack is a GNSS velocity
-update, 11564 bytes, and linking every entry point takes
-119538 bytes of flash at `opt-level = "s"`. Execution time on
+update, 11580 bytes, and linking every entry point takes
+121230 bytes of flash at `opt-level = "s"`. Execution time on
 hardware is not measured yet (#41).
 
 Every figure on this page is pinned exactly in `data/footprint.txt`, which CI measures on
@@ -42,11 +42,11 @@ host timings, which are taken on one machine and pinned nowhere.
 
 | type | `thumbv6m` | `thumbv7em` |
 | --- | --- | --- |
-| `Eskf`, the filter | 4672 | 4672 |
+| `Eskf`, the filter | 4688 | 4688 |
 | of which the state history of (23′) | 1544 | 1544 |
 | of which the covariance `P` | 900 | 900 |
 | of which `Diagnostics` | 1160 | 1160 |
-| of which the yaw estimator of (45)–(52) | 440 | 440 |
+| of which the yaw estimator of (45)–(52) | 456 | 456 |
 | of which the barometric offset of (30′) | 64 | 64 |
 | `State`, the estimate `state()` returns | 72 | 72 |
 | `Config` | 268 | 268 |
@@ -62,20 +62,20 @@ The deepest stack a call into each entry point takes, in bytes, before the calle
 
 | entry point | `thumbv6m` | `thumbv7em` |
 | --- | --- | --- |
-| `predict` | 10844 | 10680 |
+| `predict` | 10812 | 10640 |
 | `fuse_gnss_position` | 10812 | 10600 |
 | `fuse_gnss_geodetic` | 11148 | 10928 |
-| `fuse_gnss_velocity` | 11564 | 11328 |
+| `fuse_gnss_velocity` | 11580 | 11352 |
 | `fuse_baro_altitude` | 9652 | 9416 |
-| `fuse_mag_heading` | 9748 | 9504 |
+| `fuse_mag_heading` | 9756 | 9504 |
 | `fuse_gnss_heading` | 9892 | 9640 |
-| `fuse_course` | 9900 | 9648 |
+| `fuse_course` | 9908 | 9648 |
 | `fuse_stationary` | 11484 | 11264 |
 | `predicted_validity` | 8652 | 8448 |
 | `initialize` | 5476 | 5312 |
 | `initialize_coarse` | 6212 | 6048 |
-| `initialize_from` | 3016 | 2896 |
-| **the deepest of them** | **11564** | **11328** |
+| `initialize_from` | 3024 | 2896 |
+| **the deepest of them** | **11580** | **11352** |
 
 The deepest path is `fuse_gnss_velocity` calling the three-measurement update, which calls
 `nalgebra`'s 15 × 15 matrix product, which calls the soft-float multiply on `thumbv6m` and
@@ -85,17 +85,17 @@ Each entry point's own frame, and the frames beneath it that set its depth:
 
 | function | `thumbv6m` | `thumbv7em` |
 | --- | --- | --- |
-| `predict` | 112 | 112 |
+| `predict` | 80 | 72 |
 | `propagate_or_coast`, the step it calls | 2168 | 2160 |
 | `hold_if_unaided`, the hold it calls beside the step | 1304 | 1304 |
-| `YawEstimator::predict`, the yaw estimator it steps beside both | 296 | 144 |
+| `YawEstimator::predict`, the yaw estimator it steps beside both | 256 | 152 |
 | `fuse_gnss_position` | 1384 | 1336 |
 | `fuse_gnss_geodetic` | 336 | 328 |
-| `fuse_gnss_velocity` | 1440 | 1408 |
+| `fuse_gnss_velocity` | 1456 | 1432 |
 | `fuse_baro_altitude` | 1264 | 1256 |
-| `fuse_mag_heading` | 112 | 104 |
+| `fuse_mag_heading` | 120 | 104 |
 | `fuse_gnss_heading` | 248 | 248 |
-| `fuse_course` | 248 | 256 |
+| `fuse_course` | 256 | 256 |
 | `fuse_stationary` | 1360 | 1344 |
 | `predicted_validity` | 1864 | 1832 |
 | `initialize` | 2224 | 2216 |
@@ -108,7 +108,7 @@ Each entry point's own frame, and the frames beneath it that set its depth:
 | beside the update: the observation formed at the measurement's time, (23′) | 1464 | 1440 |
 | beside the update: committing its result, or handing it to an adoption | 1112 | 1064 |
 | beside the update: adopting a position, from `fuse_gnss_position` | 1976 | 1992 |
-| beside the update: adopting a velocity, from `fuse_gnss_velocity` | 1904 | 1904 |
+| beside the update: adopting a velocity, from `fuse_gnss_velocity` | 1904 | 1896 |
 | beneath the update: the attitude reset of (41) | 456 | 448 |
 | beneath the update: the injection of (39)–(40) | 168 | 88 |
 | beneath `predict`: one sample, (9)–(22) | 1088 | 1096 |
@@ -122,9 +122,9 @@ Each entry point's own frame, and the frames beneath it that set its depth:
 
 | bytes | `thumbv6m` `3` | `thumbv6m` `s` | `thumbv7em` `3` | `thumbv7em` `s` |
 | --- | --- | --- | --- | --- |
-| `.text` | 183574 | 119538 | 205348 | 127188 |
-| of which `libm` | 19532 | 10432 | 20752 | 12620 |
-| of which `compiler_builtins` | 10334 | 10334 | 7674 | 7674 |
+| `.text` | 183954 | 121230 | 205244 | 129588 |
+| of which `libm` | 19532 | 11196 | 20752 | 12620 |
+| of which `compiler_builtins` | 10334 | 11630 | 7674 | 9096 |
 | of which `nalgebra`, out of line | 15486 | 2130 | 3956 | 924 |
 | `.rodata` | 4455 | 4535 | 4599 | 4679 |
 
