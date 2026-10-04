@@ -379,7 +379,7 @@ table is 1408 bytes of `.rodata` and its lookup 1204 of `.text` (1704), about 2.
 against 1096 for the `f32` one measured with it (14a668b).
 
 The yaw estimator cost 10.5 KB of `.text` on `thumbv6m` at `opt-level = 3`, 173070 to 183574,
-and 7.5 KB at `"s"`, 112082 to 119538 (f304717 against its merge base, measured together): five
+and 7.5 KB at `"s"`, 112082 to 119538 (the commit that added it, #165, against its parent, c7f3ecf, measured together): five
 hypotheses are one loop, and most of it is the `f32` trigonometry and 3 × 3 products that loop
 inlines.
 
@@ -394,7 +394,7 @@ latitude and longitude), a GNSS velocity 1.2 µs, each one-dimensional update 0.
 `StaticWindow::push` 34 ns and `initialize` 0.37 µs.
 
 The yaw estimator, fusing, adds 0.17 µs to `predict`, 0.772 µs to 0.941, and 0.29 µs to a GNSS
-velocity, 1.262 µs to 1.549 (f304717 against its merge base, the same machine and session). On a
+velocity, 1.262 µs to 1.549 (#165 against its parent, c7f3ecf, the same machine and session). On a
 core with no FPU the ratio will be worse than the host's 22 %: each hypothesis is a quaternion
 product and a rotation per sample. That figure is #41's.
 
@@ -607,7 +607,7 @@ GNSS velocity weighed while the composite σ was under its 15° bar: median, 90t
 percentile, in degrees. EKF2 flew on its magnetometer and is a reference, not truth. PX4's
 column is its own estimator on the same flight, `yaw_estimator_status`, under the same bar.
 The figures came from a build that printed the composite at each velocity, with the replacement
-of a failed yaw turned off, at f304717; no tool in the repository reproduces them (not built:
+of a failed yaw turned off, on the estimator as #165 landed it; no tool in the repository reproduces them (not built:
 carrying `yaw_estimator_status` into `--reference`).
 
 | log | vehicle | shipped | tilt against gravity alone | no σ floor | PX4's own |
