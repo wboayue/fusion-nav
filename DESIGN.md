@@ -614,8 +614,8 @@ GNSS velocity weighed while the composite σ was under its 15° bar: median, 90t
 percentile, in degrees. EKF2 flew on its magnetometer and is a reference, not truth. PX4's
 column is its own estimator on the same flight, `yaw_estimator_status`, under the same bar.
 The figures came from a build that printed the composite at each velocity, with the replacement
-of a failed yaw turned off, on the estimator as #165 landed it; no tool in the repository reproduces them (not built:
-carrying `yaw_estimator_status` into `--reference`).
+of a failed yaw turned off, on the estimator as #165 landed it; no tool in the repository reproduces them. Not built: #219,
+which carries `yaw_estimator_status` into `--reference`.
 
 | log | vehicle | shipped | tilt against gravity alone | no σ floor | PX4's own |
 | --- | --- | --- | --- | --- | --- |

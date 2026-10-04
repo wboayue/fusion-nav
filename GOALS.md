@@ -1112,7 +1112,7 @@ flights. DESIGN.md, "`YawEstimator`", has the table.
   off and holds station stays `Aligning` until it moves.
 - Before the adoption the start still claims `sigma_yaw` on a yaw nothing measured, and GNSS
   velocity fused under it leaves tilt 3.2° out under a 1.8° σ for 0.8 s on `multirotor_no_mag`
-  (`data/anees.txt` asserts it). PX4 fuses no GNSS until yaw is aligned.
+  (`data/anees.txt` asserts it). PX4 fuses no GNSS until yaw is aligned. #218.
 - A sensor that is wrong and says it is right is believed until the vehicle accelerates and a
   velocity is rejected for it: `yaw_fault` is 80° out for 8 s, 15 s on one seed of 50, and its
   covariance cannot say so.

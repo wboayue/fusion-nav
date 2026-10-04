@@ -73,9 +73,10 @@ Known losses, stated in the published pages:
 - A start with no magnetometer claims `sigma_yaw` on a yaw nothing measured until the yaw
   estimator supplies one, and GNSS velocity fused under it tilts the estimate
   (`multirotor_no_mag`, `data/anees.txt` asserts the failure). PX4 fuses no GNSS until yaw is
-  aligned. The estimator needs acceleration: a vehicle that hovers stays `Aligning`.
+  aligned. #218. The estimator needs acceleration: a vehicle that hovers stays `Aligning`.
 - `a299e722` cannot judge the yaw estimator: its log holds 50 IMU samples a second, each
-  averaging 2.5 ms of 20. The estimator's fixed-wing tails are wider than PX4's own.
+  averaging 2.5 ms of 20. The estimator's fixed-wing tails are wider than PX4's own, by a
+  comparison no tool in the repository reproduces yet (#219).
 - On `2c42096b`, height disagrees with EKF2 because EKF2 follows its barometer and this filter
   follows GNSS height's low frequencies; horizontal agrees to 0.3 m RMS.
 
