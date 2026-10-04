@@ -370,7 +370,13 @@ impl Eskf {
         self.aligned = false;
         // A hold belongs to the life it held; the next outage anchors afresh.
         self.hold = HoldState::default();
-        self.yaw_estimator.clear();
+        // A bank that begins in motion levels against whatever the vehicle is doing, as one
+        // begun again in flight does, and settles before its yaw is taken.
+        if at_rest {
+            self.yaw_estimator.clear();
+        } else {
+            self.yaw_estimator.restart();
+        }
         self.yaw_replaced = YawReplaced::default();
     }
 }

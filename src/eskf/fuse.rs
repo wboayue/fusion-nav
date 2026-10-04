@@ -227,7 +227,7 @@ impl Eskf {
                     outcome,
                     |diagnostics| &mut diagnostics.gnss_position,
                     recovery_after(
-                        self.hold.holds_position() || self.yaw_replaced.position,
+                        self.hold.holds_position() || self.yaw_replaced.owes_position(),
                         self.config.recovery.gnss_position,
                     ),
                     |filter| {
@@ -242,8 +242,8 @@ impl Eskf {
         // An adoption ended the hold's claim on position on its way. A fix the gate passes
         // measures position too, and one it passes against a position already measured since
         // the hold has checked the velocity that carried the estimate there.
-        if matches!(horizontal, Fusion::Accepted { .. } | Fusion::Reset) {
-            self.yaw_replaced.position = false;
+        if matches!(horizontal, Fusion::Accepted { .. }) {
+            self.yaw_replaced.settle_position();
         }
         if matches!(horizontal, Fusion::Accepted { .. }) {
             if !self.hold.holds_position() {
@@ -568,6 +568,7 @@ impl Eskf {
             return refuse(&mut self.diagnostics.gnss_velocity, Fusion::InvalidNoise);
         }
         self.weigh_yaw(time, velocity, noise, antenna);
+        self.adopt_first_yaw();
         if self.unestablished.velocity {
             let Some(adopted) = self.carried_velocity(velocity, antenna, time) else {
                 return refuse(&mut self.diagnostics.gnss_velocity, Fusion::NotFinite);
@@ -599,7 +600,7 @@ impl Eskf {
             outcome,
             |diagnostics| &mut diagnostics.gnss_velocity,
             recovery_after(
-                self.hold.holds_velocity() || self.yaw_replaced.velocity,
+                self.hold.holds_velocity() || self.yaw_replaced.owes_velocity(),
                 self.config.recovery.gnss_velocity,
             ),
             |filter| {
@@ -609,8 +610,8 @@ impl Eskf {
                     .is_some()
             },
         );
-        if matches!(fusion, Fusion::Accepted { .. } | Fusion::Reset) {
-            self.yaw_replaced.velocity = false;
+        if matches!(fusion, Fusion::Accepted { .. }) {
+            self.yaw_replaced.settle_velocity();
         }
         // An adoption ended the hold's claim on velocity in `adopt_velocity`.
         if matches!(fusion, Fusion::Accepted { .. }) {

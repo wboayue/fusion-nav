@@ -99,6 +99,7 @@ impl Eskf {
         self.reset_block(axes, variances);
         if axes.contains(&ErrorState::PositionNorth) {
             self.hold.end_position();
+            self.yaw_replaced.settle_position();
         }
     }
 
@@ -136,6 +137,7 @@ impl Eskf {
             noise.variance(),
         );
         self.hold.end_velocity();
+        self.yaw_replaced.settle_velocity();
     }
 
     /// Read `α₀` from the estimate at one altitude, `α̂₀ = α + p̂_D` — (30) solved for α₀ with

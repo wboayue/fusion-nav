@@ -16,6 +16,7 @@ use nalgebra::{
 use crate::frames::Body;
 use crate::init::level_from_accel;
 use crate::math::{exp_quat, wrap_pi};
+use crate::observation::heading::heading_of;
 use crate::propagate::ImuSample;
 use crate::units::{Acceleration, Timestamp};
 
@@ -45,8 +46,22 @@ const BIAS_RATE_MAX: f32 = 0.174_532_93;
 const ACCEL_FILTER_RATIO: f32 = 10.0;
 
 /// The longest interval between two GNSS velocities that still measures an acceleration,
-/// seconds: past it the difference is an average over maneuvers (46) has already seen.
-const ACCELERATION_GAP: f32 = 1.0;
+/// seconds: two and a half periods of a 1 Hz receiver, so that one late or missing solution
+/// is still a slope. Past it the difference averages maneuvers (46) has long since seen.
+///
+/// At a bound of 1 s, exclusive, a 1 Hz receiver measured nothing, and the steady circle
+/// `gsf.rs` tests read 0.22 rad out under a 0.04 rad σ: the gravity-only form, silently.
+const ACCELERATION_GAP: f32 = 2.5;
+
+/// `τ`, the time constant of the low-pass on specific force, seconds: a tenth of the tilt
+/// correction's (`EKFGSF_yaw.cpp:71`), against vibration.
+const ACCEL_FILTER_TAU: f32 = 1.0 / (ACCEL_FILTER_RATIO * TILT_GAIN);
+
+/// The velocity σ at or above which a solution is not weighed, m/s: PX4's `EKF2_REQ_SACC`
+/// default (`params_gnss.yaml:117-121` at `c4e4ef98e9`), applied at `gps_control.cpp:388`.
+/// A receiver this unsure of its velocity separates no hypotheses, and its error is not the
+/// white one (51) takes it for.
+const SIGMA_MAX: f32 = 0.5;
 
 /// Yaw-rate noise of (48), rad s⁻¹ / √Hz.
 ///
@@ -121,7 +136,7 @@ impl Model {
     /// `ψ_i`, the heading of the model's forward axis: the angle the main filter's heading
     /// is, so the two difference to a rotation about down.
     fn yaw(&self) -> f32 {
-        yaw_of(self.attitude)
+        heading_of(self.attitude)
     }
 
     /// Turn the attitude about navigation down, composed on the left as a heading adoption
@@ -130,12 +145,6 @@ impl Model {
         self.attitude = exp_quat(Vector3::z() * angle) * self.attitude;
         self.attitude.renormalize();
     }
-}
-
-/// The heading of an attitude's forward axis, `atan2` of its east and north components.
-pub(crate) fn yaw_of(attitude: UnitQuaternion<f32>) -> f32 {
-    let forward = attitude * Vector3::x();
-    RealField::atan2(forward.y, forward.x)
 }
 
 /// A rotation of a horizontal vector by `angle` about down.
@@ -157,6 +166,9 @@ pub(crate) struct YawEstimator {
     /// `ā`, the vehicle's horizontal acceleration as successive GNSS velocities measure it,
     /// low-passed as `f̄` is: what (46) takes out of the specific force before reading tilt.
     acceleration: Vector2<f32>,
+    /// `u` of (46), the direction `ā` leaves for specific force to be leveled against:
+    /// kept, since it changes with a velocity and is read with every IMU sample.
+    reference: Vector3<f32>,
     /// The last velocity weighed and when it was taken, for `ā`.
     last: Option<(Vector2<f32>, Timestamp)>,
     /// Whether the models' tilt has been set from the accelerometer.
@@ -165,8 +177,8 @@ pub(crate) struct YawEstimator {
     fusing: bool,
     /// Seconds of propagation since fusing began.
     active: f32,
-    /// Whether this bank is a second one: begun again by [`restart`](Self::restart), in what
-    /// may be mid-flight, rather than at the filter's start.
+    /// Whether this bank began by [`restart`](Self::restart), in what may be mid-flight,
+    /// rather than with a vehicle shown at rest.
     restarted: bool,
     /// `ψ̄` of (52).
     yaw: f32,
@@ -180,6 +192,7 @@ impl Default for YawEstimator {
             models: [Model::default(); MODELS],
             accel: Vector3::zeros(),
             acceleration: Vector2::zeros(),
+            reference: Vector3::z(),
             last: None,
             leveled: false,
             fusing: false,
@@ -210,6 +223,7 @@ impl YawEstimator {
         }
         self.accel = Vector3::zeros();
         self.acceleration = Vector2::zeros();
+        self.reference = Vector3::z();
         self.last = None;
         self.leveled = false;
         self.fusing = false;
@@ -224,10 +238,23 @@ impl YawEstimator {
         self.fusing.then_some((self.yaw, self.variance))
     }
 
-    /// Whether the composite may overrule a heading the main filter holds: always for the
-    /// first bank, and for one begun again only after [`RESTART_SETTLING`] of fusion.
+    /// Whether the composite may be taken for a heading: always for a bank begun at rest,
+    /// and for one begun in motion only after [`RESTART_SETTLING`] of fusion.
     pub(crate) fn is_settled(&self) -> bool {
         !self.restarted || self.active >= RESTART_SETTLING
+    }
+
+    /// Whether the hypotheses have a tilt yet, without which no velocity is weighed.
+    pub(crate) fn is_leveled(&self) -> bool {
+        self.leveled
+    }
+
+    /// The variance (50) reads for a velocity whose north and east variances are these, or
+    /// `None` for one too uncertain to weigh: the larger of the two, no smaller than
+    /// [`SIGMA_MIN`]'s and under [`SIGMA_MAX`]'s.
+    pub(crate) fn variance_of(north: f32, east: f32) -> Option<f32> {
+        let variance = north.max(east);
+        (variance < SIGMA_MAX * SIGMA_MAX).then_some(variance.max(SIGMA_MIN * SIGMA_MIN))
     }
 
     /// Step every hypothesis across one IMU sample. Equations (46)–(48).
@@ -244,6 +271,7 @@ impl YawEstimator {
         let delta_velocity = imu.delta_velocity.vector();
         let delta_angle = imu.delta_angle.vector();
         let accel = delta_velocity / dt_v;
+        let measured_rate = delta_angle / dt_a;
 
         let coefficient = (ACCEL_FILTER_RATIO * dt_v * TILT_GAIN).min(1.0);
         self.accel = self.accel * (1.0 - coefficient) + accel * coefficient;
@@ -261,27 +289,29 @@ impl YawEstimator {
             }
             self.leveled = true;
         }
-        if !self.fusing {
-            for model in &mut self.models {
-                model.gyro_bias = gyro_bias;
-            }
-        }
-
         let force = self.accel.norm();
         // (46): where specific force points in navigation axes, reversed. Straight down for a
         // vehicle not accelerating, and before fusion, while no hypothesis has a yaw to turn
         // `ā` into its own axes with.
         let reference = if self.fusing {
-            Vector3::new(-self.acceleration.x, -self.acceleration.y, gravity).normalize()
+            self.reference
         } else {
             Vector3::z()
         };
+        // Before fusion the hypotheses are one attitude, which (45) spreads when fusion
+        // begins: the first is stepped and the rest take it.
+        let stepped = if self.fusing { MODELS } else { 1 };
+        if !self.fusing
+            && let Some(first) = self.models.first_mut()
+        {
+            first.gyro_bias = gyro_bias;
+        }
         // (46): unity at 1 g and zero a half g either side, squared so that vibration about
         // 1 g costs little (`ahrsCalcAccelGain`, `EKFGSF_yaw.cpp:417-435`).
         let attenuation = 1.0 - (2.0 * (force - gravity).abs() / gravity).min(1.0);
         let gain = TILT_GAIN * attenuation * attenuation;
 
-        for model in &mut self.models {
+        for model in self.models.iter_mut().take(stepped) {
             // (46): the rotation that carries the specific force the model expects onto the
             // measured one.
             let expected = model.attitude.inverse() * reference;
@@ -291,8 +321,8 @@ impl YawEstimator {
                 Vector3::zeros()
             };
             // (47).
-            let rate = delta_angle / dt_a - model.gyro_bias;
-            if rate.norm() < BIAS_RATE_MAX {
+            let rate = measured_rate - model.gyro_bias;
+            if rate.norm_squared() < BIAS_RATE_MAX * BIAS_RATE_MAX {
                 model.gyro_bias -= correction * (BIAS_GAIN * dt_a);
                 model.gyro_bias = model
                     .gyro_bias
@@ -305,24 +335,31 @@ impl YawEstimator {
             if !self.fusing {
                 continue;
             }
-            // (48). The yaw column of `F` is the velocity increment turned a quarter circle:
-            // a yaw error rotates what the accelerometer added.
+            // (48). `F = I + f e₃ᵀ`, `f` the velocity increment turned a quarter circle: a
+            // yaw error rotates what the accelerometer added. Written out as that shear,
+            // `P + f p₃ᵀ + p₃ fᵀ + P_ψψ f fᵀ` with `p₃` the yaw column, rather than as two
+            // 3 × 3 products of a matrix that is seven parts identity: five hypotheses pay it
+            // on every sample, in software floats on a core with no FPU.
             let moved = (model.attitude * delta_velocity).xy();
-            #[rustfmt::skip]
-            let f = Matrix3::new(
-                1.0, 0.0, -moved.y,
-                0.0, 1.0,  moved.x,
-                0.0, 0.0,  1.0,
-            );
+            let f = Vector3::new(-moved.y, moved.x, 0.0);
+            let p3 = model.covariance.column(2).into_owned();
             let q_v = ACCEL_NOISE * ACCEL_NOISE * dt_v;
             let q_psi = GYRO_NOISE * GYRO_NOISE * dt_a;
-            model.covariance = f * model.covariance * f.transpose()
+            model.covariance += f * p3.transpose()
+                + p3 * f.transpose()
+                + f * f.transpose() * p3.z
                 + Matrix3::from_diagonal(&Vector3::new(q_v, q_v, q_psi));
             condition(&mut model.covariance);
             model.velocity += moved;
         }
         if self.fusing {
             self.active += dt_v;
+        } else {
+            let [first, rest @ ..] = &mut self.models;
+            for model in rest {
+                model.attitude = first.attitude;
+                model.gyro_bias = first.gyro_bias;
+            }
         }
     }
 
@@ -343,12 +380,12 @@ impl YawEstimator {
         variance: f32,
         carried: Vector2<f32>,
         heading: f32,
+        gravity: f32,
     ) {
         if !self.leveled {
             return;
         }
-        self.measure_acceleration(taken, velocity);
-        let variance = variance.max(SIGMA_MIN * SIGMA_MIN);
+        self.measure_acceleration(taken, velocity, gravity);
         if !self.fusing {
             self.spread(velocity, variance, carried, heading);
             self.fusing = velocity.norm_squared() > variance;
@@ -357,10 +394,13 @@ impl YawEstimator {
         }
 
         let mut densities = [0.0; MODELS];
+        let mut yaws = [0.0; MODELS];
         let mut conditioned = true;
-        for (model, density) in self.models.iter_mut().zip(&mut densities) {
+        let each = self.models.iter_mut().zip(&mut densities).zip(&mut yaws);
+        for ((model, density), yaw) in each {
+            *yaw = model.yaw();
             // (49).
-            let z = velocity + turned(carried, wrap_pi(model.yaw() - heading));
+            let z = velocity + turned(carried, wrap_pi(*yaw - heading));
             // (50).
             let s = model.covariance.fixed_view::<2, 2>(0, 0) + Matrix2::identity() * variance;
             let determinant = s.m11 * s.m22 - s.m12 * s.m21;
@@ -381,6 +421,8 @@ impl YawEstimator {
             let correction = -k * innovation;
             model.velocity += correction.xy();
             model.turn(correction.z);
+            // A turn about down moves the heading one for one, so it need not be read back.
+            *yaw = wrap_pi(*yaw + correction.z);
             model.covariance -= k * s * k.transpose();
             condition(&mut model.covariance);
             // (51).
@@ -398,28 +440,45 @@ impl YawEstimator {
                 model.weight /= total;
             }
         }
-        self.compose();
+        self.compose(yaws);
     }
 
-    /// `ā` of (46): the change between this velocity and the last, over the time between
-    /// them, low-passed with the time constant `f̄` has so that the two lag alike.
+    /// `ā` and `u` of (46): the change between this velocity and the last, over the time
+    /// between them, low-passed so that it lags as `f̄` does.
+    ///
+    /// A slope over an interval `T` is the acceleration `T / 2` ago, so the low-pass takes
+    /// what is left of `f̄`'s `τ`, `τ − T / 2`, and none at all from `T = 2τ`, 1 Hz, where
+    /// the slope alone is already as late. It is then held until the next velocity, which no
+    /// filter takes back: on the steady circle `gsf.rs` tests, the yaw is within 0.02 rad
+    /// from 2 Hz up and 0.07 rad out at 1 Hz, against 0.22 with no `ā` at all.
     ///
     /// From the measurements' own times, since a fix's arrival jitters by tens of
     /// milliseconds on an interval of a couple of hundred. Velocities more than
     /// [`ACCELERATION_GAP`] apart measure no acceleration, and `ā` starts again from zero.
-    fn measure_acceleration(&mut self, taken: Timestamp, velocity: Vector2<f32>) {
+    ///
+    /// The velocities are the antenna's. Its swing about the IMU as the vehicle turns,
+    /// `ω × r`, is in their difference, and is not taken out: referring it to the IMU needs
+    /// the yaw this estimator exists to find. A 0.3 m arm turning at 1 rad/s swings 0.3 m/s.
+    fn measure_acceleration(&mut self, taken: Timestamp, velocity: Vector2<f32>, gravity: f32) {
         let interval = self
             .last
             .map(|(_, last)| taken.since(last).as_secs())
-            .filter(|interval| (0.0..ACCELERATION_GAP).contains(interval) && *interval > 0.0);
+            .filter(|interval| *interval > 0.0 && *interval <= ACCELERATION_GAP);
         match (self.last, interval) {
             (Some((last, _)), Some(interval)) => {
                 let measured = (velocity - last) / interval;
-                let coefficient = (ACCEL_FILTER_RATIO * interval * TILT_GAIN).min(1.0);
+                let tau = ACCEL_FILTER_TAU - 0.5 * interval;
+                let coefficient = if tau > 0.0 {
+                    -ComplexField::exp_m1(-interval / tau)
+                } else {
+                    1.0
+                };
                 self.acceleration += (measured - self.acceleration) * coefficient;
             }
             _ => self.acceleration = Vector2::zeros(),
         }
+        self.reference =
+            Vector3::new(-self.acceleration.x, -self.acceleration.y, gravity).normalize();
         self.last = Some((velocity, taken));
     }
 
@@ -448,10 +507,11 @@ impl YawEstimator {
 
     /// (52): the weighted mean direction, and the weighted variance about it. Summed as unit
     /// vectors so that hypotheses either side of ±π do not average to zero.
-    fn compose(&mut self) {
+    ///
+    /// `yaws` are the hypotheses' headings, which the caller has just used.
+    fn compose(&mut self, yaws: [f32; MODELS]) {
         let mut direction = Vector2::zeros();
-        for model in &self.models {
-            let yaw = model.yaw();
+        for (model, yaw) in self.models.iter().zip(yaws) {
             direction +=
                 Vector2::new(ComplexField::cos(yaw), ComplexField::sin(yaw)) * model.weight;
         }
@@ -459,8 +519,9 @@ impl YawEstimator {
         self.variance = self
             .models
             .iter()
-            .map(|model| {
-                let delta = wrap_pi(model.yaw() - self.yaw);
+            .zip(yaws)
+            .map(|(model, yaw)| {
+                let delta = wrap_pi(yaw - self.yaw);
                 model.weight * (model.covariance.m33 + delta * delta)
             })
             .sum();
@@ -506,6 +567,8 @@ pub(crate) mod tests {
         ripple: f32,
         /// What the gyroscope reads with the vehicle not turning.
         gyro_bias: Vector3<f32>,
+        /// IMU steps between velocities: 20 is 5 Hz.
+        every: u32,
     }
 
     impl Flight {
@@ -517,6 +580,7 @@ pub(crate) mod tests {
                 step: 0,
                 ripple: 0.05,
                 gyro_bias: Vector3::zeros(),
+                every: 20,
             }
         }
 
@@ -542,17 +606,18 @@ pub(crate) mod tests {
             self.estimator.fuse_velocity(
                 Timestamp::from_micros(10_000 * self.step),
                 self.velocity.xy() + error * self.ripple,
-                0.01,
+                0.09,
                 Vector2::zeros(),
                 0.0,
+                GRAVITY,
             );
         }
 
-        /// `seconds` of flight under `acceleration(t)`, a fix every 0.2 s.
+        /// `seconds` of flight under `acceleration(t)`, a fix every `every` steps.
         fn fly(&mut self, seconds: f32, acceleration: impl Fn(f32) -> Vector3<f32>) {
             for k in 0..(seconds / DT) as u32 {
                 self.step(acceleration(k as f32 * DT), Vector3::zeros());
-                if k % 20 == 19 {
+                if k % self.every == self.every - 1 {
                     self.fix();
                 }
             }
@@ -683,7 +748,7 @@ pub(crate) mod tests {
         let now = Timestamp::from_micros(10_000 * flight.step);
         flight
             .estimator
-            .fuse_velocity(now, spike, 0.01, Vector2::zeros(), 0.0);
+            .fuse_velocity(now, spike, 0.09, Vector2::zeros(), 0.0, GRAVITY);
         for (model, before) in flight.estimator.models.iter().zip(before) {
             // 5σ of an innovation whose σ is a few tenths of a meter per second.
             let moved = (model.velocity - before).norm();
@@ -765,9 +830,10 @@ pub(crate) mod tests {
                     flight.estimator.fuse_velocity(
                         taken,
                         then,
-                        0.01,
+                        0.09,
                         carried,
                         wrap_pi(yaw + wrong),
+                        GRAVITY,
                     );
                 }
             }
@@ -793,18 +859,44 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_receiver_claiming_millimeters_is_read_at_the_floor() {
+    fn a_velocitys_sigma_is_read_between_the_floor_and_the_ceiling() {
+        // 0.3 m/s and 0.5 m/s, written out: compared with the constants this would pass at
+        // any floor and any ceiling. The larger axis decides.
+        let read = YawEstimator::variance_of;
+        assert_eq!(read(1.0e-6, 1.0e-6), Some(0.09));
+        assert_eq!(read(0.16, 0.04), Some(0.16));
+        assert_eq!(read(0.04, 0.2499), Some(0.2499));
+        assert_eq!(read(0.25, 0.01), None);
+        assert_eq!(read(0.01, f32::NAN), Some(0.09));
+    }
+
+    #[test]
+    fn the_shear_of_48_is_the_dense_product_it_stands_for() {
+        // One step of a fusing bank against `F P Fᵀ + Q` computed the long way.
         let mut flight = Flight::airborne(0.4);
-        let now = Timestamp::from_micros(10_000 * flight.step);
-        let velocity = Vector2::new(1.0, 0.0);
-        flight
-            .estimator
-            .fuse_velocity(now, velocity, 1.0e-6, Vector2::zeros(), 0.0);
-        let p = flight.estimator.models[0].covariance;
-        // 0.3 m/s, written out: compared with the constant this would pass at any floor.
+        flight.fly(3.0, legs);
+        let before = flight.estimator.models[0];
+        let acceleration = Vector3::new(1.5, -0.7, 0.0);
+        flight.step(acceleration, Vector3::zeros());
+        let after = flight.estimator.models[0];
+        let moved = after.velocity - before.velocity;
+        #[rustfmt::skip]
+        let f = Matrix3::new(
+            1.0, 0.0, -moved.y,
+            0.0, 1.0,  moved.x,
+            0.0, 0.0,  1.0,
+        );
+        let q = Matrix3::from_diagonal(&Vector3::new(
+            ACCEL_NOISE * ACCEL_NOISE * DT,
+            ACCEL_NOISE * ACCEL_NOISE * DT,
+            GYRO_NOISE * GYRO_NOISE * DT,
+        ));
+        let dense = f * before.covariance * f.transpose() + q;
+        assert!(moved.norm() > 0.005);
         assert!(
-            (p.m11 - 0.09).abs() < 1.0e-6 && (p.m22 - 0.09).abs() < 1.0e-6,
-            "{p}"
+            (after.covariance - dense).abs().max() < 1.0e-7,
+            "{}",
+            after.covariance - dense
         );
     }
 
@@ -819,8 +911,8 @@ pub(crate) mod tests {
             (measured - Vector2::new(2.0, 0.0)).norm() < 0.05,
             "{measured}"
         );
-        // The next velocity arrives two seconds on: its slope is no acceleration.
-        for _ in 0..200 {
+        // The next velocity arrives three seconds on: its slope is no acceleration.
+        for _ in 0..300 {
             flight.step(Vector3::zeros(), Vector3::zeros());
         }
         flight.fix();
@@ -844,11 +936,27 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_slow_receiver_still_measures_the_circle() {
+        // The steady circle of the test above from 10 Hz down to 1 Hz. A slope held for a
+        // second is late whatever filters it, and 1 Hz pays for that. Survives a gap that
+        // takes a 1 s interval for no acceleration at all, which read 0.22 rad out there.
+        for (every, bound) in [(10, 0.02), (20, 0.02), (50, 0.02), (100, 0.09), (101, 0.09)] {
+            let mut flight = Flight::airborne(0.3);
+            flight.every = every;
+            flight.fly(30.0, circling);
+            let (estimate, _) = flight.estimator.yaw().unwrap();
+            let error = wrap_pi(estimate - 0.3);
+            assert!(error.abs() < bound, "every {every}: error {error}");
+        }
+    }
+
+    #[test]
     fn a_bank_that_stops_producing_numbers_starts_over() {
         let mut flight = Flight::airborne(0.0);
         flight.fly(3.0, circling);
         flight.estimator.models[2].covariance.m33 = f32::NAN;
-        flight.estimator.compose();
+        let yaws = flight.estimator.models.each_ref().map(Model::yaw);
+        flight.estimator.compose(yaws);
         assert!(flight.estimator.yaw().is_none() && !flight.estimator.is_settled());
     }
 }

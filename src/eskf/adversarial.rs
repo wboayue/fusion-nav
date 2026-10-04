@@ -699,10 +699,15 @@ fn apply(filter: &mut Eskf, op: &Op, project: bool) -> Result<(), TestCaseError>
                         "{:?} changed the estimate",
                         refused
                     );
-                    prop_assert_eq!(
-                        &filter.yaw_estimator,
-                        &before.yaw_estimator,
-                        "{:?} stepped the yaw estimator",
+                    // Time the yaw estimator did not integrate: it starts over, unless off.
+                    let yaw = &filter.yaw_estimator;
+                    prop_assert!(
+                        if filter.config.yaw_estimator && filter.initialized {
+                            yaw.yaw().is_none() && !yaw.is_settled()
+                        } else {
+                            yaw == &before.yaw_estimator
+                        },
+                        "{:?} left the yaw estimator running",
                         refused
                     );
                     if filter.initialized {

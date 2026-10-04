@@ -89,6 +89,9 @@ impl Eskf {
             self.config.recovery.mag_heading,
             &[&d.gnss_position, &d.gnss_velocity, &d.gnss_heading],
         );
+        // Nor after the yaw estimator replaced the heading, until a magnetic heading agrees
+        // with the new one: see `YawReplaced`.
+        let recovery = recovery.filter(|_| !self.yaw_replaced.overrules_magnetometer());
         let source = HeadingSource {
             health: |diagnostics| &mut diagnostics.mag_heading,
             gate: self.config.gates.mag_heading,
@@ -96,9 +99,13 @@ impl Eskf {
             recovery,
             magnetic: true,
         };
-        self.fuse_heading(time, source, 0.0, |past, covariance| {
+        let fusion = self.fuse_heading(time, source, 0.0, |past, covariance| {
             mag::heading_observation(past, covariance, field, declination, noise)
-        })
+        });
+        if matches!(fusion, Fusion::Accepted { .. }) {
+            self.yaw_replaced.settle_magnetometer();
+        }
+        fusion
     }
 
     /// Fuse a true heading from a dual-antenna (moving-baseline) GNSS receiver.

@@ -60,7 +60,16 @@ impl Eskf {
         match outcome {
             Propagation::Propagated => self.step_yaw_estimator(imu),
             Propagation::Coasted { .. } => self.restart_yaw_estimator(),
-            _ => return outcome,
+            // The clock did not move: nothing was missed.
+            Propagation::NotInitialized | Propagation::InvalidStep { .. } => return outcome,
+            // It did, and the yaw estimator integrated none of it.
+            Propagation::StepTooLong { .. }
+            | Propagation::NotFinite
+            | Propagation::InvalidInterval { .. }
+            | Propagation::StateNotFinite => {
+                self.restart_yaw_estimator();
+                return outcome;
+            }
         }
         self.hold_if_unaided();
         outcome

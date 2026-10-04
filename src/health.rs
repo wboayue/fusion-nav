@@ -1145,8 +1145,8 @@ pub struct Diagnostics {
     /// [`Config::hold`](crate::Config::hold).
     pub position_hold: SourceHealth,
     /// The yaw estimator of (45)–(52): each GNSS velocity it weighed is an arrival, and each
-    /// heading the filter took from it an adoption. Never accepted or rejected, since its
-    /// answer is adopted and not gated; see
+    /// heading the filter took from it an adoption, counted in `adopted` and, as every
+    /// adoption is, in `accepted`. Never rejected, since its answer is not gated; see
     /// [`Config::yaw_estimator`](crate::Config::yaw_estimator).
     pub yaw_estimator: SourceHealth,
     /// What [`Eskf::predict`](crate::Eskf::predict) refused. Not a source, so not in
