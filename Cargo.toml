@@ -25,7 +25,7 @@ exclude = ["AGENTS.md", "VALIDATION.md", "data/flight.truth.csv", "validation/",
 # `bench` holds the host benchmarks, a member rather than a dev-dependency here because
 # criterion's features would reach every test and example build (see `bench/Cargo.toml`).
 [workspace]
-members = [".", "bench", "panic-check"]
+members = [".", "bench", "onboard", "panic-check"]
 default-members = ["."]
 
 [dependencies]

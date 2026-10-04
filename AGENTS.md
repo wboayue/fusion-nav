@@ -289,6 +289,7 @@ cargo run --example simulate -- flight data   # regenerate the committed data/fl
 data/bench.sh                     # score every scenario against data/scenarios.txt; a CI gate
 data/bench.sh mission static      # only these
 data/expect.sh --self-test        # the comparator both bench.sh and the manifest rules read
+cargo test -p onboard            # the trace #41's board replays: codec, executor, digests
 cargo test --lib adversarial      # the proptest suite of #44, seeded; ~6 s in debug
 data/anees.sh                     # every scenario on 50 seeds against data/anees.txt; a CI gate
 python3 tools/anees.py --self-test   # the ensemble aggregator's fixtures (stdlib, no uv)
@@ -1130,6 +1131,9 @@ Every source touches the same ten places, and three of them are public:
   guard on this list.
 - The README fusion table, the `Eskf` and `prelude` doctests, and `EQUATIONS.md`'s mapping
   table.
+- `onboard/`'s `Record`, `Machine::execute` and `Recorder`, which carry every public call into a
+  trace the board times (#41). An exhaustive `match` on `Record` makes the codec a compile error,
+  but a `fuse_*` with no `Record` is simply never timed.
 - `tools/ulog2replay.py`, which has to find the source in a ULog and name its variance columns.
 - The comparison with EKF2, if EKF2 judges the source: its test ratio in `EKF2_RATIOS`
   (`tools/ulog2replay.py`) and `REFERENCE_KINDS["ratio"]` (`tools/replay_report.py`), the pairing

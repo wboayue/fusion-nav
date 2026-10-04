@@ -370,6 +370,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "onboard"
+version = "0.0.0"
+dependencies = [
+ "bench",
+ "fusion-nav",
+]
+
+[[package]]
 name = "oorandom"
 version = "11.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,15 @@
+[package]
+name = "onboard"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Cost on a board (#41): a trace of every call a run makes into the filter, recorded on the host
+# and replayed on the target with each call timed and its stack painted. The codec and the
+# executor are `no_std` and shared by both sides; the recorder is the host's alone. A member, not
+# a default one, so nothing at the root builds it, and a target's dependencies stay its own.
+[dependencies]
+fusion-nav = { path = ".." }
+
+[dev-dependencies]
+bench = { path = "../bench" }
