@@ -407,7 +407,7 @@ impl Eskf {
     /// [`carried_position`](Self::carried_position) for a velocity, referred to the IMU by
     /// (29′) at the mean rate over the measurement's age, or the last sample's for one taken
     /// now.
-    fn carried_velocity(
+    pub(super) fn carried_velocity(
         &self,
         taken: Velocity<Ned>,
         antenna: Position<Body>,
@@ -564,6 +564,7 @@ impl Eskf {
         if !noise.is_positive() {
             return refuse(&mut self.diagnostics.gnss_velocity, Fusion::InvalidNoise);
         }
+        self.weigh_yaw(time, velocity, noise, antenna);
         if self.unestablished.velocity {
             let Some(adopted) = self.carried_velocity(velocity, antenna, time) else {
                 return refuse(&mut self.diagnostics.gnss_velocity, Fusion::NotFinite);
@@ -1614,9 +1615,12 @@ mod tests {
             let _ = filter.fuse_course(now, heading);
             let _ = filter.fuse_stationary(now, VelocityNoise::from_speed_accuracy(nan));
         });
-        // The hold offers nothing; the filter makes it, and `hold.rs` times it.
+        // The hold offers nothing; the filter makes it, and `hold.rs` times it. Nor does the
+        // yaw estimator, which weighs the velocities the filter screened: `yaw.rs` times it.
         let offered = filter.diagnostics().sources();
-        let offered = offered.iter().filter(|&&(name, _)| name != "position_hold");
+        let offered = offered
+            .iter()
+            .filter(|&&(name, _)| !matches!(name, "position_hold" | "yaw_estimator"));
         for &(name, source) in offered {
             assert_eq!(source.accepted, 0, "{name}");
             let period = source.period().map(Seconds::as_secs);

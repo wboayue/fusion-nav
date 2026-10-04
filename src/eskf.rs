@@ -9,6 +9,7 @@
 use crate::config::{Config, ConfigError};
 use crate::frames::Body;
 use crate::geodetic::LocalOrigin;
+use crate::gsf::YawEstimator;
 use crate::health::{Diagnostics, Status};
 use crate::math::{floor_diagonal, floor_offset};
 use crate::state::{Covariance, Offset, State};
@@ -23,6 +24,7 @@ mod predict;
 mod site;
 mod start;
 mod validity;
+mod yaw;
 
 use estimate::Estimate;
 
@@ -174,6 +176,9 @@ pub struct Eskf {
     /// The position hold of (28″): its anchor, and which quantities still carry the covariance
     /// it shaped; see [`hold_if_unaided`](Self::hold_if_unaided).
     hold: hold::HoldState,
+    /// The yaw hypotheses of (45)–(52), stepped and weighed while
+    /// [`Config::yaw_estimator`] is on; see [`weigh_yaw`](Self::weigh_yaw).
+    yaw_estimator: YawEstimator,
     initialized: bool,
     /// The clock; see [`time`](Self::time). Meaningless until `initialized`.
     time: Timestamp,
@@ -230,6 +235,7 @@ impl Eskf {
             unestablished: Unestablished::default(),
             aligned: false,
             hold: hold::HoldState::default(),
+            yaw_estimator: YawEstimator::default(),
             initialized: false,
             time: Timestamp::ZERO,
         }

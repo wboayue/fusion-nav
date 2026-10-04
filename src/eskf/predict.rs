@@ -57,12 +57,12 @@ impl Eskf {
         // the propagation's frame instead of above it ([measured]).
         //
         // [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function
-        if matches!(
-            outcome,
-            Propagation::Propagated | Propagation::Coasted { .. }
-        ) {
-            self.hold_if_unaided();
+        match outcome {
+            Propagation::Propagated => self.step_yaw_estimator(imu),
+            Propagation::Coasted { .. } => self.restart_yaw_estimator(),
+            _ => return outcome,
         }
+        self.hold_if_unaided();
         outcome
     }
 

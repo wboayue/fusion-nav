@@ -924,6 +924,21 @@ pub struct Config {
     /// [`Fusion::NoReference`](crate::Fusion::NoReference) until it does than referred to the
     /// estimate's height at whatever moment the first reading arrived.
     pub baro_reference_from_estimate: bool,
+    /// Whether the filter runs the yaw estimator of equations (45)–(52): a bank of yaw
+    /// hypotheses weighed by each GNSS velocity, whose answer is adopted as the first heading
+    /// where no heading source has established one.
+    ///
+    /// It is how a multirotor with no magnetometer and no second antenna gets a heading, which
+    /// [`Eskf::fuse_course`](crate::Eskf::fuse_course) cannot give a vehicle that flies in any
+    /// direction facing any other. PX4 and ArduPilot run the same estimator (`EKFGSF_yaw`).
+    /// It needs GNSS velocity and a horizontal acceleration: a hover separates no hypotheses.
+    ///
+    /// On by default, per [rejection
+    /// handling](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#rejection-handling-recover-by-default-opt-out-per-source).
+    /// Off, it is never stepped and costs no cycles, for a vehicle that always has a heading
+    /// source or a processor that cannot afford five small filters on every IMU sample
+    /// ([cost](https://github.com/wboayue/fusion-nav/blob/main/validation/cost.md)).
+    pub yaw_estimator: bool,
 }
 
 impl Default for Config {
@@ -944,6 +959,7 @@ impl Default for Config {
             hold: Some(Hold::default()),
             baro_offset_walk: 0.13,
             baro_reference_from_estimate: true,
+            yaw_estimator: true,
         }
     }
 }
@@ -1010,6 +1026,7 @@ impl Config {
             hold,
             baro_offset_walk,
             baro_reference_from_estimate: _,
+            yaw_estimator: _,
         } = *self;
         let check = |field, value: f32, bound: ConfigBound| {
             if bound.holds(value) {

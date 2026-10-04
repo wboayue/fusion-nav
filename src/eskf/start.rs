@@ -369,6 +369,7 @@ impl Eskf {
         self.aligned = false;
         // A hold belongs to the life it held; the next outage anchors afresh.
         self.hold = HoldState::default();
+        self.yaw_estimator.restart();
     }
 }
 

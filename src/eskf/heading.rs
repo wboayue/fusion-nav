@@ -390,7 +390,7 @@ impl Eskf {
     /// their correlations with attitude transform on one side only — left unrotated, a
     /// roll-error/gyro-bias-x correlation is read afterwards as roll-error/gyro-bias-y and
     /// the next velocity update pushes the correction into the wrong axis.
-    fn reset_heading_by(&mut self, y: f32, variance: f32, down: Vector3<f32>) {
+    pub(super) fn reset_heading_by(&mut self, y: f32, variance: f32, down: Vector3<f32>) {
         let before = self
             .estimate
             .state()

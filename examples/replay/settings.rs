@@ -82,6 +82,8 @@ pub fn settings(config: &Config) -> Vec<(String, String)> {
         hold: _,
         baro_offset_walk,
         baro_reference_from_estimate: _,
+        // The vehicle's, as `hold` is: `--yaw-estimator off` sets it.
+        yaw_estimator: _,
     } = *config;
     // `{}` on an `f32` prints the shortest text that parses back to the same value.
     let mut out = vec![

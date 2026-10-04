@@ -55,4 +55,5 @@ fusion_nav::Config {
     // GNSS height / barometer rejections at each walk: 0: 0/0, 0.02: 0/0, 0.05: 0/0, 0.13: 0/0.
     baro_offset_walk: 0.13,
     baro_reference_from_estimate: true, // policy
+    yaw_estimator: true, // policy
 }

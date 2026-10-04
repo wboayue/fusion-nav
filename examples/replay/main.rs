@@ -23,6 +23,8 @@
 //! `--antenna zero` fuses every GNSS row as the IMU's rather than at the header's antenna.
 //! `--recovery off` replays with `Recovery::OFF`, the filter that only reports, which is how a
 //! lockout recovery ends is priced (`recovery=` on the `summary` line says which ran).
+//! `--yaw-estimator off` replays without the yaw estimator of (45)–(52) (`yaw_estimator=` says
+//! which ran, `yaw_adopted=` and `yaw_recovered=` the headings taken from it).
 //! `--hold off` replays without the position hold an unaided filter fuses, and `--hold <σ>`
 //! with it at another σ in meters (`hold=` says which ran, `holds=` how many it fused).
 //! `--set <field>=<value>`, repeatable, sets one `Config` field by its path, `--set
@@ -540,6 +542,12 @@ fn run() -> Result<(), Box<dyn Error>> {
                 Some("off") => false,
                 _ => return Err("--recovery wants `on` or `off`".into()),
             };
+        } else if arg == "--yaw-estimator" {
+            options.yaw_estimator = match args.next().as_deref() {
+                Some("on") => true,
+                Some("off") => false,
+                _ => return Err("--yaw-estimator wants `on` or `off`".into()),
+            };
         } else if arg == "--hold" {
             options.hold = Some(match args.next().as_deref() {
                 Some("off") => None,
@@ -658,6 +666,7 @@ struct Options {
     recovery: bool,
     /// `--hold`: `None` keeps `Config::hold`'s default, `Some(None)` turns it off.
     hold: Option<Option<Hold>>,
+    yaw_estimator: bool,
     sets: Vec<(String, String)>,
 }
 
@@ -671,6 +680,7 @@ impl Default for Options {
             antenna_from_header: true,
             recovery: true,
             hold: None,
+            yaw_estimator: true,
             sets: Vec::new(),
         }
     }
@@ -686,6 +696,7 @@ impl Options {
         if let Some(hold) = self.hold {
             config.hold = hold;
         }
+        config.yaw_estimator = self.yaw_estimator;
         // After `--recovery off`, so a source's own timeout can be put back on top of it.
         for (name, value) in &self.sets {
             settings::set(&mut config, name, value)?;
@@ -2294,7 +2305,7 @@ impl Replay {
         format!(
             "summary rate={:.0} window={} {} align={} an={} alpha0={} heading={} \
              roll0={roll0:.2} pitch0={pitch0:.2} yaw0={yaw0:.2} declination={:.2} declination_model={} antenna={} resets={} \
-             recovered={} aligned_at={} attitude_lost={} r_policy={} recovery={} hold={} holds={} course={} without={} set={} rejected={}{} discarded={} coasted={} refused={} \
+             recovered={} aligned_at={} attitude_lost={} r_policy={} recovery={} hold={} holds={} yaw_estimator={} yaw_adopted={} yaw_recovered={} course={} without={} set={} rejected={}{} discarded={} coasted={} refused={} \
              invalid={} floored={} epochs={}{} {} \
              degraded_s={:.2} dead_reckoning_s={:.2} transitions={} status={:?}",
             self.interval.map_or(0.0, |interval| 1.0 / interval),
@@ -2388,6 +2399,19 @@ impl Replay {
                 let hold = self.filter.diagnostics().position_hold;
                 hold.accepted + hold.rejected
             },
+            // Whether the yaw estimator of (45)–(52) ran, a choice as `recovery=` is, and the
+            // headings the filter took from it: the first one, and those that replaced a yaw
+            // GNSS kept turning down. Zero wherever a heading sensor is healthy.
+            if self.filter.config().yaw_estimator {
+                "on"
+            } else {
+                "off"
+            },
+            {
+                let yaw = self.filter.diagnostics().yaw_estimator;
+                yaw.adopted - yaw.recovered
+            },
+            self.filter.diagnostics().yaw_estimator.recovered,
             // Choices rather than counts, as `r_policy=` is: whether the course constraint was
             // fused and at what sideslip, and which input source was dropped, so a figure from
             // a vehicle replayed without its magnetometer names that it was.
@@ -5113,7 +5137,13 @@ mod tests {
                 "no rejected_{source}= on the line: {summary}"
             );
         }
-        assert_eq!(SOURCES.len(), Diagnostics::default().sources().len());
+        // All but the yaw estimator, last in `sources()`: its answer is adopted and never
+        // judged, so it has no ratio, gate or innovation to key, and `yaw_adopted=` and
+        // `yaw_recovered=` are its own.
+        let diagnostics = Diagnostics::default();
+        let sources = diagnostics.sources();
+        assert_eq!(SOURCES.len(), sources.len() - 1);
+        assert_eq!(sources[SOURCES.len()].0, "yaw_estimator");
     }
 
     #[test]

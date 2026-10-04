@@ -765,7 +765,8 @@ fn apply(filter: &mut Eskf, op: &Op, project: bool) -> Result<(), TestCaseError>
             health_of(
                 filter,
                 &health,
-                &["gnss_velocity"],
+                // A velocity is also what the yaw estimator weighs.
+                &["gnss_velocity", "yaw_estimator"],
                 &[("gnss_velocity", is_refused(outcome))],
             )?;
         }
