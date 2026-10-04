@@ -370,13 +370,9 @@ impl Eskf {
         self.aligned = false;
         // A hold belongs to the life it held; the next outage anchors afresh.
         self.hold = HoldState::default();
-        // A bank that begins in motion levels against whatever the vehicle is doing, as one
-        // begun again in flight does, and settles before its yaw is taken.
-        if at_rest {
-            self.yaw_estimator.clear();
-        } else {
-            self.yaw_estimator.restart();
-        }
+        // Settled from the start, at rest or not, as PX4's first bank is: DESIGN.md,
+        // "`YawEstimator`", has what settling after a start in motion cost `7ce66f0d`.
+        self.yaw_estimator.clear();
         self.yaw_replaced = YawReplaced::default();
     }
 }

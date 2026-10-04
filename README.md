@@ -398,8 +398,8 @@ Its answer reaches the filter in two cases, both adoptions and both counted in
 
 * **No heading yet.** Once the hypotheses agree to within 15°, their yaw is adopted as the
   first heading (`adopted`), and the filter leaves `Aligning`. That takes a horizontal
-  acceleration: a hover says nothing about yaw. After a start in motion, or an IMU gap, it
-  also takes ten seconds of GNSS velocity first.
+  acceleration: a hover says nothing about yaw. After an IMU gap it also takes ten seconds
+  of GNSS velocity first.
 * **A heading GNSS contradicts.** A magnetometer that is wrong turns every acceleration the
   wrong way, and GNSS velocity is rejected for it. After a second of that, with the estimator
   more than 25° from the filter's yaw, its yaw replaces the filter's and the velocity is adopted

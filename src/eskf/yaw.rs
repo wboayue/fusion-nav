@@ -662,16 +662,6 @@ mod tests {
     }
 
     #[test]
-    fn a_start_in_motion_begins_an_unsettled_estimator() {
-        let mut filter = Eskf::default();
-        let _ = filter
-            .initialize_over(&moving_window_at(100.0), Seconds::from_secs(0.25))
-            .unwrap();
-        assert!(!filter.yaw_estimator.is_settled());
-        assert!(initialized().yaw_estimator.is_settled());
-    }
-
-    #[test]
     fn one_velocity_turned_down_is_not_a_yaw_failure() {
         // A converged estimator, a filter turned 1.4 rad from it behind its back, and no
         // velocity for a second and a half: the delay is met by the first one the gate turns

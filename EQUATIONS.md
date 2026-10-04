@@ -1631,10 +1631,10 @@ $`\sigma_{\bar\psi}^2`$, in two cases:
   position alone is not the trigger, where it is PX4's: a wrong yaw reaches velocity first. Nor
   does it fire while a dual-antenna heading, (35′), is being accepted.
 
-Either way the bank must be settled. One that began with the vehicle shown at rest is. One that
-began in motion, at a moving start or again after time it did not integrate (a coasted gap, a
-refused step), leveled against whatever the vehicle was doing, and must first fuse for 10 s
-(PX4's `EKFGSF_min_active_time`, which PX4 asks only of the replacement).
+Either way the bank must be settled. The one the filter starts with is. One begun again, after
+time it did not integrate (a coasted gap, a refused step), leveled against whatever the vehicle
+was doing, and must first fuse for 10 s (PX4's `EKFGSF_min_active_time`, which PX4 asks only of
+the replacement).
 
 ## Equation-to-code mapping
 

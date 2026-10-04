@@ -177,8 +177,8 @@ pub(crate) struct YawEstimator {
     fusing: bool,
     /// Seconds of propagation since fusing began.
     active: f32,
-    /// Whether this bank began by [`restart`](Self::restart), in what may be mid-flight,
-    /// rather than with a vehicle shown at rest.
+    /// Whether this bank began by [`restart`](Self::restart), after time it did not
+    /// integrate, rather than with the filter.
     restarted: bool,
     /// `ψ̄` of (52).
     yaw: f32,
@@ -238,8 +238,8 @@ impl YawEstimator {
         self.fusing.then_some((self.yaw, self.variance))
     }
 
-    /// Whether the composite may be taken for a heading: always for a bank begun at rest,
-    /// and for one begun in motion only after [`RESTART_SETTLING`] of fusion.
+    /// Whether the composite may be taken for a heading: always for the bank the filter
+    /// started with, and for one begun again only after [`RESTART_SETTLING`] of fusion.
     pub(crate) fn is_settled(&self) -> bool {
         !self.restarted || self.active >= RESTART_SETTLING
     }
