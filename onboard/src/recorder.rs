@@ -367,13 +367,14 @@ impl TraceFile {
         .write(&mut self.trace)?;
         self.at.trace += (bytes.len() + crate::FRAME_OVERHEAD) as u64;
         let (kind, height) = outcome.names();
+        // Quoted, since a label is prose and may hold a comma.
         let line = format!(
-            "{},{},{},{},{}\n",
+            "{},{},{},{},\"{}\"\n",
             self.at.calls,
             record.name(),
             kind,
             height.unwrap_or(""),
-            label
+            label.replace('"', "\"\"")
         );
         self.calls.write_all(line.as_bytes())?;
         self.at.csv += line.len() as u64;

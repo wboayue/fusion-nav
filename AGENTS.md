@@ -291,6 +291,8 @@ data/bench.sh                     # score every scenario against data/scenarios.
 data/bench.sh mission static      # only these
 data/expect.sh --self-test        # the comparator both bench.sh and the manifest rules read
 cargo test -p onboard            # the trace #41's board replays: codec, executor, digests
+cargo run --release -p onboard --example paths -- target/onboard/paths.trace   # the worst paths the corpus misses
+cargo run --release -p onboard --example verify -- <trace> ...   # every call again on the host, digests checked
 cargo test --lib adversarial      # the proptest suite of #44, seeded; ~6 s in debug
 data/anees.sh                     # every scenario on 50 seeds against data/anees.txt; a CI gate
 python3 tools/anees.py --self-test   # the ensemble aggregator's fixtures (stdlib, no uv)
