@@ -341,7 +341,9 @@ impl YawEstimator {
             // (50).
             let s = model.covariance.fixed_view::<2, 2>(0, 0) + Matrix2::identity() * variance;
             let determinant = s.m11 * s.m22 - s.m12 * s.m21;
-            if !(determinant > f32::MIN_POSITIVE) {
+            // Written so that a determinant that is not a number is not invertible.
+            let invertible = determinant > f32::MIN_POSITIVE;
+            if !invertible {
                 conditioned = false;
                 continue;
             }

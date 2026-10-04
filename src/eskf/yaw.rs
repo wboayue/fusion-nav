@@ -187,7 +187,9 @@ impl Eskf {
             return false;
         };
         let bar = YAW_SIGMA_MAX.as_radians();
-        if !(variance < bar * bar) || !has_heading(self.estimate.state()) {
+        // Written so that a variance that is not a number is not converged.
+        let converged = variance < bar * bar;
+        if !converged || !has_heading(self.estimate.state()) {
             return false;
         }
         let attitude = self.estimate.state().attitude.quaternion();
