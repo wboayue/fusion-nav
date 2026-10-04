@@ -30,6 +30,9 @@ jobs:
       - run: cargo clippy --all-targets --no-deps --no-default-features
       # The benchmark member, which no root build selects.
       - run: cargo clippy -p bench --all-targets --no-deps
+      # #41's trace and its examples, and the firmware's host stub; the firmware itself is
+      # linted in the no_std job, for its target.
+      - run: cargo clippy -p onboard --all-targets --features firmware --no-deps
       # `tools/check-anchors.sh` owns what this checks and why; its fixtures run first for
       # the reason `data/expect.sh --self-test` does below. The README's snippets are
       # checked by `cargo test --doc`, through the `include_str!` in `src/lib.rs`.
@@ -67,6 +70,9 @@ jobs:
       # The host benchmarks, each run once: they keep building, and each asserts the call it
       # times is fused rather than refused. Timings are not gated on a shared runner (#42).
       - run: cargo test -p bench --benches
+      # #41's trace: the codec round trip, and a recorded flight made again on a fresh
+      # machine agreeing bit for bit, which the board checks call by call.
+      - run: cargo test -p onboard
 
   anees:
     name: anees
@@ -101,6 +107,12 @@ jobs:
       - run: cargo build --lib --features defmt --target ${{ matrix.target }}
       - run: cargo build --example embedded --features defmt --target ${{ matrix.target }}
       - run: cargo build --lib --no-default-features --target ${{ matrix.target }}
+      # #41's firmware, for the board it times on (a Cortex-M7, so thumbv7em alone): built and
+      # linted here, never run, since CI has no board.
+      - if: matrix.target == 'thumbv7em-none-eabihf'
+        run: cargo clippy -p onboard --bin onboard --features firmware --release --target ${{ matrix.target }}
+      - if: matrix.target == 'thumbv7em-none-eabihf'
+        run: cargo build -p onboard --bin onboard --features firmware --release --target ${{ matrix.target }}
 
   # What the filter costs a bare-metal target: type sizes, stack frames and flash, pinned
   # exactly in `data/footprint.txt` (#42). The nightly is the script's, so CI and a laptop
