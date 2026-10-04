@@ -848,8 +848,8 @@ pub(crate) mod tests {
     fn a_steady_circle_is_not_read_as_a_tilt() {
         // A specific force that keeps turning is what a tilt filter leveling against gravity
         // alone cannot survive: it lags a quarter cycle, and the gravity it leaks turns the
-        // acceleration every hypothesis sees by about `atan(k_t / ω)`, 0.22 rad here. Survives
-        // putting `e₃` back for (46)'s reference.
+        // acceleration every hypothesis sees by about `atan(k_t / ω)`, 0.24 rad, and 0.22
+        // measured here. Survives putting `e₃` back for (46)'s reference.
         let mut flight = Flight::airborne(0.3);
         flight.fly(20.0, circling);
         let (estimate, variance) = flight.estimator.yaw().unwrap();

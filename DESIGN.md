@@ -648,7 +648,7 @@ three logs carry no GNSS velocity the estimator weighs.
   the guard, the estimator, wrong for the reason above, replaced its heading 7 times: 227 GNSS
   headings rejected where there had been none.
 * **Left as PX4 has them**, unmeasured here: five hypotheses, the 15° bar, the 25° disagreement,
-  the 1 s delay, the 10 s a restarted bank settles for, and the complementary filter's gains.
+  the 1 s delay, the 10 s a bank begun in motion settles for, and the complementary filter's gains.
 
 The fixed-wing tails stay wider than PX4's, 16.6° against 6.8° at the 90th percentile on
 `093e806a`: an acceleration differenced from 5 Hz velocities lags a turn's entry, where an

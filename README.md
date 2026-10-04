@@ -398,12 +398,14 @@ Its answer reaches the filter in two cases, both adoptions and both counted in
 
 * **No heading yet.** Once the hypotheses agree to within 15°, their yaw is adopted as the
   first heading (`adopted`), and the filter leaves `Aligning`. That takes a horizontal
-  acceleration: a hover says nothing about yaw.
+  acceleration: a hover says nothing about yaw. After a start in motion, or an IMU gap, it
+  also takes ten seconds of GNSS velocity first.
 * **A heading GNSS contradicts.** A magnetometer that is wrong turns every acceleration the
   wrong way, and GNSS velocity is rejected for it. After a second of that, with the estimator
   more than 25° from the filter's yaw, its yaw replaces the filter's and the velocity is adopted
   (`recovered`). `Recovery::yaw_estimator` is that second, and `None` turns it off. A
-  dual-antenna heading that is being accepted is never overruled.
+  dual-antenna heading that is being accepted is never overruled, and a magnetometer that was
+  is not adopted back until it agrees with the new heading.
 
 `Config::yaw_estimator = false` turns the whole estimator off, for a vehicle that always has a
 heading source or a processor that would rather not run it: its state is part of `Eskf` either

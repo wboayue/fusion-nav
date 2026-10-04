@@ -1483,12 +1483,12 @@ claiming centimeters per second sharpens them until noise picks the hypothesis.
 **(45)**
 
 ```math
-\psi_i = -\pi + \big(i + \tfrac12\big)\frac{2\pi}{N}, \qquad v_i = z, \qquad
+\psi_i = -\pi + \big(i + \tfrac12\big)\frac{2\pi}{N}, \qquad v_i = z_i, \qquad
 P_i = \mathrm{diag}\Big(\sigma_v^2,\ \sigma_v^2,\ \big(\tfrac{\pi}{N}\big)^2\Big), \qquad w_i = \tfrac1N
 ```
 
-for $`i = 0 \ldots N-1`$. Fusion begins once $`\lVert z \rVert > \sigma_v`$; until then each
-velocity spreads them again. PX4 also begins when told the vehicle is airborne, which this filter
+for $`i = 0 \ldots N-1`$, with $`z_i`$ the velocity carried to the present by (49). Fusion
+begins once $`\lVert z \rVert > \sigma_v`$; until then each velocity spreads them again. PX4 also begins when told the vehicle is airborne, which this filter
 is not told.
 
 **Tilt.** Each IMU sample turns every $`q_i`$ by the gyroscope and pulls it toward the attitude
@@ -1505,8 +1505,12 @@ e_i = k\,\frac{\big(R(q_i)^\mathsf{T} u\big) \times \bar f}{\lVert \bar f \rVert
 ```
 
 $`\bar a`$ is horizontal and comes from outside the hypotheses: the difference of successive GNSS
-velocities over the time between them, low-passed as $`\bar f`$ is so that the two lag alike. It
-is zero before fusion begins and after a gap of a second between velocities.
+velocities over the time $`T`$ between them. That slope is the acceleration $`T/2`$ ago, so it is
+low-passed with what is left of $`\bar f`$'s time constant, $`\tau - T/2`$, and not at all from
+$`T = 2\tau`$, a 1 Hz receiver, so that the two lag alike. It is measured from the first
+velocity and used once fusion begins, since until then no hypothesis has a yaw to turn it by,
+and it starts again from zero after 2.5 s without a velocity. The velocities are the antenna's:
+its swing about the IMU is in $`\bar a`$, since taking it out needs the yaw being sought.
 
 **(47)**
 
@@ -1529,7 +1533,9 @@ bias of about $`\mathrm{atan}(k_t / \omega)`$, 0.24 rad at 0.8 rad/s, under a va
 does not know it. PX4 subtracts a fixed-wing's centripetal acceleration with a measured or
 assumed airspeed; a velocity differenced needs neither the airspeed nor the vehicle to point
 where it goes. [What it measured](DESIGN.md#yawestimator) on a fixed-wing: a median 31.9° from
-EKF2's heading without $`\bar a`$, 3.1° with.
+EKF2's heading without $`\bar a`$, 3.1° with. A slope is held until the next velocity, which
+costs a slow receiver: on a steady circle at 0.8 rad/s the yaw is within 0.02 rad from 2 Hz up
+and 0.07 rad out at 1 Hz, against 0.22 rad with no $`\bar a`$.
 
 **Propagation.** The same sample moves each velocity by the specific force its own attitude
 rotates into the horizontal, $`\Delta v_i = \big[R(q_i)\,\Delta v\big]_{NE}`$. Gravity has no
@@ -1617,13 +1623,18 @@ $`\sigma_{\bar\psi} < 15°`$ (PX4's `EKFGSF_yaw_err_max`), $`\bar\psi`$ is taken
 $`\sigma_{\bar\psi}^2`$, in two cases:
 
 * **A heading never established.** The first heading, as a first magnetic heading is.
-* **A heading GNSS contradicts.** A GNSS velocity is rejected, none has been accepted for 1 s,
-  and $`|y| > 25°`$ ([gate lockout](#gate-lockout) with its cause named; PX4's `isYawFailure`).
-  That velocity is then adopted at once, and so is the first GNSS position the gate turns down,
-  since both were being judged against the wrong yaw. A rejected position alone is not the
-  trigger, where it is PX4's: a wrong yaw reaches velocity first. Nor does it fire while a
-  dual-antenna heading, (35′), is being accepted, and a bank that restarted, after a coasted
-  gap, must first fuse for 10 s.
+* **A heading GNSS contradicts.** A second GNSS velocity in a row is rejected, none has been
+  accepted for 1 s, and $`|y| > 25°`$ ([gate lockout](#gate-lockout) with its cause named;
+  PX4's `isYawFailure`). That velocity is then adopted at once, and so is the first GNSS
+  position the gate turns down, since both were being judged against the wrong yaw. A
+  magnetometer is not adopted back until one of its headings passes the gate. A rejected
+  position alone is not the trigger, where it is PX4's: a wrong yaw reaches velocity first. Nor
+  does it fire while a dual-antenna heading, (35′), is being accepted.
+
+Either way the bank must be settled. One that began with the vehicle shown at rest is. One that
+began in motion, at a moving start or again after time it did not integrate (a coasted gap, a
+refused step), leveled against whatever the vehicle was doing, and must first fuse for 10 s
+(PX4's `EKFGSF_min_active_time`, which PX4 asks only of the replacement).
 
 ## Equation-to-code mapping
 
@@ -1661,7 +1672,7 @@ Each implementing function cites its equation numbers in a doc comment.
 | (35′) | dual-antenna GNSS heading | `observation/heading.rs`, `eskf/heading.rs` | `gnss_observation`, `has_heading`; committed by `Eskf::fuse_gnss_heading` |
 | (35″) | course constraint | `observation/heading.rs`, `eskf/heading.rs` | `course_observation`, `course_variance`; committed by `Eskf::fuse_course` |
 | (45)–(52) | yaw estimator | `gsf.rs` | `YawEstimator::predict` for (46)–(48), `fuse_velocity` for (49)–(51), `spread` for (45), `compose` for (52) |
-| (49), (52) | yaw estimator, fed and adopted | `eskf/yaw.rs` | `Eskf::step_yaw_estimator` and `weigh_yaw`, called by `Eskf::predict` and `Eskf::fuse_gnss_velocity`; `Eskf::replace_failed_yaw`; adopted through `Eskf::reset_heading_by` |
+| (49), (52) | yaw estimator, fed and adopted | `eskf/yaw.rs` | `Eskf::step_yaw_estimator` and `weigh_yaw`, called by `Eskf::predict` and `Eskf::fuse_gnss_velocity`; `Eskf::adopt_first_yaw` and `Eskf::replace_failed_yaw`; adopted through `Eskf::reset_heading_by` |
 | (37) `γ` | gate thresholds | `config.rs` | `Gate::at`, `Gate::new`, `Gates::at` |
 | (37)–(38) | innovation gating, test ratio | `update.rs` | `nis`, `test_ratio`, called by `update` |
 | — | per-source health tracking | `health.rs` | `SourceHealth`, `Status` |

@@ -479,8 +479,10 @@ pub struct Recovery {
     /// a crosswind or a multirotor crabbing, rather than a wrong heading.
     pub course: Option<Seconds>,
     /// The yaw estimator's heading, adopted in place of one GNSS contradicts: once no GNSS
-    /// velocity has been accepted for this long and another is rejected, while the estimator
-    /// of [`Config::yaw_estimator`] has converged on a yaw more than 25° from the filter's.
+    /// velocity has been accepted for this long and a second in a row is rejected, while the
+    /// estimator of [`Config::yaw_estimator`] has converged on a yaw more than 25° from the
+    /// filter's. A magnetometer is then not adopted back until one of its headings passes
+    /// the gate.
     /// That velocity, and the first GNSS position the gate turns down after it, are then
     /// adopted at once rather than after their own timeouts, since what they were judged
     /// against was the wrong heading. Not while a dual-antenna

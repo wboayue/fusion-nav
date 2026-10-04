@@ -119,6 +119,10 @@ pub fn settings(config: &Config) -> Vec<(String, String)> {
     for (field, value) in recovery.fields() {
         out.push((format!("recovery.{field}"), optional(value)));
     }
+    out.push((
+        "recovery.yaw_estimator".into(),
+        optional(recovery.yaw_estimator),
+    ));
     out
 }
 
@@ -163,6 +167,7 @@ macro_rules! per_source_impl {
                     "mag_heading" => &mut self.mag_heading,
                     "gnss_heading" => &mut self.gnss_heading,
                     "course" => &mut self.course,
+                    $(stringify!($apart) => &mut self.$apart,)?
                     _ => return None,
                 })
             }
@@ -170,7 +175,8 @@ macro_rules! per_source_impl {
     };
 }
 per_source_impl!(Correlation);
-// The yaw estimator's delay times another source's rejections, so it is no source's field.
+// The yaw estimator's delay times another source's rejections, so it is settable and no
+// source's field: `fields` pairs with `SOURCES` by position, and it has no place there.
 per_source_impl!(Recovery, yaw_estimator);
 
 fn per_source<'a>(
@@ -232,7 +238,7 @@ mod tests {
             mag_heading: Some(Seconds::from_secs(9.5)),
             gnss_heading: Some(Seconds::from_secs(10.5)),
             course: Some(Seconds::from_secs(11.5)),
-            ..Recovery::default()
+            yaw_estimator: Some(Seconds::from_secs(12.5)),
         };
         config
     }
@@ -253,9 +259,9 @@ mod tests {
     fn the_arguments_for_a_config_set_that_config() {
         let config = everything_moved();
         let arguments = arguments(&config);
-        // Every settable field moved, so every one is named: 7 scalars, the coast pair and
-        // two per-source tables.
-        assert_eq!(arguments.len(), 7 + 2 + 7 + 7, "{arguments:?}");
+        // Every settable field moved, so every one is named: 7 scalars, the coast pair, two
+        // per-source tables and the yaw estimator's delay.
+        assert_eq!(arguments.len(), 7 + 2 + 7 + 7 + 1, "{arguments:?}");
         assert_eq!(applied(&arguments), config);
     }
 
