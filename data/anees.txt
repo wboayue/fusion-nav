@@ -111,3 +111,15 @@ hover_outage     50  runs=50  any_pos=0   any_vel=0   any_att=0   over_pos<=0.10
 # `--hold off` passes every block. Velocity and attitude pass, and `Validity` reports the
 # position invalid throughout.
 long_outage      50  runs=50  any_pos>=1  any_vel=0   any_att=0   over_pos>=0.11 over_vel<=0.10 over_att<=0.10
+# `multirotor_no_mag` asserts what a start with no magnetometer claims before any heading is
+# measured: `Initialization::sigma_yaw`, 20 deg, on a yaw 126 deg out, which `Validity` reports
+# invalid and the covariance does not. any_att=1041, peak_att=14.50 at 6.6 s, all of it before
+# the yaw estimator's heading is adopted near 6.9 s; GNSS velocity fused under that yaw is the
+# any_vel=145, peak_vel=3.57 at 6.8 s. From the adoption on every block passes: anees_att=0.614
+# over the whole flight. A prior honest about an unestablished yaw trips this line.
+multirotor_no_mag 50 runs=50  any_pos=0   any_vel>=1  any_att>=1  over_pos<=0.10 over_vel<=0.10 over_att<=0.10
+# `yaw_fault` asserts a filter told a wrong heading by its own magnetometer: 80 deg out under
+# a 3 deg sigma until the yaw estimator replaces it 8 s in. anees_att=16.45, peak_att=273.5 at
+# 9.6 s, anees_pos=0.537 with over_pos=0.139, peak_vel=15.74. No covariance prices a sensor
+# that is wrong and says it is right; what the line holds is that it ends.
+yaw_fault        50  runs=50  any_pos>=1  any_vel>=1  any_att>=1  over_pos>=0.11 over_vel<=0.10 over_att>=0.11

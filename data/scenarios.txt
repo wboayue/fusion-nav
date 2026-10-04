@@ -217,6 +217,24 @@ hover_outage     10 pos_h<=7.747 pos_v<=0.254 vel<=0.481 pos_h_max<=17.644  tilt
 # under `--hold off`, `nees_pos` 0.6657 against 0.1075, and the fix that ends the gap adopted
 # (`recovered=1`). `data/anees.txt` asserts the overconfidence; the cause is #214.
 long_outage      2  pos_h<=16.164 pos_v<=0.267 vel<=0.707 pos_h_max<=60.056  tilt<=0.375 yaw<=0.482 ba<=0.03568 bg<=0.000503 in3s>=0.9900 nees_pos<=0.6724   nees_vel<=0.0955 nees_att<=0.0239 false_valid<=0   false_valid_att<=0   scored>=36600  recovered=1
+# The yaw estimator of (45)-(52), on a multirotor that hovers and shuttles with its nose turning
+# on a schedule of its own, 126 deg from where a window with no magnetometer leaves the yaw.
+# `multirotor_no_mag` has no heading sensor: the estimator's yaw is adopted 4.81 s after the
+# window (`aligned_at=`), 1.9 s after the vehicle leaves the ground, 9 deg out under a 14 deg
+# sigma, and `yaw_valid`, the heading error from then on, reads 1.073 deg against `moving_start`'s
+# 1.494 with a magnetometer. `yaw` is that wait: 126 deg for 4.9 s of 118. With the estimator
+# off (`--yaw-estimator off`) no heading is ever established, and `tilt` 1.145 deg, `vel` 0.206
+# and `false_valid`=543 are what GNSS velocity fused under an unknown yaw does to the rest. The
+# 165 that remain are the same thing before the adoption: tilt 3.2 deg out under a 1.8 deg sigma
+# for 0.8 s, a velocity turned by the wrong yaw read as a tilt.
+# `yaw_fault` is the same flight with a magnetometer 80 deg wrong from the first sample, so the
+# window levels a heading and claims it. The first accelerations contradict it, GNSS velocity
+# is rejected for a second, and the estimator's yaw replaces it 8.0 s in (`yaw_recovered=1`),
+# with that velocity adopted (`recovered=2`). Everything on the line is the 8 s before: with
+# the estimator off `pos_h` reads 26.837 m, `yaw` 80.494 deg and `recovered=16`. The
+# magnetometer goes on reading 80 deg out and is rejected 2200 times, `Degraded`.
+multirotor_no_mag 7 pos_h<=0.434 pos_v<=0.283 vel<=0.155 pos_h_max<=0.707  tilt<=0.621 yaw<=25.313 yaw_valid<=1.084 ba<=0.06581 bg<=0.000234 in3s>=0.9872 nees_pos<=0.1515   nees_vel<=0.1281 nees_att<=0.5891 false_valid<=167 false_valid_att<=162 scored>=23600  recovered=0 yaw_adopted=1 yaw_recovered=0 noise_gyro=0.000208..0.000338 noise_accel=0.001600..0.002600 noise_baro=0.2800..0.4400
+yaw_fault        11 pos_h<=0.963 pos_v<=0.182 vel<=0.329 pos_h_max<=3.250  tilt<=0.906 yaw<=20.556 yaw_valid<=20.556 ba<=0.08070 bg<=0.000323 in3s>=0.9788 nees_pos<=0.5082   nees_vel<=0.2701 nees_att<=15.2889 false_valid<=2470 false_valid_att<=2215 scored>=23600  recovered=2 yaw_adopted=0 yaw_recovered=1 noise_gyro=0.000208..0.000338 noise_accel=0.001600..0.002600 noise_baro=0.2800..0.4400
 
 # (34)-(36) are what `yaw` reads now, and what it buys depends entirely on what the start knew.
 # Where yaw was never observed the magnetometer is the whole estimate: `moving_start` goes 3.228
