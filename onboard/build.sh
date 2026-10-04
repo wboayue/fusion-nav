@@ -21,8 +21,8 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
 die() { echo "onboard: $*" >&2; exit 1; }
 
-toolchain=$(sed -n 's/^TOOLCHAIN=//p' tools/footprint.sh)
-[ -n "$toolchain" ] || die "tools/footprint.sh pins no TOOLCHAIN"
+# shellcheck source=tools/nightly.sh
+. "$root/tools/nightly.sh"
 target=thumbv7em-none-eabihf
 
 build=${1:-}
@@ -34,10 +34,7 @@ case "$build" in
     *) die "usage: onboard/build.sh primary|shipped|fp64" ;;
 esac
 
-host=$(rustc "+$toolchain" -vV 2>/dev/null | sed -n 's/^host: //p' || true)
-[ -n "$host" ] || die "no $toolchain: run tools/footprint.sh --install"
-objcopy="$(rustc "+$toolchain" --print sysroot)/lib/rustlib/$host/bin/llvm-objcopy"
-[ -x "$objcopy" ] || die "no llvm-objcopy in $toolchain: run tools/footprint.sh --install"
+nightly_tools
 
 # One directory per build, so switching between them rebuilds nothing twice.
 export CARGO_TARGET_DIR="$root/target/onboard/$build"
@@ -49,8 +46,30 @@ export CARGO_PROFILE_RELEASE_LTO=$lto
 export RUSTFLAGS="$rustflags -Zemit-stack-sizes"
 export ONBOARD_BUILD=$build
 export ONBOARD_LTO=$lto
-cargo "+$toolchain" build --quiet --release -p onboard --bin onboard --features firmware \
+ONBOARD_COMMIT=$(git describe --always --dirty --abbrev=10)
+export ONBOARD_COMMIT
+cargo "+$TOOLCHAIN" build --quiet --release -p onboard --bin onboard --features firmware \
     --target "$target"
 elf="$CARGO_TARGET_DIR/$target/release/onboard"
-"$objcopy" -O binary "$elf" "$root/target/onboard/$build.bin"
+
+# Every frame between the board's paint and a call is a `Machine` function's, read off this ELF
+# beside it, so the figures and the frames subtracted from them come from one build.
+frames="$root/target/onboard/$build.frames"
+"$tools/llvm-readobj" --stack-sizes --demangle "$elf" > "$frames.readobj"
+{
+    echo "# $build $ONBOARD_COMMIT"
+    python3 tools/footprint.py --frames "<onboard::machine::Machine>::" "$frames.readobj"
+} > "$frames"
+rm "$frames.readobj"
+
+# `execute` must call every entry point, never jump to one: a tail call runs beneath where its
+# frame was, and the frame subtracted from it would publish that call low.
+jumps=$("$tools/llvm-objdump" -d --demangle --no-show-raw-insn "$elf" | awk '
+    /^[0-9a-f]+ <<onboard::machine::Machine>::execute>:$/ { inside = 1; next }
+    inside && /^$/ { inside = 0 }
+    inside && $2 ~ /^b(\.w)?$/ && /</ && !/<<onboard::machine::Machine>::execute/ { print }')
+[ -z "$jumps" ] || die "Machine::execute tail-calls, so its frame is not above the call:
+$jumps"
+
+"$tools/llvm-objcopy" -O binary "$elf" "$root/target/onboard/$build.bin"
 echo "target/onboard/$build.bin ($(wc -c < "$root/target/onboard/$build.bin" | tr -d ' ') bytes) from $elf"

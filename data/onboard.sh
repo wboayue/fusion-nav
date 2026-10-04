@@ -3,8 +3,9 @@
 #
 #   data/onboard.sh traces [LOGDIR]          traces into target/onboard/traces: each log
 #                                            data/manifest.txt names, converted in LOGDIR
-#                                            (default data/logs), the hover_outage scenario,
-#                                            and onboard/examples/paths.rs
+#                                            (default data/logs), as <first 8 of its name>,
+#                                            the `scenarios` below, and
+#                                            onboard/examples/paths.rs
 #   data/onboard.sh time BUILD [--cold] [TRACE ...]
 #                                            every trace (or those named) timed on the board,
 #                                            which must be running BUILD (onboard/build.sh),
@@ -21,15 +22,22 @@ set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
 traces="$root/target/onboard/traces"
+# The simulated scenarios traced beside the corpus: what no log covers, the hold over a long
+# outage in a hover.
+scenarios=(hover_outage)
 die() { echo "onboard: $*" >&2; exit 1; }
 
 case "${1:-}" in
     traces)
         logs=${2:-$root/data/logs}
         mkdir -p "$traces"
-        cargo build --quiet --release --example replay --example simulate
+        cargo build --quiet --release --example simulate
         cargo build --quiet --release -p onboard --example paths --example verify
-        replay="$root/target/release/examples/replay"
+        # The harness that writes traces is its own build (`examples/replay/filter.rs`), in a
+        # directory of its own so the flag rebuilds nothing in target/.
+        CARGO_TARGET_DIR="$root/target/onboard/host" RUSTFLAGS="--cfg fusion_nav_onboard" \
+            cargo build --quiet --release --example replay
+        replay="$root/target/onboard/host/release/examples/replay"
         for name in $(awk '!/^#/ && NF { sub(/\.ulg$/, "", $2); print $2 }' data/manifest.txt); do
             input="$logs/$name.csv"
             [ -f "$input" ] || die "no $input: convert the corpus first (data/README.md)"
@@ -37,8 +45,10 @@ case "${1:-}" in
                 "$root/target/onboard/replay/${name:0:8}.csv" > /dev/null
         done
         "$root/target/release/examples/simulate" > /dev/null
-        "$replay" --trace "$traces/hover_outage.trace" "$root/target/sim/hover_outage.csv" \
-            "$root/target/onboard/replay/hover_outage.csv" > /dev/null
+        for scenario in "${scenarios[@]}"; do
+            "$replay" --trace "$traces/$scenario.trace" "$root/target/sim/$scenario.csv" \
+                "$root/target/onboard/replay/$scenario.csv" > /dev/null
+        done
         "$root/target/release/examples/paths" "$traces/paths.trace"
         "$root/target/release/examples/verify" "$traces"/*.trace
         ;;
@@ -60,22 +70,18 @@ case "${1:-}" in
         if [ $# -eq 0 ]; then
             set -- "$traces"/*.trace
         fi
-        # The dispatcher's frames, off the ELF the board runs: a painted stack is measured from
-        # the call into `Machine::execute`, and the published figure starts beneath it and
-        # beneath the out-of-line arm a call goes through (`tools/onboard.py`, `ARMS`).
-        toolchain=$(sed -n 's/^TOOLCHAIN=//p' tools/footprint.sh)
-        host=$(rustc "+$toolchain" -vV | sed -n 's/^host: //p')
-        readobj="$(rustc "+$toolchain" --print sysroot)/lib/rustlib/$host/bin/llvm-readobj"
-        elf="$root/target/onboard/$build/thumbv7em-none-eabihf/release/onboard"
+        # The frames above every painted call, off the ELF `onboard/build.sh` built, and only if
+        # it built the one the board runs: frames from a later build would be subtracted from
+        # this one's figures.
+        frames="$root/target/onboard/$build.frames"
+        [ -f "$frames" ] || die "no $frames: build with onboard/build.sh $build"
+        built=$(head -1 "$frames" | awk '{ print $3 }')
+        case "$running" in
+            *" commit=$built "*) ;;
+            *) die "$frames is of $built; the board runs: $running" ;;
+        esac
         mkdir -p "$out"
-        : > "$out/dispatch.txt"
-        for function in execute renew new_window seed; do
-            frame=$("$readobj" --stack-sizes --demangle "$elf" | awk -v f="$function" '
-                $0 ~ "Functions: \\[<onboard::machine::Machine>::" f "\\]" { found = 1; next }
-                found && /Size:/ { print $2; exit }')
-            [ -n "$frame" ] || die "no frame for Machine::$function in $elf"
-            printf '%s=%d\n' "$function" "$frame" >> "$out/dispatch.txt"
-        done
+        cp "$frames" "$out/frames.txt"
         python3 tools/onboard.py run --out "$out" ${cold[@]+"${cold[@]}"} "$@"
         python3 tools/onboard.py fmodf --out "$out" ${cold[@]+"${cold[@]}"}
         ;;

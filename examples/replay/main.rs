@@ -217,10 +217,11 @@ use std::path::{Path, PathBuf};
 
 use fusion_nav::STATES;
 use fusion_nav::prelude::*;
-use onboard::{Recorder, TraceFile};
 
 mod derive;
+mod filter;
 mod settings;
+use filter::{Filter, Trace};
 use nalgebra::{Quaternion, SMatrix, SVector, UnitQuaternion, Vector3};
 
 /// Capacity of the initialization window, in samples.
@@ -641,7 +642,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     write_header(&mut epoch_out)?;
     write_fusion_header(&mut fusion_out, config.gates)?;
 
-    let trace = trace.map(|path| TraceFile::create(&path)).transpose()?;
+    let trace = trace.map(|path| Trace::create(&path)).transpose()?;
     let mut replay = prepare(&text, config, &options, scoring, trace)?;
     drive(
         &mut replay,
@@ -730,7 +731,7 @@ fn prepare(
     config: Config,
     options: &Options,
     scoring: Option<Scoring>,
-    trace: Option<TraceFile>,
+    trace: Option<Trace>,
 ) -> Result<Replay, Box<dyn Error>> {
     let mut replay = Replay::new(config, options.policy, scoring, trace)?;
     replay.course = options.course.or_else(|| sideslip_of(text));
@@ -1157,7 +1158,7 @@ struct Verdict {
 /// Everything the loop carries between rows.
 #[derive(Clone)]
 struct Replay {
-    filter: Recorder<TraceFile>,
+    filter: Filter,
     /// Candidate static window, slid forward one sample at a time until `initialize`
     /// accepts it. A log that begins in motion simply initializes later.
     window: [Held; WINDOW],
@@ -1291,11 +1292,11 @@ impl Replay {
         config: Config,
         policy: RPolicy,
         scoring: Option<Scoring>,
-        trace: Option<TraceFile>,
+        trace: Option<Trace>,
     ) -> Result<Self, ConfigError> {
         Ok(Self {
             consistency: Consistency::new(config.gates),
-            filter: Recorder::new(config, trace)?,
+            filter: Filter::new(config, trace)?,
             window: [Held::default(); WINDOW],
             filled: 0,
             still_since_start: true,

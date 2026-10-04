@@ -78,7 +78,7 @@ Numbered, not ranked. 4 is the most defensible, being true by construction; 1 ma
 
 | | claim | the evidence a reader can check | state |
 | --- | --- | --- | --- |
-| 1 | verified embedded determinism | [validation/cost.md](validation/cost.md), pinned by `data/footprint.txt` in CI and by `data/onboard.txt` off a board | built: cycles and a painted stack on an STM32H743; no M0 timed |
+| 1 | verified embedded determinism | [validation/cost.md](validation/cost.md), pinned by `data/footprint.txt` in CI and by `data/onboard.txt` off a board | built: cycles and a painted stack on an STM32H743 |
 | 2 | compile-time frames and units | `src/units.rs`, `src/frames.rs`; the README's [conventions](README.md#conventions) | built |
 | 3 | readable mathematics | [EQUATIONS.md](EQUATIONS.md) and its equation-to-code mapping | built |
 | 4 | pure Rust, single crate | CI builds for `thumbv6m` and `thumbv7em` with one dependency | built |
@@ -1108,7 +1108,8 @@ flights. DESIGN.md, "`YawEstimator`", has the table.
 
 - 456 bytes of `Eskf` whether it runs or not, 10.9 KB of flash on `thumbv6m`, and 0.18 µs of a
   0.97 µs `predict` on the host, as it landed; `validation/cost.md` has the current figures,
-  and a core with no FPU pays more in time than the host does; none has been timed.
+  and a core with no FPU pays more in time than the host does (which cores are timed:
+  [validation/cost.md](validation/cost.md#what-is-measured-and-what-is-not)).
 - A hover establishes nothing. Yaw is observed through acceleration, so a vehicle that takes
   off and holds station stays `Aligning` until it moves.
 - Before the adoption the start still claims `sigma_yaw` on a yaw nothing measured, and GNSS

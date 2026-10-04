@@ -49,16 +49,18 @@ magnetic-model = []
 # as the filter's transcendentals are. Already in the graph under nalgebra's `libm` feature.
 libm = "0.2.16"
 
-# The trace `replay --trace` writes for #41's board: a member, so a dev-dependency here only for
-# the harness. It depends on nothing but this crate, so it moves no feature of the graph.
-onboard = { path = "onboard" }
-
 # The adversarial suite (`src/eskf/adversarial.rs`, #44): generated hostile inputs, shrunk to
 # the shortest failing sequence. Test-only, so the `no_std` build and its one dependency are
 # untouched; hosted targets only, because examples take dev-dependencies too and
 # `examples/embedded.rs` builds for bare metal. `no_std` rather than `std`: proptest's `std`
 # turns on `num-traits/std`, which swaps nalgebra's transcendentals from `libm` to the
 # platform's in every test and example build, and moved `flight.csv` in the last digit.
+# The trace `replay --trace` writes for #41's board, only in the build `data/onboard.sh` makes
+# with `--cfg fusion_nav_onboard`: `onboard` is an unpublished member, which the packaged crate
+# cannot carry, so the default harness drives `Eskf` without it (`examples/replay/filter.rs`).
+[target.'cfg(fusion_nav_onboard)'.dev-dependencies]
+onboard = { path = "onboard" }
+
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
 proptest = { version = "1.11.0", default-features = false, features = ["alloc", "no_std"] }
 
@@ -68,3 +70,7 @@ proptest = { version = "1.11.0", default-features = false, features = ["alloc", 
 name = "replay"
 path = "examples/replay/main.rs"
 required-features = ["magnetic-model"]
+
+# `fusion_nav_onboard` is the replay harness's switch to its traced build (`examples/replay/filter.rs`).
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fusion_nav_onboard)"] }

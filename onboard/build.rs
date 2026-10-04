@@ -9,6 +9,7 @@ fn main() {
     println!("cargo:rerun-if-changed=memory.x");
     println!("cargo:rerun-if-env-changed=ONBOARD_BUILD");
     println!("cargo:rerun-if-env-changed=ONBOARD_LTO");
+    println!("cargo:rerun-if-env-changed=ONBOARD_COMMIT");
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("none") {
         return;
     }
@@ -17,13 +18,6 @@ fn main() {
     println!("cargo:rustc-link-search={}", out.display());
     println!("cargo:rustc-link-arg-bins=-Tlink.x");
 
-    let commit = Command::new("git")
-        .args(["describe", "--always", "--dirty", "--abbrev=10"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map_or_else(|| "unknown".to_string(), |s| s.trim().to_string());
     let rustc = Command::new(env::var("RUSTC").unwrap_or_else(|_| "rustc".into()))
         .arg("--version")
         .output()
@@ -45,6 +39,9 @@ fn main() {
         "single"
     };
     let build = env::var("ONBOARD_BUILD").unwrap_or_else(|_| "dev".into());
+    // `build.sh` names the commit, since it knows when one moved: a `rerun-if-changed` on
+    // `.git/HEAD` misses every commit on a branch, whose HEAD only names it.
+    let commit = env::var("ONBOARD_COMMIT").unwrap_or_else(|_| "unknown".into());
     let opt = env::var("OPT_LEVEL").unwrap_or_default();
     // A build script does not see the profile's LTO; `build.sh` says which it asked for.
     let lto = env::var("ONBOARD_LTO").unwrap_or_else(|_| "unknown".into());
@@ -55,5 +52,4 @@ fn main() {
     println!("cargo:rustc-env=ONBOARD_BUILD={build}");
     println!("cargo:rustc-env=ONBOARD_OPT={opt}");
     println!("cargo:rustc-env=ONBOARD_LTO={lto}");
-    println!("cargo:rerun-if-changed=../.git/HEAD");
 }

@@ -9,7 +9,8 @@ use std::path::Path;
 use fusion_nav::prelude::*;
 
 use crate::Frame;
-use crate::machine::{Machine, Outcome, Returned};
+use crate::machine::{Machine, Returned};
+use crate::outcome::Outcome;
 use crate::record::{MAX_RECORD, Record};
 
 /// Where a [`Recorder`] puts each call: its encoded record, and what the host got from it.
@@ -35,7 +36,7 @@ pub struct Recorder<S: Sink> {
     // A cell so that `predicted_validity`, which reads, is recorded through `&self` as
     // `Eskf`'s is called.
     sink: RefCell<Option<S>>,
-    label: &'static str,
+    label: String,
     /// Where the sink stood when this recorder was cloned from one holding it.
     mark: Option<S::Mark>,
 }
@@ -48,7 +49,7 @@ impl<S: Sink> Clone for Recorder<S> {
         Self {
             machine: self.machine.clone(),
             sink: RefCell::new(None),
-            label: self.label,
+            label: self.label.clone(),
             mark: self.sink.borrow().as_ref().map(Sink::mark).or(self.mark),
         }
     }
@@ -68,7 +69,7 @@ impl<S: Sink> Recorder<S> {
         let mut recorder = Self {
             machine: Machine::default(),
             sink: RefCell::new(sink),
-            label: "",
+            label: String::new(),
             mark: None,
         };
         match recorder.call(Record::New(config)) {
@@ -79,8 +80,8 @@ impl<S: Sink> Recorder<S> {
 
     /// Name the calls that follow, until the next label: the per-call CSV carries it, so a
     /// trace built to reach a path can say which calls reach it.
-    pub fn label(&mut self, label: &'static str) {
-        self.label = label;
+    pub fn label(&mut self, label: impl Into<String>) {
+        self.label = label.into();
     }
 
     /// The window the last [`initialize_on`](Self::initialize_on) folded.
@@ -116,7 +117,7 @@ impl<S: Sink> Recorder<S> {
         if let Some(sink) = self.sink.borrow_mut().as_mut() {
             let outcome = Outcome::of(returned);
             let digest = self.machine.digest(outcome);
-            sink.call(bytes, record, outcome, digest, self.label);
+            sink.call(bytes, record, outcome, digest, &self.label);
         }
     }
 
@@ -280,11 +281,32 @@ impl<S: Sink> Recorder<S> {
 
     /// `Eskf::predicted_validity`, recorded: it reads, but it is an entry point with a cost of
     /// its own, up to 64 runs of (22).
-    pub fn predicted_validity(&self) -> Validity {
-        let (buffer, length, decoded) = encoded(&Record::PredictedValidity);
+    /// `Eskf::state`, recorded: an integrator reads it every epoch, and it derives status and
+    /// validity from `P` on the read.
+    pub fn state(&self) -> State {
+        match self.read(Record::State) {
+            Returned::State(state) => state,
+            other => unreachable!("state returned {other:?}"),
+        }
+    }
+
+    pub fn geodetic_position(&self) -> Option<Geodetic> {
+        match self.read(Record::GeodeticPosition) {
+            Returned::Geodetic(position) => position,
+            other => unreachable!("geodetic_position returned {other:?}"),
+        }
+    }
+
+    /// A call that only reads, made and recorded through `&self`.
+    fn read(&self, record: Record) -> Returned {
+        let (buffer, length, decoded) = encoded(&record);
         let returned = self.machine.query(&decoded);
         self.emit(&buffer[..length], &decoded, &returned);
-        match returned {
+        returned
+    }
+
+    pub fn predicted_validity(&self) -> Validity {
+        match self.read(Record::PredictedValidity) {
             Returned::Validity(v) => v,
             other => unreachable!("predicted_validity returned {other:?}"),
         }
@@ -327,7 +349,7 @@ impl TraceFile {
         let mut csv = path.as_os_str().to_owned();
         csv.push(".csv");
         let mut calls = BufWriter::new(File::create(csv)?);
-        let header = "index,call,outcome,height,label\n";
+        let header = "index,call,arm,outcome,height,label\n";
         calls.write_all(header.as_bytes())?;
         Ok(Self {
             trace: BufWriter::new(File::create(path)?),
@@ -369,9 +391,10 @@ impl TraceFile {
         let (kind, height) = outcome.names();
         // Quoted, since a label is prose and may hold a comma.
         let line = format!(
-            "{},{},{},{},\"{}\"\n",
+            "{},{},{},{},{},\"{}\"\n",
             self.at.calls,
             record.name(),
+            record.arm().name(),
             kind,
             height.unwrap_or(""),
             label.replace('"', "\"\"")

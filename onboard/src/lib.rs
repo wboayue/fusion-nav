@@ -9,12 +9,14 @@
 #![cfg_attr(target_os = "none", no_std)]
 
 mod machine;
+mod outcome;
 mod record;
 #[cfg(not(target_os = "none"))]
 mod recorder;
 mod wire;
 
-pub use machine::{KINDS, Machine, Outcome, Returned};
+pub use machine::{Arm, Machine, Returned};
+pub use outcome::{KINDS, Kind, Outcome};
 pub use record::{MAX_RECORD, Record};
 #[cfg(not(target_os = "none"))]
 pub use recorder::{Recorder, Sink, TraceFile};
@@ -25,6 +27,20 @@ pub struct Frame<'a> {
     pub record: &'a [u8],
     pub outcome: Outcome,
     pub digest: u64,
+}
+
+/// The board's verdict on a call, as bits: what `tools/onboard.py` reads off each result.
+pub mod flags {
+    /// The outcome matches the host's.
+    pub const OUTCOME: u8 = 1;
+    /// The digest matches the host's.
+    pub const DIGEST: u8 = 2;
+    /// A denormal was an input (`FPSCR.IDC`).
+    pub const DENORMAL: u8 = 4;
+    /// The call ran off the painted stack.
+    pub const OVERFLOW: u8 = 8;
+    /// The record did not decode.
+    pub const UNDECODED: u8 = 16;
 }
 
 /// The bytes a frame takes beside its record: the length, the outcome and the digest.
@@ -43,6 +59,21 @@ impl<'a> Frame<'a> {
             digest: u64::from_le_bytes(*digest),
         };
         Some((frame, rest))
+    }
+
+    /// Whether `machine`, having made this frame's call and got `returned`, agrees with the
+    /// host: [`flags::OUTCOME`] and [`flags::DIGEST`], set where each matches. The one check, so
+    /// the board and `examples/verify.rs` report the same thing.
+    pub fn check(&self, machine: &Machine, returned: &Returned) -> u8 {
+        let outcome = Outcome::of(returned);
+        let mut verdict = 0;
+        if outcome == self.outcome {
+            verdict |= flags::OUTCOME;
+        }
+        if machine.digest(outcome) == self.digest {
+            verdict |= flags::DIGEST;
+        }
+        verdict
     }
 
     /// Append the frame to `out`.

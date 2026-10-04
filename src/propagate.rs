@@ -6,7 +6,7 @@
 //! covariance: (22) only adds, and the measurement update of (23)–(28) is what takes
 //! uncertainty back out.
 
-use nalgebra::{Matrix3, SMatrix, Vector3};
+use nalgebra::{Matrix3, SMatrix, SVector, Vector3};
 
 use crate::config::{Coast, Config, ImuNoise};
 use crate::frames::Body;
@@ -505,10 +505,11 @@ fn process_noise(noise: &ImuNoise, imu: Corrected) -> [f32; STATES] {
         imu.velocity_interval.as_secs(),
         imu.angle_interval.as_secs(),
     );
-    let velocity = noise.accel_white * noise.accel_white * dt_v;
-    let attitude = noise.gyro_white * noise.gyro_white * dt_theta;
-    let accel_bias = noise.accel_bias_walk * noise.accel_bias_walk * dt_v;
-    let gyro_bias = noise.gyro_bias_walk * noise.gyro_bias_walk * dt_theta;
+    let densities = Densities::of(noise, None);
+    let velocity = densities.velocity * dt_v;
+    let attitude = densities.attitude * dt_theta;
+    let accel_bias = densities.accel_bias * dt_v;
+    let gyro_bias = densities.gyro_bias * dt_theta;
 
     // In the `ErrorState` ordering: `[δp δv δθ δβa δβg]`. Position takes none of its own --
     // (16) has no driving noise, and position error is what the velocity block integrates.
@@ -589,7 +590,14 @@ pub(crate) fn project(
         return covariance;
     }
     let densities = Densities::of(&config.imu, None);
-    unaccelerated_growth(state, &covariance, seconds, config.gravity, &densities).0
+    unaccelerated_growth(
+        state,
+        &covariance,
+        seconds,
+        config.gravity,
+        &densities,
+        None,
+    )
 }
 
 /// Advance the state and its covariance across a gap no IMU sample describes. Equation (22′).
@@ -604,14 +612,14 @@ pub(crate) fn project(
 /// One step at any gap, the nominal one because an unaccelerated vehicle's (13) is exact over
 /// any interval, and the covariance's because `ω = 0` makes the error dynamics nilpotent: the
 /// transition and the noise it integrates are polynomials in `T`, exact where (22) run in short
-/// steps understates. So a gap costs one (22)'s arithmetic, where 64 runs of it measured 4.6 ms
-/// on a 400 MHz Cortex-M7 for a 6.4 s gap ([measured]).
+/// steps understates. So a gap costs one (22)'s arithmetic, where the steps cost a long gap
+/// nearly two periods of a 400 Hz loop ([measured]).
 ///
 /// A gap that is not a positive duration coasts nothing, for [`project`]'s reason.
 /// [`Eskf::predict`](crate::Eskf::predict) coasts only past a positive limit, so the guard
 /// holds a bound no caller in the crate crosses.
 ///
-/// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#stack-frames
+/// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#coast-and-projection
 pub(crate) fn coast(
     state: State,
     covariance: Covariance,
@@ -630,8 +638,17 @@ pub(crate) fn coast(
         };
     }
     let densities = Densities::of(&config.imu, Some(unmeasured));
-    let (covariance, transition) =
-        unaccelerated_growth(&state, &covariance, seconds, config.gravity, &densities);
+    // (30′) across the whole gap at once: the offset has no dynamics, so its cross-covariance
+    // moves with the error state through `Φ`, and its variance walks by `q_b² T`.
+    let mut cross = offset.cross;
+    let covariance = unaccelerated_growth(
+        &state,
+        &covariance,
+        seconds,
+        config.gravity,
+        &densities,
+        Some(&mut cross),
+    );
     let walk = config.baro_offset_walk;
     Propagated {
         state: propagate_nominal(
@@ -640,18 +657,16 @@ pub(crate) fn coast(
             config.gravity,
         ),
         covariance,
-        // (30′) across the whole gap at once: the offset has no dynamics, so its variance walks
-        // by `q_b² T` and its cross-covariance moves with the error state through `Φ`.
         offset: Offset {
-            cross: transition * offset.cross,
+            cross,
             variance: offset.variance + walk * walk * seconds,
         },
         omega: None,
     }
 }
 
-/// The white densities driving an unaccelerated vehicle's error, per axis: (21)'s, with
-/// [`Coast`]'s unmeasured acceleration and rotation added where a gap allows them.
+/// The white densities driving the error, per axis: (21)'s, with [`Coast`]'s unmeasured
+/// acceleration and rotation added where a gap allows them.
 struct Densities {
     velocity: f32,
     attitude: f32,
@@ -672,28 +687,69 @@ impl Densities {
     }
 }
 
-/// `P ← Φ P Φᵀ + Q_d` over `T` seconds of an unaccelerated, unrotating vehicle, exactly, and
-/// `Φ`. Equation (22′).
+/// `Φ`, the exact transition over `T` seconds of an unaccelerated, unrotating vehicle.
+/// Equation (22′).
 ///
 /// With `ω = 0` and `a_b = −R(q̂)ᵀ g`, the dynamics (16)–(19) are a chain, `δβg → δθ → δv → δp`,
 /// with `δβa` entering velocity, so `A⁴ = 0` and `Φ = exp(A T) = I + A T + A² T²/2 + A³ T³/6`
-/// has four terms. `Q_d = ∫₀ᵀ Φ(s) Q_c Φ(s)ᵀ ds` integrates each density along the column of
-/// `Φ` it enters by, in closed form; `EQUATIONS.md` (22′) writes out both. `G` is (17)'s
-/// `−R(q̂)[a_b]ₓ`, which for this `a_b` is `[g]ₓ R(q̂)`: the gravity leak.
+/// has four terms; `EQUATIONS.md` (22′) writes it out. Built in blocks rather than as `A` and its
+/// powers: it has eleven nonzero blocks, each a scalar times `I`, `R` or `G`, where `G` is (17)'s
+/// `−R(q̂)[a_b]ₓ`, for this `a_b` the gravity leak `[g]ₓ R(q̂)`.
+fn unaccelerated_transition(state: &State, t: f32, gravity: f32) -> Transition {
+    let (r, g) = gravity_leak(state, gravity);
+    let i = Matrix3::<f32>::identity();
+    let t2 = t * t;
+    let (p, v, theta, beta_a, beta_g) = (
+        ErrorState::PositionNorth.index(),
+        ErrorState::VelocityNorth.index(),
+        ErrorState::AttitudeX.index(),
+        ErrorState::AccelBiasX.index(),
+        ErrorState::GyroBiasX.index(),
+    );
+    // Row by row: position, velocity, attitude; the biases' rows are the identity's.
+    let mut phi = Transition::identity();
+    phi.fixed_view_mut::<3, 3>(p, v).copy_from(&(i * t));
+    phi.fixed_view_mut::<3, 3>(p, theta)
+        .copy_from(&(g * (t2 / 2.0)));
+    phi.fixed_view_mut::<3, 3>(p, beta_a)
+        .copy_from(&(-r * (t2 / 2.0)));
+    phi.fixed_view_mut::<3, 3>(p, beta_g)
+        .copy_from(&(-g * (t2 * t / 6.0)));
+    phi.fixed_view_mut::<3, 3>(v, theta).copy_from(&(g * t));
+    phi.fixed_view_mut::<3, 3>(v, beta_a).copy_from(&(-r * t));
+    phi.fixed_view_mut::<3, 3>(v, beta_g)
+        .copy_from(&(-g * (t2 / 2.0)));
+    phi.fixed_view_mut::<3, 3>(theta, beta_g)
+        .copy_from(&(-i * t));
+    phi
+}
+
+/// `R(q̂)` and (17)'s `G = −R(q̂)[a_b]ₓ` at the specific force of an unaccelerated vehicle.
+fn gravity_leak(state: &State, gravity: f32) -> (Matrix3<f32>, Matrix3<f32>) {
+    let r = *state.attitude.quaternion().to_rotation_matrix().matrix();
+    let g = -r * skew(unaccelerated_force(state, gravity));
+    (r, g)
+}
+
+/// `P ← Φ P Φᵀ + Q_d` over `T` seconds of an unaccelerated, unrotating vehicle, exactly.
+/// Equation (22′), with `Φ` [`unaccelerated_transition`]'s.
 ///
-/// Built in blocks rather than as `A` and its powers: `Φ` has eleven nonzero blocks, and the
-/// noise twenty-one counting both halves, each a scalar times `I`, `R`, `G` or `G Gᵀ`.
+/// `Q_d = ∫₀ᵀ Φ(s) Q_c Φ(s)ᵀ ds` integrates each density along the column of `Φ` it enters by, in
+/// closed form: twenty-one blocks counting both halves, each a scalar times `I`, `R`, `G` or
+/// `G Gᵀ`. `cross`, where given, is a column correlated with the error state, (30′)'s `P_xb`,
+/// carried through the same `Φ` here rather than handing `Φ` back: returned, it sat in every
+/// caller's frame, `predicted_validity`'s included ([measured]).
+///
+/// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#stack-frames
 fn unaccelerated_growth(
     state: &State,
     covariance: &Covariance,
     t: f32,
     gravity: f32,
     q: &Densities,
-) -> (Covariance, Transition) {
-    let rotation = state.attitude.quaternion().to_rotation_matrix();
-    let r = *rotation.matrix();
-    let a_b = rotation.inverse() * -gravity_vector(gravity);
-    let g = -r * skew(a_b);
+    cross: Option<&mut SVector<f32, STATES>>,
+) -> Covariance {
+    let (r, g) = gravity_leak(state, gravity);
     let i = Matrix3::<f32>::identity();
     let (t2, t3) = (t * t, t * t * t);
     let (t4, t5) = (t3 * t, t3 * t2);
@@ -705,22 +761,10 @@ fn unaccelerated_growth(
         ErrorState::GyroBiasX.index(),
     );
 
-    // Φ, row by row: position, velocity, attitude; the biases' rows are the identity's.
-    let mut phi = Transition::identity();
-    phi.fixed_view_mut::<3, 3>(p, v).copy_from(&(i * t));
-    phi.fixed_view_mut::<3, 3>(p, theta)
-        .copy_from(&(g * (t2 / 2.0)));
-    phi.fixed_view_mut::<3, 3>(p, beta_a)
-        .copy_from(&(-r * (t2 / 2.0)));
-    phi.fixed_view_mut::<3, 3>(p, beta_g)
-        .copy_from(&(-g * (t3 / 6.0)));
-    phi.fixed_view_mut::<3, 3>(v, theta).copy_from(&(g * t));
-    phi.fixed_view_mut::<3, 3>(v, beta_a).copy_from(&(-r * t));
-    phi.fixed_view_mut::<3, 3>(v, beta_g)
-        .copy_from(&(-g * (t2 / 2.0)));
-    phi.fixed_view_mut::<3, 3>(theta, beta_g)
-        .copy_from(&(-i * t));
-
+    let phi = unaccelerated_transition(state, t, gravity);
+    if let Some(cross) = cross {
+        *cross = phi * *cross;
+    }
     let mut next = phi * covariance.as_matrix() * phi.transpose();
 
     // Q_d, the upper blocks; the lower are their transposes, written beside them. Each line
@@ -769,7 +813,7 @@ fn unaccelerated_growth(
 
     // (42), for the rounding the products leave.
     enforce_symmetry(&mut next);
-    (Covariance::from_matrix(next), phi)
+    Covariance::from_matrix(next)
 }
 
 /// What the IMU of an unaccelerated vehicle at `state`'s attitude reads over `dt`: no
@@ -780,15 +824,20 @@ fn unaccelerated_growth(
 /// `(0, 0, −γ)`, evaluated at an attitude that need not be level. [`coast`] moves the nominal
 /// state with it, and [`unaccelerated_growth`] linearizes about the same specific force.
 fn unaccelerated_sample(state: &State, dt: Seconds, gravity: f32) -> Corrected {
-    let rotation = state.attitude.quaternion().to_rotation_matrix();
     Corrected {
         delta_angle: DeltaAngle::from_vector(Vector3::zeros()),
         angle_interval: dt,
         delta_velocity: DeltaVelocity::from_vector(
-            rotation.inverse() * -gravity_vector(gravity) * dt.as_secs(),
+            unaccelerated_force(state, gravity) * dt.as_secs(),
         ),
         velocity_interval: dt,
     }
+}
+
+/// `−R(q̂)ᵀ g`, the specific force that holds an unaccelerated vehicle up, in body axes: what
+/// [`unaccelerated_sample`] reads and [`gravity_leak`] linearizes about.
+fn unaccelerated_force(state: &State, gravity: f32) -> Vector3<f32> {
+    state.attitude.quaternion().to_rotation_matrix().inverse() * -gravity_vector(gravity)
 }
 
 /// `g = [0, 0, γ]ᵀ`, the navigation-frame gravity vector of (11), for `γ` as
@@ -1472,8 +1521,7 @@ mod unaccelerated {
             "A³ is zero, so the cubic term is untested"
         );
         for t in [0.01f32, 1.3, 6.4] {
-            let (_, phi) =
-                unaccelerated_growth(&state, &Covariance::zero(), t, GRAVITY, &densities());
+            let phi = unaccelerated_transition(&state, t, GRAVITY);
             let difference = (widen(&phi) - exp(&a, f64::from(t))).amax();
             assert!(
                 difference < 1e-4,
@@ -1514,7 +1562,7 @@ mod unaccelerated {
             }
             integral *= h / 3.0;
 
-            let (closed, _) = unaccelerated_growth(&state, &Covariance::zero(), t, GRAVITY, &q);
+            let closed = unaccelerated_growth(&state, &Covariance::zero(), t, GRAVITY, &q, None);
             let closed = closed.as_matrix().map(f64::from);
             for row in 0..STATES {
                 for column in 0..STATES {
@@ -1546,12 +1594,13 @@ mod unaccelerated {
         );
         let noise = ImuNoise::default();
         let seconds = 5.0;
-        let (exact, _) = unaccelerated_growth(
+        let exact = unaccelerated_growth(
             &state,
             &from,
             seconds,
             GRAVITY,
             &Densities::of(&noise, None),
+            None,
         );
         let stepped = |rate: f32| {
             let dt = Seconds::from_secs(1.0 / rate);
@@ -1570,6 +1619,33 @@ mod unaccelerated {
             "10 Hz {coarse}, 400 Hz {fine}"
         );
         assert!(fine > 0.995, "400 Hz {fine} of the exact position variance");
+    }
+
+    /// The offset's correlation with the error state moves through the same `Φ` as `P` does: one
+    /// with down velocity alone reaches down position by `T`, `Φ`'s `I T` block, and keeps its
+    /// velocity share, since an unaccelerated vehicle's velocity row is the identity there.
+    #[test]
+    fn a_coast_carries_the_offsets_correlation_through_the_transition() {
+        let mut cross = SVector::<f32, STATES>::zeros();
+        cross[ErrorState::VelocityDown.index()] = 1.0;
+        let offset = Offset {
+            cross,
+            variance: 0.25,
+        };
+        let coasted = coast(
+            tilted(),
+            Covariance::from_sigmas([0.5; STATES]),
+            offset,
+            Seconds::from_secs(2.5),
+            &Config::default(),
+            &Coast::default(),
+        );
+        let after = coasted.offset.cross;
+        assert!(
+            (after[ErrorState::PositionDown.index()] - 2.5).abs() < 1e-6,
+            "{after}"
+        );
+        assert_eq!(after[ErrorState::VelocityDown.index()], 1.0);
     }
 
     /// A projection grows a covariance and never shrinks one, whatever the horizon. The zero and

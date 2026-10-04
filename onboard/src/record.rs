@@ -10,6 +10,7 @@
 use fusion_nav::prelude::*;
 use fusion_nav::{Quaternion, STATES};
 
+use crate::outcome::{status_code, validity_bits};
 use crate::wire::{Reader, Writer};
 
 /// The longest record: [`Record::InitializeFrom`], a state and the 15 × 15 covariance.
@@ -48,6 +49,10 @@ pub enum Record {
     FuseCourse(Timestamp, HeadingNoise),
     FuseStationary(Timestamp, VelocityNoise<Ned>),
     PredictedValidity,
+    /// `Eskf::state`, which an integrator reads every epoch: status and validity are derived
+    /// from `P` on the read.
+    State,
+    GeodeticPosition,
 }
 
 impl Record {
@@ -76,61 +81,86 @@ impl Record {
             Record::FuseCourse(..) => "fuse_course",
             Record::FuseStationary(..) => "fuse_stationary",
             Record::PredictedValidity => "predicted_validity",
+            Record::State => "state",
+            Record::GeodeticPosition => "geodetic_position",
+        }
+    }
+
+    /// The byte a record is encoded under, and decoded by: the one list of them, exhaustive, so a
+    /// new record has one, and a test holds `decode` to every tag.
+    pub const fn tag(&self) -> u8 {
+        match self {
+            Record::Nop => 0,
+            Record::New(_) => 1,
+            Record::SetOrigin(_) => 2,
+            Record::SetMagneticDeclination(_) => 3,
+            Record::SetBaroReference(..) => 4,
+            Record::ResetPositionTo(..) => 5,
+            Record::ResetVelocityTo(..) => 6,
+            Record::WindowNew => 7,
+            Record::WindowPush(_) => 8,
+            Record::Initialize => 9,
+            Record::InitializeCoarse(_) => 10,
+            Record::InitializeFrom(..) => 11,
+            Record::Predict(_) => 12,
+            Record::FuseGnssPosition(..) => 13,
+            Record::FuseGnssGeodetic(..) => 14,
+            Record::FuseGnssVelocity(..) => 15,
+            Record::FuseBaroAltitude(..) => 16,
+            Record::FuseMagHeading(..) => 17,
+            Record::FuseGnssHeading(..) => 18,
+            Record::FuseCourse(..) => 19,
+            Record::FuseStationary(..) => 20,
+            Record::PredictedValidity => 21,
+            Record::State => 22,
+            Record::GeodeticPosition => 23,
         }
     }
 
     /// Encode into `buffer`, returning the length, or `None` if it does not fit.
     pub fn encode(&self, buffer: &mut [u8]) -> Option<usize> {
         let mut w = Writer::new(buffer);
+        w.u8(self.tag());
         match *self {
-            Record::Nop => w.u8(0),
+            Record::Nop => {}
             Record::New(config) => {
-                w.u8(1);
                 write_config(&mut w, &config);
             }
             Record::SetOrigin(origin) => {
-                w.u8(2);
                 write_geodetic(&mut w, origin);
             }
             Record::SetMagneticDeclination(declination) => {
-                w.u8(3);
                 w.f32(declination.as_radians());
             }
             Record::SetBaroReference(reference, noise) => {
-                w.u8(4);
                 w.f32(reference.as_meters());
                 w.f32(noise.variance());
             }
             Record::ResetPositionTo(position, noise) => {
-                w.u8(5);
                 w.f32s(position.to_array());
                 w.f32s(noise.variance());
             }
             Record::ResetVelocityTo(velocity, noise) => {
-                w.u8(6);
                 w.f32s(velocity.to_array());
                 w.f32s(noise.variance());
             }
-            Record::WindowNew => w.u8(7),
+            Record::WindowNew => {}
             Record::WindowPush(StaticSample {
                 imu,
                 mag,
                 baro,
                 velocity,
             }) => {
-                w.u8(8);
                 write_imu(&mut w, imu);
                 write_option3(&mut w, mag.map(MagField::to_array));
                 w.option_f32(baro.map(Altitude::as_meters));
                 write_option3(&mut w, velocity.map(Velocity::to_array));
             }
-            Record::Initialize => w.u8(9),
+            Record::Initialize => {}
             Record::InitializeCoarse(imu) => {
-                w.u8(10);
                 write_imu(&mut w, imu);
             }
             Record::InitializeFrom(state, covariance, time) => {
-                w.u8(11);
                 write_state(&mut w, &state);
                 for row in covariance.to_rows() {
                     w.f32s(row);
@@ -138,59 +168,50 @@ impl Record {
                 w.u64(time.as_micros());
             }
             Record::Predict(imu) => {
-                w.u8(12);
                 write_imu(&mut w, imu);
             }
             Record::FuseGnssPosition(time, position, noise, antenna) => {
-                w.u8(13);
                 w.u64(time.as_micros());
                 w.f32s(position.to_array());
                 w.f32s(noise.variance());
                 w.f32s(antenna.to_array());
             }
             Record::FuseGnssGeodetic(time, fix, noise, antenna) => {
-                w.u8(14);
                 w.u64(time.as_micros());
                 write_geodetic(&mut w, fix);
                 w.f32s(noise.variance());
                 w.f32s(antenna.to_array());
             }
             Record::FuseGnssVelocity(time, velocity, noise, antenna) => {
-                w.u8(15);
                 w.u64(time.as_micros());
                 w.f32s(velocity.to_array());
                 w.f32s(noise.variance());
                 w.f32s(antenna.to_array());
             }
             Record::FuseBaroAltitude(time, altitude, noise) => {
-                w.u8(16);
                 w.u64(time.as_micros());
                 w.f32(altitude.as_meters());
                 w.f32(noise.variance());
             }
             Record::FuseMagHeading(time, field, noise) => {
-                w.u8(17);
                 w.u64(time.as_micros());
                 w.f32s(field.to_array());
                 w.f32(noise.variance());
             }
             Record::FuseGnssHeading(time, heading, noise) => {
-                w.u8(18);
                 w.u64(time.as_micros());
                 w.f32(heading.as_radians());
                 w.f32(noise.variance());
             }
             Record::FuseCourse(time, sideslip) => {
-                w.u8(19);
                 w.u64(time.as_micros());
                 w.f32(sideslip.variance());
             }
             Record::FuseStationary(time, noise) => {
-                w.u8(20);
                 w.u64(time.as_micros());
                 w.f32s(noise.variance());
             }
-            Record::PredictedValidity => w.u8(21),
+            Record::PredictedValidity | Record::State | Record::GeodeticPosition => {}
         }
         w.finish()
     }
@@ -282,6 +303,8 @@ impl Record {
                 noise3(r.f32s()?, VelocityNoise::from_variance),
             ),
             21 => Record::PredictedValidity,
+            22 => Record::State,
+            23 => Record::GeodeticPosition,
             _ => return None,
         };
         r.is_empty().then_some(record)
@@ -378,15 +401,6 @@ fn read_state(r: &mut Reader) -> Option<State> {
     })
 }
 
-pub(crate) const fn status_code(status: Status) -> u8 {
-    match status {
-        Status::Healthy => 0,
-        Status::Degraded => 1,
-        Status::DeadReckoning => 2,
-        Status::Aligning => 3,
-    }
-}
-
 fn status_of(code: u8) -> Option<Status> {
     Some(match code {
         0 => Status::Healthy,
@@ -395,23 +409,6 @@ fn status_of(code: u8) -> Option<Status> {
         3 => Status::Aligning,
         _ => return None,
     })
-}
-
-pub(crate) const fn validity_bits(validity: Validity) -> u8 {
-    let Validity {
-        tilt,
-        heading,
-        horizontal_position,
-        vertical_position,
-        horizontal_velocity,
-        vertical_velocity,
-    } = validity;
-    (tilt as u8)
-        | (heading as u8) << 1
-        | (horizontal_position as u8) << 2
-        | (vertical_position as u8) << 3
-        | (horizontal_velocity as u8) << 4
-        | (vertical_velocity as u8) << 5
 }
 
 fn validity_of(bits: u8) -> Validity {

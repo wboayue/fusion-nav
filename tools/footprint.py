@@ -4,6 +4,8 @@
     tools/footprint.py TYPES FRAMES FLASH CODE SYSROOT    print one line of pairs
     tools/footprint.py --path <key> FRAMES CODE SYSROOT   print one chain's path, or why it was
                                                           refused
+    tools/footprint.py --frames <prefix> FRAMES           `name=bytes` for each function named
+                                                          `<prefix><name>`, for `onboard/build.sh`
     tools/footprint.py --self-test                        run the fixtures
 
 `tools/footprint.sh` builds and writes the five inputs, and compares the line against
@@ -812,6 +814,12 @@ def self_test():
             failures.append(f"{name}: got {got!r}, want {want!r}")
 
     check("method", path("<fusion_nav::eskf::Eskf>::predict"), "eskf.Eskf.predict")
+    # A folded entry gives each name its frame; a name outside the prefix is left out.
+    check("frames under a prefix", frames_under("<m::M>::", "\n".join([
+        "  Entry {", "    Functions: [<m::M>::execute]", "    Size: 0xA0", "  }",
+        "  Entry {", "    Functions: [<m::M>::renew, <m::M>::seed]", "    Size: 0x3F8", "  }",
+        "  Entry {", "    Functions: [<m::Other>::execute]", "    Size: 0x10", "  }"])),
+        {"execute": 160, "renew": 1016, "seed": 1016})
     check("const generic", path("fusion_nav::update::update::<3>"), "update.update.3")
     check("llvm suffix", path("fusion_nav::propagate::coast (.llvm.1234)"), "propagate.coast")
     check(
@@ -904,9 +912,30 @@ def self_test():
     print("footprint self-test: ok")
 
 
+def frames_under(prefix, frames):
+    """`{name: bytes}` for each function `<prefix><name>` in FRAMES, folded entries included."""
+    found = {}
+    for _, names, size in stack_sizes(frames):
+        for name in names:
+            if name.startswith(prefix):
+                found[name[len(prefix):]] = size
+    return found
+
+
 def main(argv):
     if argv == ["--self-test"]:
         self_test()
+        return
+    if argv[:1] == ["--frames"] and len(argv) == 3:
+        try:
+            with open(argv[2]) as f:
+                found = frames_under(argv[1], f.read())
+        except OSError as error:
+            sys.exit(f"footprint: {error}")
+        if not found:
+            sys.exit(f"footprint: no function named {argv[1]}... in {argv[2]}")
+        for name, size in sorted(found.items()):
+            print(f"{name}={size}")
         return
     show = argv[1] if argv[:1] == ["--path"] and len(argv) == 5 else None
     if show is None and len(argv) != 5:

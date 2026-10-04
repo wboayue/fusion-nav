@@ -10,7 +10,7 @@
 
 use std::process::ExitCode;
 
-use onboard::{Frame, Machine, Outcome, Record};
+use onboard::{Frame, Machine, Outcome, Record, flags};
 
 fn main() -> ExitCode {
     let mut failed = false;
@@ -48,16 +48,17 @@ fn verify(trace: &[u8]) -> Result<u64, String> {
         rest = after;
         let record = Record::decode(frame.record)
             .ok_or_else(|| format!("call {index}: the record does not decode"))?;
-        let outcome = Outcome::of(&machine.execute(&record));
-        if outcome != frame.outcome {
+        let returned = machine.execute(&record);
+        let verdict = frame.check(&machine, &returned);
+        if verdict & flags::OUTCOME == 0 {
             return Err(format!(
                 "call {index}, {}: outcome {:?}, recorded {:?}",
                 record.name(),
-                outcome.names(),
+                Outcome::of(&returned).names(),
                 frame.outcome.names()
             ));
         }
-        if machine.digest(outcome) != frame.digest {
+        if verdict & flags::DIGEST == 0 {
             return Err(format!(
                 "call {index}, {}: the digest differs",
                 record.name()

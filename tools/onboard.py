@@ -16,9 +16,10 @@ for a call the board made differently is a figure for another run.
 
 Every run is preceded by calls that do nothing (`Record::Nop`), timed the same way: their least
 cycles are what the measurement itself costs, the two cycle-counter reads and the dispatch, and
-`pin` subtracts them. A stack is painted from the call into `Machine::execute`, whose frame
-`data/onboard.sh` reads off the ELF into `dispatch.txt` (a nop does not show it: LLVM sets up
-the frame only on the paths that need it), and `pin` subtracts that. It is the one place the
+`pin` subtracts them. A stack is painted from the call into `Machine::execute`, and `pin`
+subtracts `execute`'s frame and the out-of-line arm's a call goes through (the trace's `arm`
+column), read off the ELF into `<build>.frames` by `onboard/build.sh`. A nop does not show that
+frame: painting sees only the bytes written, and a call inlined into `execute` writes few. It is the one place the
 board's raw figures become published ones (AGENTS.md, "one statistic, one implementation").
 
 Standard library only, as `tools/anees.py` is: the port is a CDC device opened raw through
@@ -36,7 +37,7 @@ import termios
 import tty
 from pathlib import Path
 
-PROTOCOL = 1
+PROTOCOL = 2
 BATCH = 256 * 1024
 RESULT = struct.Struct("<IIHBx")
 FRAME_OVERHEAD = 2 + 2 + 8
@@ -45,10 +46,7 @@ NOPS = 256
 # the host does not know here, so calibration reads no digest flag.
 NOP_FRAME = struct.pack("<HBHQ", 1, 0, 0, 0)
 
-# The calls `Machine::execute` makes through an out-of-line arm, whose frame sits between the
-# dispatcher's and the entry point's (`onboard/src/machine.rs`, `renew`, `new_window`, `seed`).
-ARMS = {"new": "renew", "window_new": "new_window", "initialize_from": "seed"}
-
+# `onboard::flags`, which `PROTOCOL` guards: the firmware's info line names its protocol.
 OUTCOME_MATCH, DIGEST_MATCH, DENORMAL, OVERFLOW, UNDECODED = 1, 2, 4, 8, 16
 
 
@@ -135,6 +133,8 @@ class Board:
         fields = dict(word.split("=", 1) for word in line.split()[1:] if "=" in word)
         if not line.startswith("onboard ") or fields.get("proto") != str(PROTOCOL):
             die(f"not this protocol's firmware: {line!r}")
+        if fields.get("batch") != str(BATCH):
+            die(f"the firmware takes batches of {fields.get('batch')} bytes, this tool {BATCH}")
         return line, fields
 
     def batch(self, data):
@@ -184,12 +184,13 @@ def run(board, trace_path, out_dir, cold):
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["index", "call", "outcome", "height", "label", "cycles", "stack", "flags"])
+        writer.writerow(["index", "call", "arm", "outcome", "height", "label", "cycles", "stack",
+                         "flags"])
         for row in nops:
-            writer.writerow([-1, "nop", "nothing", "", "", row[0], row[1], row[3]])
+            writer.writerow([-1, "nop", "inline", "nothing", "", "", row[0], row[1], row[3]])
         for call, (cycles, stack, _, flags) in zip(calls, measured):
-            writer.writerow([call["index"], call["call"], call["outcome"], call["height"],
-                             call["label"], cycles, stack, flags])
+            writer.writerow([call["index"], call["call"], call["arm"], call["outcome"],
+                             call["height"], call["label"], cycles, stack, flags])
     for call, (_, _, _, flags) in zip(calls, measured):
         problem = refusal(flags)
         if problem:
@@ -229,8 +230,9 @@ def fmodf(board, out_dir):
 
 
 def pairs(text):
-    """`{key: int}` for the `key=value` tokens of `text`."""
-    return {k: int(v) for k, v in (t.split("=", 1) for t in text.split() if "=" in t)}
+    """`{key: int}` for the `key=value` tokens of `text`, its `#` lines aside."""
+    lines = (line for line in text.splitlines() if not line.startswith("#"))
+    return {k: int(v) for k, v in (t.split("=", 1) for line in lines for t in line.split() if "=" in t)}
 
 
 def slug(text):
@@ -240,9 +242,10 @@ def slug(text):
 def summarize(rows, frames):
     """Keys for one run's per-call rows: per call, per call and outcome, per label.
 
-    Cycles are net of the least a `nop` took, and stack of the dispatcher's frame and the arm's
-    a call goes through (`frames`, by function, from `dispatch.txt`). Under LTO the dispatcher's
-    frame holds whatever entry point it inlined, so `stack_raw` keeps it.
+    Cycles are net of the least a `nop` took, and stack of `execute`'s frame and the arm's a call
+    goes through (`frames`, by function, from `<build>.frames`); a call inlined into `execute` has
+    no stack of its own, and none is published. Under LTO `execute`'s frame holds whatever entry
+    point it inlined, so `stack_raw` keeps it.
     """
     nops = [r for r in rows if r["call"] == "nop"]
     if not nops:
@@ -254,20 +257,30 @@ def summarize(rows, frames):
         if r["call"] == "nop":
             continue
         outcome = r["outcome"] + (f"_{r['height']}" if r["height"] else "")
-        beneath = frames["execute"] + (frames[ARMS[r["call"]]] if r["call"] in ARMS else 0)
-        cycles, raw = int(r["cycles"]) - overhead, int(r["stack"])
+        arm, raw = r["arm"], int(r["stack"])
+        if arm == "inline":
+            net = None
+        elif arm not in frames:
+            raise ValueError(f"{r['call']} goes through `{arm}`, which the build's frames lack")
+        else:
+            net = raw - frames["execute"] - (0 if arm == "execute" else frames[arm])
+            if net < 0:
+                raise ValueError(f"{r['call']}: {raw} bytes painted, under the frames above it")
+        cycles = int(r["cycles"]) - overhead
         names = [r["call"], f"{r['call']}.{outcome}"]
         if r["label"]:
             names.append(f"label.{slug(r['label'])}")
         for name in names:
-            groups.setdefault(name, []).append((cycles, raw - beneath, int(r["flags"]), raw))
+            groups.setdefault(name, []).append((cycles, net, int(r["flags"]), raw))
     for name, members in groups.items():
         cycles = [c for c, _, _, _ in members]
         keys[f"{name}.n"] = len(members)
         keys[f"{name}.min"] = min(cycles)
         keys[f"{name}.mean"] = round(sum(cycles) / len(cycles))
         keys[f"{name}.max"] = max(cycles)
-        keys[f"{name}.stack"] = max(s for _, s, _, _ in members)
+        stacks = [s for _, s, _, _ in members if s is not None]
+        if stacks:
+            keys[f"{name}.stack"] = max(stacks)
         keys[f"{name}.stack_raw"] = max(raw for _, _, _, raw in members)
         keys[f"{name}.denormal"] = sum(1 for _, _, f, _ in members if f & DENORMAL)
     return keys
@@ -327,7 +340,7 @@ def pin(dirs):
         for f in sorted(d.glob("*.csv")):
             if f.name == "fmodf.csv":
                 continue
-            frames = pairs((d / "dispatch.txt").read_text())
+            frames = pairs((d / "frames.txt").read_text())
             runs[f.stem] = summarize(list(csv.DictReader(open(f, newline=""))), frames)
         keep = ("commit", "rustc", "opt", "lto", "cpu", "fpu", "sysclk", "cache", "fz")
         lines.append(f"{tag} " + " ".join(f"{k}={meta[k]}" for k in keep if k in meta))
@@ -346,6 +359,7 @@ def pin(dirs):
             keys = microseconds(bound(runs.values()), sysclk)
             lines.append(f"{tag}/bound " + " ".join(f"{k}={v}" for k, v in sorted(keys.items())))
             keys = microseconds(bound(v for n, v in runs.items() if n in shared), sysclk)
+            keys["runs"] = ",".join(sorted(shared))
             lines.append(f"{tag}/common " + " ".join(f"{k}={v}" for k, v in sorted(keys.items())))
     return lines
 
@@ -387,18 +401,19 @@ def self_test():
     assert "outcome" in refusal(DIGEST_MATCH)
     assert "painted" in refusal(OUTCOME_MATCH | DIGEST_MATCH | OVERFLOW)
 
-    # The overhead is the least nop, so a slow nop raises nothing; the frames are passed in, and
-    # a nop's own stack (shallower: no prologue) is not the dispatcher's. The worst predict is in
-    # the middle, so a reader that takes the first or the last row misses it.
+    # The overhead is the least nop, so a slow nop raises nothing; the frames are the build's, not
+    # a nop's stack, which shows only what it wrote. The worst predict is in the middle, so a
+    # reader that takes the first or the last row misses it.
     ok = OUTCOME_MATCH | DIGEST_MATCH
     rows = [
-        {"call": "nop", "outcome": "nothing", "height": "", "label": "", "cycles": "20", "stack": "96", "flags": "1"},
-        {"call": "nop", "outcome": "nothing", "height": "", "label": "", "cycles": "31", "stack": "104", "flags": "1"},
-        {"call": "predict", "outcome": "propagated", "height": "", "label": "", "cycles": "1020", "stack": "5000", "flags": str(ok)},
-        {"call": "predict", "outcome": "coasted", "height": "", "label": "a coast", "cycles": "64020", "stack": "7000", "flags": str(ok | DENORMAL)},
-        {"call": "predict", "outcome": "propagated", "height": "", "label": "", "cycles": "1220", "stack": "5004", "flags": str(ok)},
-        {"call": "fuse_gnss_position", "outcome": "accepted", "height": "rejected", "label": "", "cycles": "3020", "stack": "9000", "flags": str(ok)},
-        {"call": "initialize_from", "outcome": "seeded", "height": "", "label": "", "cycles": "9020", "stack": "4000", "flags": str(ok)},
+        {"call": "nop", "arm": "inline", "outcome": "nothing", "height": "", "label": "", "cycles": "20", "stack": "96", "flags": "1"},
+        {"call": "nop", "arm": "inline", "outcome": "nothing", "height": "", "label": "", "cycles": "31", "stack": "104", "flags": "1"},
+        {"call": "predict", "arm": "execute", "outcome": "propagated", "height": "", "label": "", "cycles": "1020", "stack": "5000", "flags": str(ok)},
+        {"call": "predict", "arm": "execute", "outcome": "coasted", "height": "", "label": "a coast", "cycles": "64020", "stack": "7000", "flags": str(ok | DENORMAL)},
+        {"call": "predict", "arm": "execute", "outcome": "propagated", "height": "", "label": "", "cycles": "1220", "stack": "5004", "flags": str(ok)},
+        {"call": "fuse_gnss_position", "arm": "execute", "outcome": "accepted", "height": "rejected", "label": "", "cycles": "3020", "stack": "9000", "flags": str(ok)},
+        {"call": "initialize_from", "arm": "seed", "outcome": "seeded", "height": "", "label": "", "cycles": "9020", "stack": "4000", "flags": str(ok)},
+        {"call": "set_magnetic_declination", "arm": "inline", "outcome": "true", "height": "", "label": "", "cycles": "60", "stack": "36", "flags": str(ok)},
     ]
     keys = summarize(rows, pairs("execute=160 renew=5000 new_window=900 seed=1000"))
     # A seed's stack is beneath its arm's frame as well as the dispatcher's.
@@ -413,6 +428,18 @@ def self_test():
     assert keys["predict.coasted.denormal"] == 1 and keys["predict.propagated.denormal"] == 0
     assert keys["label.a_coast.max"] == 64000
     assert keys["fuse_gnss_position.accepted_rejected.max"] == 3000
+    # Inlined into `execute`, it painted less than `execute`'s frame: no stack is published.
+    assert "set_magnetic_declination.stack" not in keys
+    assert keys["set_magnetic_declination.stack_raw"] == 36
+    built = pairs("execute=160 renew=5000 new_window=900 seed=1000")
+    for arm, stack, why in (("rename", "4000", "lack"), ("execute", "120", "under")):
+        bad = dict(rows[2], arm=arm, stack=stack)
+        try:
+            summarize(rows[:2] + [bad], built)
+        except ValueError as error:
+            assert why in str(error), error
+        else:
+            raise AssertionError(f"{arm} with {stack} painted was published")
 
     other = dict(keys, **{"predict.max": 70000, "predict.stack": 10, "predict.min": 900,
                           "predict.n": 1, "predict.mean": 900})
@@ -432,17 +459,18 @@ def self_test():
     # the first build's comparison line.
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:
-        header = "index,call,outcome,height,label,cycles,stack,flags\n"
-        nop = "-1,nop,nothing,,,40,36,1\n"
+        header = "index,call,arm,outcome,height,label,cycles,stack,flags\n"
+        nop = "-1,nop,inline,nothing,,,40,36,1\n"
         for build, traces in (("primary", {"a": 1040, "b": 9040}), ("shipped", {"a": 2040})):
             d = Path(tmp) / f"{build}-warm"
             d.mkdir()
             (d / "info.txt").write_text(
                 f"onboard proto=1 build={build} commit=c sysclk=400000000 cache=warm fz=0\n")
-            (d / "dispatch.txt").write_text("execute=160\nrenew=1\nnew_window=1\nseed=1\n")
+            (d / "frames.txt").write_text(
+                f"# {build} c\nexecute=160\nrenew=1\nnew_window=1\nseed=1\n")
             for name, cycles in traces.items():
                 (d / f"{name}.csv").write_text(
-                    header + nop + f"0,predict,propagated,,,{cycles},5160,{ok}\n")
+                    header + nop + f"0,predict,execute,propagated,,,{cycles},5160,{ok}\n")
         out = {}
         for line in pin([Path(tmp) / "primary-warm", Path(tmp) / "shipped-warm"]):
             run, *words = line.split()
@@ -453,6 +481,7 @@ def self_test():
         assert out["shipped/warm/common"]["predict.max_us"] == "5.0"
         assert out["primary/warm/a"]["predict.stack"] == "5000"
         assert out["primary/warm"]["sysclk"] == "400000000"
+        assert out["primary/warm/common"]["runs"] == "a"
     print("onboard self-test: ok")
 
 

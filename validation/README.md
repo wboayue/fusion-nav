@@ -28,8 +28,10 @@ builds. It checks that every placed figure exists.
 
 ## The cost page
 
-`cost.md` is the exception to "local, never CI". Its numbers are `{{footprint}}` placeholders
-on `data/footprint.txt`'s pins and need no replay, so it renders and checks alone:
+`cost.md` is the exception to "local, never CI". Its numbers are `{{footprint}}` and `{{onboard}}`
+placeholders on the pins in `data/footprint.txt` and `data/onboard.txt` and need no replay, so it
+renders and checks alone. CI measures the footprint pins and fails on a move; it has no board, so
+it checks only that the page shows the board's pins, which carry the commit they were taken at:
 
 ```console
 $ python3 tools/validation.py render validation/src target/validation . --only cost.md

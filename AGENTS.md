@@ -286,7 +286,7 @@ cargo run --release --example replay -- --derive <log.csv> > config.rs   # a Con
 cargo run --example replay -- --derive data/flight.csv > data/flight.config.rs  # regenerate the fixture a test pins
 cargo run --example replay -- --set correlation.gnss_height=29 <in.csv> <out.csv>   # any derivable field; `set=` names it
 cargo run --example replay -- --without mag --yaw-estimator off <in.csv> <out.csv>   # a vehicle with no magnetometer, and the filter without (45)-(52)
-cargo run --release --example replay -- --trace target/onboard/<id>.trace <in.csv> <out.csv>   # every call, for the board (#41)
+RUSTFLAGS="--cfg fusion_nav_onboard" CARGO_TARGET_DIR=target/onboard/host cargo run --release --example replay -- --trace <id>.trace <in.csv> <out.csv>   # every call, for the board (#41)
 REPLAY_ARGS="--set ..." data/anees.sh correlated   # the ANEES gate under a derived Config
 cargo test --example replay -- --ignored drift_scatter --nocapture   # the drift estimator's scatter DESIGN quotes
 
@@ -995,22 +995,30 @@ the declination table, and CI builds and tests without it too.
   the root would move every replay output (the dev-dependency rule under Replay corpus). Not a
   default member; `cargo bench -p bench` times it, and CI runs `cargo test -p bench --benches`.
 - `onboard/`: a fourth unpublished member, #41's cost on a board. Its library, `no_std`, is a
-  `Record` per public mutating call, `Machine::execute`, the one executor, and a digest of the
-  state and covariance; `Recorder`, host-only, is the filter `replay --trace` and `paths` drive,
-  which encodes, decodes and executes every call so the host runs exactly what the board will.
-  Its binary, behind the `firmware` feature so the root's bare-metal examples never build a HAL,
-  is the ARK FPV's firmware (`onboard/build.sh`), driven by `tools/onboard.py`. What the bring-up
-  taught, each found on the board and invisible to every host check:
+  `Record` per public call the board times, `Machine::execute`, the one executor, with
+  `Record::arm` saying how it reaches each call, and the `Outcome` and digest a board and a host
+  compare (`Frame::check`). `Recorder`, host-only, is the filter `paths` drives and the replay
+  harness's traced build wraps: it encodes, decodes and executes every call, so the host runs
+  exactly what the board will. The harness drives `Eskf` itself unless built with
+  `--cfg fusion_nav_onboard` (`examples/replay/filter.rs`), which keeps the codec out of every
+  statistic and the unpublished member out of the packaged crate; CI holds the two builds to the
+  same output. The binary, behind the `firmware` feature so the root's bare-metal examples never
+  build a HAL, is the ARK FPV's firmware (`onboard/build.sh`), driven by `tools/onboard.py`. What
+  the bring-up and the review taught, each invisible to every host check:
   - A section `memory.x` inserts after `.bss` is zeroed with it: cortex-m-rt's `__ebss` moved
     into AXI SRAM and reset faulted clearing unmapped memory, with no LED lit. The buffers take
     fixed addresses instead; check `__ebss` with `llvm-nm` after touching the link script.
-  - A `nop` does not measure the dispatcher's frame: LLVM sets up a frame only on the paths that
-    need it. `execute`'s frame, and each out-of-line arm's, is read off the ELF's
-    `-Zemit-stack-sizes` table, which every build carries (the flashed image is byte-identical
-    without it).
+  - Painting sees only bytes written: a call inlined into `execute` shows part of its frame, a
+    `nop` almost none. So the frames subtracted are read off the ELF's `-Zemit-stack-sizes`
+    table into `<build>.frames` (the flashed image is byte-identical without it), and a call
+    `Record::arm` names `inline` publishes no stack.
+  - A tail call runs where the caller's frame was: `execute` jumped to `initialize` and
+    `initialize_coarse`, and subtracting its frame published both 160 bytes low. It holds every
+    result past the call, and `build.sh` refuses an ELF in which it still jumps out.
   - A by-value argument holds stack in its caller: `execute` keeps a whole `Eskf` and a seed's
     covariance in out-of-line arms, or every call's painted stack carries them.
-  - Every painted stack sat 52 bytes under its walked `chain.`, the bound the walk claims.
+  - `%` and `libm::fmodf` are two functions: the operator lowers to `compiler_builtins`' copy.
+    Time the code path the filter links, not a function of the same name.
 
 ### Invariants worth knowing before editing
 
@@ -1163,7 +1171,8 @@ Every source touches the same ten places, and three of them are public:
   table.
 - `onboard/`'s `Record`, `Machine::execute` and `Recorder`, which carry every public call into a
   trace the board times (#41). An exhaustive `match` on `Record` makes the codec a compile error,
-  but a `fuse_*` with no `Record` is simply never timed.
+  and `onboard`'s `every_entry_point_is_recorded_or_named_as_untimed` fails until a new `pub fn`
+  on `Eskf` is a `Record` or named as a read the board does not time.
 - `tools/ulog2replay.py`, which has to find the source in a ULog and name its variance columns.
 - The comparison with EKF2, if EKF2 judges the source: its test ratio in `EKF2_RATIOS`
   (`tools/ulog2replay.py`) and `REFERENCE_KINDS["ratio"]` (`tools/replay_report.py`), the pairing

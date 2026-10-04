@@ -49,12 +49,13 @@ profile the stack frames above are measured in, for the `thumbv7em-none-eabihf` 
 {{onboard primary/warm fpu}}-precision FPU, `f64` in library calls, flush-to-zero off.
 
 The calls are the replay's (`onboard/`, #41): every call the harness makes into the filter on
-the thirteen corpus logs and `hover_outage`, written down on the host and made again on the
-board, plus a trace built to reach the paths the corpus does not (`onboard/examples/paths.rs`).
+the thirteen corpus logs and `hover_outage`, the `state()` it reads each epoch included, written
+down on the host and made again on the board, plus a trace built to reach the paths the corpus
+does not (`onboard/examples/paths.rs`).
 Each call is timed alone by the cycle counter, interrupts masked, net of the
 {{onboard primary/warm/bound nop_cycles}} cycles the timing itself takes, and the stack beneath it painted. After
-every call the board checks its outcome and a digest of the state and covariance against the
-host's, and refuses the run on any difference: every figure is of the arithmetic the host ran,
+every call the board checks its outcome and a digest against the host's (the state, the
+covariance, the clock, the barometric reference and every source's counters), and refuses the run on any difference: every figure is of the arithmetic the host ran,
 bit for bit.
 
 | entry point | worst, µs | mean, µs | worst cold, µs | calls | denormal inputs | painted stack | walked stack |
@@ -68,15 +69,17 @@ bit for bit.
 | `fuse_gnss_heading` | {{onboard primary/warm/bound fuse_gnss_heading.max_us}} | {{onboard primary/warm/bound fuse_gnss_heading.mean_us}} | {{onboard primary/cold/bound fuse_gnss_heading.max_us}} | {{onboard primary/warm/bound fuse_gnss_heading.n}} | {{onboard primary/warm/bound fuse_gnss_heading.denormal}} | {{onboard primary/warm/bound fuse_gnss_heading.stack}} | {{footprint thumbv7em-none-eabihf chain.eskf.Eskf.fuse_gnss_heading}} |
 | `fuse_course` | {{onboard primary/warm/bound fuse_course.max_us}} | {{onboard primary/warm/bound fuse_course.mean_us}} | {{onboard primary/cold/bound fuse_course.max_us}} | {{onboard primary/warm/bound fuse_course.n}} | {{onboard primary/warm/bound fuse_course.denormal}} | {{onboard primary/warm/bound fuse_course.stack}} | {{footprint thumbv7em-none-eabihf chain.eskf.Eskf.fuse_course}} |
 | `fuse_stationary` | {{onboard primary/warm/bound fuse_stationary.max_us}} | {{onboard primary/warm/bound fuse_stationary.mean_us}} | {{onboard primary/cold/bound fuse_stationary.max_us}} | {{onboard primary/warm/bound fuse_stationary.n}} | {{onboard primary/warm/bound fuse_stationary.denormal}} | {{onboard primary/warm/bound fuse_stationary.stack}} | {{footprint thumbv7em-none-eabihf chain.eskf.Eskf.fuse_stationary}} |
+| `state` | {{onboard primary/warm/bound state.max_us}} | {{onboard primary/warm/bound state.mean_us}} | {{onboard primary/cold/bound state.max_us}} | {{onboard primary/warm/bound state.n}} | {{onboard primary/warm/bound state.denormal}} | {{onboard primary/warm/bound state.stack}} | — |
 | `predicted_validity` | {{onboard primary/warm/bound predicted_validity.max_us}} | {{onboard primary/warm/bound predicted_validity.mean_us}} | {{onboard primary/cold/bound predicted_validity.max_us}} | {{onboard primary/warm/bound predicted_validity.n}} | {{onboard primary/warm/bound predicted_validity.denormal}} | {{onboard primary/warm/bound predicted_validity.stack}} | {{footprint thumbv7em-none-eabihf chain.eskf.Eskf.predicted_validity}} |
 | `initialize` | {{onboard primary/warm/bound initialize.max_us}} | {{onboard primary/warm/bound initialize.mean_us}} | {{onboard primary/cold/bound initialize.max_us}} | {{onboard primary/warm/bound initialize.n}} | {{onboard primary/warm/bound initialize.denormal}} | {{onboard primary/warm/bound initialize.stack}} | {{footprint thumbv7em-none-eabihf chain.eskf.Eskf.initialize}} |
 | `initialize_coarse` | {{onboard primary/warm/bound initialize_coarse.max_us}} | {{onboard primary/warm/bound initialize_coarse.mean_us}} | {{onboard primary/cold/bound initialize_coarse.max_us}} | {{onboard primary/warm/bound initialize_coarse.n}} | {{onboard primary/warm/bound initialize_coarse.denormal}} | {{onboard primary/warm/bound initialize_coarse.stack}} | {{footprint thumbv7em-none-eabihf chain.eskf.Eskf.initialize_coarse}} |
 | `initialize_from` | {{onboard primary/warm/bound initialize_from.max_us}} | {{onboard primary/warm/bound initialize_from.mean_us}} | {{onboard primary/cold/bound initialize_from.max_us}} | {{onboard primary/warm/bound initialize_from.n}} | {{onboard primary/warm/bound initialize_from.denormal}} | {{onboard primary/warm/bound initialize_from.stack}} | {{footprint thumbv7em-none-eabihf chain.eskf.Eskf.initialize_from}} |
 | `StaticWindow::push` | {{onboard primary/warm/bound window_push.max_us}} | {{onboard primary/warm/bound window_push.mean_us}} | {{onboard primary/cold/bound window_push.max_us}} | {{onboard primary/warm/bound window_push.n}} | {{onboard primary/warm/bound window_push.denormal}} | {{onboard primary/warm/bound window_push.stack}} | — |
 
-The worst is over every call on every trace. *Cold* invalidates both caches before each call; it
-moves the worst cases little, and the longer the call the less, since each refills the caches once
-and then runs from them. The painted stack is beneath the call into the entry point, and the walked is
+The worst is over every call on every trace. *Cold* invalidates both caches before each call, which
+reaches the code and its constants in flash and nothing else: the filter, the stack and the record
+sit in DTCM, which no cache covers, so a firmware placing `Eskf` in cacheable memory is not
+measured here. The painted stack is beneath the call into the entry point, and the walked is
 `chain.` above: every entry point's painted stack is under its walk.
 
 The worst paths, reached on purpose by the `paths` trace:
@@ -95,12 +98,12 @@ The worst paths, reached on purpose by the `paths` trace:
 | a heading of 3e38 rad | {{onboard primary/warm/paths label.fuse_gnss_heading_3e38_rad_fmodf_s_longest_reduction.max_us}} | {{onboard primary/warm/paths label.fuse_gnss_heading_3e38_rad_fmodf_s_longest_reduction.n}} |
 
 A coast is (22′) in one exact step, so a gap costs what a step does at any length. `wrap_pi`'s
-`fmodf` takes at most {{onboard primary/warm/fmodf filter_range}} cycles on the angles the filter forms itself, inside
-(−4π, 4π), and at most {{onboard primary/warm/fmodf max}} on any `f32` a caller hands it
+reduction, `x % 2π` as the filter links it, takes at most {{onboard primary/warm/fmodf filter_range}} cycles on the angles
+the filter forms itself, inside (−4π, 4π), and at most {{onboard primary/warm/fmodf max}} across every exponent an `f32`
+has, at four mantissas each
 ([DESIGN.md, "Execution time bounded by constants"](../DESIGN.md#execution-time-bounded-by-constants)).
 
-Two other builds, on the traces all three ran (`4b473e91`, `a299e722`, `cd7e0001`, `093e806a`
-and `paths`), worst case in µs:
+Two other builds, on the traces all three ran (`{{onboard primary/warm/common runs}}`), worst case in µs:
 
 | entry point | `primary` | `opt-level = "s"`, fat LTO | `-C target-cpu=cortex-m7` |
 | --- | --- | --- | --- |
@@ -111,9 +114,11 @@ and `paths`), worst case in µs:
 | `fuse_gnss_geodetic` | {{onboard primary/warm/common fuse_gnss_geodetic.max_us}} | {{onboard shipped/warm/common fuse_gnss_geodetic.max_us}} | {{onboard fp64/warm/common fuse_gnss_geodetic.max_us}} |
 | `StaticWindow::push` | {{onboard primary/warm/common window_push.max_us}} | {{onboard shipped/warm/common window_push.max_us}} | {{onboard fp64/warm/common window_push.max_us}} |
 
-`opt-level = "s"` with fat LTO runs the filter's own arithmetic at about half the speed, and inlines the entry points into the caller:
-the deepest stack beneath its dispatcher is {{onboard shipped/warm/common stack_raw_max}} bytes. `cortex-m7` turns
-on the M7's double-precision FPU, which the `f64` of a start's window and of a geodetic fix use.
+`opt-level = "s"` with fat LTO inlines the entry points into the dispatcher, and the deepest stack
+beneath it is {{onboard shipped/warm/common stack_raw_max}} bytes. `-C target-cpu=cortex-m7` is the build to ship on an M7: it
+schedules for the M7's pipeline, which no `f64` reaches on the update paths, and turns on its
+double-precision FPU, which the `f64` of a start's window and of a geodetic fix use. The mean GNSS
+velocity update is {{onboard primary/warm/common fuse_gnss_velocity.mean_us}} µs under `primary` and {{onboard fp64/warm/common fuse_gnss_velocity.mean_us}} µs under it.
 
 ## Memory
 
@@ -192,7 +197,7 @@ Each entry point's own frame, and the frames beneath it that set its depth:
 | beneath that: the covariance step of (22) | {{footprint thumbv6m-none-eabi frame.propagate.propagate_covariance}} | {{footprint thumbv7em-none-eabihf frame.propagate.propagate_covariance}} |
 | beneath that and the reset of (41): symmetry, (42) | {{footprint thumbv6m-none-eabi frame.math.enforce_symmetry.15}} | {{footprint thumbv7em-none-eabihf frame.math.enforce_symmetry.15}} |
 | beneath `predict`, across a gap: the coast of (22′) | {{footprint thumbv6m-none-eabi frame.propagate.coast}} | {{footprint thumbv7em-none-eabihf frame.propagate.coast}} |
-| beneath `predicted_validity`: the covariance carried over the horizon | {{footprint thumbv6m-none-eabi frame.propagate.project}} | {{footprint thumbv7em-none-eabihf frame.propagate.project}} |
+| beneath `predicted_validity` and a coast: (22′), the covariance carried in one exact step | {{footprint thumbv6m-none-eabi frame.propagate.unaccelerated_growth}} | {{footprint thumbv7em-none-eabihf frame.propagate.unaccelerated_growth}} |
 | beneath `initialize` and `initialize_coarse`: the initial covariance | {{footprint thumbv6m-none-eabi frame.init.initial_covariance}} | {{footprint thumbv7em-none-eabihf frame.init.initial_covariance}} |
 
 ## Flash

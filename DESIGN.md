@@ -368,6 +368,7 @@ was measured together, at the commit named where the code has moved since.
 | `Eskf::adopt_position`, `adopt_velocity` | inlined, +976 on `fuse_gnss_position` and +952 on `fuse_gnss_velocity`; out of line they follow `update` rather than stacking on it |
 | `propagate_covariance` | the largest frame propagation reaches. Inlined into its one caller, the same three temporaries sit in `predict` |
 | `project` | through `coast` the arming query's chain measured 9 KB, over `update::<3>` |
+| `propagate::unaccelerated_growth` | returning `Φ` with the covariance put a 900-byte transition in each caller's frame: `predicted_validity` 2744 against 944, `coast` 1920 against 1080, measured together on `thumbv7em` at 7cad0f1. It carries the offset's column through `Φ` itself instead |
 | `enforce_symmetry::<15>` | the equation form, `(P + Pᵀ)/2`, is 1884 (1820): two 15 × 15 temporaries under `predict`, where the sweep needs almost none |
 | `init::initial_covariance` | a diagonal-only `P₀` inlined to 80 |
 | `Eskf::initialize_coarse` | it holds a `StaticWindow` of one sample and the `Startup` worked out from it, both on its own frame |
@@ -375,8 +376,8 @@ was measured together, at the commit named where the code has moved since.
 | `StaticWindow::halve` | a copy of the blocks is 512 bytes |
 
 Walked through the call graph (`tools/footprint.py`, `chain.`), no path but an update moves the
-crate's peak: `predict`, the arming query (`predicted_validity` over `project` over
-`propagate_covariance`) and the starts all reach less. The path and its figures are on
+crate's peak: `predict`, the arming query (`predicted_validity` over (22′)'s one step,
+`unaccelerated_growth`) and the starts all reach less. The path and its figures are on
 [validation/cost.md](validation/cost.md#stack); the peak is comfortable on the STM32H7 class
 above and more than the whole RAM of an 8 KB Cortex-M0 part.
 
@@ -384,15 +385,21 @@ Two block-wise forms that would cut it stay written as the equation reads, becau
 on a 400 MHz Cortex-M7 say no target in that class needs them (validation/cost.md, "Time on a
 target"):
 
-* (22), where (20)'s identity and zero blocks make most of `F P Fᵀ` known;
+* (22), where (20)'s identity and zero blocks make most of `F P Fᵀ` known, and the same in
+  (22′)'s one step, where eleven of twenty-five blocks of `Φ` are nonzero;
 * a runtime `M` for `update` in place of a type parameter.
 
-The coast was the third, and the figures took it: (22′) run as up to 64 steps of (22) cost a
-6.4 s gap 1.83 M cycles (4.58 ms, nearly two periods at 400 Hz) and the arming query over a 6.4 s
-horizon 1.59 M (3.97 ms), measured together at 7cb8d36 on the H743. With `ω = 0` the error
-dynamics are nilpotent and one exact step replaces the steps (`propagate::unaccelerated_growth`).
-The steps also understated: with 0.1 s steps the position variance reached 0.938 of a 100 Hz
-propagation at 5 s and 0.902 at 120 s, which the 100 Hz propagation itself understates.
+A third, the coast, was taken: [Coast and projection](#coast-and-projection).
+
+#### Coast and projection
+
+(22′) run as up to 64 steps of (22) cost a 6.4 s gap 1.83 M cycles (4.58 ms, nearly two periods of
+a 400 Hz loop) and the arming query over a 6.4 s horizon 1.59 M (3.97 ms), measured together at
+7cb8d36 on the H743. With `ω = 0` the error dynamics are nilpotent, and one exact step
+(`propagate::unaccelerated_growth`) replaces the steps for both. The steps also understated
+what reaches position: against the same horizon propagated at 100 Hz, which itself understates,
+0.1 s steps reached 0.938 of the position variance at 5 s (0.2 s steps 0.873, 0.05 s steps
+0.953), and the 64 longer steps a horizon past 6.4 s took reached 0.902 at 120 s.
 
 #### Sizes
 
@@ -432,7 +439,7 @@ latitude and longitude), a GNSS velocity 1.2 µs, each one-dimensional update 0.
 The yaw estimator, fusing, adds 0.18 µs to `predict`, 0.781 µs to 0.965, and 0.25 µs to a GNSS
 velocity, 1.272 µs to 1.525 (#165 against its parent, c7f3ecf, the same machine and session). On a
 core with no FPU the ratio will be worse than the host's 24 %: each hypothesis is a quaternion
-product and a rotation per sample. No core without an FPU has been timed.
+product and a rotation per sample; which cores are timed is [validation/cost.md](validation/cost.md#what-is-measured-and-what-is-not).
 
 Its covariance step, (48), is written as the shear it is rather than as `F P Fᵀ`. On the host
 the two time alike, 0.965 µs against 0.972. On `thumbv6m` the dense form calls `nalgebra`'s

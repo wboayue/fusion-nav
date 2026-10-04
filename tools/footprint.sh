@@ -30,8 +30,6 @@
 
 set -euo pipefail
 
-TOOLCHAIN=nightly-2026-08-06
-
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
 expectations="$root/data/footprint.txt"
@@ -42,6 +40,8 @@ die() { echo "footprint: $*" >&2; exit 1; }
 . "$root/data/expect.sh"
 # shellcheck source=panic-check/profile.sh
 . "$root/panic-check/profile.sh"
+# shellcheck source=tools/nightly.sh
+. "$root/tools/nightly.sh"
 
 mode=check
 case "${1:-}" in
@@ -55,13 +55,7 @@ case "${1:-}" in
     *) die "unknown argument $1" ;;
 esac
 
-host=$(rustc "+$TOOLCHAIN" -vV 2>/dev/null | sed -n 's/^host: //p' || true)
-[ -n "$host" ] || die "no $TOOLCHAIN: run tools/footprint.sh --install"
-sysroot=$(rustc "+$TOOLCHAIN" --print sysroot)
-tools="$sysroot/lib/rustlib/$host/bin"
-for tool in llvm-readobj llvm-objdump llvm-nm llvm-size; do
-    [ -x "$tools/$tool" ] || die "$tool not in $tools: run tools/footprint.sh --install"
-done
+nightly_tools
 
 # Its own directory, so a measurement never reads an artifact some other build left behind,
 # and nothing here invalidates the caches `cargo test` keeps in target/.

@@ -169,7 +169,48 @@ fn every_record_round_trips() {
         Record::FuseCourse(t, heading),
         Record::FuseStationary(t, velocity_noise()),
         Record::PredictedValidity,
+        Record::State,
+        Record::GeodeticPosition,
     ];
+    // Exhaustive, so a new record does not compile until it is in the list above as well as here.
+    let listed = |record: &Record| match record {
+        Record::Nop
+        | Record::New(_)
+        | Record::SetOrigin(_)
+        | Record::SetMagneticDeclination(_)
+        | Record::SetBaroReference(..)
+        | Record::ResetPositionTo(..)
+        | Record::ResetVelocityTo(..)
+        | Record::WindowNew
+        | Record::WindowPush(_)
+        | Record::Initialize
+        | Record::InitializeCoarse(_)
+        | Record::InitializeFrom(..)
+        | Record::Predict(_)
+        | Record::FuseGnssPosition(..)
+        | Record::FuseGnssGeodetic(..)
+        | Record::FuseGnssVelocity(..)
+        | Record::FuseBaroAltitude(..)
+        | Record::FuseMagHeading(..)
+        | Record::FuseGnssHeading(..)
+        | Record::FuseCourse(..)
+        | Record::FuseStationary(..)
+        | Record::PredictedValidity
+        | Record::State
+        | Record::GeodeticPosition => record.tag(),
+    };
+    let mut tags: Vec<u8> = records.iter().map(listed).collect();
+    tags.sort_unstable();
+    tags.dedup();
+    assert_eq!(
+        tags,
+        (0..=23).collect::<Vec<u8>>(),
+        "every tag once, none skipped"
+    );
+    assert!(
+        Record::decode(&[24]).is_none(),
+        "a tag past the last decodes as nothing"
+    );
     for record in &records {
         let decoded = round_trip(record);
         assert_eq!(decoded.name(), record.name());
@@ -256,8 +297,8 @@ fn a_digest_tells_two_filters_apart() {
                 noise,
             );
         }
-        let outcome = Outcome::of(&machine.execute(&record));
-        differed |= machine.digest(outcome) != frame.digest;
+        let returned = machine.execute(&record);
+        differed |= frame.check(&machine, &returned) & flags::DIGEST == 0;
     }
     assert!(differed);
 }
@@ -283,6 +324,11 @@ fn outcomes_name_a_gnss_fix_by_both_halves() {
     assert_eq!(one.names(), ("reset", None));
     let valid = Outcome::of(&Returned::Validity(Validity::NONE));
     assert_eq!(valid.names(), ("validity", None));
+    let state = Outcome::of(&Returned::State(State {
+        status: Status::DeadReckoning,
+        ..State::default()
+    }));
+    assert_eq!(state.names(), ("state", None));
 }
 
 /// Re-execute `trace` on a fresh machine, requiring every outcome and digest; the call count.
@@ -294,9 +340,13 @@ fn replayed(trace: &[u8]) -> usize {
         let (frame, after) = Frame::split(rest).expect("whole frames");
         rest = after;
         let record = Record::decode(frame.record).expect("decodes");
-        let outcome = Outcome::of(&machine.execute(&record));
-        assert_eq!(outcome, frame.outcome, "call {calls}, {}", record.name());
-        assert_eq!(machine.digest(outcome), frame.digest, "call {calls}");
+        let returned = machine.execute(&record);
+        assert_eq!(
+            frame.check(&machine, &returned),
+            flags::OUTCOME | flags::DIGEST,
+            "call {calls}, {}",
+            record.name()
+        );
         calls += 1;
     }
     calls
@@ -325,4 +375,86 @@ fn a_rewound_run_forgets_the_calls_it_never_made() {
     }
     // `New`, a window of 800 pushes, its start, and the twenty predictions after the rewind.
     assert_eq!(replayed(&filter.take_sink().unwrap()), 1 + 1 + 800 + 1 + 20);
+}
+
+/// Every `pub fn` on `Eskf` is a `Record`, so the board times it, or a read named here as one the
+/// board does not time. Read off the source, as `panic-check/run.sh` reads it: a new entry point
+/// fails here until it is one or the other.
+#[test]
+fn every_entry_point_is_recorded_or_named_as_untimed() {
+    const UNTIMED: [&str; 14] = [
+        // Constructors and plain field reads: no arithmetic to time.
+        "new",
+        "config",
+        "diagnostics",
+        "covariance",
+        "time",
+        "magnetic_declination",
+        "baro_reference",
+        "origin",
+        "angular_rate",
+        "is_initialized",
+        "is_aligned",
+        // Reads the trace does not carry: an integrator's choice, not the loop's.
+        "alignment_of",
+        "attitude_variance",
+        "validity",
+    ];
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../src");
+    let mut files = vec![root.join("eskf.rs")];
+    for entry in std::fs::read_dir(root.join("eskf")).unwrap() {
+        files.push(entry.unwrap().path());
+    }
+    let recorded: Vec<&str> = [
+        Record::Nop,
+        Record::SetMagneticDeclination(Radians::ZERO),
+        Record::WindowNew,
+        Record::Initialize,
+        Record::PredictedValidity,
+        Record::State,
+        Record::GeodeticPosition,
+    ]
+    .iter()
+    .map(Record::name)
+    .chain([
+        "set_origin",
+        "set_baro_reference",
+        "reset_position_to",
+        "reset_velocity_to",
+        "initialize_coarse",
+        "initialize_from",
+        "predict",
+        "fuse_gnss_position",
+        "fuse_gnss_geodetic",
+        "fuse_gnss_velocity",
+        "fuse_baro_altitude",
+        "fuse_mag_heading",
+        "fuse_gnss_heading",
+        "fuse_course",
+        "fuse_stationary",
+    ])
+    .collect();
+    let mut missing = Vec::new();
+    for file in files {
+        let text = std::fs::read_to_string(&file).unwrap();
+        // Up to the test module: a test's helpers are not the API.
+        let text = text.split("#[cfg(test)]").next().unwrap();
+        for line in text.lines() {
+            let line = line.trim_start();
+            let Some(rest) = line
+                .strip_prefix("pub fn ")
+                .or_else(|| line.strip_prefix("pub const fn "))
+            else {
+                continue;
+            };
+            let name = rest.split(['(', '<']).next().unwrap();
+            if !recorded.contains(&name) && !UNTIMED.contains(&name) {
+                missing.push(format!("{}: {name}", file.display()));
+            }
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "neither recorded nor named untimed: {missing:?}"
+    );
 }

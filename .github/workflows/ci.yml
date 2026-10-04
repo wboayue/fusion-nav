@@ -33,6 +33,11 @@ jobs:
       # #41's trace and its examples, and the firmware's host stub; the firmware itself is
       # linted in the no_std job, for its target.
       - run: cargo clippy -p onboard --all-targets --features firmware --no-deps
+      # The harness's traced build (`examples/replay/filter.rs`), in a directory of its own.
+      - run: cargo clippy --example replay --no-deps
+        env:
+          CARGO_TARGET_DIR: target/traced
+          RUSTFLAGS: -D warnings --cfg fusion_nav_onboard
       # `tools/check-anchors.sh` owns what this checks and why; its fixtures run first for
       # the reason `data/expect.sh --self-test` does below. The README's snippets are
       # checked by `cargo test --doc`, through the `include_str!` in `src/lib.rs`.
@@ -76,6 +81,15 @@ jobs:
       # #41's trace: the codec round trip, and a recorded flight made again on a fresh
       # machine agreeing bit for bit, which the board checks call by call.
       - run: cargo test -p onboard
+      # The traced harness writes the same output as the plain one, byte for byte, and its
+      # trace makes every call again on the host with every digest agreeing.
+      - run: cargo run --quiet --example replay -- data/flight.csv target/plain.csv
+      - run: cargo run --quiet --example replay -- --trace target/flight.trace data/flight.csv target/traced.csv
+        env:
+          CARGO_TARGET_DIR: target/traced
+          RUSTFLAGS: -D warnings --cfg fusion_nav_onboard
+      - run: cmp target/plain.csv target/traced.csv && cmp target/plain.fusion.csv target/traced.fusion.csv
+      - run: cargo run --quiet -p onboard --example verify -- target/flight.trace
 
   anees:
     name: anees
@@ -130,7 +144,7 @@ jobs:
       # the old one's.
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ hashFiles('tools/footprint.sh') }}
+          key: ${{ hashFiles('tools/footprint.sh', 'tools/nightly.sh') }}
       # The comparator and the parser fail as themselves before either reads a measurement.
       - run: data/expect.sh --self-test
       - run: python3 tools/footprint.py --self-test

@@ -5,15 +5,14 @@
 //!
 //! | byte | reply |
 //! | --- | --- |
-//! | `i` | one line, `onboard proto=… build=… commit=… rustc=… opt=… lto=… cpu=… fpu=… sysclk=… cache=… fz=…` |
+//! | `i` | one line, `onboard proto=… build=… commit=… rustc=… opt=… lto=… cpu=… fpu=… sysclk=… batch=… cache=… fz=…` |
 //! | `n` | a fresh [`Machine`], before a run's first batch |
 //! | `w`, `c` | warm or cold: `c` invalidates both caches before every timed call |
 //! | `b` | a `u32` length and that many bytes of whole frames; replies `R`, a `u32` count, and per frame cycles (`u32`), stack bytes (`u32`), the outcome (`u16`) and flags (`u8`), and a pad byte |
-//! | `f` | `fmodf(2^k, 2π)` timed for `k` from −8 to 127; replies `F`, a `u32` count and `(k, cycles)` as two `i32`/`u32` |
+//! | `f` | `x % 2π` timed, as `wrap_pi` reduces, for `x = m · 2^k`, `k` from −8 to 127, at a few mantissas `m` each; replies `F`, a `u32` count and `(k, cycles)` as two `i32`/`u32` per input |
 //! | `r` | reboots into the ROM bootloader, for `dfu-util` |
 //!
-//! Flags: 1 the outcome matches the host's, 2 the digest does, 4 a denormal was an input
-//! (`FPSCR.IDC`), 8 the call ran off the painted stack, 16 the record did not decode.
+//! Each result's flags are [`onboard::flags`]'s.
 
 use core::arch::asm;
 use core::mem::MaybeUninit;
@@ -31,10 +30,10 @@ use stm32h7xx_hal::{
 use usb_device::{bus::UsbBusAllocator, prelude::*};
 use usbd_serial::SerialPort;
 
-use onboard::{FRAME_OVERHEAD, Frame, Machine, Outcome, Record, Returned};
+use onboard::{FRAME_OVERHEAD, Frame, Machine, Outcome, Record, Returned, flags};
 
 /// Bumped when a command or a reply changes shape; `tools/onboard.py` refuses another.
-const PROTOCOL: u32 = 1;
+const PROTOCOL: u32 = 2;
 const SYSCLK: u32 = 400_000_000;
 
 /// A batch of whole frames, and room for a result per frame of the smallest size.
@@ -240,7 +239,7 @@ fn run(
         let Some(slot) = results.get_mut(count * RESULT..(count + 1) * RESULT) else {
             break;
         };
-        let mut flags = 0u8;
+        let mut verdict = 0u8;
         let (cycles, stack, outcome) = match Record::decode(frame.record) {
             Some(record) => {
                 if cold {
@@ -248,47 +247,59 @@ fn run(
                     scb.clean_invalidate_dcache(cpuid);
                 }
                 let measured = measure(machine, &record);
-                let outcome = Outcome::of(&measured.returned);
-                flags |= u8::from(outcome == frame.outcome);
-                flags |= u8::from(machine.digest(outcome) == frame.digest) << 1;
-                flags |= u8::from(measured.denormal) << 2;
-                flags |= u8::from(measured.overflowed) << 3;
-                (measured.cycles, measured.stack, outcome.0)
+                verdict |= frame.check(machine, &measured.returned);
+                if measured.denormal {
+                    verdict |= flags::DENORMAL;
+                }
+                if measured.overflowed {
+                    verdict |= flags::OVERFLOW;
+                }
+                (
+                    measured.cycles,
+                    measured.stack,
+                    Outcome::of(&measured.returned).0,
+                )
             }
             None => {
-                flags |= 1 << 4;
+                verdict |= flags::UNDECODED;
                 (0, 0, 0)
             }
         };
         slot[..4].copy_from_slice(&cycles.to_le_bytes());
         slot[4..8].copy_from_slice(&stack.to_le_bytes());
         slot[8..10].copy_from_slice(&outcome.to_le_bytes());
-        slot[10] = flags;
+        slot[10] = verdict;
         slot[11] = 0;
         count += 1;
     }
     count
 }
 
-/// `fmodf(2^k, 2π)`, the reduction `wrap_pi` makes, timed across the exponent gap
-/// (`DESIGN.md`, "Execution time bounded by constants").
-fn sweep_fmodf(link: &mut Link) {
+/// `x % 2π`, the reduction `wrap_pi` makes, timed across the exponent gap
+/// (`DESIGN.md`, "Execution time bounded by constants"). `%` rather than a `libm` call: the
+/// operator lowers to the `fmodf` the filter links, `compiler_builtins`', and `libm::fmodf` is
+/// another copy of it. Several mantissas per exponent, since the reduction divides, and a
+/// division's time follows its operands.
+fn sweep_reduction(link: &mut Link) {
     const FIRST: i32 = -8;
     const LAST: i32 = 127;
-    let count = (LAST - FIRST + 1) as u32;
+    const MANTISSAS: [u32; 4] = [0, 0x2A_AAAB, 0x55_5555, 0x7F_FFFF];
+    let count = (LAST - FIRST + 1) as u32 * MANTISSAS.len() as u32;
     link.write_all(b"F");
     link.write_all(&count.to_le_bytes());
     for k in FIRST..=LAST {
-        let x = f32::from_bits(((k + 127) as u32) << 23);
-        let x = core::hint::black_box(x);
-        unsafe { asm!("cpsid i", "dsb", "isb", options(nostack)) };
-        let start = DWT::cycle_count();
-        let r = libm::fmodf(x, core::f32::consts::TAU);
-        let end = DWT::cycle_count();
-        unsafe { asm!("cpsie i", options(nostack)) };
-        core::hint::black_box(r);
-        link.write_all(&k.to_le_bytes());
-        link.write_all(&end.wrapping_sub(start).to_le_bytes());
+        for mantissa in MANTISSAS {
+            let x = f32::from_bits((((k + 127) as u32) << 23) | mantissa);
+            let x = core::hint::black_box(x);
+            unsafe { asm!("cpsid i", "dsb", "isb", options(nostack)) };
+            let start = DWT::cycle_count();
+            let r = x % core::f32::consts::TAU;
+            let end = DWT::cycle_count();
+            unsafe { asm!("cpsie i", options(nostack)) };
+            core::hint::black_box(r);
+            link.write_all(&k.to_le_bytes());
+            link.write_all(&end.wrapping_sub(start).to_le_bytes());
+        }
     }
 }
 
@@ -301,7 +312,7 @@ fn info(link: &mut Link, cold: bool) {
     let _ = writeln!(
         line,
         "onboard proto={PROTOCOL} build={} commit={} rustc={} opt={} lto={} cpu={} fpu={} \
-         sysclk={SYSCLK} cache={} fz={}",
+         sysclk={SYSCLK} batch={BATCH} cache={} fz={}",
         env!("ONBOARD_BUILD"),
         env!("ONBOARD_COMMIT"),
         env!("ONBOARD_RUSTC"),
@@ -453,11 +464,18 @@ fn main() -> ! {
             b'w' => cold = false,
             b'c' => cold = true,
             b'r' => reboot_to_bootloader(),
-            b'f' => sweep_fmodf(&mut link),
+            b'f' => sweep_reduction(&mut link),
             b'b' => {
                 let length = link.read_u32() as usize;
                 let Some(bytes) = batch.get_mut(..length) else {
-                    // Too long for the buffer: answer with no results, which the host refuses.
+                    // Too long for the buffer: read it away, so the next command is a command,
+                    // and answer with no results, which the host refuses.
+                    let mut left = length;
+                    while left > 0 {
+                        let chunk = left.min(batch.len());
+                        link.read_exact(&mut batch[..chunk]);
+                        left -= chunk;
+                    }
                     link.write_all(b"R");
                     link.write_all(&0u32.to_le_bytes());
                     continue;
