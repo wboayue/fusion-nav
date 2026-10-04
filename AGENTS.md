@@ -8,7 +8,8 @@ This file provides guidance to coding agents working with code in this repositor
 out of scope, and (5′)'s subtraction, in-motion leveling (#59). Those two carry the `**Stub.**`
 marker and nothing else does. Every source the crate publishes is fused: GNSS position, GNSS
 height (gated apart from horizontal), GNSS velocity, dual-antenna heading, course over ground,
-barometric altitude and magnetic heading. What remains is measurement and publication: #47, the
+barometric altitude and magnetic heading, and two observations made from an assumption, the
+stationary claim (29″) and the position hold (28″). What remains is measurement and publication: #47, the
 release, and #41, cost on a board.
 
 What the filter does, and where each decision's evidence lives:
@@ -31,6 +32,11 @@ What the filter does, and where each decision's evidence lives:
   `floored=0` on the whole corpus (`DESIGN.md`'s `FLOOR` section).
 - **Recovery.** Per source, by adoption, at PX4's timeouts (`Config::recovery`); `Recovery::OFF`
   reproduces the filter that only reports, byte for byte.
+- **Unaided.** While no horizontal source is judged and tilt σ is past 3°, `predict` fuses the
+  position hold of `Config::hold` (`src/eskf/hold.rs`), at (24′) with `τ` 2 s; it never counts as
+  aiding, and horizontal position and velocity each stay invalid after it until measured again.
+  `fuse_stationary` is the caller's claim of zero velocity. `GOALS.md`, "Holding tilt without
+  aiding"; `DESIGN.md`, "`Hold`".
 - **Health.** `Status` times each source against its own measured period; `DeadReckoning` reads
   horizontal GNSS alone. `Validity` and `predicted_validity` answer per quantity.
 - **Boundary.** No public item names an `nalgebra` type. `Eskf::new` validates `Config`, a refused
@@ -50,6 +56,9 @@ Known losses, stated in the published pages:
 - `correlated` is overconfident on position (`data/anees.txt` asserts the failure): a `τ` read
   through the filter cannot remove it, and an unbiased estimator is #195.
 - `7ce66f0d`, a hand launch, levels 12° wrong: (5′), #59.
+- `long_outage`, 60 s without GNSS flown through, is overconfident on position under the hold and
+  worse than no hold (`data/anees.txt` asserts the failure); where the hold barely engages its
+  fusions have zero innovation. #214. A car or fixed-wing sets `Config::hold = None`.
 - A receiver that is persistently wrong while claiming accuracy captures the filter (UrbanNav's
   M8T); no gate percentile prevents it. Detecting it is #181, with `2b2ad123`'s offset epochs
   the case to fire on and `89a498ce` the one not to.
@@ -570,6 +579,18 @@ over a few of its `τ`: a slope read at 60–240 s reported that rise as baromet
 across its whole range before fitting a piece of it, and suspect a figure that flips with a
 window you chose.
 
+**A scenario's pass is a claim about its parameters.** `gnss_outage`'s 20 s gap was chosen before
+the position hold existed, and "every ANEES block passes" rested on it: at 40 s the hold fails
+position and the filter without it passes, and half a degree off the 3° bar fails the 20 s gap
+too (#213's reviews, #214). When a feature's evidence is a scenario passing, sweep the parameter
+the feature is sensitive to, and pin the point where it stops passing.
+
+**An update with zero innovation is not evidence of a correction.** The hold anchors at the
+estimate and, where one fusion pulls tilt σ back under its bar, fuses on that same step: `ν = 0`,
+`P` narrows and the state does not move. `attitude_lost` going to `never` on `gnss_outage` and
+`2c42096b` read as a tilt held and was the covariance narrowed. Before a validity or NEES figure
+is credited to a new observation, read its `nu_` and `nis_` keys.
+
 **An ablation that removes the rows it counts proves nothing about them.** #169's first draft
 dropped eleven off-level fixes and quoted 19 rejections falling to 2, but seven of the eleven
 were rejections themselves. The review's version drops only the four *accepted* ones, the
@@ -939,7 +960,8 @@ the declination table, and CI builds and tests without it too.
   or a constraining source is being accepted. Both exist because PX4 and ArduPilot answer
   per-quantity validity and a single ladder cannot.
 - **An unaided filter loses its outputs on a schedule the defaults set**, and the schedule is
-  measured: at `ImuNoise`'s defaults a static start holds tilt for 10.3 s and heading for 274 s
+  measured, with `Config::hold` off (the hold bounds tilt σ near 3° rather than keeping it
+  valid): at `ImuNoise`'s defaults a static start holds tilt for 10.3 s and heading for 274 s
   from a window that measured its gyroscope, 4.84 s and 51.4 s from one whose gyroscope never
   scattered. Those figures are cited by `Accuracy`'s doc comment and pinned by a test; the
   gyroscope-bias prior entering attitude through (20)'s `−I Δt` sets them, and only a window that
@@ -1008,8 +1030,8 @@ Every source touches the same ten places, and three of them are public:
 - `Diagnostics` gains a field and `sources()`'s return type changes length
   (`src/health.rs:1030`) — `#[non_exhaustive]` covers the new field, but not the array length,
   so settle the source set before publishing. `aiding()` beside it derives the sources `Status`
-  counts from that list, so a source that aids nothing a sensor does not (the course) is excluded
-  there by name, and `advance()` is a third list to extend.
+  counts from that list, so a source that aids nothing a sensor does not (the course, the
+  stationary claim, the position hold) is excluded there by name, and `advance()` is a third list to extend.
 - `Gates` gains a field, a `Gate<DOF>` at the observation's dimension — the type states the degrees
   of freedom, and `Gates::at` needs a line for the new field.
 - A source is a verdict, not a sensor: a GNSS fix is two, `gnss_position` and `gnss_height`, gated
@@ -1025,7 +1047,7 @@ Every source touches the same ten places, and three of them are public:
 - A `summary` key in `examples/replay/main.rs`, pinned per log in `data/manifest.txt`, plus a corpus log
   that uniquely covers the source — or an honest note that none does.
 - `AXES` in `examples/replay/main.rs`, naming the source's innovation components, since `Innovation`
-  carries values and variances and no names for them. Twenty-three consistency keys are generated
+  carries values and variances and no names for them. Forty-two consistency keys are generated
   from it and `SOURCES` together, so a source added to one and not the other is an index out of range
   rather than a missing key — caught by an `assert_eq!` in the same file, which is the weakest
   guard on this list.
