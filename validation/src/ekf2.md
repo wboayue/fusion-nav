@@ -159,15 +159,21 @@ flight.
 
 A flying wing launched by hand. This filter finds which way is down by averaging the
 accelerometer over its first moments, which only works when the vehicle is still. Here those
-moments are the throw, so it starts with the wrong tilt. For the first minutes its position
-swings away from EKF2's and from the GNSS fixes, and it resets itself to a fix
-{{summary 7ce66f0d/raw recovered}} times over the flight. After that the positions track each
-other, but the filter reports `Degraded` for most of the flight and ends there
+moments are the throw, so it starts with the wrong tilt. In the first seconds its position
+swings away from EKF2's and from the GNSS fixes, the spike at the left edge of the figure.
+
+A wrong tilt also turns the heading the magnetometer gives, and GNSS velocity contradicts the
+result. The filter's yaw estimator, which reads heading from the IMU and GNSS velocity alone,
+replaces that heading {{summary 7ce66f0d/raw yaw_recovered}} times over the flight; counting
+those, the filter resets itself to a measurement {{summary 7ce66f0d/raw recovered}} times. After
+the first seconds the positions track each other. The filter goes on refusing its magnetometer,
+so it reports `Degraded` for most of the flight and ends there
 ({{summary 7ce66f0d/raw status}}). Over the whole log, position differs from EKF2's by
 {{agreement 7ce66f0d/raw pos_e_rms}} m RMS east and tilt by
 {{agreement 7ce66f0d/raw tilt_diff_rms}}° RMS, and this filter spends
 {{agreement 7ce66f0d/raw rej_s_gnss_pos}} s refusing GNSS positions where EKF2 spends
-{{agreement 7ce66f0d/raw rej_s_gnss_pos_ekf2}} s.
+{{agreement 7ce66f0d/raw rej_s_gnss_pos_ekf2}} s, and {{agreement 7ce66f0d/raw rej_s_mag}} s
+refusing the magnetometer.
 
 This is a loss with a known cause. Starting while moving needs the vehicle's own acceleration
 taken out of that first average, which is equation (5′), in-motion leveling, and #59.
