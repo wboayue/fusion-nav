@@ -34,7 +34,8 @@ const YAW_FAILURE: Radians = Radians::from_degrees(25.0);
 /// and a gate built on that covariance would hold the next fix off for its whole timeout. So
 /// each source's first measurement the gate turns down is adopted at once, as after a position
 /// hold ([`recovery_after`](super::hold::recovery_after)), and the debt is settled by that
-/// adoption, by a measurement the gate passes, or by a caller's reset.
+/// adoption, by a caller's reset, or for position by a fix the gate passes. Velocity's is
+/// settled in the call that incurs it, which adopts the velocity that showed the failure.
 ///
 /// A debt needs no expiry. One still standing after the source's own
 /// [`Recovery`](crate::Recovery) timeout belongs to a source not accepted for that long,
@@ -80,7 +81,7 @@ impl YawReplaced {
         self.position = false;
     }
 
-    /// Velocity has been judged, adopted or set since.
+    /// Velocity has been adopted or set since.
     pub(super) fn settle_velocity(&mut self) {
         self.velocity = false;
     }
@@ -274,8 +275,8 @@ mod tests {
     use crate::observation::heading::heading_of;
     use crate::propagate::ImuSample;
     use crate::units::{
-        Acceleration, AngularRate, HeadingNoise, MagField, Position, Seconds, Velocity,
-        VelocityNoise,
+        Acceleration, AngularRate, HeadingNoise, MagField, Position, PositionNoise, Seconds,
+        Velocity, VelocityNoise,
     };
 
     /// A vehicle held level at a true `yaw`, flown under `acceleration(t)`, the filter handed
@@ -287,8 +288,6 @@ mod tests {
         sigma: f32,
         /// How old each velocity is when it is fused, in steps.
         age: usize,
-        /// IMU steps between velocities: 20 is 5 Hz.
-        every: u32,
         /// The last velocity's outcome.
         last: Option<Fusion>,
     }
@@ -300,7 +299,6 @@ mod tests {
                 velocity: Vector3::zeros(),
                 sigma: 0.1,
                 age: 0,
-                every: 20,
                 last: None,
             }
         }
@@ -438,7 +436,19 @@ mod tests {
         flight.fly(&mut filter, 2.0, still, north);
         assert!(flight.error(&filter) > 1.3);
 
-        flight.fly(&mut filter, 12.0, legs, north);
+        // What velocity owed in the call that replaced the yaw, once it returned.
+        let mut owed = None;
+        flight.fly(&mut filter, 12.0, legs, |filter| {
+            north(filter);
+            if filter.diagnostics().yaw_estimator.recovered == 1 && owed.is_none() {
+                owed = Some(filter.yaw_replaced.owes_velocity());
+            }
+        });
+        assert_eq!(
+            owed,
+            Some(false),
+            "the adoption settles what the replacement owed"
+        );
         let d = filter.diagnostics();
         assert_eq!((d.yaw_estimator.adopted, d.yaw_estimator.recovered), (1, 1));
         // Not on the first rejection: after a second of them, five at this rate.
@@ -500,6 +510,26 @@ mod tests {
             fix(&mut filter).horizontal,
             Fusion::Rejected { .. }
         ));
+
+        // A fix the gate passes settles it as well as one adopted.
+        let mut filter = pointing_north(Config {
+            recovery: Recovery {
+                gnss_position: Some(Seconds::from_secs(1000.0)),
+                ..Recovery::default()
+            },
+            ..Config::default()
+        });
+        let mut flight = Flight::heading(1.4);
+        flight.fly(&mut filter, 2.0, still, north);
+        flight.fly(&mut filter, 12.0, legs, north);
+        let here = filter.state().position;
+        let wide = PositionNoise::from_sigma(50.0, 50.0, 50.0);
+        let passed = filter.fuse_gnss_position(filter.now(), here, wide, Position::zero());
+        assert!(passed.horizontal.is_accepted(), "{passed:?}");
+        let far = Position::from_vector(here.vector() + Vector3::new(500.0, 0.0, 0.0));
+        let turned_down =
+            filter.fuse_gnss_position(filter.now(), far, one_metre(), Position::zero());
+        assert!(matches!(turned_down.horizontal, Fusion::Rejected { .. }));
 
         // And a new start forgets a latch still set.
         let mut filter = pointing_north(Config::default());
@@ -643,20 +673,25 @@ mod tests {
 
     #[test]
     fn one_velocity_turned_down_is_not_a_yaw_failure() {
-        // Velocities 1.2 s apart, so the first one rejected already meets the second's delay.
-        // The yaw is replaced on a later one, and that first rejection stands as a rejection.
+        // A converged estimator, a filter turned 1.4 rad from it behind its back, and no
+        // velocity for a second and a half: the delay is met by the first one the gate turns
+        // down, as it is on every rejection from a 1 Hz receiver. The yaw goes on the second.
         let mut filter = pointing_north(Config::default());
-        let mut flight = Flight::heading(1.4);
-        flight.every = 120;
-        flight.fly(&mut filter, 2.4, still, north);
-        flight.fly(&mut filter, 24.0, legs, north);
-        let d = filter.diagnostics();
-        assert_eq!(d.yaw_estimator.recovered, 1);
-        assert!(
-            d.gnss_velocity.rejected >= 1,
-            "{}",
-            d.gnss_velocity.rejected
-        );
+        let mut flight = Flight::heading(0.0);
+        flight.fly(&mut filter, 2.0, still, north);
+        flight.fly(&mut filter, 12.0, legs, north);
+        let down = filter.state().attitude.quaternion().inverse() * Vector3::z();
+        filter.reset_heading_by(1.4, 0.01, down);
+        hold(&mut filter, 1.5, 1000, |_| {});
+        // Too unsure of themselves for the estimator to weigh, and far outside the gate.
+        let noise = VelocityNoise::from_speed_accuracy(0.6);
+        let wild = Velocity::from_vector(flight.velocity + Vector3::new(30.0, 0.0, 0.0));
+        let first = filter.fuse_gnss_velocity(filter.now(), wild, noise, Position::zero());
+        assert!(matches!(first, Fusion::Rejected { .. }), "{first:?}");
+        assert_eq!(filter.diagnostics().yaw_estimator.recovered, 0);
+        let second = filter.fuse_gnss_velocity(filter.now(), wild, noise, Position::zero());
+        assert_eq!(second, Fusion::Reset);
+        assert_eq!(filter.diagnostics().yaw_estimator.recovered, 1);
     }
 
     #[test]
@@ -687,6 +722,17 @@ mod tests {
         let fusion = filter.fuse_mag_heading(filter.now(), field, HeadingNoise::from_sigma(0.1));
         assert!(fusion.is_accepted(), "{fusion:?}");
         assert!(!filter.yaw_replaced.overrules_magnetometer());
+    }
+
+    #[test]
+    fn a_velocity_before_the_estimator_has_leveled_is_not_an_arrival() {
+        let mut filter = initialized();
+        let mut flight = Flight::heading(2.2);
+        // Half a second in, the low-passed force has not reached 1 g.
+        flight.fly(&mut filter, 0.5, still, |_| {});
+        assert_eq!(filter.diagnostics().yaw_estimator, Default::default());
+        flight.fly(&mut filter, 5.0, still, |_| {});
+        assert!(filter.diagnostics().yaw_estimator.period().is_some());
     }
 
     #[test]

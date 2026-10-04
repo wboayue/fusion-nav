@@ -951,6 +951,22 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_composite_is_of_the_headings_the_update_left() {
+        // (52) from the models themselves, after a fix that turned them: computed from the
+        // headings the update began with, the composite is one correction stale.
+        let mut flight = Flight::airborne(-1.1);
+        flight.fly(2.2, legs);
+        let (yaw, _) = flight.estimator.yaw().unwrap();
+        let mut direction = Vector2::zeros();
+        for model in &flight.estimator.models {
+            let psi = model.yaw();
+            direction += Vector2::new(psi.cos(), psi.sin()) * model.weight;
+        }
+        let expected = direction.y.atan2(direction.x);
+        assert!(wrap_pi(yaw - expected).abs() < 1.0e-5, "{yaw} {expected}");
+    }
+
+    #[test]
     fn a_bank_that_stops_producing_numbers_starts_over() {
         let mut flight = Flight::airborne(0.0);
         flight.fly(3.0, circling);

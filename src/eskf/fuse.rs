@@ -610,9 +610,6 @@ impl Eskf {
                     .is_some()
             },
         );
-        if matches!(fusion, Fusion::Accepted { .. }) {
-            self.yaw_replaced.settle_velocity();
-        }
         // An adoption ended the hold's claim on velocity in `adopt_velocity`.
         if matches!(fusion, Fusion::Accepted { .. }) {
             self.hold.end_velocity();
