@@ -279,6 +279,7 @@ cargo run --example replay -- data/flight.csv target/replay.csv data/flight.trut
 cargo run --release --example replay -- --derive <log.csv> > config.rs   # a Config from a log; evidence on stderr
 cargo run --example replay -- --derive data/flight.csv > data/flight.config.rs  # regenerate the fixture a test pins
 cargo run --example replay -- --set correlation.gnss_height=29 <in.csv> <out.csv>   # any derivable field; `set=` names it
+cargo run --example replay -- --without mag --yaw-estimator off <in.csv> <out.csv>   # a vehicle with no magnetometer, and the filter without (45)-(52)
 REPLAY_ARGS="--set ..." data/anees.sh correlated   # the ANEES gate under a derived Config
 cargo test --example replay -- --ignored drift_scatter --nocapture   # the drift estimator's scatter DESIGN quotes
 
@@ -600,6 +601,20 @@ position and the filter without it passes, and half a degree off the 3° bar fai
 too (#213's reviews, #214). When a feature's evidence is a scenario passing, sweep the parameter
 the feature is sensitive to, and pin the point where it stops passing.
 
+A scenario's start is a parameter too, and so is its sensors' rate. Every scenario that began
+with heading unestablished started 0.6 rad from where the window leaves the yaw, inside
+`sigma_yaw`, and passed its attitude ANEES. `multirotor_no_mag` starts 2.2 rad out and fails it
+before any heading is measured (#218). Every simulated and corpus receiver the yaw estimator
+weighs reports at 4.9 Hz or faster, and its first form measured no acceleration at all from a
+1 Hz one: a review found it with a fixture swept from 10 Hz to 1 Hz (#165). Where code
+differences a stream or times one out, the fixture sweeps the rate.
+
+**An ensemble's mean can be one seed.** `yaw_fault`'s attitude ANEES sat on a plateau near 5 for
+seven seconds after the heading was replaced. It was not a slow convergence: 49 seeds were
+replaced by 10.6 s and one at 17.2 s, its velocities inside the gate at ratios up to 0.97, and
+that seed's NEES of 240 over 50 is the plateau. Before a step or a shelf in a mean is
+explained, split it by seed.
+
 **An update with zero innovation is not evidence of a correction.** The hold anchors at the
 estimate and, where one fusion pulls tilt σ back under its bar, fuses on that same step: `ν = 0`,
 `P` narrows and the state does not move. `attitude_lost` going to `never` on `gnss_outage` and
@@ -662,7 +677,10 @@ at a start in motion should settle for 10 s as a restarted one does. Applied unm
 took `7ce66f0d` from 14 m RMS against EKF2 over the first minute to 72 m, and nothing in the
 simulator moved. Its verified findings each came with a failing fixture; the suspected ones
 are replayed on the corpus before they land, and one that the corpus contradicts is recorded
-as measured and rejected (DESIGN.md, "`YawEstimator`").
+as measured and rejected (DESIGN.md, "`YawEstimator`"). A proposed guard is also checked for
+whether it can fire: an expiry on the latch a replaced yaw leaves was requested and would have
+been dead, since a debt older than the source's recovery timeout is one the ordinary lockout
+already adopts.
 
 **Measure a claim on the rows the code reads.** A figure taken on a convenient proxy, "the first
 500 rows", is a claim about the proxy. On #50 two of them ran past a still window into flight
@@ -1055,7 +1073,9 @@ the declination table, and CI builds and tests without it too.
   `#[cfg(test)]`. On `thumbv6m` a panic is a `udf` and the vehicle is a brick, which is why bad
   input is reported through a typed outcome rather than asserted on. The matrix arithmetic the
   equations bring is where this gets broken — `try_inverse` returns an `Option` and `nalgebra`
-  indexing panics out of range. Refuse or saturate; never unwrap. `panic-check/run.sh` gates it
+  indexing panics out of range. So does a view taken by index: `p.column(2)` on a `Matrix3`
+  kept its bounds check at `opt-level = "s"` and failed the gate where `opt-level = 3` had
+  elided it (#165); name the entries (`p.m13`) instead. Refuse or saturate; never unwrap. `panic-check/run.sh` gates it
   in CI by linking the public API for both thumb targets and failing on a surviving
   `core::panicking` reference, which catches the indexing nobody wrote down as well as the
   `unwrap` somebody did. It also refuses to run if `panic-check/src/main.rs` is missing any
