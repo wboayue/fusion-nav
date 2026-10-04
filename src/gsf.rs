@@ -777,9 +777,10 @@ pub(crate) mod tests {
             .estimator
             .fuse_velocity(now, velocity, 1.0e-6, Vector2::zeros(), 0.0);
         let p = flight.estimator.models[0].covariance;
-        assert_eq!(
-            (p.m11, p.m22),
-            (SIGMA_MIN * SIGMA_MIN, SIGMA_MIN * SIGMA_MIN)
+        // 0.3 m/s, written out: compared with the constant this would pass at any floor.
+        assert!(
+            (p.m11 - 0.09).abs() < 1.0e-6 && (p.m22 - 0.09).abs() < 1.0e-6,
+            "{p}"
         );
     }
 
