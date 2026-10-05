@@ -2,7 +2,8 @@
 
 > **Status: rationale, not specification.** Why `fusion-nav` exists: its positioning against
 > existing Rust crates and production autopilot estimators, and the decisions already made. How to
-> use it is [README.md](README.md), how it is built and where its numbers come from
+> use it is [README.md](README.md), in detail [GUIDE.md](GUIDE.md) and from PX4 or ArduPilot
+> [MIGRATING.md](MIGRATING.md), how it is built and where its numbers come from
 > [DESIGN.md](DESIGN.md), what it computes [EQUATIONS.md](EQUATIONS.md), and what the words mean
 > [GLOSSARY.md](GLOSSARY.md).
 

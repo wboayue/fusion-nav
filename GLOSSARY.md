@@ -2,7 +2,7 @@
 
 Terms this repository uses without explaining, for a reader who has not worked on estimators
 before. Each entry says what the word means and points at the document that owns the thing:
-the mathematics is [EQUATIONS.md](EQUATIONS.md), the structure [DESIGN.md](DESIGN.md), the
+its use [GUIDE.md](GUIDE.md), the mathematics is [EQUATIONS.md](EQUATIONS.md), the structure [DESIGN.md](DESIGN.md), the
 positioning [GOALS.md](GOALS.md), the harness [data/README.md](data/README.md). Nothing here is
 normative: an entry that disagrees with one of those is wrong.
 

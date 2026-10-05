@@ -1,8 +1,8 @@
 # Design
 
 How `fusion-nav` is built and where its numbers come from. The documents, by question:
-[README.md](README.md) is how to use the filter, [GOALS.md](GOALS.md) why it exists, this one how
-it is built, [EQUATIONS.md](EQUATIONS.md) what it computes, and [GLOSSARY.md](GLOSSARY.md) what
+[README.md](README.md) is how to use the filter, with [GUIDE.md](GUIDE.md) in detail and
+[MIGRATING.md](MIGRATING.md) from PX4 or ArduPilot, [GOALS.md](GOALS.md) why it exists, this one how it is built, [EQUATIONS.md](EQUATIONS.md) what it computes, and [GLOSSARY.md](GLOSSARY.md) what
 the words mean.
 
 > **Status:** every equation of `EQUATIONS.md` is built except two. Three-axis magnetometer

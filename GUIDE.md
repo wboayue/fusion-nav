@@ -1,7 +1,9 @@
 # Guide
 
-How to use `fusion-nav` in detail. [README.md](https://github.com/wboayue/fusion-nav/blob/main/README.md) is the overview and quick start,
-and [MIGRATING.md](https://github.com/wboayue/fusion-nav/blob/main/MIGRATING.md) maps PX4 and ArduPilot parameters onto this crate.
+How to use `fusion-nav` in detail.
+[README.md](https://github.com/wboayue/fusion-nav/blob/main/README.md) is the overview and quick start,
+and [MIGRATING.md](https://github.com/wboayue/fusion-nav/blob/main/MIGRATING.md) maps PX4 and ArduPilot
+parameters onto this crate.
 
 ## Conventions
 
@@ -98,8 +100,7 @@ altitude.
 `StaticSample::velocity` is what a moving window has that a still one does not need. Two GNSS
 velocities in the window give `ā_n`, the vehicle's own acceleration: the part of the specific
 force that is not gravity. `Coarse::NotStationary` reports it beside the motion it measured.
-Leveling with it, equation (5′), is not built: a coarse start bounds tilt by how far its
-*averaged* specific force is from gravity, and a real `ā_n` is part of what puts it there.
+Leveling with it is not built; see [limitations](#limitations).
 
 A **seed** is checked where a window is not, because it crosses a boundary the filter does not
 control: another estimator, or storage that may be stale. `initialize_from` returns
@@ -291,12 +292,11 @@ fix. Build it the way the source reports it: `PositionNoise::horizontal_vertical
 `Position::body(forward, right, down)` or `Position::flu(..)`, and `Position::zero()` for one on
 top of it. A fix measures the antenna, so the filter refers it to the IMU by its own attitude
 and, for a velocity, by the rate the vehicle was turning when the fix was taken, equations (28′)
-and (29′). From PX4 it is `SENS_GPS0_OFF*` less `EKF2_IMU_POS*`. It is an argument rather than a
-setting, as on PX4's GNSS message, because a second receiver sits somewhere else.
+and (29′). It is an argument rather than a setting, as on PX4's GNSS message, because a second receiver sits somewhere else.
 
 `time` is when the measurement was taken, on the clock the IMU's samples are timed on. It is an
 argument because a receiver's latency is a property of that receiver and that fix. A measurement
-older than `LATENCY_HORIZON`, or later than the state by more than `Config::max_predict_dt`, is
+older than `LATENCY_HORIZON` (0.3 s), or later than the state by more than `Config::max_predict_dt`, is
 refused as `OutOfHorizon { age }`, and the age tells a latency past the horizon from a clock on
 another epoch.
 
@@ -349,7 +349,7 @@ Three questions, three answers:
 | which outputs can I use now? | `state().validity`, one flag per quantity | before using a quantity in control |
 | will they still be good if I take off now? | `predicted_validity()` | in an arming check |
 
-### `Status` — how bad is the worst thing
+### `Status`: how bad is the worst thing
 
 | `Status` | meaning |
 | -------- | ------- |
@@ -372,7 +372,7 @@ at fixed bars, `ALIGNED_TILT` (3°, PX4's) and `ALIGNED_HEADING` (30°), read fr
 so promotion is measured rather than timed. `validity.tilt` and `validity.heading` stay live
 instead, and go false again as an unaided covariance grows past `Config::accuracy`.
 
-### `validity` — which outputs can I use
+### `validity`: which outputs can I use
 
 `state().validity` has one flag per quantity: `tilt`, `heading`, `horizontal_position`,
 `vertical_position`, `horizontal_velocity`, `vertical_velocity`. Each is the covariance measured
@@ -388,7 +388,7 @@ nothing else. `Status::Aligning` reads its fixed bars, so asking for 1° of roll
 filter wait for 1° before it calls the start resolved. A bar tighter than the prior
 `Initialization` starts from is never met, and that quantity is invalid from the first epoch.
 
-### `predicted_validity` — will it be good if I take off now
+### `predicted_validity`: will it be good if I take off now
 
 On the ground, heading may be unobservable and GNSS may not have a fix yet, so `validity` says no
 about a filter that would be navigating a second after takeoff. `predicted_validity()` answers
@@ -499,8 +499,7 @@ issue that removes them, where one is open.
   against the state as it was then, so a late fix costs nothing. But the filter cannot measure how
   late a receiver is: PX4 takes a parameter and ArduPilot the driver's figure. A wrong latency is
   an error that grows with speed, and a receiver that no single latency fits can be worse at its
-  configured one than fused as current. Anything older than `LATENCY_HORIZON`, 0.3 s, is refused.
-  See
+  configured one than fused as current. See
   [measurement latency](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#measurement-latency).
 * **Barometer drift costs height where there is none.** The reference is estimated and allowed to
   walk, at PX4's rate by default, so GNSS height carries the low frequencies and a barometer
@@ -521,8 +520,9 @@ issue that removes them, where one is open.
   shows. Before that the filter flies on the sensor, and its covariance says the heading is
   good.
 * **In-motion alignment is coarse.** A moving start runs and reports `Aligning`, but full
-  alignment of a bare vehicle in motion is not built: leveling with the vehicle's own
-  acceleration, equation (5′), is
+  alignment of a bare vehicle in motion is not built. A coarse start bounds tilt by how far its
+  *averaged* specific force is from gravity, and a real `ā_n` is part of what puts it there.
+  Leveling with the vehicle's own acceleration, equation (5′), is
   [#59](https://github.com/wboayue/fusion-nav/issues/59). `initialize_from` covers a held
   estimate. See
   [alignment beyond the static window](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#alignment-beyond-the-static-window).
@@ -555,7 +555,8 @@ issue that removes them, where one is open.
   ([equation (43)](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#geodetic-origin)),
   but a plane leaves a curved Earth: `d` from the origin it sits `d²/2R` above the surface, 8 cm
   at 1 km and 7.8 m at 10 km, so `-p_D` far out is not height. The barometer model does not
-  correct for it, and [equation (30)](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#barometric-altitude)
+  correct for it, and
+  [equation (30)](https://github.com/wboayue/fusion-nav/blob/main/EQUATIONS.md#barometric-altitude)
   records the measurement behind that.
 
 Features out of scope (wind, terrain, optical flow, airspeed, ...) are listed in
