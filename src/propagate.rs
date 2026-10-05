@@ -541,7 +541,7 @@ fn process_noise(noise: &ImuNoise, imu: Corrected) -> [f32; STATES] {
 ///
 /// [published]: https://github.com/wboayue/fusion-nav/blob/main/validation/cost.md#stack
 /// [counted]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#arithmetic
-/// [timed]: https://github.com/wboayue/fusion-nav/blob/main/validation/cost.md#time-on-a-target
+/// [timed]: https://github.com/wboayue/fusion-nav/blob/main/validation/cost.md#time-on-a-cortex-m7
 /// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#stack-frames
 #[inline(never)]
 fn propagate_covariance(p: Covariance, f: &Transition, q: [f32; STATES]) -> Covariance {
