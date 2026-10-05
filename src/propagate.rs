@@ -6,7 +6,7 @@
 //! covariance: (22) only adds, and the measurement update of (23)–(28) is what takes
 //! uncertainty back out.
 
-use nalgebra::{Matrix3, SMatrix, Vector3};
+use nalgebra::{Matrix3, SMatrix, SVector, Vector3};
 
 use crate::config::{Coast, Config, ImuNoise};
 use crate::frames::Body;
@@ -505,10 +505,11 @@ fn process_noise(noise: &ImuNoise, imu: Corrected) -> [f32; STATES] {
         imu.velocity_interval.as_secs(),
         imu.angle_interval.as_secs(),
     );
-    let velocity = noise.accel_white * noise.accel_white * dt_v;
-    let attitude = noise.gyro_white * noise.gyro_white * dt_theta;
-    let accel_bias = noise.accel_bias_walk * noise.accel_bias_walk * dt_v;
-    let gyro_bias = noise.gyro_bias_walk * noise.gyro_bias_walk * dt_theta;
+    let densities = Densities::of(noise, None);
+    let velocity = densities.velocity * dt_v;
+    let attitude = densities.attitude * dt_theta;
+    let accel_bias = densities.accel_bias * dt_v;
+    let gyro_bias = densities.gyro_bias * dt_theta;
 
     // In the `ErrorState` ordering: `[δp δv δθ δβa δβg]`. Position takes none of its own --
     // (16) has no driving noise, and position error is what the velocity block integrates.
@@ -529,13 +530,20 @@ fn process_noise(noise: &ImuNoise, imu: Corrected) -> [f32; STATES] {
 /// temporaries per IMU sample, at up to 400 Hz. (20) is sparse enough (two identity blocks, two
 /// zero rows) that a block-wise form would cut them, at the cost of the one equation a reader of
 /// this crate is most likely to have come for. Its stack frame is [published], and its
-/// arithmetic [counted]. The block-wise form: not built, #41, until hardware figures ask for it.
+/// arithmetic [counted]. The block-wise form is not built: [timed] on a 400 MHz Cortex-M7, a step
+/// sits well inside a 400 Hz period.
 ///
 /// `Q` arrives as a diagonal and is added as one, which keeps those temporaries to three
 /// rather than four.
 ///
+/// Out of line by attribute: inlined into `propagate`, its one caller, the three temporaries
+/// sit in `predict`'s own chain ([measured]).
+///
 /// [published]: https://github.com/wboayue/fusion-nav/blob/main/validation/cost.md#stack
 /// [counted]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#arithmetic
+/// [timed]: https://github.com/wboayue/fusion-nav/blob/main/validation/cost.md#time-on-a-target
+/// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#stack-frames
+#[inline(never)]
 fn propagate_covariance(p: Covariance, f: &Transition, q: [f32; STATES]) -> Covariance {
     let mut next = f * p.as_matrix() * f.transpose();
 
@@ -551,70 +559,22 @@ fn propagate_covariance(p: Covariance, f: &Transition, q: [f32; STATES]) -> Cova
     Covariance::from_matrix(next)
 }
 
-/// The step [`project`] takes, which is also the longest it takes: the count rounds up.
-///
-/// The discretization of (20) is first order, so a step understates the growth: `δp` gains
-/// `δv` linearly over the step and the within-step growth of `δv` itself — the `½at²` of
-/// (13), and the `t³` the gyroscope-bias walk reaches position by — is what the *next* step
-/// picks up and a single long one never does. Position is the state that suffers, being the
-/// doubly integrated one.
-///
-/// So the step is fixed and the count follows from the horizon, rather than the other way round: a
-/// fixed count would make the answer's accuracy depend on the question's length. 0.1 s is where a
-/// shorter step stops buying much: against the same horizon propagated at 100 Hz it holds the
-/// projection within 3.2 % of the sigma out to a 5 s horizon ([measured]), against an
-/// [`Accuracy`](crate::Accuracy) bar that is a mission's choice and carries far more than 3.2 % of
-/// latitude itself. What the shortfall is not is symmetric — a first-order step always understates,
-/// so the projection reads slightly *optimistic*, and
-/// [`Eskf::predicted_validity`](crate::Eskf::predicted_validity) says so.
-///
-/// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#projection_step
-const PROJECTION_STEP: Seconds = Seconds::from_secs(0.1);
-
-/// The most steps [`project`] will take, which bounds what one query costs.
-///
-/// 64 steps of [`PROJECTION_STEP`] is 6.4 s of horizon at the step the accuracy above was measured
-/// at, past any arming question this is meant to answer. A longer horizon is projected in 64 longer
-/// steps rather than more of them, so it costs the same and leaves that measured range — gracefully
-/// rather than without bound, because the count stays fixed while `dt` stretches. A horizon of
-/// minutes is answered about 5 % optimistic in the sigma ([measured]): worth knowing if
-/// [`Accuracy::horizon`](crate::Accuracy::horizon) is set out there, and not worth a longer loop on
-/// an arming query to fix.
-///
-/// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#max_projection_steps
-const MAX_PROJECTION_STEPS: usize = 64;
-
 /// Grow `P` over `horizon` as if nothing were measured and the vehicle stayed put.
-/// Equations (16)–(22), run forward without a sample.
+/// Equation (22′), without the unmeasured motion a gap allows.
 ///
 /// This is the arming question's half of [`Eskf::predicted_validity`](crate::Eskf::predicted_validity):
-/// not *is the estimate
-/// good now*, but *will it still be good in `horizon` seconds if I take off and nothing
-/// aids it*. The covariance is the only thing that can answer that, and answering it means
-/// running the same growth `predict` runs — so this builds (20) and calls (22) rather than
-/// evaluating a closed form for the diagonal. A closed form would be cheaper and would
-/// ignore the correlations (17) and (20) build, which is where most of the growth a few
-/// seconds out actually comes from; it would also be a second implementation of a number
-/// the propagator already defines.
+/// not *is the estimate good now*, but *will it still be good in `horizon` seconds if I take off
+/// and nothing aids it*. The covariance is the only thing that can answer that, and the answer
+/// keeps the correlations (17) and (20) build, which is where most of the growth a few seconds
+/// out comes from.
 ///
-/// The IMU input is the one the question presumes: a vehicle on the ground, not rotating,
-/// so `ω = 0` and the specific force is `−R(q̂)ᵀ g` — what a stationary accelerometer reads
-/// at the current attitude. That is what makes the tilt-to-velocity coupling of (17) the
-/// gravity leak it is in flight, rather than zero.
-///
-/// So a projection grows `P` as a [`coast`] allowing no unmeasured acceleration or rotation would,
-/// since `F` does not read velocity and an unaccelerated vehicle and one standing still grow it
-/// alike. It does not call [`coast`], which carries a state and an offset the query discards, and
-/// which raised the arming query's stack past `update`'s. The nominal state is untouched and no
-/// timer moves. A projection is not time passing.
-///
-/// What it costs, and why that is acceptable on a query and would not be on the hot path: one `F`
-/// and one `Q`, built once because an unaccelerated vehicle does not rotate, then one
-/// [`propagate_covariance`] per step — ten of them at the default 1 s horizon, up to
-/// [`MAX_PROJECTION_STEPS`]. So an arming check is ten times the arithmetic of an IMU epoch, on a
-/// stack that stays under `update`'s ([measured]).
-///
-/// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function
+/// The IMU input is the one the question presumes: a vehicle on the ground, not rotating, so
+/// `ω = 0` and the specific force is `−R(q̂)ᵀ g`, what a stationary accelerometer reads at the
+/// current attitude. That is what makes the tilt-to-velocity coupling of (17) the gravity leak
+/// it is in flight, rather than zero. It is [`coast`]'s assumption with neither of [`Coast`]'s
+/// densities, since `F` does not read velocity and an unaccelerated vehicle and one standing
+/// still grow it alike, so both are [`unaccelerated_growth`]: one exact step at any horizon. The
+/// nominal state is untouched and no timer moves. A projection is not time passing.
 pub(crate) fn project(
     state: &State,
     covariance: Covariance,
@@ -622,68 +582,44 @@ pub(crate) fn project(
     config: &Config,
 ) -> Covariance {
     // A horizon that is not a positive duration projects nothing rather than projecting
-    // backwards. `Q` of (21) is linear in `dt`, so a negative one *subtracts* process noise
-    // and lands variances below zero, which `Validity` reads as an estimate better than any
-    // the filter could have — the covariance is the only thing it consults. `Config::validate`
+    // backwards: a negative `T` *subtracts* process noise and lands variances below zero, which
+    // `Validity` reads as an estimate better than any the filter could have. `Config::validate`
     // refuses a negative or NaN `Accuracy::horizon`; zero, which it allows, arrives here.
     let seconds = horizon.as_secs();
     if seconds.is_nan() || seconds <= 0.0 {
         return covariance;
     }
-
-    let steps = projection_steps(horizon);
-    let dt = Seconds::from_secs(seconds / steps as f32);
-    let unaccelerated = unaccelerated_sample(state, dt, config.gravity);
-    let transition = transition_matrix(state, unaccelerated);
-    repeat_covariance(
-        covariance,
-        &transition,
-        process_noise(&config.imu, unaccelerated),
-        steps,
+    let densities = Densities::of(&config.imu, None);
+    unaccelerated_growth(
+        state,
+        &covariance,
+        seconds,
+        config.gravity,
+        &densities,
+        None,
     )
-}
-
-/// `steps` runs of (22) under one `F` and one `Q`, the growth [`project`] and [`coast`] share.
-fn repeat_covariance(
-    covariance: Covariance,
-    transition: &Transition,
-    q: [f32; STATES],
-    steps: usize,
-) -> Covariance {
-    let mut covariance = covariance;
-    for _ in 0..steps {
-        covariance = propagate_covariance(covariance, transition, q);
-    }
-    covariance
 }
 
 /// Advance the state and its covariance across a gap no IMU sample describes. Equation (22′).
 ///
 /// The input assumed is [`unaccelerated_sample`]'s: no rotation, and the specific force that
-/// cancels gravity. Run through (13)–(15) it moves position by `v̂ Δt` and nothing else, and
-/// run through (20) it builds the `F` of the same assumption, so the state and the covariance
-/// describe one hypothesis. What the hypothesis leaves out, the vehicle's actual acceleration
-/// and rotation, enters as the white densities of [`Coast`] on the velocity and attitude
-/// blocks, beside (21)'s own noise.
+/// cancels gravity. Run through (13)–(15) it moves position by `v̂ T` and nothing else, and its
+/// error dynamics are [`unaccelerated_growth`]'s, so the state and the covariance describe one
+/// hypothesis. What the hypothesis leaves out, the vehicle's actual acceleration and rotation,
+/// enters as the white densities of [`Coast`] on the velocity and attitude blocks, beside (21)'s
+/// own noise.
 ///
-/// One nominal step, because an unaccelerated vehicle's (13) is exact over any interval. The
-/// covariance under (22) takes the steps [`project`] does, at [`PROJECTION_STEP`] and no more than
-/// [`MAX_PROJECTION_STEPS`] of them: a single long step of first-order (20) never reaches
-/// position with the velocity growth it integrates, and the table at [`PROJECTION_STEP`] is
-/// the shortfall that remains. `F` is built once, since it reads attitude and the corrected
-/// sample and neither moves.
+/// One step at any gap, the nominal one because an unaccelerated vehicle's (13) is exact over
+/// any interval, and the covariance's because `ω = 0` makes the error dynamics nilpotent: the
+/// transition and the noise it integrates are polynomials in `T`, exact where (22) run in short
+/// steps understates. So a gap costs one (22)'s arithmetic, where the steps cost a long gap
+/// nearly two periods of a 400 Hz loop ([measured]).
 ///
-/// What it costs is up to [`MAX_PROJECTION_STEPS`] runs of (22) in one call, 64 IMU epochs'
-/// arithmetic landing on the step after the loop has already overrun. Worst case, not typical: a
-/// 1.2 s gap is 12 runs, on a stack under `update`'s ([measured]). The exact `F` of an
-/// unaccelerated vehicle is a four-term polynomial in `Δt`, since `ω = 0` makes the error dynamics
-/// nilpotent. Not built: #41, until the spike is measured too costly.
+/// A gap that is not a positive duration coasts nothing, for [`project`]'s reason.
+/// [`Eskf::predict`](crate::Eskf::predict) coasts only past a positive limit, so the guard
+/// holds a bound no caller in the crate crosses.
 ///
-/// A gap that is not a positive duration coasts nothing, for [`project`]'s reason: a negative
-/// `Δt` subtracts `Q`. [`Eskf::predict`](crate::Eskf::predict) coasts only past a positive
-/// limit, so the guard holds a bound no caller in the crate crosses.
-///
-/// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#measured-cost-by-function
+/// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#coast-and-projection
 pub(crate) fn coast(
     state: State,
     covariance: Covariance,
@@ -701,96 +637,183 @@ pub(crate) fn coast(
             omega: None,
         };
     }
-
-    let steps = projection_steps(gap);
-    let dt = Seconds::from_secs(seconds / steps as f32);
-    let unaccelerated = unaccelerated_sample(&state, dt, config.gravity);
-    let transition = transition_matrix(&state, unaccelerated);
-    // The unmeasured rotation goes through (22) with the rest of `Q`: it reaches velocity
-    // through (17)'s gravity leak, a coupling the steps integrate and no closed form here does.
-    let mut q = process_noise(&config.imu, unaccelerated);
-    let turned = unmeasured.rotation * unmeasured.rotation * dt.as_secs();
-    for axis in [
-        ErrorState::AttitudeX,
-        ErrorState::AttitudeY,
-        ErrorState::AttitudeZ,
-    ] {
-        // `get_mut` rather than indexing: an index the compiler cannot prove in range is a
-        // panic path, and nothing in `src/` may carry one.
-        if let Some(variance) = q.get_mut(axis.index()) {
-            *variance += turned;
-        }
-    }
-
-    let covariance = repeat_covariance(covariance, &transition, q, steps);
-    let mut offset = offset;
-    for _ in 0..steps {
-        offset = propagate_offset(offset, &transition, config.baro_offset_walk, dt);
-    }
-
-    // The unmeasured acceleration, added whole rather than per step. It reaches nothing but
-    // position, through a block of `F` that is exact at any `Δt`, so the white-noise integral
-    // is exact in closed form: `a² [Δt³/3, Δt²/2; Δt²/2, Δt]` on each axis. Per step, the
-    // first-order discretization would reach position with `(1 − 1/n)(1 − 1/2n)` of it, 12 %
-    // short over a 1.2 s gap.
-    let density = unmeasured.acceleration * unmeasured.acceleration;
-    let (p, v) = (
-        ErrorState::PositionNorth.index(),
-        ErrorState::VelocityNorth.index(),
+    let densities = Densities::of(&config.imu, Some(unmeasured));
+    // (30′) across the whole gap at once: the offset has no dynamics, so its cross-covariance
+    // moves with the error state through `Φ`, and its variance walks by `q_b² T`.
+    let mut cross = offset.cross;
+    let covariance = unaccelerated_growth(
+        &state,
+        &covariance,
+        seconds,
+        config.gravity,
+        &densities,
+        Some(&mut cross),
     );
-    let mut matrix = *covariance.as_matrix();
-    let identity = Matrix3::<f32>::identity();
-    let mut position = matrix.fixed_view_mut::<3, 3>(p, p);
-    position += identity * (density * seconds * seconds * seconds / 3.0);
-    let mut cross = matrix.fixed_view_mut::<3, 3>(p, v);
-    cross += identity * (density * seconds * seconds / 2.0);
-    let mut cross = matrix.fixed_view_mut::<3, 3>(v, p);
-    cross += identity * (density * seconds * seconds / 2.0);
-    let mut velocity = matrix.fixed_view_mut::<3, 3>(v, v);
-    velocity += identity * (density * seconds);
-
+    let walk = config.baro_offset_walk;
     Propagated {
         state: propagate_nominal(
             state,
             unaccelerated_sample(&state, gap, config.gravity),
             config.gravity,
         ),
-        covariance: Covariance::from_matrix(matrix),
-        offset,
+        covariance,
+        offset: Offset {
+            cross,
+            variance: offset.variance + walk * walk * seconds,
+        },
         omega: None,
     }
 }
 
-/// How many steps a horizon is worth: one per [`PROJECTION_STEP`], at least one and at most
-/// [`MAX_PROJECTION_STEPS`].
-///
-/// The count depends on [`Accuracy::horizon`](crate::Accuracy::horizon), which is fixed for
-/// the life of a filter, so it is a constant per configuration rather than a loop that runs
-/// until something converges.
-///
-/// A horizon that is zero, negative or not a number lands on one step, and that is not what
-/// makes it safe: one step of a *negative* horizon subtracts `Q` and lands variances below
-/// zero. [`project`] refuses such a horizon before it gets here, and this function has no
-/// opinion on the matter — which is worth knowing before calling it from anywhere else.
-fn projection_steps(horizon: Seconds) -> usize {
-    let wanted = horizon.as_secs() / PROJECTION_STEP.as_secs();
-    // NaN fails both comparisons and falls through to one step, which is what `project`'s
-    // own guard has already refused anyway.
-    if wanted >= MAX_PROJECTION_STEPS as f32 {
-        MAX_PROJECTION_STEPS
-    } else if wanted > 1.0 {
-        // Rounded up, not truncated: truncating leaves the last step carrying the remainder,
-        // so a 1.5 s horizon would take one 1.5 s step and the step size the measurement was
-        // made at would be an aspiration rather than a bound.
-        let whole = wanted as usize;
-        if wanted > whole as f32 {
-            whole + 1
-        } else {
-            whole
+/// The white densities driving the error, per axis: (21)'s, with [`Coast`]'s unmeasured
+/// acceleration and rotation added where a gap allows them.
+struct Densities {
+    velocity: f32,
+    attitude: f32,
+    accel_bias: f32,
+    gyro_bias: f32,
+}
+
+impl Densities {
+    fn of(noise: &ImuNoise, unmeasured: Option<&Coast>) -> Self {
+        let (acceleration, rotation) =
+            unmeasured.map_or((0.0, 0.0), |c| (c.acceleration, c.rotation));
+        Self {
+            velocity: noise.accel_white * noise.accel_white + acceleration * acceleration,
+            attitude: noise.gyro_white * noise.gyro_white + rotation * rotation,
+            accel_bias: noise.accel_bias_walk * noise.accel_bias_walk,
+            gyro_bias: noise.gyro_bias_walk * noise.gyro_bias_walk,
         }
-    } else {
-        1
     }
+}
+
+/// `Φ`, the exact transition over `T` seconds of an unaccelerated, unrotating vehicle.
+/// Equation (22′).
+///
+/// With `ω = 0` and `a_b = −R(q̂)ᵀ g`, the dynamics (16)–(19) are a chain, `δβg → δθ → δv → δp`,
+/// with `δβa` entering velocity, so `A⁴ = 0` and `Φ = exp(A T) = I + A T + A² T²/2 + A³ T³/6`
+/// has four terms; `EQUATIONS.md` (22′) writes it out. Built in blocks rather than as `A` and its
+/// powers: it has eleven nonzero blocks, each a scalar times `I`, `R` or `G`, where `G` is (17)'s
+/// `−R(q̂)[a_b]ₓ`, for this `a_b` the gravity leak `[g]ₓ R(q̂)`.
+fn unaccelerated_transition(state: &State, t: f32, gravity: f32) -> Transition {
+    let (r, g) = gravity_leak(state, gravity);
+    let i = Matrix3::<f32>::identity();
+    let t2 = t * t;
+    let (p, v, theta, beta_a, beta_g) = (
+        ErrorState::PositionNorth.index(),
+        ErrorState::VelocityNorth.index(),
+        ErrorState::AttitudeX.index(),
+        ErrorState::AccelBiasX.index(),
+        ErrorState::GyroBiasX.index(),
+    );
+    // Row by row: position, velocity, attitude; the biases' rows are the identity's.
+    let mut phi = Transition::identity();
+    phi.fixed_view_mut::<3, 3>(p, v).copy_from(&(i * t));
+    phi.fixed_view_mut::<3, 3>(p, theta)
+        .copy_from(&(g * (t2 / 2.0)));
+    phi.fixed_view_mut::<3, 3>(p, beta_a)
+        .copy_from(&(-r * (t2 / 2.0)));
+    phi.fixed_view_mut::<3, 3>(p, beta_g)
+        .copy_from(&(-g * (t2 * t / 6.0)));
+    phi.fixed_view_mut::<3, 3>(v, theta).copy_from(&(g * t));
+    phi.fixed_view_mut::<3, 3>(v, beta_a).copy_from(&(-r * t));
+    phi.fixed_view_mut::<3, 3>(v, beta_g)
+        .copy_from(&(-g * (t2 / 2.0)));
+    phi.fixed_view_mut::<3, 3>(theta, beta_g)
+        .copy_from(&(-i * t));
+    phi
+}
+
+/// `R(q̂)` and (17)'s `G = −R(q̂)[a_b]ₓ` at the specific force of an unaccelerated vehicle.
+fn gravity_leak(state: &State, gravity: f32) -> (Matrix3<f32>, Matrix3<f32>) {
+    let r = *state.attitude.quaternion().to_rotation_matrix().matrix();
+    let g = -r * skew(unaccelerated_force(state, gravity));
+    (r, g)
+}
+
+/// `P ← Φ P Φᵀ + Q_d` over `T` seconds of an unaccelerated, unrotating vehicle, exactly.
+/// Equation (22′), with `Φ` [`unaccelerated_transition`]'s.
+///
+/// `Q_d = ∫₀ᵀ Φ(s) Q_c Φ(s)ᵀ ds` integrates each density along the column of `Φ` it enters by, in
+/// closed form: twenty-one blocks counting both halves, each a scalar times `I`, `R`, `G` or
+/// `G Gᵀ`. `cross`, where given, is a column correlated with the error state, (30′)'s `P_xb`,
+/// carried through the same `Φ` here rather than handing `Φ` back: returned, it sat in every
+/// caller's frame, `predicted_validity`'s included ([measured]).
+///
+/// [measured]: https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#stack-frames
+fn unaccelerated_growth(
+    state: &State,
+    covariance: &Covariance,
+    t: f32,
+    gravity: f32,
+    q: &Densities,
+    cross: Option<&mut SVector<f32, STATES>>,
+) -> Covariance {
+    let (r, g) = gravity_leak(state, gravity);
+    let i = Matrix3::<f32>::identity();
+    let (t2, t3) = (t * t, t * t * t);
+    let (t4, t5) = (t3 * t, t3 * t2);
+    let (p, v, theta, beta_a, beta_g) = (
+        ErrorState::PositionNorth.index(),
+        ErrorState::VelocityNorth.index(),
+        ErrorState::AttitudeX.index(),
+        ErrorState::AccelBiasX.index(),
+        ErrorState::GyroBiasX.index(),
+    );
+
+    let phi = unaccelerated_transition(state, t, gravity);
+    if let Some(cross) = cross {
+        *cross = phi * *cross;
+    }
+    let mut next = phi * covariance.as_matrix() * phi.transpose();
+
+    // Q_d, the upper blocks; the lower are their transposes, written beside them. Each line
+    // sums the densities that reach that pair of states, with the integral of the product of
+    // the two columns they enter by.
+    let ggt = g * g.transpose();
+    let (qv, qt, qa, qg) = (q.velocity, q.attitude, q.accel_bias, q.gyro_bias);
+    // One statement per block, with the indices constants: a loop over `(row, column)` pairs
+    // leaves `fixed_view_mut`'s bounds check in, a panic path nothing in `src/` may carry.
+    macro_rules! add {
+        ($row:expr, $column:expr, $block:expr) => {{
+            let block: Matrix3<f32> = $block;
+            let mut upper = next.fixed_view_mut::<3, 3>($row, $column);
+            upper += block;
+            if $row != $column {
+                let mut lower = next.fixed_view_mut::<3, 3>($column, $row);
+                lower += block.transpose();
+            }
+        }};
+    }
+    add!(
+        p,
+        p,
+        i * (qv * t3 / 3.0 + qa * t5 / 20.0) + ggt * (qt * t5 / 20.0 + qg * t5 * t2 / 252.0)
+    );
+    add!(
+        p,
+        v,
+        i * (qv * t2 / 2.0 + qa * t4 / 8.0) + ggt * (qt * t4 / 8.0 + qg * t5 * t / 72.0)
+    );
+    add!(p, theta, g * (qt * t3 / 6.0 + qg * t5 / 30.0));
+    add!(p, beta_a, -r * (qa * t3 / 6.0));
+    add!(p, beta_g, -g * (qg * t4 / 24.0));
+    add!(
+        v,
+        v,
+        i * (qv * t + qa * t3 / 3.0) + ggt * (qt * t3 / 3.0 + qg * t5 / 20.0)
+    );
+    add!(v, theta, g * (qt * t2 / 2.0 + qg * t4 / 8.0));
+    add!(v, beta_a, -r * (qa * t2 / 2.0));
+    add!(v, beta_g, -g * (qg * t3 / 6.0));
+    add!(theta, theta, i * (qt * t + qg * t3 / 3.0));
+    add!(theta, beta_g, -i * (qg * t2 / 2.0));
+    add!(beta_a, beta_a, i * (qa * t));
+    add!(beta_g, beta_g, i * (qg * t));
+
+    // (42), for the rounding the products leave.
+    enforce_symmetry(&mut next);
+    Covariance::from_matrix(next)
 }
 
 /// What the IMU of an unaccelerated vehicle at `state`'s attitude reads over `dt`: no
@@ -798,19 +821,23 @@ fn projection_steps(horizon: Seconds) -> usize {
 /// velocity alike.
 ///
 /// The inverse of the test (11) is written against — a level vehicle at rest reads
-/// `(0, 0, −γ)` — evaluated at an attitude that need not be level. Named because [`coast`],
-/// [`project`] and the measurement behind [`PROJECTION_STEP`] have to use the same one for the
-/// comparison between them to mean anything.
+/// `(0, 0, −γ)`, evaluated at an attitude that need not be level. [`coast`] moves the nominal
+/// state with it, and [`unaccelerated_growth`] linearizes about the same specific force.
 fn unaccelerated_sample(state: &State, dt: Seconds, gravity: f32) -> Corrected {
-    let rotation = state.attitude.quaternion().to_rotation_matrix();
     Corrected {
         delta_angle: DeltaAngle::from_vector(Vector3::zeros()),
         angle_interval: dt,
         delta_velocity: DeltaVelocity::from_vector(
-            rotation.inverse() * -gravity_vector(gravity) * dt.as_secs(),
+            unaccelerated_force(state, gravity) * dt.as_secs(),
         ),
         velocity_interval: dt,
     }
+}
+
+/// `−R(q̂)ᵀ g`, the specific force that holds an unaccelerated vehicle up, in body axes: what
+/// [`unaccelerated_sample`] reads and [`gravity_leak`] linearizes about.
+fn unaccelerated_force(state: &State, gravity: f32) -> Vector3<f32> {
+    state.attitude.quaternion().to_rotation_matrix().inverse() * -gravity_vector(gravity)
 }
 
 /// `g = [0, 0, γ]ᵀ`, the navigation-frame gravity vector of (11), for `γ` as
@@ -1438,144 +1465,203 @@ mod tests {
 }
 
 #[cfg(test)]
-mod projection_steps {
+mod unaccelerated {
     use super::*;
     use crate::config::{GRAVITY, Initialization};
     use crate::init;
     use crate::units::Radians;
+    use nalgebra::UnitQuaternion;
 
-    fn start() -> (State, Covariance, ImuNoise) {
-        (
-            State::default(),
-            init::initial_covariance(
-                &Initialization::default(),
-                &State::default().attitude,
-                Radians::from_radians(0.02),
-                Radians::from_radians(0.35),
-                Some(0.0),
-                // The gyroscope-bias prior `PROJECTION_STEP`'s figures were measured at.
-                Vector3::repeat(0.01),
-                GRAVITY,
-            ),
-            ImuNoise::default(),
-        )
-    }
+    type Matrix64 = SMatrix<f64, STATES, STATES>;
 
-    /// The same horizon propagated at 100 Hz, which is the growth `predict` would produce
-    /// over it and what [`PROJECTION_STEP`] is chosen against.
-    fn at_100_hz(state: &State, from: Covariance, noise: &ImuNoise, seconds: f32) -> Covariance {
-        let dt = Seconds::from_secs(0.01);
-        let unaccelerated = unaccelerated_sample(state, dt, GRAVITY);
-        let f = transition_matrix(state, unaccelerated);
-        let q = process_noise(noise, unaccelerated);
-        let mut p = from;
-        for _ in 0..(seconds / 0.01) as usize {
-            p = propagate_covariance(p, &f, q);
-        }
-        p
-    }
-
-    /// The figures [`PROJECTION_STEP`]'s doc comment quotes, as a test, because a step size
-    /// chosen against a measurement should fail when the measurement moves.
-    ///
-    /// Variance rather than sigma: `sqrt` is `libm`'s here and the claim is the same either
-    /// way — 0.938 of the variance is 0.968 of the sigma.
-    #[test]
-    fn a_tenth_of_a_second_step_holds_the_projection_within_five_percent_out_to_five_seconds() {
-        let (state, from, noise) = start();
-        for (seconds, floor) in [(1.0f32, 0.99f32), (2.0, 0.97), (5.0, 0.93)] {
-            let truth = at_100_hz(&state, from, &noise, seconds);
-            let projected = project(
-                &state,
-                from,
-                Seconds::from_secs(seconds),
-                &Config {
-                    imu: noise,
-                    ..Config::default()
-                },
-            );
-            let ratio = projected.variance(ErrorState::PositionNorth)
-                / truth.variance(ErrorState::PositionNorth);
-            assert!(
-                (floor..=1.0).contains(&ratio),
-                "{seconds} s horizon: {ratio} of the reference position variance"
-            );
+    /// Tilted and turned, so `R` and the gravity leak `G` are full matrices and a block written
+    /// with the wrong one, or transposed, reads differently.
+    fn tilted() -> State {
+        State {
+            attitude: Attitude::from_quaternion(UnitQuaternion::from_euler_angles(0.3, -0.2, 1.1)),
+            ..State::default()
         }
     }
 
-    /// The direction of the error, which is the half a caller has to know: a first-order
-    /// step understates growth, so the projection is optimistic and never pessimistic. A
-    /// discretization that came out *above* the reference would mean (20) had gained a term
-    /// the fine propagation does not have.
+    fn densities() -> Densities {
+        // Distinct, and large enough that each term clears f32's rounding of the others.
+        Densities {
+            velocity: 0.3,
+            attitude: 0.02,
+            accel_bias: 0.005,
+            gyro_bias: 0.0007,
+        }
+    }
+
+    fn widen(m: &Transition) -> Matrix64 {
+        m.map(f64::from)
+    }
+
+    /// `A` of (16)–(19) at the unaccelerated input, from `error_dynamics`, the function (23′)
+    /// reads: a second statement of the dynamics the closed form is checked against.
+    fn a(state: &State) -> Matrix64 {
+        let rotation = state.attitude.quaternion().to_rotation_matrix();
+        let a_b = rotation.inverse() * -gravity_vector(GRAVITY);
+        widen(&error_dynamics(state, Vector3::zeros(), a_b))
+    }
+
+    fn exp(a: &Matrix64, t: f64) -> Matrix64 {
+        let a2 = a * a;
+        Matrix64::identity() + a * t + a2 * (t * t / 2.0) + a2 * a * (t * t * t / 6.0)
+    }
+
     #[test]
-    fn the_projection_understates_the_growth_rather_than_overstating_it() {
-        let (state, from, noise) = start();
-        let truth = at_100_hz(&state, from, &noise, 5.0);
-        let projected = project(
-            &state,
-            from,
-            Seconds::from_secs(5.0),
-            &Config {
-                imu: noise,
-                ..Config::default()
-            },
+    fn the_dynamics_are_nilpotent_and_the_transition_is_their_exponential() {
+        let state = tilted();
+        let a = a(&state);
+        let a4 = a * a * a * a;
+        assert!(a4.amax() < 1e-9, "A⁴ is not zero: {}", a4.amax());
+        assert!(
+            (a * a * a).amax() > 1e-3,
+            "A³ is zero, so the cubic term is untested"
         );
-        for s in [
-            ErrorState::PositionNorth,
-            ErrorState::VelocityNorth,
-            ErrorState::AttitudeX,
-            ErrorState::GyroBiasX,
-        ] {
+        for t in [0.01f32, 1.3, 6.4] {
+            let phi = unaccelerated_transition(&state, t, GRAVITY);
+            let difference = (widen(&phi) - exp(&a, f64::from(t))).amax();
             assert!(
-                projected.variance(s) <= truth.variance(s) * 1.0001,
-                "{s:?}: projected {} against {}",
-                projected.variance(s),
-                truth.variance(s)
+                difference < 1e-4,
+                "{t} s: Φ differs from exp(A T) by {difference}"
             );
         }
     }
 
-    /// A projection grows a covariance and never shrinks one, whatever the horizon: (22)
-    /// only adds. The zero and negative cases are the ones a caller reaches by configuring
-    /// a horizon nobody checked.
+    /// `Q_d` against `∫ Φ(s) Q_c Φ(s)ᵀ ds` by Simpson's rule in `f64`, from `A` rather than the
+    /// blocks: each of the twenty-one blocks, its sign and its power of `T`.
+    #[test]
+    fn the_noise_is_the_integral_of_the_densities_along_the_transition() {
+        let state = tilted();
+        let a = a(&state);
+        let q = densities();
+        let mut qc = Matrix64::zeros();
+        for (first, density) in [
+            (ErrorState::VelocityNorth, q.velocity),
+            (ErrorState::AttitudeX, q.attitude),
+            (ErrorState::AccelBiasX, q.accel_bias),
+            (ErrorState::GyroBiasX, q.gyro_bias),
+        ] {
+            for k in 0..3 {
+                qc[(first.index() + k, first.index() + k)] = f64::from(density);
+            }
+        }
+        for t in [0.5f32, 4.0] {
+            let n = 400;
+            let h = f64::from(t) / f64::from(n);
+            let integrand = |s: f64| {
+                let phi = exp(&a, s);
+                phi * qc * phi.transpose()
+            };
+            let mut integral = integrand(0.0) + integrand(f64::from(t));
+            for k in 1..n {
+                let weight = if k % 2 == 1 { 4.0 } else { 2.0 };
+                integral += integrand(f64::from(k) * h) * weight;
+            }
+            integral *= h / 3.0;
+
+            let closed = unaccelerated_growth(&state, &Covariance::zero(), t, GRAVITY, &q, None);
+            let closed = closed.as_matrix().map(f64::from);
+            for row in 0..STATES {
+                for column in 0..STATES {
+                    let (got, want) = (closed[(row, column)], integral[(row, column)]);
+                    let scale = (integral[(row, row)] * integral[(column, column)]).sqrt();
+                    assert!(
+                        (got - want).abs() <= 1e-4 * scale + 1e-9,
+                        "{t} s, ({row}, {column}): {got} against {want}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// (22) run in short steps approaches the one step from below: a first-order step
+    /// understates, and the shorter the steps the less. The one step is what they converge to,
+    /// not a different model of the gap.
+    #[test]
+    fn short_steps_of_the_first_order_form_approach_it_from_below() {
+        let state = tilted();
+        let from = init::initial_covariance(
+            &Initialization::default(),
+            &state.attitude,
+            Radians::from_radians(0.02),
+            Radians::from_radians(0.35),
+            Some(0.0),
+            Vector3::repeat(0.01),
+            GRAVITY,
+        );
+        let noise = ImuNoise::default();
+        let seconds = 5.0;
+        let exact = unaccelerated_growth(
+            &state,
+            &from,
+            seconds,
+            GRAVITY,
+            &Densities::of(&noise, None),
+            None,
+        );
+        let stepped = |rate: f32| {
+            let dt = Seconds::from_secs(1.0 / rate);
+            let unaccelerated = unaccelerated_sample(&state, dt, GRAVITY);
+            let f = transition_matrix(&state, unaccelerated);
+            let q = process_noise(&noise, unaccelerated);
+            let mut p = from;
+            for _ in 0..(seconds * rate) as usize {
+                p = propagate_covariance(p, &f, q);
+            }
+            p.variance(ErrorState::PositionNorth) / exact.variance(ErrorState::PositionNorth)
+        };
+        let (coarse, fine) = (stepped(10.0), stepped(400.0));
+        assert!(
+            coarse < fine && fine <= 1.0001,
+            "10 Hz {coarse}, 400 Hz {fine}"
+        );
+        assert!(fine > 0.995, "400 Hz {fine} of the exact position variance");
+    }
+
+    /// The offset's correlation with the error state moves through the same `Φ` as `P` does: one
+    /// with down velocity alone reaches down position by `T`, `Φ`'s `I T` block, and keeps its
+    /// velocity share, since an unaccelerated vehicle's velocity row is the identity there.
+    #[test]
+    fn a_coast_carries_the_offsets_correlation_through_the_transition() {
+        let mut cross = SVector::<f32, STATES>::zeros();
+        cross[ErrorState::VelocityDown.index()] = 1.0;
+        let offset = Offset {
+            cross,
+            variance: 0.25,
+        };
+        let coasted = coast(
+            tilted(),
+            Covariance::from_sigmas([0.5; STATES]),
+            offset,
+            Seconds::from_secs(2.5),
+            &Config::default(),
+            &Coast::default(),
+        );
+        let after = coasted.offset.cross;
+        assert!(
+            (after[ErrorState::PositionDown.index()] - 2.5).abs() < 1e-6,
+            "{after}"
+        );
+        assert_eq!(after[ErrorState::VelocityDown.index()], 1.0);
+    }
+
+    /// A projection grows a covariance and never shrinks one, whatever the horizon. The zero and
+    /// negative cases are the ones a caller reaches by configuring a horizon nobody checked.
     #[test]
     fn a_horizon_that_is_not_positive_leaves_the_covariance_where_it_was() {
-        let (state, from, noise) = start();
+        let state = State::default();
+        let from = Covariance::from_sigmas([0.5; STATES]);
         for seconds in [0.0f32, -1.0, f32::NAN] {
             let projected = project(
                 &state,
                 from,
                 Seconds::from_secs(seconds),
-                &Config {
-                    imu: noise,
-                    ..Config::default()
-                },
+                &Config::default(),
             );
-            for i in 0..STATES {
-                let (before, after) = (from.as_matrix()[(i, i)], projected.as_matrix()[(i, i)]);
-                assert!(
-                    after >= before || (after - before).abs() < 1e-9,
-                    "state {i} at {seconds} s: {before} became {after}"
-                );
-            }
+            assert_eq!(projected.to_rows(), from.to_rows(), "{seconds} s");
         }
-    }
-
-    /// The step count is the horizon's, bounded at both ends.
-    #[test]
-    fn the_step_count_follows_the_horizon_and_stops_at_the_cap() {
-        assert_eq!(projection_steps(Seconds::from_secs(1.0)), 10);
-        assert_eq!(projection_steps(Seconds::from_secs(0.05)), 1);
-        assert_eq!(projection_steps(Seconds::from_secs(0.0)), 1);
-        assert_eq!(projection_steps(Seconds::from_secs(-3.0)), 1);
-        assert_eq!(projection_steps(Seconds::from_secs(f32::NAN)), 1);
-        assert_eq!(
-            projection_steps(Seconds::from_secs(6.4)),
-            MAX_PROJECTION_STEPS
-        );
-        assert_eq!(
-            projection_steps(Seconds::from_secs(600.0)),
-            MAX_PROJECTION_STEPS
-        );
     }
 }

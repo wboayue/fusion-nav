@@ -194,7 +194,7 @@ impl Check {
 ///
 /// Boxed, so that a derivation holding several finished replays holds pointers to them.
 fn run(text: &str, config: Config, options: &Options) -> Result<Box<Replay>, String> {
-    let mut replay = prepare(text, config, options, None).map_err(|e| e.to_string())?;
+    let mut replay = prepare(text, config, options, None, None).map_err(|e| e.to_string())?;
     replay.trail = Some(Vec::new());
     drive(
         &mut replay,

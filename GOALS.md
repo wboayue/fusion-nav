@@ -72,13 +72,13 @@ None of this criticizes `eskf`, which does what it set out to do. It is a differ
 
 ## Differentiators
 
-Numbered, not ranked. 4 is the most defensible, being true by construction; 1 matters most, and
-waits on target hardware (#41). 5 was *ecosystem coherence*,
+Numbered, not ranked. 4 is the most defensible, being true by construction; 1 matters most.
+5 was *ecosystem coherence*,
 [dropped](#ecosystem-coherence-dropped).
 
 | | claim | the evidence a reader can check | state |
 | --- | --- | --- | --- |
-| 1 | verified embedded determinism | [validation/cost.md](validation/cost.md), pinned by `data/footprint.txt` in CI | memory, stack and flash published; cycles on target are #41 |
+| 1 | verified embedded determinism | [validation/cost.md](validation/cost.md), pinned by `data/footprint.txt` in CI and by `data/onboard.txt` off a board | built: cycles and a painted stack on an STM32H743 |
 | 2 | compile-time frames and units | `src/units.rs`, `src/frames.rs`; the README's [conventions](README.md#conventions) | built |
 | 3 | readable mathematics | [EQUATIONS.md](EQUATIONS.md) and its equation-to-code mapping | built |
 | 4 | pure Rust, single crate | CI builds for `thumbv6m` and `thumbv7em` with one dependency | built |
@@ -92,7 +92,8 @@ Publish measured worst-case execution time (cycle counts) and stack high-water m
 
 No Rust navigation crate does this, so nobody can tell from outside whether one fits a 400 Hz
 control loop. [validation/cost.md](validation/cost.md) publishes the figures: memory, stack and
-flash today, measured on the build; cycles and a painted stack are #41's. PX4 and ArduPilot
+flash measured on the build, and the cycles and painted stack of every call the corpus makes,
+measured on an STM32H743 at 400 MHz. PX4 and ArduPilot
 instrument their timing (`perf_counter`, scheduler task budgets), but neither publishes
 per-function worst-case figures to design against before adopting.
 
@@ -1031,8 +1032,8 @@ error and has its velocity pulled toward zero; the gate and (24′) bound that r
 it. Attitude goes
 invalid when its honest σ crosses `Accuracy::tilt`, sooner than the white hold claims. `f16771dd`
 agrees with EKF2 less than the white hold does, which is the form EKF2 itself runs. `predict`
-grows a branch and, while held, a 2-D update every 0.2 s, so its worst case is an update's
-(#41), and its deepest stack is the hold's, still under the crate's peak
+grows a branch and, while held, a 2-D update every 0.2 s, so its worst case is an update's,
+and its deepest stack is the hold's, still under the crate's peak
 ([validation/cost.md](validation/cost.md)). The stationary claim is only as true as the caller making it, and one made in
 motion reads as tilt until the gate turns it down.
 
@@ -1107,7 +1108,8 @@ flights. DESIGN.md, "`YawEstimator`", has the table.
 
 - 456 bytes of `Eskf` whether it runs or not, 10.9 KB of flash on `thumbv6m`, and 0.18 µs of a
   0.97 µs `predict` on the host, as it landed; `validation/cost.md` has the current figures,
-  and a core with no FPU pays more in time than the host does (#41).
+  and a core with no FPU pays more in time than the host does (which cores are timed:
+  [validation/cost.md](validation/cost.md#what-is-measured-and-what-is-not)).
 - A hover establishes nothing. Yaw is observed through acceleration, so a vehicle that takes
   off and holds station stays `Aligning` until it moves.
 - Before the adoption the start still claims `sigma_yaw` on a yaw nothing measured, and GNSS
@@ -1273,8 +1275,8 @@ tables.
 2. PX4 public logs are the regression corpus (`data/manifest.txt`): cheap to add, they catch
    divergence and provide EKF2 as a side-by-side reference.
 3. UrbanNav serves the innovation-gating tests, since its GNSS is hostile.
-4. Recordings from [ark-fpv-discovery](https://github.com/wboayue/ark-fpv-discovery) supply the
-   timing and stack figures (#41). No public dataset can supply differentiator 1; those numbers
+4. The board [ark-fpv-discovery](https://github.com/wboayue/ark-fpv-discovery) brings up, an
+   STM32H743, supplies the timing and stack figures: the corpus replayed on it call by call (#41). No public dataset can supply differentiator 1; those numbers
    come off the target hardware.
 
 ### Harness constraint

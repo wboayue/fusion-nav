@@ -25,7 +25,7 @@ exclude = ["AGENTS.md", "VALIDATION.md", "data/flight.truth.csv", "validation/",
 # `bench` holds the host benchmarks, a member rather than a dev-dependency here because
 # criterion's features would reach every test and example build (see `bench/Cargo.toml`).
 [workspace]
-members = [".", "bench", "panic-check"]
+members = [".", "bench", "onboard", "panic-check"]
 default-members = ["."]
 
 [dependencies]
@@ -55,6 +55,12 @@ libm = "0.2.16"
 # `examples/embedded.rs` builds for bare metal. `no_std` rather than `std`: proptest's `std`
 # turns on `num-traits/std`, which swaps nalgebra's transcendentals from `libm` to the
 # platform's in every test and example build, and moved `flight.csv` in the last digit.
+# The trace `replay --trace` writes for #41's board, only in the build `data/onboard.sh` makes
+# with `--cfg fusion_nav_onboard`: `onboard` is an unpublished member, which the packaged crate
+# cannot carry, so the default harness drives `Eskf` without it (`examples/replay/filter.rs`).
+[target.'cfg(fusion_nav_onboard)'.dev-dependencies]
+onboard = { path = "onboard" }
+
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
 proptest = { version = "1.11.0", default-features = false, features = ["alloc", "no_std"] }
 
@@ -64,3 +70,7 @@ proptest = { version = "1.11.0", default-features = false, features = ["alloc", 
 name = "replay"
 path = "examples/replay/main.rs"
 required-features = ["magnetic-model"]
+
+# `fusion_nav_onboard` is the replay harness's switch to its traced build (`examples/replay/filter.rs`).
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fusion_nav_onboard)"] }

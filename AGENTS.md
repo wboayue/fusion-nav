@@ -10,8 +10,8 @@ marker and nothing else does. Every source the crate publishes is fused: GNSS po
 height (gated apart from horizontal), GNSS velocity, dual-antenna heading, course over ground,
 barometric altitude and magnetic heading, and two observations made from an assumption, the
 stationary claim (29″) and the position hold (28″). Beside them runs the yaw estimator of
-(45)–(52), whose answer is adopted and never fused. What remains is measurement and
-publication: #47, the release, and #41, cost on a board.
+(45)–(52), whose answer is adopted and never fused. What remains is publication: #47, the
+release.
 
 What the filter does, and where each decision's evidence lives:
 
@@ -47,6 +47,12 @@ What the filter does, and where each decision's evidence lives:
   "Yaw without a heading sensor"; `DESIGN.md`, "`YawEstimator`".
 - **Health.** `Status` times each source against its own measured period; `DeadReckoning` reads
   horizontal GNSS alone. `Validity` and `predicted_validity` answer per quantity.
+- **Cost.** `validation/cost.md` publishes memory, stack and flash, pinned in CI
+  (`data/footprint.txt`), and the time and painted stack of every call the corpus makes on an
+  STM32H743 (`onboard/`, #41), pinned off the board in `data/onboard.txt`. No hot-path loop runs
+  on the data (`DESIGN.md`, "Execution time bounded by constants"); a coast and the arming query
+  are (22′) in one exact step. A board figure is a measurement of the commit its build line
+  names: re-run `data/onboard.sh` when a change moves a pinned frame.
 - **Boundary.** No public item names an `nalgebra` type. `Eskf::new` validates `Config`, a refused
   call commits nothing, and `src/eskf/adversarial.rs` holds both. Declination comes from a WMM2025
   table `tools/declination.py` generates (`magnetic-model`) unless the caller sets one.
@@ -280,6 +286,7 @@ cargo run --release --example replay -- --derive <log.csv> > config.rs   # a Con
 cargo run --example replay -- --derive data/flight.csv > data/flight.config.rs  # regenerate the fixture a test pins
 cargo run --example replay -- --set correlation.gnss_height=29 <in.csv> <out.csv>   # any derivable field; `set=` names it
 cargo run --example replay -- --without mag --yaw-estimator off <in.csv> <out.csv>   # a vehicle with no magnetometer, and the filter without (45)-(52)
+RUSTFLAGS="--cfg fusion_nav_onboard" CARGO_TARGET_DIR=target/onboard/host cargo run --release --example replay -- --trace <id>.trace <in.csv> <out.csv>   # every call, for the board (#41)
 REPLAY_ARGS="--set ..." data/anees.sh correlated   # the ANEES gate under a derived Config
 cargo test --example replay -- --ignored drift_scatter --nocapture   # the drift estimator's scatter DESIGN quotes
 
@@ -289,6 +296,13 @@ cargo run --example simulate -- flight data   # regenerate the committed data/fl
 data/bench.sh                     # score every scenario against data/scenarios.txt; a CI gate
 data/bench.sh mission static      # only these
 data/expect.sh --self-test        # the comparator both bench.sh and the manifest rules read
+cargo test -p onboard            # the trace #41's board replays: codec, executor, digests
+cargo run --release -p onboard --example paths -- target/onboard/paths.trace   # the worst paths the corpus misses
+cargo run --release -p onboard --example verify -- <trace> ...   # every call again on the host, digests checked
+onboard/build.sh primary|shipped|fp64   # the firmware #41 times with, to target/onboard/<build>.bin for dfu-util
+data/onboard.sh traces [LOGDIR]   # every manifest log, hover_outage and paths, traced and verified on the host
+data/onboard.sh time <build> [--cold]   # every trace timed on the board running <build>; then `pin`
+python3 tools/onboard.py --self-test   # the frame reader's, the batcher's and the statistics' fixtures
 cargo test --lib adversarial      # the proptest suite of #44, seeded; ~6 s in debug
 data/anees.sh                     # every scenario on 50 seeds against data/anees.txt; a CI gate
 python3 tools/anees.py --self-test   # the ensemble aggregator's fixtures (stdlib, no uv)
@@ -980,6 +994,31 @@ the declination table, and CI builds and tests without it too.
   member rather than a root dev-dependency because criterion turns on `num-traits/std`, which at
   the root would move every replay output (the dev-dependency rule under Replay corpus). Not a
   default member; `cargo bench -p bench` times it, and CI runs `cargo test -p bench --benches`.
+- `onboard/`: a fourth unpublished member, #41's cost on a board. Its library, `no_std`, is a
+  `Record` per public call the board times, `Machine::execute`, the one executor, with
+  `Record::arm` saying how it reaches each call, and the `Outcome` and digest a board and a host
+  compare (`Frame::check`). `Recorder`, host-only, is the filter `paths` drives and the replay
+  harness's traced build wraps: it encodes, decodes and executes every call, so the host runs
+  exactly what the board will. The harness drives `Eskf` itself unless built with
+  `--cfg fusion_nav_onboard` (`examples/replay/filter.rs`), which keeps the codec out of every
+  statistic and the unpublished member out of the packaged crate; CI holds the two builds to the
+  same output. The binary, behind the `firmware` feature so the root's bare-metal examples never
+  build a HAL, is the ARK FPV's firmware (`onboard/build.sh`), driven by `tools/onboard.py`. What
+  the bring-up and the review taught, each invisible to every host check:
+  - A section `memory.x` inserts after `.bss` is zeroed with it: cortex-m-rt's `__ebss` moved
+    into AXI SRAM and reset faulted clearing unmapped memory, with no LED lit. The buffers take
+    fixed addresses instead; check `__ebss` with `llvm-nm` after touching the link script.
+  - Painting sees only bytes written: a call inlined into `execute` shows part of its frame, a
+    `nop` almost none. So the frames subtracted are read off the ELF's `-Zemit-stack-sizes`
+    table into `<build>.frames` (the flashed image is byte-identical without it), and a call
+    `Record::arm` names `inline` publishes no stack.
+  - A tail call runs where the caller's frame was: `execute` jumped to `initialize` and
+    `initialize_coarse`, and subtracting its frame published both 160 bytes low. It holds every
+    result past the call, and `build.sh` refuses an ELF in which it still jumps out.
+  - A by-value argument holds stack in its caller: `execute` keeps a whole `Eskf` and a seed's
+    covariance in out-of-line arms, or every call's painted stack carries them.
+  - `%` and `libm::fmodf` are two functions: the operator lowers to `compiler_builtins`' copy.
+    Time the code path the filter links, not a function of the same name.
 
 ### Invariants worth knowing before editing
 
@@ -1069,6 +1108,12 @@ the declination table, and CI builds and tests without it too.
   adoption, a declination turn or an origin placement that could still refuse is asked first
   (`declination_at`, `carried_*` returning `None`). The adversarial suite holds both: a refused
   call must leave the estimate, clock, origin, declination, reference and latches bit-identical.
+- **No loop runs on the data.** A loop beneath `predict`, a `fuse_*`, a start or
+  `predicted_validity` runs a number of times a constant bounds, or its worst case is not a
+  bound and #41's cycle counts certify nothing. A new loop names its constant in `DESIGN.md`,
+  "Execution time bounded by constants", and the trace that times #41's worst paths gains the
+  input that reaches it. A count a caller's input sets beyond a constant is a finding, as
+  `fmodf`'s exponent gap was.
 - **Nothing in `src/` panics.** No `unwrap`, `expect`, `panic!` or `unreachable!` outside
   `#[cfg(test)]`. On `thumbv6m` a panic is a `udf` and the vehicle is a brick, which is why bad
   input is reported through a typed outcome rather than asserted on. The matrix arithmetic the
@@ -1124,6 +1169,10 @@ Every source touches the same ten places, and three of them are public:
   guard on this list.
 - The README fusion table, the `Eskf` and `prelude` doctests, and `EQUATIONS.md`'s mapping
   table.
+- `onboard/`'s `Record`, `Machine::execute` and `Recorder`, which carry every public call into a
+  trace the board times (#41). An exhaustive `match` on `Record` makes the codec a compile error,
+  and `onboard`'s `every_entry_point_is_recorded_or_named_as_untimed` fails until a new `pub fn`
+  on `Eskf` is a `Record` or named as a read the board does not time.
 - `tools/ulog2replay.py`, which has to find the source in a ULog and name its variance columns.
 - The comparison with EKF2, if EKF2 judges the source: its test ratio in `EKF2_RATIOS`
   (`tools/ulog2replay.py`) and `REFERENCE_KINDS["ratio"]` (`tools/replay_report.py`), the pairing

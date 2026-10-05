@@ -536,8 +536,8 @@ fn snapshot(filter: &Eskf) -> Snapshot {
 }
 
 /// What must hold after any call, whatever it was handed. `project` also runs
-/// [`Eskf::predicted_validity`], which projects `P` up to 64 steps and is most of the suite's
-/// time, so [`run`] asks for it on a sample of calls rather than every one.
+/// [`Eskf::predicted_validity`], which projects `P` across the horizon, so [`run`] asks for it on
+/// a sample of calls rather than every one.
 fn check(filter: &Eskf, after: &str, project: bool) -> Result<(), TestCaseError> {
     let state = filter.estimate.state();
     prop_assert!(state.is_finite(), "{after}: state not finite: {state:?}");

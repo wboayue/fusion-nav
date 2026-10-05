@@ -640,25 +640,59 @@ PX4's density, because replay measured this filter needing it; `DESIGN.md`,
 A step longer than `Config::max_predict_dt` has no sample describing it. One IMU reading cannot
 stand for seconds of flight, so (9)–(22) are not run on it. What the filter can state about the
 gap is an assumption and its uncertainty. It assumes the vehicle was unaccelerated and not
-rotating, the input $`\omega = 0`$, $`a_b = -R(\hat{q})^\mathsf{T} g`$. Through (13)–(15) that
-moves position by $`\hat{v}\Delta t`$ and nothing else; through (20) it gives the $`F`$ of the
-same assumption. What the assumption leaves out enters as two white densities, an acceleration
+rotating, the input $`\omega = 0`$, $`a_b = -R(\hat{q})^\mathsf{T} g`$, across the gap's
+$`T`$. Through (13)–(15) that moves position by $`\hat{v}T`$ and nothing else; through (16)–(19)
+it gives the error dynamics of the same assumption, integrated exactly rather than by (20)'s
+first-order step. What the assumption leaves out enters as two white densities, an acceleration
 $`\sigma_c`$ and a rotation $`\sigma_r`$ (`Config::coast`):
 
 **(22′)**
 
 ```math
-P \leftarrow F^n P (F^n)^\mathsf{T} + \sum_{k<n} F^k (Q + Q_r) (F^k)^\mathsf{T} + \sigma_c^2 \begin{bmatrix} \tfrac{T^3}{3} I & \tfrac{T^2}{2} I \\ \tfrac{T^2}{2} I & T I \end{bmatrix}_{pv},
-\qquad Q_r = \mathrm{diag}(0,\ 0,\ \sigma_r^2 \Delta t\, I,\ 0,\ 0)
+P \leftarrow \Phi P \Phi^\mathsf{T} + Q_d,
+\qquad \Phi = e^{AT} = I + AT + \tfrac{1}{2}A^2T^2 + \tfrac{1}{6}A^3T^3,
+\qquad Q_d = \int_0^T \Phi(s)\, Q_c\, \Phi(s)^\mathsf{T}\, ds
 ```
 
-that is, (22) run $`n`$ times at $`\Delta t = T / n`$ with $`Q_r`$ added to (21), then the
-acceleration's white-noise integral added once to the position–velocity block. `project` takes
-$`n = \lceil T / 0.1\,\mathrm{s} \rceil`$ steps, at most 64, because a single first-order step
-of (20) understates what reaches position. The acceleration term needs no steps: it reaches
-nothing but position, through the $`I\Delta t`$ block that is exact at any $`\Delta t`$, so its
-integral is exact in closed form. The rotation reaches velocity through (17)'s gravity term,
-which only the steps integrate.
+Here $`A`$ is (16)–(19) at the assumed input and $`Q_c`$ their densities: $`\sigma_a^2 + \sigma_c^2`$
+on velocity, $`\sigma_g^2 + \sigma_r^2`$ on attitude, and the two bias walks. With $`\omega = 0`$
+the dynamics are a chain, $`\delta\beta_g \to \delta\theta \to \delta v \to \delta p`$ with
+$`\delta\beta_a`$ entering velocity, so $`A^4 = 0`$ and the series stops at its fourth term. Write
+$`G = -R(\hat{q})[\,a_b\,]_\times = [\,g\,]_\times R(\hat{q})`$, (17)'s gravity leak. The rows of
+$`\Phi`$ that differ from $`I`$ are
+
+```math
+\Phi_{p} = \begin{bmatrix} I & IT & \tfrac{T^2}{2}G & -\tfrac{T^2}{2}R & -\tfrac{T^3}{6}G \end{bmatrix},
+\quad
+\Phi_{v} = \begin{bmatrix} 0 & I & TG & -TR & -\tfrac{T^2}{2}G \end{bmatrix},
+\quad
+\Phi_{\theta} = \begin{bmatrix} 0 & 0 & I & 0 & -IT \end{bmatrix}
+```
+
+and $`Q_d`$ integrates each density along the column of $`\Phi(s)`$ it enters by. Velocity's
+reaches position by $`s`$; attitude's by $`\tfrac{s^2}{2}G`$ and velocity by $`sG`$; the
+accelerometer bias walk's by $`-\tfrac{s^2}{2}R`$ and $`-sR`$; the gyroscope bias walk's by
+$`-\tfrac{s^3}{6}G`$, $`-\tfrac{s^2}{2}G`$ and $`-s`$ on attitude. So, with
+$`q_v, q_\theta, q_a, q_g`$ the four densities, the upper blocks are
+
+```math
+\begin{aligned}
+Q_{pp} &= \left(\tfrac{T^3}{3}q_v + \tfrac{T^5}{20}q_a\right) I + \left(\tfrac{T^5}{20}q_\theta + \tfrac{T^7}{252}q_g\right) GG^\mathsf{T} &
+Q_{pv} &= \left(\tfrac{T^2}{2}q_v + \tfrac{T^4}{8}q_a\right) I + \left(\tfrac{T^4}{8}q_\theta + \tfrac{T^6}{72}q_g\right) GG^\mathsf{T} \\
+Q_{vv} &= \left(T q_v + \tfrac{T^3}{3}q_a\right) I + \left(\tfrac{T^3}{3}q_\theta + \tfrac{T^5}{20}q_g\right) GG^\mathsf{T} &
+Q_{\theta\theta} &= \left(T q_\theta + \tfrac{T^3}{3} q_g\right) I \\
+Q_{p\theta} &= \left(\tfrac{T^3}{6}q_\theta + \tfrac{T^5}{30}q_g\right) G &
+Q_{v\theta} &= \left(\tfrac{T^2}{2}q_\theta + \tfrac{T^4}{8}q_g\right) G \\
+Q_{p\beta_a} &= -\tfrac{T^3}{6}q_a R & Q_{v\beta_a} &= -\tfrac{T^2}{2}q_a R \\
+Q_{p\beta_g} &= -\tfrac{T^4}{24}q_g G & Q_{v\beta_g} &= -\tfrac{T^3}{6}q_g G \\
+Q_{\theta\beta_g} &= -\tfrac{T^2}{2}q_g I & Q_{\beta_a\beta_a} &= T q_a I,\quad Q_{\beta_g\beta_g} = T q_g I
+\end{aligned}
+```
+
+with the lower blocks their transposes. One step at any $`T`$, and exact, where (22) run in
+short steps understates what reaches position. `project` takes the same step without
+$`\sigma_c`$ and $`\sigma_r`$, for the arming question's vehicle that stays put. The offset of
+(30′) has no dynamics: $`P_{xb} \leftarrow \Phi P_{xb}`$, $`P_{bb} \leftarrow P_{bb} + q_b^2 T`$.
 
 Refusing the step instead, as `Propagation::StepTooLong` does with `Config::coast` off, leaves a
 moving vehicle stale by $`\hat{v}\Delta t`$ under a $`P`$ that did not grow, so every fix after
@@ -1654,7 +1688,7 @@ Each implementing function cites its equation numbers in a doc comment.
 | (20) | state transition matrix | `propagate.rs` | `transition_matrix` |
 | (21) | discrete process noise | `propagate.rs` | `process_noise` |
 | (22) | covariance propagation | `propagate.rs` | `propagate_covariance`, called with (9)–(15) by `propagate` |
-| (22′) | coasting across an IMU gap | `propagate.rs`, `eskf/predict.rs` | `coast`, with `unaccelerated_sample` and `repeat_covariance`; chosen by `Eskf::predict` |
+| (22′) | coasting across an IMU gap | `propagate.rs`, `eskf/predict.rs` | `coast`, with `unaccelerated_sample` and `unaccelerated_growth`, which `project` shares; chosen by `Eskf::predict` |
 | (23)–(27) | generic update, Joseph form | `update.rs` | `update` |
 | (23′) | delayed measurements | `eskf/fuse.rs`, `history.rs`, `update.rs`, `propagate.rs` | `Eskf::observe`, `Eskf::past`, `Eskf::carried_position` and `carried_velocity`; `History`; `Observation::delayed`; `error_dynamics` |
 | (24′) | correlated measurements | `math.rs`, `update.rs`, `health.rs`, `eskf/fuse.rs`, `eskf/heading.rs` | `correlation_inflation`; `Observation::correlated` and its `r_gain`; `SourceHealth`'s `since_measured` for `Δt`; each `fuse_*` |

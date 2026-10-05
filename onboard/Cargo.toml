@@ -1,0 +1,40 @@
+[package]
+name = "onboard"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Cost on a board (#41): a trace of every call a run makes into the filter, recorded on the host
+# and replayed on the target with each call timed and its stack painted. The codec and the
+# executor are `no_std` and shared by both sides; the recorder is the host's alone. A member, not
+# a default one, so nothing at the root builds it, and a target's dependencies stay its own.
+[dependencies]
+fusion-nav = { path = ".." }
+
+[dev-dependencies]
+bench = { path = "../bench" }
+
+# The firmware, `src/main.rs`, for the ARK FPV's STM32H743 alone, behind `firmware` so that the
+# root's examples, which take this crate as a dev-dependency and build for bare metal, never
+# compile a HAL. A host build compiles the binary to an empty `main`. Bring-up follows
+# ark-fpv-discovery's at b07f131, which pins the same versions.
+[features]
+firmware = [
+    "dep:cortex-m",
+    "dep:cortex-m-rt",
+    "dep:stm32h7xx-hal",
+    "dep:usb-device",
+    "dep:usbd-serial",
+]
+
+[[bin]]
+name = "onboard"
+path = "src/main.rs"
+required-features = ["firmware"]
+
+[target.'cfg(target_os = "none")'.dependencies]
+cortex-m = { version = "0.7", features = ["critical-section-single-core"], optional = true }
+cortex-m-rt = { version = "0.7", optional = true }
+stm32h7xx-hal = { version = "0.16", features = ["stm32h743v", "rt", "usb_hs"], optional = true }
+usb-device = { version = "0.3", optional = true }
+usbd-serial = { version = "0.2", optional = true }

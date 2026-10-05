@@ -30,6 +30,14 @@ jobs:
       - run: cargo clippy --all-targets --no-deps --no-default-features
       # The benchmark member, which no root build selects.
       - run: cargo clippy -p bench --all-targets --no-deps
+      # #41's trace and its examples, and the firmware's host stub; the firmware itself is
+      # linted in the no_std job, for its target.
+      - run: cargo clippy -p onboard --all-targets --features firmware --no-deps
+      # The harness's traced build (`examples/replay/filter.rs`), in a directory of its own.
+      - run: cargo clippy --example replay --no-deps
+        env:
+          CARGO_TARGET_DIR: target/traced
+          RUSTFLAGS: -D warnings --cfg fusion_nav_onboard
       # `tools/check-anchors.sh` owns what this checks and why; its fixtures run first for
       # the reason `data/expect.sh --self-test` does below. The README's snippets are
       # checked by `cargo test --doc`, through the `include_str!` in `src/lib.rs`.
@@ -44,6 +52,9 @@ jobs:
       # local, but a broken lookup, log reader or drift maximum would misreport `--drift` with
       # nothing else to notice.
       - run: python3 tools/declination.py --self-test
+      # #41's statistics over the board's figures, stdlib only: the board is local, but the
+      # numbers it publishes are computed here.
+      - run: python3 tools/onboard.py --self-test
 
   test:
     name: test
@@ -67,6 +78,18 @@ jobs:
       # The host benchmarks, each run once: they keep building, and each asserts the call it
       # times is fused rather than refused. Timings are not gated on a shared runner (#42).
       - run: cargo test -p bench --benches
+      # #41's trace: the codec round trip, and a recorded flight made again on a fresh
+      # machine agreeing bit for bit, which the board checks call by call.
+      - run: cargo test -p onboard
+      # The traced harness writes the same output as the plain one, byte for byte, and its
+      # trace makes every call again on the host with every digest agreeing.
+      - run: cargo run --quiet --example replay -- data/flight.csv target/plain.csv
+      - run: cargo run --quiet --example replay -- --trace target/flight.trace data/flight.csv target/traced.csv
+        env:
+          CARGO_TARGET_DIR: target/traced
+          RUSTFLAGS: -D warnings --cfg fusion_nav_onboard
+      - run: cmp target/plain.csv target/traced.csv && cmp target/plain.fusion.csv target/traced.fusion.csv
+      - run: cargo run --quiet -p onboard --example verify -- target/flight.trace
 
   anees:
     name: anees
@@ -101,6 +124,12 @@ jobs:
       - run: cargo build --lib --features defmt --target ${{ matrix.target }}
       - run: cargo build --example embedded --features defmt --target ${{ matrix.target }}
       - run: cargo build --lib --no-default-features --target ${{ matrix.target }}
+      # #41's firmware, for the board it times on (a Cortex-M7, so thumbv7em alone): built and
+      # linted here, never run, since CI has no board.
+      - if: matrix.target == 'thumbv7em-none-eabihf'
+        run: cargo clippy -p onboard --bin onboard --features firmware --release --target ${{ matrix.target }}
+      - if: matrix.target == 'thumbv7em-none-eabihf'
+        run: cargo build -p onboard --bin onboard --features firmware --release --target ${{ matrix.target }}
 
   # What the filter costs a bare-metal target: type sizes, stack frames and flash, pinned
   # exactly in `data/footprint.txt` (#42). The nightly is the script's, so CI and a laptop
@@ -115,7 +144,7 @@ jobs:
       # the old one's.
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ hashFiles('tools/footprint.sh') }}
+          key: ${{ hashFiles('tools/footprint.sh', 'tools/nightly.sh') }}
       # The comparator and the parser fail as themselves before either reads a measurement.
       - run: data/expect.sh --self-test
       - run: python3 tools/footprint.py --self-test
