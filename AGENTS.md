@@ -251,6 +251,7 @@ cargo test --doc                  # README.md and GUIDE.md (included by lib.rs),
 cargo test --lib eskf::predict::tests::a_gap_is_coasted_on_the_estimated_velocity_and_the_time_still_passes  # one test
 cargo fmt --all -- --check
 cargo clippy --all-targets --no-deps   # CI runs with RUSTFLAGS=-D warnings
+cargo tarpaulin                   # line coverage of src/, flags in tarpaulin.toml; CI posts it to Coveralls from main
 cargo build --lib --target thumbv7em-none-eabihf   # also thumbv6m-none-eabi; both gate CI
 panic-check/run.sh                # no reachable panic, both thumb targets; needs llvm-tools
 tools/check-anchors.sh            # every `.md#anchor` resolves; --self-test runs its fixtures

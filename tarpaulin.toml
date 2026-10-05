@@ -1,0 +1,9 @@
+# `cargo tarpaulin`, locally and in `.github/workflows/coverage.yml`: line coverage of `src/`
+# under every test target, the replay harness's included.
+[default]
+engine = "Llvm"
+run-types = ["AllTargets"]
+# The proptest suite and the replay harness's tests run unoptimized; past tarpaulin's 60 s
+# default they time out.
+timeout = "1200s"
+exclude-files = ["examples/*", "bench/*", "onboard/*", "panic-check/*"]

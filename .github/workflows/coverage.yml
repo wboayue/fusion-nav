@@ -1,0 +1,27 @@
+name: coverage
+
+# After CI passes on main, line coverage of `src/` to Coveralls. Flags live in `tarpaulin.toml`,
+# so a local `cargo tarpaulin` measures the same thing.
+on:
+  workflow_run:
+    workflows: [CI]
+    branches: [main]
+    types: [completed]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  coverage:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-tarpaulin
+      - run: cargo tarpaulin --coveralls ${{ secrets.COVERALLS_REPO_TOKEN }}
