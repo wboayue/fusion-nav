@@ -27,7 +27,10 @@ jobs:
         with:
           tool: cargo-tarpaulin
       - run: cargo tarpaulin --out Lcov
+      # The token both ways: the action's input and the reporter's own variable.
       - uses: coverallsapp/github-action@v2
+        env:
+          COVERALLS_REPO_TOKEN: ${{ secrets.COVERALLS_REPO_TOKEN }}
         with:
           github-token: ${{ secrets.COVERALLS_REPO_TOKEN }}
           file: lcov.info
