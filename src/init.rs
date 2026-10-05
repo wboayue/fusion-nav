@@ -1159,8 +1159,8 @@ pub enum Coarse {
         /// reads both, and only one of them spoils tilt.
         ///
         /// **Stub.** Reported, not subtracted (equation (5′), #59), so it narrows nothing:
-        /// [`attitude_sigmas`] bounds tilt by how far the window's *averaged* specific force is
-        /// from gravity, and a real `ā_n` is part of what puts it there.
+        /// the tilt prior of (8′) is bounded by how far the window's *averaged* specific force
+        /// is from gravity, and a real `ā_n` is part of what puts it there.
         inertial_accel: Option<Acceleration<Ned>>,
     },
 }
