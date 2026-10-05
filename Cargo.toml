@@ -4,17 +4,37 @@ version = "0.0.0"
 edition = "2024"
 rust-version = "1.89"
 authors = ["Wil Boayue <wil@wsblabs.com>"]
-description = "A no_std, allocation-free 15-state error-state Kalman filter for inertial navigation. Fuses IMU with GNSS, barometric altitude, and magnetometer heading. For attitude or altitude only, see fusion-ahrs and fusion-altitude."
+description = "A no_std, allocation-free 15-state error-state Kalman filter for inertial navigation. Fuses IMU with GNSS position, velocity, dual-antenna heading and course, barometric altitude, and magnetometer heading. For attitude or altitude only, see fusion-ahrs and fusion-altitude."
 readme = "README.md"
 repository = "https://github.com/wboayue/fusion-nav/"
 documentation = "https://docs.rs/fusion-nav"
 license = "MIT"
 keywords = ["eskf", "kalman", "sensor-fusion", "gnss", "embedded"]
 categories = ["embedded", "no-std", "algorithms", "aerospace::unmanned-aerial-vehicles"]
-# `data/flight.truth.csv` is 31 KB of the packaged crate and nothing on the published side reads
-# it: scoring a replay against truth happens in this repository, never in a dependent's build.
-# `data/flight.csv` stays, because `cargo run --example replay` is the first thing a reader runs.
-exclude = ["AGENTS.md", "VALIDATION.md", "data/flight.truth.csv", "validation/", "assets/"]
+# An allowlist, so a new file in the repository stays out of the packaged crate until someone
+# argues it in. The rest of the repository is how the crate was validated, not what it is, and the
+# packaged docs reach it by absolute URL. `data/flight.csv` ships because `cargo run --example
+# replay` is the first thing a reader runs, and it and `data/flight.config.rs` are `include_str!`ed
+# by the replay harness's tests; `data/flight.truth.csv` does not, since scoring happens here.
+include = [
+    "/src/**",
+    "/examples/**",
+    "/data/flight.csv",
+    "/data/flight.config.rs",
+    "/README.md",
+    "/GUIDE.md",
+    "/MIGRATING.md",
+    "/CHANGELOG.md",
+    "/LICENSE",
+]
+
+# docs.rs renders the crate for a Cortex-M7, the target it exists for, with `defmt`'s impls shown
+# beside the default `magnetic-model`; the host target follows so the docs a desktop reader lands on
+# are the same API. `docsrs` turns on `doc_cfg`, which labels what each feature adds.
+[package.metadata.docs.rs]
+features = ["defmt"]
+targets = ["thumbv7em-none-eabihf", "x86_64-unknown-linux-gnu"]
+rustdoc-args = ["--cfg", "docsrs"]
 
 # `panic-check` builds a bare-metal binary that links the whole public API, so CI can prove
 # nothing in it reaches `core::panicking`. It is a workspace member for one reason: a second
@@ -71,6 +91,7 @@ name = "replay"
 path = "examples/replay/main.rs"
 required-features = ["magnetic-model"]
 
-# `fusion_nav_onboard` is the replay harness's switch to its traced build (`examples/replay/filter.rs`).
+# `fusion_nav_onboard` is the replay harness's switch to its traced build (`examples/replay/filter.rs`);
+# `docsrs` is docs.rs's, set by `[package.metadata.docs.rs]`.
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fusion_nav_onboard)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fusion_nav_onboard)", "cfg(docsrs)"] }

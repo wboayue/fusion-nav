@@ -159,6 +159,35 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --lib
 
+  # What crates.io receives is `Cargo.toml`'s `include` list, not the repository: an example
+  # that reads a file left out, or a dependency the packaging strips, compiles here and fails
+  # for every dependent. So the packaged copy is built and tested on its own, with no workspace
+  # around it.
+  package:
+    name: packaged crate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo package
+      - run: cd target/package/fusion-nav-*/ && cargo test --all-targets
+
+  # docs.rs renders on nightly for the thumb target with `--cfg docsrs`
+  # (`[package.metadata.docs.rs]`); a link to a private item renders as dead text there.
+  docsrs:
+    name: docs.rs build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: thumbv7em-none-eabihf
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --no-deps --lib --target thumbv7em-none-eabihf --features defmt
+        env:
+          RUSTDOCFLAGS: --cfg docsrs -D warnings
+
   # Replay is the regression guard for every later stage: #32 asserts a stage wired nothing
   # in by diffing `target/replay.csv` byte for byte, and that diff only means anything if the
   # bytes depend on the input and not on the host. Both runners produce the same file because

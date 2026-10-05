@@ -13,6 +13,7 @@ parameters onto this crate.
 * [Health reporting](#health-reporting): `Status`, `validity` and `predicted_validity`
 * [Recovery from gate lockout](#recovery-from-gate-lockout) and
   [logging an outcome](#logging-an-outcome)
+* [Versioning](#versioning): what semver covers, the MSRV, and which types can grow
 * [Limitations](#limitations)
 
 ## Conventions
@@ -499,6 +500,37 @@ With the `defmt` feature the same types, and `State` and `Diagnostics` besides, 
 `defmt::Format`. It is off by default, so the default build keeps its one dependency. Numbers
 print in fixed point through integer formatting, because core's `f32` formatting can panic; see
 [the library cannot panic](https://github.com/wboayue/fusion-nav/blob/main/DESIGN.md#the-library-cannot-panic).
+
+## Versioning
+
+The crate follows semver as Cargo reads it before 1.0: a change that can break a caller's build
+bumps the minor version (0.1 to 0.2), and anything else bumps the patch. Each release is recorded
+in [CHANGELOG.md](https://github.com/wboayue/fusion-nav/blob/main/CHANGELOG.md).
+
+**Covered:** every public name and signature, the variants of every outcome, the frames, units
+and sign conventions of [Conventions](#conventions), what each `Status` means and its precedence,
+the length of `Diagnostics::sources()`, and the two features, `defmt` (against `defmt` 1) and
+`magnetic-model`.
+
+**Not covered: the numbers.** `Config`'s default values move as data settles them, the estimate
+moves when an equation is corrected, and a regenerated declination table moves every magnetic
+heading. Any release may carry such a change, and the changelog names each one with the
+measurement behind it.
+
+**MSRV** is Rust 1.89. Raising it is a minor version bump, never a patch, so a toolchain pinned
+for a firmware build keeps building every patch release of the version it chose.
+
+**Which types can grow.** A struct with public fields that lacks `#[non_exhaustive]` gains a field
+only in a minor bump, and so does an enum that lacks it gain a variant. The split is by what the
+type is for:
+
+| kind | types | `#[non_exhaustive]` | why |
+| --- | --- | --- | --- |
+| report | `Diagnostics`, `SourceHealth`, `PropagationHealth`, `WindowNoise` | yes | read, never built; a new field costs a reader nothing |
+| choice | `Percentile` | yes | constructed and rarely matched, so a new percentile costs a caller nothing |
+| outcome | `Propagation`, `Fusion`, `GnssFusion`, `Refusal`, `Status`, `Validity`, `Alignment`, `Coarse`, `InitError`, `SampleRefusal`, `ConfigError`, `ConfigBound` | no | matched; a new variant should fail to compile at every `match` that would ignore it |
+| configuration | `Config`, `ImuNoise`, `Gates`, `Timeouts`, `Correlation`, `Recovery`, `Coast`, `Hold`, `Initialization`, `Accuracy` | no | written as a literal with `..Config::default()`, which is what `replay --derive` prints; a new field, as a new source brings, is a minor bump |
+| value | `Quaternion`, `ImuSample`, `StaticSample`, `State`, `AttitudeVariance` | no | a fixed set of components, built or read field by field |
 
 ## Limitations
 
