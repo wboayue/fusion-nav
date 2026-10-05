@@ -78,6 +78,24 @@ The filter estimates the small error in a nominal state rather than the state it
 can be a quaternion in the nominal state and three angles in the error: four quaternion components
 are never treated as independent Kalman states, and the unit norm holds by construction.
 
+The errors are also coupled, and each step integrates once more. Followed from a constant bias:
+
+```text
+  gyroscope bias ──► attitude error ──► velocity error ──► position error
+     constant           grows ∝ t         grows ∝ t²          grows ∝ t³
+                            │                 ▲
+                            └─ gravity tipped ┘
+                               into the wrong axis
+
+  accelerometer bias ─────────────────► velocity error ──► position error
+     constant                             grows ∝ t           grows ∝ t²
+```
+
+A filter that carries all of these together models that coupling in its covariance, so a GNSS
+position fix corrects not only position but the attitude and IMU biases that made it drift.
+[Error-state dynamics](EQUATIONS.md#error-state-dynamics) draws the same chain with its equation
+numbers.
+
 | | position | velocity | attitude | accelerometer bias | gyroscope bias | total |
 | --- | --- | --- | --- | --- | --- | --- |
 | nominal state | 3 | 3 | 4, a quaternion | 3 | 3 | 16 |

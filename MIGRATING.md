@@ -1,13 +1,14 @@
 # Coming from PX4 or ArduPilot
 
 How a tuned EKF2 or EKF3 maps onto `fusion-nav`. [GUIDE.md](GUIDE.md) is how to use the filter, and
-[GLOSSARY.md](GLOSSARY.md#coming-from-px4-or-ardupilot) where the two estimators use a word differently.
+[GLOSSARY.md](GLOSSARY.md#coming-from-px4-or-ardupilot) where the two estimators use a word
+differently. Everything here was read from source at PX4-Autopilot `c4e4ef98` and ardupilot
+`368dc0c4`; PX4's firmware defaults are the ones in its `params_*.yaml`, which override the
+initializers in `EKF/common.h`.
 
 A tuned EKF2 or EKF3 does not carry across by renaming. Most of what those estimators take as
 parameters is here either a per-call argument, because it describes one measurement, or derived,
-because the filter can find it. Read from source at PX4-Autopilot `c4e4ef98` and ardupilot
-`368dc0c4`; PX4's firmware defaults are the ones in its `params_*.yaml`, which override the
-initializers in `EKF/common.h`.
+because the filter can find it.
 
 What is not a rename:
 

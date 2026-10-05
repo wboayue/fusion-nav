@@ -5,6 +5,16 @@ How to use `fusion-nav` in detail.
 and [MIGRATING.md](https://github.com/wboayue/fusion-nav/blob/main/MIGRATING.md) maps PX4 and ArduPilot
 parameters onto this crate.
 
+* [Conventions](#conventions): frames, units, quaternions and time
+* [Initialization](#initialization): the three ways to start, and
+  [seeding an attitude](#seeding-an-attitude)
+* [Running the filter](#running-the-filter): propagation, yaw without a heading sensor,
+  [measurements](#measurements) and the navigation origin
+* [Health reporting](#health-reporting): `Status`, `validity` and `predicted_validity`
+* [Recovery from gate lockout](#recovery-from-gate-lockout) and
+  [logging an outcome](#logging-an-outcome)
+* [Limitations](#limitations)
+
 ## Conventions
 
 Fixed, not configurable. ENU and FLU input converts at the boundary, through constructors that

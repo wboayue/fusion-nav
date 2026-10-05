@@ -2,8 +2,8 @@
 
 Terms this repository uses without explaining, for a reader who has not worked on estimators
 before. Each entry says what the word means and points at the document that owns the thing:
-its use [GUIDE.md](GUIDE.md), the mathematics is [EQUATIONS.md](EQUATIONS.md), the structure [DESIGN.md](DESIGN.md), the
-positioning [GOALS.md](GOALS.md), the harness [data/README.md](data/README.md). Nothing here is
+its use is [GUIDE.md](GUIDE.md), the mathematics [EQUATIONS.md](EQUATIONS.md), the structure
+[DESIGN.md](DESIGN.md), the positioning [GOALS.md](GOALS.md), the harness [data/README.md](data/README.md). Nothing here is
 normative: an entry that disagrees with one of those is wrong.
 
 It defines this crate's vocabulary rather than the field's. The exception is the last section,
@@ -64,7 +64,7 @@ the difference is the kind that costs a day.
   WGS-84 ellipsoid; an earth-centered Cartesian frame; and the flat NED frame this filter works
   in, pinned to a geodetic **origin**. Converting between them is
   [equations (43)–(44)](EQUATIONS.md#geodetic-origin); the flat approximation's cost is in the
-  README's limitations.
+  guide's [limitations](GUIDE.md#limitations).
 
 ## The filter
 
@@ -205,7 +205,7 @@ the difference is the kind that costs a day.
 * **Latency**: the age of a measurement when it is fused. GNSS solutions are 100–200 ms stale.
   Each `fuse_*` takes the time the measurement was taken and fuses it against the state as it was
   then, [equation (23′)](EQUATIONS.md#delayed-measurements); knowing the latency is the caller's,
-  which is in the README's limitations.
+  which is in the guide's [limitations](GUIDE.md#limitations).
 * **History**, **horizon**: the recent past of the nominal state that (23′) reads, 32 entries
   10 ms apart. A measurement older than `LATENCY_HORIZON` (0.3 s) is past it and returns
   `Fusion::OutOfHorizon` rather than being fused against a guess.

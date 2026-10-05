@@ -1324,13 +1324,16 @@ point first, a table or list where a paragraph enumerates. It avoids em dashes: 
 parenthesis or a new sentence carries the same aside. Concise is not lossy, so the evidence-move
 audit above applies to a rewrite as much as to a move.
 
-**The documents answer one question each**, and each opens with the same line naming all five:
-README how to use the filter (GUIDE in detail, MIGRATING from PX4 or ArduPilot), GOALS why it exists, DESIGN how it is built and where its numbers
-come from, EQUATIONS what it computes, GLOSSARY what a word means. Two pictures recur, labeled per
-document so a reader recognizes them: the filter loop (API names in the README, owning modules in
-DESIGN, equation numbers in EQUATIONS) and the error-growth chain. A change to one copy is a
-change to all three. EQUATIONS runs in execution order, so its numbers jump; never renumber to
-fix that. A GOALS decision reads context, then **Decided**, **Measured against** (or "Not
+**The documents answer one question each**: README how to use the filter (GUIDE in detail,
+MIGRATING from PX4 or ArduPilot), GOALS why it exists, DESIGN how it is built and where its numbers
+come from, EQUATIONS what it computes, GLOSSARY what a word means. DESIGN, GOALS, EQUATIONS and
+GLOSSARY open with a line naming the others; the README ends with a table of them, and GUIDE and
+MIGRATING open by naming their neighbors. The README is for a newcomer: who it is for, a quick
+start, health and limitations in plain words, and a link for everything else. Two pictures recur,
+labeled per document so a reader recognizes them: the filter loop (API names in the README, owning
+modules in DESIGN, equation numbers in EQUATIONS) and the error-growth chain (plain in DESIGN,
+equation numbers in EQUATIONS). A change to one copy is a change to every copy. EQUATIONS runs in
+execution order, so its numbers jump; never renumber to fix that. A GOALS decision reads context, then **Decided**, **Measured against** (or "Not
 measured") and **Costs**, and the decision index above them gains a row.
 
 What #205 learned doing this, each caught by a review rather than by a check:
