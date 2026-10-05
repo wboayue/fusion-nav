@@ -24,6 +24,9 @@ mod state;
 mod units;
 mod update;
 
+#[doc = include_str!("../GUIDE.md")]
+pub mod guide {}
+
 // The prelude is the one list of public types; the root adds back the four it leaves out.
 #[doc(inline)]
 pub use prelude::*;

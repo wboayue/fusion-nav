@@ -58,7 +58,7 @@ export LC_ALL
 
 # Documents rustdoc includes verbatim, and which therefore may not use relative links.
 # `src/lib.rs` carries the `include_str!`; this is the list it implies.
-INCLUDED_IN_RUSTDOC="README.md"
+INCLUDED_IN_RUSTDOC="README.md GUIDE.md"
 
 # ASCII punctuation GitHub drops from a slug. `-` and `_` are not here because it keeps them.
 SLUG_DROPS='!"#$%&'\''()*+,./:;<=>?@[\]^`{|}~'

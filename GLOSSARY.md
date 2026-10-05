@@ -2,8 +2,8 @@
 
 Terms this repository uses without explaining, for a reader who has not worked on estimators
 before. Each entry says what the word means and points at the document that owns the thing:
-the mathematics is [EQUATIONS.md](EQUATIONS.md), the structure [DESIGN.md](DESIGN.md), the
-positioning [GOALS.md](GOALS.md), the harness [data/README.md](data/README.md). Nothing here is
+its use is [GUIDE.md](GUIDE.md), the mathematics [EQUATIONS.md](EQUATIONS.md), the structure
+[DESIGN.md](DESIGN.md), the positioning [GOALS.md](GOALS.md), the harness [data/README.md](data/README.md). Nothing here is
 normative: an entry that disagrees with one of those is wrong.
 
 It defines this crate's vocabulary rather than the field's. The exception is the last section,
@@ -35,7 +35,7 @@ the difference is the kind that costs a day.
   not. **Hamilton** vs JPL is settled here as Hamilton, and **scalar-first** vs scalar-last
   storage is not settled at all: `Quaternion`'s fields are named `w`, `x`, `y`, `z`, so a caller
   writes the order down rather than assuming one. The constructors that name frame and direction,
-  and what a wrong one costs, are in [seeding an attitude](README.md#seeding-an-attitude).
+  and what a wrong one costs, are in [seeding an attitude](GUIDE.md#seeding-an-attitude).
 * **Specific force**: what an accelerometer measures, acceleration minus gravity, in body axes.
   A stationary level vehicle reads `[0, 0, −γ]`, not zero, which is what makes leveling from
   the accelerometer possible. See [initialization](EQUATIONS.md#initialization).
@@ -64,7 +64,7 @@ the difference is the kind that costs a day.
   WGS-84 ellipsoid; an earth-centered Cartesian frame; and the flat NED frame this filter works
   in, pinned to a geodetic **origin**. Converting between them is
   [equations (43)–(44)](EQUATIONS.md#geodetic-origin); the flat approximation's cost is in the
-  README's limitations.
+  guide's [limitations](GUIDE.md#limitations).
 
 ## The filter
 
@@ -205,7 +205,7 @@ the difference is the kind that costs a day.
 * **Latency**: the age of a measurement when it is fused. GNSS solutions are 100–200 ms stale.
   Each `fuse_*` takes the time the measurement was taken and fuses it against the state as it was
   then, [equation (23′)](EQUATIONS.md#delayed-measurements); knowing the latency is the caller's,
-  which is in the README's limitations.
+  which is in the guide's [limitations](GUIDE.md#limitations).
 * **History**, **horizon**: the recent past of the nominal state that (23′) reads, 32 entries
   10 ms apart. A measurement older than `LATENCY_HORIZON` (0.3 s) is past it and returns
   `Fusion::OutOfHorizon` rather than being fused against a guess.
@@ -272,14 +272,14 @@ the difference is the kind that costs a day.
 
 * **`Status`**: one enum answering *how bad is the worst thing*, most-severe-first:
   `DeadReckoning` > `Aligning` > `Degraded` > `Healthy`. See
-  [health reporting](README.md#health-reporting).
+  [health reporting](GUIDE.md#health-reporting).
 * **`Validity`**: six per-quantity flags answering *which outputs can I use*, derived from `P`
   against `Config::accuracy`. `Status` is the summary, `Validity` the detail, and neither
-  substitutes for the other. Usage is [health reporting](README.md#health-reporting), the
+  substitutes for the other. Usage is [health reporting](GUIDE.md#health-reporting), the
   reasoning [per-quantity validity](GOALS.md#per-quantity-validity-not-one-ladder).
 * **`Accuracy`**: what the *mission* needs from each output, and the one knob the filter cannot
   derive for the caller. It moves `Validity` and nothing else
-  ([health reporting](README.md#health-reporting)).
+  ([health reporting](GUIDE.md#health-reporting)).
 * **Aligning**: the filter is running, but its attitude has not converged: a coarse start, a
   vague seed, or a heading no source has observed yet. It latches: once resolved it never
   returns, because read live it flaps.

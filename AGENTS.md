@@ -247,7 +247,7 @@ three things a copy would have carried over:
 
 ```bash
 cargo test --all-targets          # unit tests: inline `mod tests` across src/, and in examples/replay/main.rs
-cargo test --doc                  # README.md (included by lib.rs), plus the item doctests
+cargo test --doc                  # README.md and GUIDE.md (included by lib.rs), plus the item doctests
 cargo test --lib eskf::predict::tests::a_gap_is_coasted_on_the_estimated_velocity_and_the_time_still_passes  # one test
 cargo fmt --all -- --check
 cargo clippy --all-targets --no-deps   # CI runs with RUSTFLAGS=-D warnings
@@ -1146,7 +1146,7 @@ the declination table, and CI builds and tests without it too.
   one call per name is enough and a rename is what breaks it. Every `Display` impl in `src/` is
   held the same way, through a `show::<T>(` call, because core's `f32` formatting reaches
   `core::panicking`: an impl printing a float with `{}` fails the gate, and `src/display.rs`'s
-  `Fixed` is what prints one instead. `README.md` owns the two
+  `Fixed` is what prints one instead. `DESIGN.md`, "The library cannot panic", owns the two
   boundaries: `debug-assertions = false`, and `opt-level = 3` or `"s"`.
 - Frames and units are fixed at the boundary: NED navigation frame, FRD body, Hamilton
   quaternion scalar-first, down-positive gravity. Not configurable.
@@ -1185,7 +1185,7 @@ Every source touches the same ten places, and three of them are public:
   from it and `SOURCES` together, so a source added to one and not the other is an index out of range
   rather than a missing key — caught by an `assert_eq!` in the same file, which is the weakest
   guard on this list.
-- The README fusion table, the `Eskf` and `prelude` doctests, and `EQUATIONS.md`'s mapping
+- `GUIDE.md`'s measurement table, the `Eskf` and `prelude` doctests, and `EQUATIONS.md`'s mapping
   table.
 - `onboard/`'s `Record`, `Machine::execute` and `Recorder`, which carry every public call into a
   trace the board times (#41). An exhaustive `match` on `Record` makes the codec a compile error,
@@ -1304,8 +1304,8 @@ goes to `replay --derive`, which prints a `Config` from a log (#51), not into th
 the module and function intended to implement each. Implementation work follows that layout
 (`init.rs`, `propagate.rs`, `update.rs`, `observation/{gnss,baro,mag}.rs`, `math.rs`), cites its
 equation numbers in the doc comment (existing stubs already do), and updates the table when the
-layout changes. `README.md` is the user guide (why an ESKF, how to initialize, run, and read
-health); architecture and implementation detail go in `DESIGN.md`, replay/corpus usage in
+layout changes. `README.md` is the overview and quick start, kept short; `GUIDE.md` is the user guide (how to
+initialize, run, and read health), and `MIGRATING.md` maps PX4 and ArduPilot parameters; architecture and implementation detail go in `DESIGN.md`, replay/corpus usage in
 `data/README.md`. `GLOSSARY.md` defines the vocabulary the rest assume — one entry per term,
 pointing at the document that owns the thing rather than restating it, so a definition cannot
 drift from the equation it describes. A term a newcomer would have to look up belongs there, not
@@ -1324,13 +1324,16 @@ point first, a table or list where a paragraph enumerates. It avoids em dashes: 
 parenthesis or a new sentence carries the same aside. Concise is not lossy, so the evidence-move
 audit above applies to a rewrite as much as to a move.
 
-**The documents answer one question each**, and each opens with the same line naming all five:
-README how to use the filter, GOALS why it exists, DESIGN how it is built and where its numbers
-come from, EQUATIONS what it computes, GLOSSARY what a word means. Two pictures recur, labeled per
-document so a reader recognizes them: the filter loop (API names in the README, owning modules in
-DESIGN, equation numbers in EQUATIONS) and the error-growth chain. A change to one copy is a
-change to all three. EQUATIONS runs in execution order, so its numbers jump; never renumber to
-fix that. A GOALS decision reads context, then **Decided**, **Measured against** (or "Not
+**The documents answer one question each**: README how to use the filter (GUIDE in detail,
+MIGRATING from PX4 or ArduPilot), GOALS why it exists, DESIGN how it is built and where its numbers
+come from, EQUATIONS what it computes, GLOSSARY what a word means. DESIGN, GOALS, EQUATIONS and
+GLOSSARY open with a line naming the others; the README ends with a table of them, and GUIDE and
+MIGRATING open by naming their neighbors. The README is for a newcomer: who it is for, a quick
+start, health and limitations in plain words, and a link for everything else. Two pictures recur,
+labeled per document so a reader recognizes them: the filter loop (API names in the README, owning
+modules in DESIGN, equation numbers in EQUATIONS) and the error-growth chain (plain in DESIGN,
+equation numbers in EQUATIONS). A change to one copy is a change to every copy. EQUATIONS runs in
+execution order, so its numbers jump; never renumber to fix that. A GOALS decision reads context, then **Decided**, **Measured against** (or "Not
 measured") and **Costs**, and the decision index above them gains a row.
 
 What #205 learned doing this, each caught by a review rather than by a check:
@@ -1354,7 +1357,9 @@ What #205 learned doing this, each caught by a review rather than by a check:
   together.
 
 The README **is** the crate's front page: `src/lib.rs` is one `#![doc = include_str!]` and no
-prose of its own, so `cargo test --doc` compiles every snippet the user guide shows. A snippet
+prose of its own, and `GUIDE.md` is included the same way as `fusion_nav::guide`, so
+`cargo test --doc` compiles every snippet either shows. The README stays an overview and a quick
+start; detail goes to the guide, whose headings other documents link. A snippet
 that cannot stand alone takes hidden `# ` setup lines rather than a `text` fence — a snippet
 that opts out is the one that rots — and few of them, because rustdoc hides those lines while
 GitHub and crates.io print them. The integration loop is `no_run`: it compiles, which is the
@@ -1364,22 +1369,22 @@ document, `Eskf` and `prelude`, so the README carries shape and those carry beha
 What the compiler still does not read is the prose around the snippets. The variant tables for
 `Status`, `Propagation` and `Fusion` are written by hand, and a missing row is how the old API
 block lost `Status::Aligning`, `Fusion::Reset` and `Fusion::NoReference`. Snippets handle every
-`#[must_use]` outcome rather than `let _ =`; the README is where integrators copy from. `Fusion`
+`#[must_use]` outcome rather than `let _ =`; the README and guide are where integrators copy from. `Fusion`
 no longer carries the lint, because `Diagnostics` covers acceptance and rejection, but a snippet
 still shows the refusals it does not cover rather than dropping them.
 
-The README reaches the other documents through **absolute** GitHub URLs, since rustdoc serves it
-with no siblings beside it and a relative `DESIGN.md` is a 404 on docs.rs. Both forms, and
-in-page anchors, are resolved against the headings they name by `tools/check-anchors.sh`, which
+The README and guide reach the other documents through **absolute** GitHub URLs, since rustdoc
+serves them with no siblings beside them and a relative `DESIGN.md` is a 404 on docs.rs. Both
+forms, and in-page anchors, are resolved against the headings they name by `tools/check-anchors.sh`, which
 CI runs together with its `--self-test` fixtures — so a renamed heading fails there rather than
 in a reader's browser, and nobody greps for `.md#` first. It refuses a relative sibling link in
 any file rustdoc includes, which is the docs.rs 404 nobody reading GitHub can see. It is shell
 rather than Python, and outside `uv`'s remit above, because it reads the repository's Markdown
 and nothing else.
 
-For the same reason the README carries **no mermaid**: mermaid renders through client-side
+For the same reason the README and guide carry **no mermaid**: mermaid renders through client-side
 JavaScript that GitHub ships and docs.rs and crates.io do not, so a diagram there is a picture on
-one surface and ten lines of `flowchart TD` on the other two. A diagram the README needs goes in
+one surface and ten lines of `flowchart TD` on the other two. A diagram either needs goes in
 a `text` fence, which renders the same everywhere. `DESIGN.md` and `GOALS.md` keep theirs —
 nothing includes them, and GitHub is where they are read.
 

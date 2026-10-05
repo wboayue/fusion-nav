@@ -12,8 +12,9 @@ This document is the normative mathematical description of `fusion-nav`. Equatio
 so that the implementation can cite them directly; see
 [Readable mathematics](GOALS.md#3-readable-mathematics) for why that matters.
 
-The documents, by question: [README.md](README.md) is how to use the filter, [GOALS.md](GOALS.md)
-why it exists, [DESIGN.md](DESIGN.md) how it is built, this one what it computes, and
+The documents, by question: [README.md](README.md)
+is how to use the filter, with [GUIDE.md](GUIDE.md) in detail and
+[MIGRATING.md](MIGRATING.md) from PX4 or ArduPilot, [GOALS.md](GOALS.md) why it exists, [DESIGN.md](DESIGN.md) how it is built, this one what it computes, and
 [GLOSSARY.md](GLOSSARY.md) what the words mean.
 
 ## The filter at a glance

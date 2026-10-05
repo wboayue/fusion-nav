@@ -10,7 +10,7 @@
 //! through `core::fmt::Write`, or through `defmt` with the `defmt` feature, and the same
 //! format strings serve both, since every outcome implements `Display` and `defmt::Format`.
 //! Neither route prints an `f32` through core's float formatting, which reaches
-//! `core::panicking`; see the README, "The library cannot panic".
+//! `core::panicking`; see DESIGN.md, "The library cannot panic".
 //!
 //! Compiled for `thumbv7em-none-eabihf` and `thumbv6m-none-eabi` in CI, never run: there is
 //! no board. On a host it compiles to an empty `main`, so `cargo clippy --all-targets` still
@@ -191,8 +191,8 @@ fn align(filter: &mut Eskf, board: &mut impl Board) {
 /// One rejection needs nothing: that is what the gate is for. Sustained rejection shows up
 /// in `Status` and is recovered by the filter itself, by default, through the `Reset` arm
 /// below. An application that owns that decision sets `Config::recovery` to
-/// `Recovery::OFF` and calls `reset_position_to` from its own failsafe instead; see the
-/// README, "Recovery from gate lockout".
+/// `Recovery::OFF` and calls `reset_position_to` from its own failsafe instead; see
+/// GUIDE.md, "Recovery from gate lockout".
 fn report(board: &mut impl Board, source: &str, outcome: Fusion) -> bool {
     match outcome {
         Fusion::Accepted { .. } | Fusion::Rejected { .. } => {}
