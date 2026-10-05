@@ -423,6 +423,12 @@ left the corpus no real vehicle whose short still start sets its own reference, 
 kept at two for that. When a change moves a manifest note's "what nothing else covers" line,
 that is the finding to weigh, not only the moved keys.
 
+**Re-pin only the keys that breached.** A pin file pinned at an older commit has drifted inside its
+bands since, harmlessly, and a blanket `--pin` re-bands every key a change never touched: on #221
+`data/fetch.sh --compare --pin` rewrote all 26 lines of `data/ekf2.txt` for six keys the
+one-step coast moved. Take the new band for each breached key from the `--pin` output, write
+those alone, and re-run the check.
+
 Expectations are matched pair by pair as substrings, so **adding** a key to the `summary` line is
 safe and pinning new behavior there is cheap — `align=`, `resets=`, `alpha0=` and `heading=` were
 added that way, and each now guards a decision that would otherwise rot into a comment (`alpha0=`
@@ -522,6 +528,13 @@ thumb targets through `examples/embedded.rs`, hence proptest's `cfg(not(target_o
 table. And `flight.csv` alone is not a neutral replay: #179's (42) fix left it byte-identical
 and still moved three corpus logs, which only `tools/validation.sh --check` noticed.
 
+**A path-only dev-dependency is stripped from the packaged crate, and the examples are not.**
+`cargo package` drops a dev-dependency that names no version, so an example that uses it ships
+and no longer compiles; nothing on the CI path builds the packaged crate, so nothing notices. #221
+made `onboard`, an unpublished member, a dev-dependency of the replay harness, and a review found
+it with `cargo package --no-verify`. Gate such a dependency on a cfg the default build does not
+set, as `examples/replay/filter.rs` gates the trace, and hold the two builds to the same output.
+
 **A test of a guard is worth mutating.** Break the guard, run the test, and see it fail before
 believing it. A passing test proves nothing about a guard that was never exercised, and the
 failure mode is not hypothetical: `data/expect.sh`'s fixture for pathname expansion passed against
@@ -583,7 +596,9 @@ barometer readings. The simulator's barometer never drifts, so no scenario could
 estimated offset shipped instead (#122), and GOALS records both measurements. The same run showed
 a criterion that could not fail: once a second height source is fused, `σ_pos_d` under the
 receiver's `epv` is legitimate, so the 4603-of-4604 count #117 was to close on reads the same
-whether or not the covariance is honest.
+whether or not the covariance is honest. An issue's check can also be backwards: #41 asked that
+the host walk's stack peak sit under the painted stack, but a walk bounds every path from above
+and a paint measures the paths taken from below, so the check that can fail is the reverse.
 
 **Evidence has to be able to come out the other way.** Before a number is offered as confirmation,
 ask what it would read if the thing were broken. The corrected EKF2 bias scaling was argued from
@@ -795,7 +810,10 @@ not in a page. The published pages follow the same rule: `VALIDATION.md` and `va
 are rendered from `validation/src/` by `tools/validation.py`, every number through a placeholder
 naming the line it is copied from and every figure drawn by `replay_report.py --figures`. A
 number typed into a template is the one `--check` cannot re-derive, so it is the one that rots;
-state a scenario's parameters in prose, never a result.
+state a scenario's parameters in prose, never a result. A list a tool computed is a result too, and
+so is a ratio read off a table: #221's cost page typed the traces three builds shared and "about
+half the speed", true of most rows and not of `fuse_gnss_geodetic`, before a review moved the
+list to a pinned key and cut the ratio.
 
 **Say which file a published number came from.** A score is a claim about a specific run, and
 `examples/replay/main.rs` refuses a truth file whose `#` header names a different scenario or seed than
