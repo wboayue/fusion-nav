@@ -1,5 +1,11 @@
 # fusion-nav
 
+[![CI](https://github.com/wboayue/fusion-nav/actions/workflows/ci.yml/badge.svg)](https://github.com/wboayue/fusion-nav/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![crates.io](https://img.shields.io/crates/v/fusion-nav.svg)](https://crates.io/crates/fusion-nav)
+[![Documentation](https://img.shields.io/docsrs/fusion-nav)](https://docs.rs/fusion-nav)
+[![Coverage Status](https://coveralls.io/repos/github/wboayue/fusion-nav/badge.svg?branch=main)](https://coveralls.io/github/wboayue/fusion-nav?branch=main)
+
 Embedded-first inertial navigation: attitude, velocity and position from an IMU, GNSS, a barometer
 and a magnetometer.
 
