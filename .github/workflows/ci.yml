@@ -171,7 +171,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo package
-      - run: cd target/package/fusion-nav-*/ && cargo test --all-targets
+      # By version, not a glob: the cache restores earlier versions' packaged copies beside it.
+      - run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "fusion-nav") | .version')
+          cd "target/package/fusion-nav-$version" && cargo test --all-targets
 
   # docs.rs renders on nightly for the thumb target with `--cfg docsrs`
   # (`[package.metadata.docs.rs]`); a link to a private item renders as dead text there.
