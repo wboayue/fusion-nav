@@ -1109,7 +1109,7 @@ flights. DESIGN.md, "`YawEstimator`", has the table.
 - 456 bytes of `Eskf` whether it runs or not, 10.9 KB of flash on `thumbv6m`, and 0.18 µs of a
   0.97 µs `predict` on the host, as it landed; `validation/cost.md` has the current figures,
   and a core with no FPU pays more in time than the host does (which cores are timed:
-  [validation/cost.md](validation/cost.md#what-is-measured-and-what-is-not)).
+  [validation/cost.md](validation/cost.md#how-it-is-measured)).
 - A hover establishes nothing. Yaw is observed through acceleration, so a vehicle that takes
   off and holds station stays `Aligning` until it moves.
 - Before the adoption the start still claims `sigma_yaw` on a yaw nothing measured, and GNSS

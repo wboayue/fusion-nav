@@ -1,112 +1,116 @@
 <!-- Generated from validation/src/cost.md by tools/validation.sh; edit that, not this. -->
 # Cost on a target
 
-**What does the filter cost a microcontroller?** The whole filter, `Eskf`, is
-4688 bytes on a Cortex-M0 and allocates nothing
-else, so that is the RAM to plan for beyond the stack. The deepest stack is a GNSS velocity
-update, 11580 bytes, and linking every entry point takes
-127134 bytes of flash at `opt-level = "s"`. On a 400 MHz
-Cortex-M7, an IMU step takes at most 279.8 µs and a GNSS velocity update
-352.7 µs, against the 2500 µs of a 400 Hz loop ([Time on a target](#time-on-a-target)).
+**Does it fit?** On a 400 MHz Cortex-M7, an IMU step takes at most
+279.8 µs (120.7 µs on
+average) and a GNSS position update at most 368.7 µs,
+against the 2500 µs of a 400 Hz loop. The first geodetic fix, which places the origin and happens
+once, takes 1143.6 µs,
+and 314.7 µs in a build for the M7's
+double-precision FPU.
 
-Every figure on this page but the board's is pinned exactly in `data/footprint.txt`, which CI
-measures on `nightly-2026-08-06` with `tools/footprint.sh` and fails on any move, growth or
-shrinkage. The board's are pinned in `data/onboard.txt`, measured at the commit their build line
-names; CI has no board, so it checks only that this page shows them.
+The filter is one struct, `Eskf`, and allocates nothing. Its stack, not its state, is what to plan
+RAM around: the deepest call is a GNSS velocity update through the 15 × 15 covariance product.
 
-## What is measured, and what is not
+| at a glance | Cortex-M0 (`thumbv6m`) | Cortex-M4/M7 (`thumbv7em`) |
+| --- | --- | --- |
+| RAM the filter holds, bytes | 4688 | 4688 |
+| deepest stack, bytes, upper bound | 11580 | 11352 |
+| flash for the whole API, `opt-level = "s"`, bytes | 127134 | 133924 |
+| worst IMU step, µs | not timed | 279.8 |
+| worst GNSS position update, µs | not timed | 368.7 |
+| worst GNSS velocity update, µs | not timed | 352.7 |
 
-The two targets are `thumbv6m-none-eabi` (Cortex-M0 and M0+, no FPU, so every float operation
-is a library call) and `thumbv7em-none-eabihf` (Cortex-M4 and M7 with a single-precision FPU).
+On an M7, build with `-C target-cpu=cortex-m7` ([Which build to ship](#which-build-to-ship)).
 
-- **Sizes** are `size_of` each type on the target, at any `opt-level`.
-- **Stack** is each function's own frame at `opt-level = 3`, read from the compiler
-  (`-Zemit-stack-sizes`), and the deepest path beneath each entry point: its frame plus its
-  deepest callee's, walked call by call through the library's relocations, down into `nalgebra`,
-  `libm`, `core` and `compiler_builtins`. Every frame on a path is the compiler's, except
-  `compiler_builtins`' hand-written division routines, which are read from their pushes. A
-  call through a function pointer counts as deep as the deepest function whose address the
-  entry point's code takes, directly or through the data it reads. For a generic function the
-  figure is its largest instance.
-- **Not in the stack figures:** the caller's own frames, and the 32 bytes a Cortex-M stacks on
-  an exception (104 with the M4F's floating-point context). The frames are the library build's,
-  and an application built with LTO can inline them differently.
-- **Flash** is a bare-metal binary (`panic-check/`) that calls the whole public API, linked
-  with fat LTO. An application reaching fewer entry points links less.
-- **Time and painted stack** are measured on a board, below: every call a replay makes, timed and
-  its stack painted. A painted stack is a lower bound, the deepest the calls made reached; the
-  walk above is an upper bound, every path the code has. No M0 board was timed.
+Every call's worst case against the 400 Hz budget, which is the axis's end. Each call's longer bar is
+its worst, the shorter one in front of it its mean:
 
-Why each function has the form it has, and what the forms not taken would have cost, is in
-[DESIGN.md, "Measured cost, by function"](../DESIGN.md#measured-cost-by-function), together with
-host timings, which are taken on one machine and pinned nowhere.
+```mermaid
+xychart-beta horizontal
+    title "Worst and mean per call on a 400 MHz Cortex-M7, µs"
+    x-axis ["predict", "fuse_gnss_position", "fuse_gnss_geodetic", "fuse_gnss_velocity", "fuse_baro_altitude", "fuse_mag_heading", "fuse_gnss_heading", "fuse_course", "fuse_stationary", "predicted_validity", "initialize", "StaticWindow::push", "state"]
+    y-axis "µs" 0 --> 2500
+    bar [279.8, 368.7, 1143.6, 352.7, 175.7, 180.3, 188.2, 164.9, 176.3, 77.0, 148.3, 28.5, 5.0]
+    bar [120.7, 344.3, 305.3, 305.4, 159.0, 160.5, 169.0, 150.6, 175.1, 75.8, 120.1, 13.0, 4.0]
+```
 
-## Time on a target
+The RAM to reserve on a Cortex-M0: the filter, held for its whole life, and the deepest stack,
+held during one call:
+
+```mermaid
+pie showData
+    title RAM to reserve on a Cortex-M0, bytes
+    "Eskf, the filter" : 4688
+    "deepest stack, one call" : 11580
+```
+
+Every figure on this page but the board's is pinned exactly in `data/footprint.txt`, and CI fails
+on any move. The board's are pinned in `data/onboard.txt` ([How it is measured](#how-it-is-measured)).
+
+## Time on a Cortex-M7
 
 An ARK FPV flight controller, an STM32H743: a Cortex-M7 at 400 MHz, instruction and data caches
 on, the filter and the stack in DTCM. Built `rustc_1.99.0-nightly_(7608eb7b0_2026-08-05)` at
 `b45f5a8ad4`, `opt-level = 3` with no LTO, the
-profile the stack frames above are measured in, for the `thumbv7em-none-eabihf` target: a
+profile the stack frames below are measured in, for the generic `thumbv7em-none-eabihf` target: a
 single-precision FPU, `f64` in library calls, flush-to-zero off.
 
-The calls are the replay's (`onboard/`, #41): every call the harness makes into the filter on
-the thirteen corpus logs and `hover_outage`, the `state()` it reads each epoch included, written
-down on the host and made again on the board, plus a trace built to reach the paths the corpus
-does not (`onboard/examples/paths.rs`).
-Each call is timed alone by the cycle counter, interrupts masked, net of the
-40 cycles the timing itself takes, and the stack beneath it painted. After
-every call the board checks its outcome and a digest against the host's (the state, the
-covariance, the clock, the barometric reference and every source's counters), and refuses the run on any difference: every figure is of the arithmetic the host ran,
-bit for bit.
+The calls are every call the replay harness makes into the filter on the thirteen corpus logs and
+`hover_outage`, the `state()` it reads each epoch included, plus a trace built to reach the paths
+the corpus does not. Every figure is of the arithmetic the host ran, bit for bit.
 
-| entry point | worst, µs | mean, µs | worst cold, µs | calls | denormal inputs | painted stack | walked stack |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `predict` | 279.8 | 120.7 | 280.2 | 3447657 | 0 | 10588 | 10640 |
-| `fuse_gnss_position` | 368.7 | 344.3 | 370.5 | 74123 | 0 | 10548 | 10600 |
-| `fuse_gnss_geodetic` | 1143.6 | 305.3 | 1140.6 | 100 | 0 | 10876 | 10928 |
-| `fuse_gnss_velocity` | 352.7 | 305.4 | 353.5 | 74222 | 0 | 11300 | 11352 |
-| `fuse_baro_altitude` | 175.7 | 159.0 | 174.4 | 111222 | 0 | 9364 | 9416 |
-| `fuse_mag_heading` | 180.3 | 160.5 | 179.5 | 87124 | 0 | 9452 | 9504 |
-| `fuse_gnss_heading` | 188.2 | 169.0 | 188.6 | 629 | 0 | 9588 | 9640 |
-| `fuse_course` | 164.9 | 150.6 | 166.5 | 19 | 0 | 9596 | 9648 |
-| `fuse_stationary` | 176.3 | 175.1 | 175.5 | 10 | 0 | 11212 | 11264 |
-| `state` | 5.0 | 4.0 | 5.5 | 3434537 | 0 | 336 | — |
-| `predicted_validity` | 77.0 | 75.8 | 77.5 | 15 | 0 | 6660 | 6712 |
-| `initialize` | 148.3 | 120.1 | 149.7 | 16 | 0 | 5120 | 5312 |
-| `initialize_coarse` | 53.1 | 53.1 | 54.6 | 1 | 0 | 5856 | 6048 |
-| `initialize_from` | 22.9 | 22.7 | 23.6 | 2 | 0 | 2844 | 2896 |
-| `StaticWindow::push` | 28.5 | 13.0 | 31.6 | 9673 | 0 | 548 | — |
+| entry point | worst, µs | mean, µs | worst, cold caches, µs | calls | calls with a denormal input |
+| --- | --- | --- | --- | --- | --- |
+| `predict` | 279.8 | 120.7 | 280.2 | 3447657 | 0 |
+| `fuse_gnss_position` | 368.7 | 344.3 | 370.5 | 74123 | 0 |
+| `fuse_gnss_geodetic` | 1143.6 | 305.3 | 1140.6 | 100 | 0 |
+| `fuse_gnss_velocity` | 352.7 | 305.4 | 353.5 | 74222 | 0 |
+| `fuse_baro_altitude` | 175.7 | 159.0 | 174.4 | 111222 | 0 |
+| `fuse_mag_heading` | 180.3 | 160.5 | 179.5 | 87124 | 0 |
+| `fuse_gnss_heading` | 188.2 | 169.0 | 188.6 | 629 | 0 |
+| `fuse_course` | 164.9 | 150.6 | 166.5 | 19 | 0 |
+| `fuse_stationary` | 176.3 | 175.1 | 175.5 | 10 | 0 |
+| `state` | 5.0 | 4.0 | 5.5 | 3434537 | 0 |
+| `predicted_validity` | 77.0 | 75.8 | 77.5 | 15 | 0 |
+| `initialize` | 148.3 | 120.1 | 149.7 | 16 | 0 |
+| `initialize_coarse` | 53.1 | 53.1 | 54.6 | 1 | 0 |
+| `initialize_from` | 22.9 | 22.7 | 23.6 | 2 | 0 |
+| `StaticWindow::push` | 28.5 | 13.0 | 31.6 | 9673 | 0 |
 
-The worst is over every call on every trace. *Cold* invalidates both caches before each call, which
-reaches the code and its constants in flash and nothing else: the filter, the stack and the record
-sit in DTCM, which no cache covers, so a firmware placing `Eskf` in cacheable memory is not
-measured here. The painted stack is beneath the call into the entry point, and the walked is
-`chain.` above: every entry point's painted stack is under its walk.
+The worst is over every call on every trace. Cold and warm differ only in fetching the code and
+its constants from flash: the filter and the stack sit in DTCM, which no cache covers, so the two
+are within the spread of one another and cold can read the lower.
 
-The worst paths, reached on purpose by the `paths` trace:
+### Worst paths
+
+The `paths` trace (`onboard/examples/paths.rs`) reaches on purpose what the corpus does not.
+Placing the origin on the first geodetic fix is `f64` work, a library call on this FPU.
 
 | path | worst, µs | calls |
 | --- | --- | --- |
-| a 6.4 s coast, then a hold on the same step | 265.1 | 1 |
-| a 10 s coast, then a hold | 267.3 | 1 |
-| an unaided step and a hold | 260.4 | 10 |
-| every source at the oldest age the history holds | 377.7 | 6 |
-| a position 100 m out, rejected until adopted | 350.3 | 3280 |
-| a velocity 30 m/s out, rejected until adopted | 352.2 | 3320 |
-| a magnetic heading half a circle out | 260.3 | 3780 |
 | the first geodetic fix, which places the origin | 1143.6 | 1 |
+| every source at the oldest age the history holds | 377.7 | 6 |
+| a velocity 30 m/s out, rejected until adopted | 352.2 | 3320 |
+| a position 100 m out, rejected until adopted | 350.3 | 3280 |
+| a 10 s coast, then a hold | 267.3 | 1 |
+| a 6.4 s coast, then a hold on the same step | 265.1 | 1 |
+| an unaided step and a hold | 260.4 | 10 |
+| a magnetic heading half a circle out | 260.3 | 3780 |
 | `predicted_validity` over a 6.4 s horizon | 77.0 | 1 |
-| a heading of 3e38 rad | 12.7 | 1 |
+| a heading of 3e38 rad, `fmodf`'s longest reduction | 12.7 | 1 |
 
-A coast is (22′) in one exact step, so a gap costs what a step does at any length. `wrap_pi`'s
-reduction, `x % 2π` as the filter links it, takes at most 248 cycles on the angles
-the filter forms itself, inside (−4π, 4π), and at most 654 across every exponent an `f32`
-has, at four mantissas each
-([DESIGN.md, "Execution time bounded by constants"](../DESIGN.md#execution-time-bounded-by-constants)).
+A coast is (22′) in one exact step, so a gap costs what a step does at any length. The 3e38 rad
+heading is there to bound `wrap_pi`'s reduction rather than to be slow
+([How it is measured](#how-it-is-measured)).
 
-Two other builds, on the traces all three ran (`093e806a,4b473e91,a299e722,cd7e0001,paths`), worst case in µs:
+### Which build to ship
 
-| entry point | `primary` | `opt-level = "s"`, fat LTO | `-C target-cpu=cortex-m7` |
+On an M7, `-C target-cpu=cortex-m7`. Three builds, compared on the traces all three ran
+(`093e806a,4b473e91,a299e722,cd7e0001,paths`), so the generic build's worst here can sit under its worst
+over every trace above. Worst case, µs:
+
+| entry point | generic: `opt-level = 3` | size: `opt-level = "s"`, fat LTO | tuned: `-C target-cpu=cortex-m7` |
 | --- | --- | --- | --- |
 | `predict` | 267.3 | 572.6 | 245.5 |
 | `fuse_gnss_position` | 364.0 | 702.4 | 315.5 |
@@ -115,15 +119,26 @@ Two other builds, on the traces all three ran (`093e806a,4b473e91,a299e722,cd7e0
 | `fuse_gnss_geodetic` | 1143.6 | 1156.3 | 314.7 |
 | `StaticWindow::push` | 28.5 | 30.0 | 4.4 |
 
-`opt-level = "s"` with fat LTO inlines the entry points into the dispatcher, and the deepest stack
-beneath it is 13012 bytes. `-C target-cpu=cortex-m7` is the build to ship on an M7. The
-update paths compute no `f64`, so what they gain is scheduling for the M7's pipeline; a start's
-window and a geodetic fix gain its double-precision FPU as well. The mean GNSS
-velocity update is 308.7 µs under `primary` and 208.1 µs under it.
+The same table drawn, each entry point's three builds side by side, in the table's order:
+
+```mermaid
+xychart-beta horizontal
+    title "Worst case by build, µs, against the same 400 Hz budget"
+    x-axis ["predict, generic", "predict, size", "predict, tuned", "gnss_position, generic", "gnss_position, size", "gnss_position, tuned", "gnss_velocity, generic", "gnss_velocity, size", "gnss_velocity, tuned", "mag_heading, generic", "mag_heading, size", "mag_heading, tuned", "gnss_geodetic, generic", "gnss_geodetic, size", "gnss_geodetic, tuned", "window push, generic", "window push, size", "window push, tuned"]
+    y-axis "µs" 0 --> 2500
+    bar [267.3, 572.6, 245.5, 364.0, 702.4, 315.5, 351.1, 604.6, 220.2, 179.7, 322.5, 154.1, 1143.6, 1156.3, 314.7, 28.5, 30.0, 4.4]
+```
+
+The size build inlines the entry points into the dispatcher under fat LTO, and the deepest stack
+beneath it is 13012 bytes. The update paths compute no
+`f64`, so what the tuned build gains there is scheduling for the M7's pipeline; a start's window
+and a geodetic fix gain its double-precision FPU as well. The mean GNSS velocity update is
+308.7 µs generic and
+208.1 µs tuned.
 
 ## Memory
 
-| type | `thumbv6m` | `thumbv7em` |
+| type | `thumbv6m`, bytes | `thumbv7em`, bytes |
 | --- | --- | --- |
 | `Eskf`, the filter | 4688 | 4688 |
 | of which the state history of (23′) | 1544 | 1544 |
@@ -137,36 +152,51 @@ velocity update is 308.7 µs under `primary` and 208.1 µs under it.
 | `StaticSample` | 80 | 80 |
 | `Startup`, a start worked out and checked before it commits, on a start's stack | 1088 | 1088 |
 
-Sizes in bytes.
+The rest of `Eskf`, beyond the parts named, is its `Config`, the nominal state, the origin, the
+position hold, the clock and its flags.
 
 ## Stack
 
-The deepest stack a call into each entry point takes, in bytes, before the caller's frames.
+The deepest stack a call into each entry point takes, in bytes, before the caller's frames. The
+walk is an upper bound over every path the code has; the painted stack is a lower bound, the
+deepest the calls made on the board reached. Every painted figure is under its walk.
 
-| entry point | `thumbv6m` | `thumbv7em` |
-| --- | --- | --- |
-| `predict` | 10812 | 10640 |
-| `fuse_gnss_position` | 10812 | 10600 |
-| `fuse_gnss_geodetic` | 11148 | 10928 |
-| `fuse_gnss_velocity` | 11580 | 11352 |
-| `fuse_baro_altitude` | 9652 | 9416 |
-| `fuse_mag_heading` | 9756 | 9504 |
-| `fuse_gnss_heading` | 9892 | 9640 |
-| `fuse_course` | 9908 | 9648 |
-| `fuse_stationary` | 11484 | 11264 |
-| `predicted_validity` | 7068 | 6712 |
-| `initialize` | 5476 | 5312 |
-| `initialize_coarse` | 6212 | 6048 |
-| `initialize_from` | 3024 | 2896 |
-| **the deepest of them** | **11580** | **11352** |
+| entry point | walked, `thumbv6m` | walked, `thumbv7em` | painted on the M7 |
+| --- | --- | --- | --- |
+| `predict` | 10812 | 10640 | 10588 |
+| `fuse_gnss_position` | 10812 | 10600 | 10548 |
+| `fuse_gnss_geodetic` | 11148 | 10928 | 10876 |
+| `fuse_gnss_velocity` | 11580 | 11352 | 11300 |
+| `fuse_baro_altitude` | 9652 | 9416 | 9364 |
+| `fuse_mag_heading` | 9756 | 9504 | 9452 |
+| `fuse_gnss_heading` | 9892 | 9640 | 9588 |
+| `fuse_course` | 9908 | 9648 | 9596 |
+| `fuse_stationary` | 11484 | 11264 | 11212 |
+| `predicted_validity` | 7068 | 6712 | 6660 |
+| `initialize` | 5476 | 5312 | 5120 |
+| `initialize_coarse` | 6212 | 6048 | 5856 |
+| `initialize_from` | 3024 | 2896 | 2844 |
+| `state` | — | — | 336 |
+| `StaticWindow::push` | — | — | 548 |
+| **the deepest of them** | **11580** | **11352** | |
 
-The deepest path is `fuse_gnss_velocity` calling the three-measurement update, which calls
-`nalgebra`'s 15 × 15 matrix product, which calls the soft-float multiply on `thumbv6m` and
-`memcpy` on `thumbv7em`. `tools/footprint.py --path` prints any entry point's path, frame by frame.
+The deepest path on `thumbv7em`, with each frame the pins name:
 
-Each entry point's own frame, and the frames beneath it that set its depth:
+```mermaid
+flowchart LR
+    A["fuse_gnss_velocity<br/>1432 B"] --> B["the update of (23)–(27),<br/>three measurements<br/>8000 B"]
+    B --> C["nalgebra's<br/>15 × 15 product"]
+    C --> D["memcpy"]
+    D -.- T(["the whole path:<br/>11352 B"])
+```
 
-| function | `thumbv6m` | `thumbv7em` |
+On `thumbv6m` the product calls the soft-float multiply instead of `memcpy`.
+`tools/footprint.py --path` prints any entry point's path, frame by frame.
+
+<details>
+<summary>Each entry point's own frame, and the frames beneath it that set its depth</summary>
+
+| function | `thumbv6m`, bytes | `thumbv7em`, bytes |
 | --- | --- | --- |
 | `predict` | 80 | 72 |
 | `propagate_or_coast`, the step it calls | 2168 | 2160 |
@@ -201,9 +231,11 @@ Each entry point's own frame, and the frames beneath it that set its depth:
 | beneath `predicted_validity` and a coast: (22′), the covariance carried in one exact step | 4080 | 3848 |
 | beneath `initialize` and `initialize_coarse`: the initial covariance | 1120 | 1080 |
 
+</details>
+
 ## Flash
 
-| bytes | `thumbv6m` `3` | `thumbv6m` `s` | `thumbv7em` `3` | `thumbv7em` `s` |
+| bytes | M0, `opt-level = 3` | M0, `opt-level = "s"` | M4/M7, `opt-level = 3` | M4/M7, `opt-level = "s"` |
 | --- | --- | --- | --- | --- |
 | `.text` | 188746 | 127134 | 208692 | 133924 |
 | of which `libm` | 19532 | 11196 | 20752 | 12620 |
@@ -211,7 +243,52 @@ Each entry point's own frame, and the frames beneath it that set its depth:
 | of which `nalgebra`, out of line | 15486 | 2130 | 3956 | 924 |
 | `.rodata` | 4455 | 4535 | 4599 | 4679 |
 
-The column heads are target and `opt-level`. `compiler_builtins` is software floating point on
-`thumbv6m`; on `thumbv7em` it is the `f64` arithmetic a single-precision FPU lacks, beside
-`memcpy`, 64-bit division and `fmodf` on both. Most of what `nalgebra` costs is not in its row:
-its generics are inlined into the filter's functions and counted there.
+`compiler_builtins` is software floating point on `thumbv6m`; on `thumbv7em` it is the `f64`
+arithmetic a single-precision FPU lacks, beside `memcpy`, 64-bit division and `fmodf` on both.
+Most of what `nalgebra` costs is not in its row: its generics are inlined into the filter's
+functions and counted there.
+
+## How it is measured
+
+The two targets are `thumbv6m-none-eabi` (Cortex-M0 and M0+, no FPU, so every float operation
+is a library call) and `thumbv7em-none-eabihf` (Cortex-M4 and M7 with a single-precision FPU).
+
+- **Sizes** are `size_of` each type on the target, at any `opt-level`.
+- **Stack** is each function's own frame at `opt-level = 3`, read from the compiler
+  (`-Zemit-stack-sizes`), and the deepest path beneath each entry point: its frame plus its
+  deepest callee's, walked call by call through the library's relocations, down into `nalgebra`,
+  `libm`, `core` and `compiler_builtins`. Every frame on a path is the compiler's, except
+  `compiler_builtins`' hand-written division routines, which are read from their pushes. A
+  call through a function pointer counts as deep as the deepest function whose address the
+  entry point's code takes, directly or through the data it reads. For a generic function the
+  figure is its largest instance.
+- **Not in the stack figures:** the caller's own frames, and the 32 bytes a Cortex-M stacks on
+  an exception (104 with the M4F's floating-point context). The frames are the library build's,
+  and an application built with LTO can inline them differently.
+- **Flash** is a bare-metal binary (`panic-check/`) that calls the whole public API, linked
+  with fat LTO. An application reaching fewer entry points links less.
+- **Time and painted stack** are measured on the board: every call a replay makes, timed, and
+  the stack beneath the call into the entry point painted. No M0 board was timed.
+
+Every figure but the board's is pinned exactly in `data/footprint.txt`, which CI measures on
+`nightly-2026-08-06` with `tools/footprint.sh` and fails on any move, growth or shrinkage.
+The board's are pinned in `data/onboard.txt`, measured at the commit their build line names; CI
+has no board, so it checks only that this page shows them.
+
+On the board (`onboard/`, #41), the calls are written down on the host and made again. Each is
+timed alone by the cycle counter, interrupts masked, net of the
+40 cycles the timing itself takes. After every call the
+board checks its outcome and a digest against the host's (the state, the covariance, the clock,
+the barometric reference and every source's counters), and refuses the run on any difference.
+*Cold* invalidates both caches before each call; a firmware placing `Eskf` in cacheable memory is
+not measured here.
+
+`wrap_pi`'s reduction, `x % 2π` as the filter links it, takes at most
+248 cycles on the angles the filter forms itself, inside
+(−4π, 4π), and at most 654 across every exponent an `f32` has, at
+four mantissas each
+([DESIGN.md, "Execution time bounded by constants"](../DESIGN.md#execution-time-bounded-by-constants)).
+
+Why each function has the form it has, and what the forms not taken would have cost, is in
+[DESIGN.md, "Measured cost, by function"](../DESIGN.md#measured-cost-by-function), together with
+host timings, which are taken on one machine and pinned nowhere.

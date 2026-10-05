@@ -439,7 +439,7 @@ latitude and longitude), a GNSS velocity 1.2 µs, each one-dimensional update 0.
 The yaw estimator, fusing, adds 0.18 µs to `predict`, 0.781 µs to 0.965, and 0.25 µs to a GNSS
 velocity, 1.272 µs to 1.525 (#165 against its parent, c7f3ecf, the same machine and session). On a
 core with no FPU the ratio will be worse than the host's 24 %: each hypothesis is a quaternion
-product and a rotation per sample; which cores are timed is [validation/cost.md](validation/cost.md#what-is-measured-and-what-is-not).
+product and a rotation per sample; which cores are timed is [validation/cost.md](validation/cost.md#how-it-is-measured).
 
 Its covariance step, (48), is written as the shear it is rather than as `F P Fᵀ`. On the host
 the two time alike, 0.965 µs against 0.972. On `thumbv6m` the dense form calls `nalgebra`'s
