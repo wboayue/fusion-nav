@@ -86,11 +86,9 @@ two paths with the module that owns each step.
 
 ## Quick start
 
-The crate is not on crates.io yet:
-
 ```toml
 [dependencies]
-fusion-nav = { git = "https://github.com/wboayue/fusion-nav" }
+fusion-nav = "0.1"
 ```
 
 The default feature `magnetic-model` links a magnetic declination table (about 2.6 KB of flash).
