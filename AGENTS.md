@@ -10,8 +10,8 @@ marker and nothing else does. Every source the crate publishes is fused: GNSS po
 height (gated apart from horizontal), GNSS velocity, dual-antenna heading, course over ground,
 barometric altitude and magnetic heading, and two observations made from an assumption, the
 stationary claim (29″) and the position hold (28″). Beside them runs the yaw estimator of
-(45)–(52), whose answer is adopted and never fused. What remains is publication: #47, the
-release.
+(45)–(52), whose answer is adopted and never fused. 0.1.0 is on crates.io (#47): `CHANGELOG.md`
+records each release, and `RELEASING.md` is the procedure.
 
 What the filter does, and where each decision's evidence lives:
 
@@ -140,13 +140,13 @@ Differentiators are cited **by number** here, in issue bodies and in `data/manif
 Never renumber them. A renumber silently repoints every citation, including closed issues that
 cannot be corrected.
 
-**Nothing is released, so nothing is a break.** The crate is `0.0.0` and has never been
-published; no integrator holds a struct literal, a match arm or a signature that a change could
-break. Design each type for the most usable, idiomatic shape it can have — rename, restructure,
-add fields and variants, change signatures — and never pick a worse API to avoid a break, bundle
-changes to "take the break once", or defer an API improvement to a version. Compatibility starts
-at #47's first published version, and the attributes and semver policy exist to protect *that*
-surface, not this one.
+**A break costs a minor version, not a worse API.** 0.1.0 is published, so an integrator may hold
+a struct literal, a match arm or a signature a change breaks. Before 1.0 such a change is a 0.x
+minor bump, and GUIDE.md, "Versioning", says what counts: a new `Config` field and a new outcome
+variant do, a new `Diagnostics` field or method does not. Still design each type for the most
+usable, idiomatic shape it can have, and never pick a worse API to avoid a bump. What a break owes
+is to be announced: say so in the PR, and add it to `CHANGELOG.md` under an `Unreleased` heading,
+opened if none is there.
 
 Put a query on the type whose data it reads. `Eskf::noise_of` read nothing of the filter but its
 `Initialization`, and its purpose, deriving a `Config`, comes before any filter exists; it
@@ -1233,9 +1233,8 @@ breaks, which is what the attribute refuses.
 
 An outcome is matched, and a wildcard arm is the integrator bug the typed outcomes exist to
 prevent — an application that silently ignores a refusal the filter grew flies on a stale state
-and reports nothing. So after the first release, adding a variant is a breaking change on
-purpose, raised by the compiler at every call site. Before it, a variant is free: add it when the
-design wants it.
+and reports nothing. So adding a variant is a breaking change on purpose, raised by the compiler
+at every call site, and a minor bump before 1.0. Add it when the design wants it.
 
 Neither attribute substitutes for settling the API: `#[non_exhaustive]` does nothing for the
 length of `sources()`'s array.
