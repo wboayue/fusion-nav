@@ -5,9 +5,9 @@
 4688 bytes on a Cortex-M0 and allocates nothing
 else, so that is the RAM to plan for beyond the stack. The deepest stack is a GNSS velocity
 update, 11580 bytes, and linking every entry point takes
-127526 bytes of flash at `opt-level = "s"`. On a 400 MHz
-Cortex-M7, an IMU step takes at most 278.7 µs and a GNSS velocity update
-352.0 µs, against the 2500 µs of a 400 Hz loop ([Time on a target](#time-on-a-target)).
+127134 bytes of flash at `opt-level = "s"`. On a 400 MHz
+Cortex-M7, an IMU step takes at most 279.8 µs and a GNSS velocity update
+352.7 µs, against the 2500 µs of a 400 Hz loop ([Time on a target](#time-on-a-target)).
 
 Every figure on this page but the board's is pinned exactly in `data/footprint.txt`, which CI
 measures on `nightly-2026-08-06` with `tools/footprint.sh` and fails on any move, growth or
@@ -45,76 +45,81 @@ host timings, which are taken on one machine and pinned nowhere.
 
 An ARK FPV flight controller, an STM32H743: a Cortex-M7 at 400 MHz, instruction and data caches
 on, the filter and the stack in DTCM. Built `rustc_1.99.0-nightly_(7608eb7b0_2026-08-05)` at
-`c0e4d26f83`, `opt-level = 3` with no LTO, the
+`b45f5a8ad4`, `opt-level = 3` with no LTO, the
 profile the stack frames above are measured in, for the `thumbv7em-none-eabihf` target: a
 single-precision FPU, `f64` in library calls, flush-to-zero off.
 
 The calls are the replay's (`onboard/`, #41): every call the harness makes into the filter on
-the thirteen corpus logs and `hover_outage`, written down on the host and made again on the
-board, plus a trace built to reach the paths the corpus does not (`onboard/examples/paths.rs`).
+the thirteen corpus logs and `hover_outage`, the `state()` it reads each epoch included, written
+down on the host and made again on the board, plus a trace built to reach the paths the corpus
+does not (`onboard/examples/paths.rs`).
 Each call is timed alone by the cycle counter, interrupts masked, net of the
-35 cycles the timing itself takes, and the stack beneath it painted. After
-every call the board checks its outcome and a digest of the state and covariance against the
-host's, and refuses the run on any difference: every figure is of the arithmetic the host ran,
+40 cycles the timing itself takes, and the stack beneath it painted. After
+every call the board checks its outcome and a digest against the host's (the state, the
+covariance, the clock, the barometric reference and every source's counters), and refuses the run on any difference: every figure is of the arithmetic the host ran,
 bit for bit.
 
 | entry point | worst, µs | mean, µs | worst cold, µs | calls | denormal inputs | painted stack | walked stack |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `predict` | 278.7 | 119.0 | 279.8 | 3447657 | 0 | 10588 | 10640 |
-| `fuse_gnss_position` | 369.2 | 345.1 | 370.3 | 74123 | 0 | 10548 | 10600 |
-| `fuse_gnss_geodetic` | 1148.0 | 305.3 | 1147.5 | 100 | 0 | 10876 | 10928 |
-| `fuse_gnss_velocity` | 352.0 | 303.3 | 352.3 | 74222 | 0 | 11300 | 11352 |
-| `fuse_baro_altitude` | 177.2 | 159.7 | 175.4 | 111222 | 0 | 9364 | 9416 |
-| `fuse_mag_heading` | 180.4 | 160.8 | 179.1 | 87124 | 0 | 9452 | 9504 |
-| `fuse_gnss_heading` | 190.1 | 169.8 | 189.7 | 629 | 0 | 9588 | 9640 |
-| `fuse_course` | 166.5 | 151.7 | 167.2 | 19 | 0 | 9596 | 9648 |
-| `fuse_stationary` | 175.6 | 174.8 | 175.2 | 10 | 0 | 11212 | 11264 |
-| `predicted_validity` | 79.9 | 78.3 | 80.3 | 15 | 0 | 8436 | 8488 |
-| `initialize` | 149.2 | 120.3 | 149.7 | 16 | 0 | 4960 | 5312 |
-| `initialize_coarse` | 52.3 | 52.3 | 54.2 | 1 | 0 | 5696 | 6048 |
-| `initialize_from` | 22.4 | 22.0 | 23.7 | 2 | 0 | 2844 | 2896 |
-| `StaticWindow::push` | 28.3 | 13.0 | 31.7 | 9673 | 0 | 548 | — |
+| `predict` | 279.8 | 120.7 | 280.2 | 3447657 | 0 | 10588 | 10640 |
+| `fuse_gnss_position` | 368.7 | 344.3 | 370.5 | 74123 | 0 | 10548 | 10600 |
+| `fuse_gnss_geodetic` | 1143.6 | 305.3 | 1140.6 | 100 | 0 | 10876 | 10928 |
+| `fuse_gnss_velocity` | 352.7 | 305.4 | 353.5 | 74222 | 0 | 11300 | 11352 |
+| `fuse_baro_altitude` | 175.7 | 159.0 | 174.4 | 111222 | 0 | 9364 | 9416 |
+| `fuse_mag_heading` | 180.3 | 160.5 | 179.5 | 87124 | 0 | 9452 | 9504 |
+| `fuse_gnss_heading` | 188.2 | 169.0 | 188.6 | 629 | 0 | 9588 | 9640 |
+| `fuse_course` | 164.9 | 150.6 | 166.5 | 19 | 0 | 9596 | 9648 |
+| `fuse_stationary` | 176.3 | 175.1 | 175.5 | 10 | 0 | 11212 | 11264 |
+| `state` | 5.0 | 4.0 | 5.5 | 3434537 | 0 | 336 | — |
+| `predicted_validity` | 77.0 | 75.8 | 77.5 | 15 | 0 | 6660 | 6712 |
+| `initialize` | 148.3 | 120.1 | 149.7 | 16 | 0 | 5120 | 5312 |
+| `initialize_coarse` | 53.1 | 53.1 | 54.6 | 1 | 0 | 5856 | 6048 |
+| `initialize_from` | 22.9 | 22.7 | 23.6 | 2 | 0 | 2844 | 2896 |
+| `StaticWindow::push` | 28.5 | 13.0 | 31.6 | 9673 | 0 | 548 | — |
 
-The worst is over every call on every trace. *Cold* invalidates both caches before each call; it
-moves the worst cases little, and the longer the call the less, since each refills the caches once
-and then runs from them. The painted stack is beneath the call into the entry point, and the walked is
+The worst is over every call on every trace. *Cold* invalidates both caches before each call, which
+reaches the code and its constants in flash and nothing else: the filter, the stack and the record
+sit in DTCM, which no cache covers, so a firmware placing `Eskf` in cacheable memory is not
+measured here. The painted stack is beneath the call into the entry point, and the walked is
 `chain.` above: every entry point's painted stack is under its walk.
 
 The worst paths, reached on purpose by the `paths` trace:
 
 | path | worst, µs | calls |
 | --- | --- | --- |
-| a 6.4 s coast, then a hold on the same step | 265.5 | 1 |
-| a 10 s coast, then a hold | 267.1 | 1 |
-| an unaided step and a hold | 258.8 | 10 |
-| every source at the oldest age the history holds | 376.6 | 6 |
-| a position 100 m out, rejected until adopted | 350.1 | 3280 |
-| a velocity 30 m/s out, rejected until adopted | 352.1 | 3280 |
-| a magnetic heading half a circle out | 259.6 | 3780 |
-| the first geodetic fix, which places the origin | 1148.0 | 1 |
-| `predicted_validity` over a 6.4 s horizon | 79.9 | 1 |
-| a heading of 3e38 rad | 13.0 | 1 |
+| a 6.4 s coast, then a hold on the same step | 265.1 | 1 |
+| a 10 s coast, then a hold | 267.3 | 1 |
+| an unaided step and a hold | 260.4 | 10 |
+| every source at the oldest age the history holds | 377.7 | 6 |
+| a position 100 m out, rejected until adopted | 350.3 | 3280 |
+| a velocity 30 m/s out, rejected until adopted | 352.2 | 3320 |
+| a magnetic heading half a circle out | 260.3 | 3780 |
+| the first geodetic fix, which places the origin | 1143.6 | 1 |
+| `predicted_validity` over a 6.4 s horizon | 77.0 | 1 |
+| a heading of 3e38 rad | 12.7 | 1 |
 
 A coast is (22′) in one exact step, so a gap costs what a step does at any length. `wrap_pi`'s
-`fmodf` takes at most 242 cycles on the angles the filter forms itself, inside
-(−4π, 4π), and at most 665 on any `f32` a caller hands it
+reduction, `x % 2π` as the filter links it, takes at most 248 cycles on the angles
+the filter forms itself, inside (−4π, 4π), and at most 654 across every exponent an `f32`
+has, at four mantissas each
 ([DESIGN.md, "Execution time bounded by constants"](../DESIGN.md#execution-time-bounded-by-constants)).
 
-Two other builds, on the traces all three ran (`4b473e91`, `a299e722`, `cd7e0001`, `093e806a`
-and `paths`), worst case in µs:
+Two other builds, on the traces all three ran (`093e806a,4b473e91,a299e722,cd7e0001,paths`), worst case in µs:
 
 | entry point | `primary` | `opt-level = "s"`, fat LTO | `-C target-cpu=cortex-m7` |
 | --- | --- | --- | --- |
-| `predict` | 267.1 | 569.6 | 247.5 |
-| `fuse_gnss_position` | 366.7 | 704.8 | 316.2 |
-| `fuse_gnss_velocity` | 350.2 | 608.0 | 219.8 |
-| `fuse_mag_heading` | 179.8 | 324.3 | 154.2 |
-| `fuse_gnss_geodetic` | 1148.0 | 1150.3 | 314.6 |
-| `StaticWindow::push` | 28.3 | 30.1 | 4.4 |
+| `predict` | 267.3 | 572.6 | 245.5 |
+| `fuse_gnss_position` | 364.0 | 702.4 | 315.5 |
+| `fuse_gnss_velocity` | 351.1 | 604.6 | 220.2 |
+| `fuse_mag_heading` | 179.7 | 322.5 | 154.1 |
+| `fuse_gnss_geodetic` | 1143.6 | 1156.3 | 314.7 |
+| `StaticWindow::push` | 28.5 | 30.0 | 4.4 |
 
-`opt-level = "s"` with fat LTO runs the filter's own arithmetic at about half the speed, and inlines the entry points into the caller:
-the deepest stack beneath its dispatcher is 14972 bytes. `cortex-m7` turns
-on the M7's double-precision FPU, which the `f64` of a start's window and of a geodetic fix use.
+`opt-level = "s"` with fat LTO inlines the entry points into the dispatcher, and the deepest stack
+beneath it is 13012 bytes. `-C target-cpu=cortex-m7` is the build to ship on an M7. The
+update paths compute no `f64`, so what they gain is scheduling for the M7's pipeline; a start's
+window and a geodetic fix gain its double-precision FPU as well. The mean GNSS
+velocity update is 308.7 µs under `primary` and 208.1 µs under it.
 
 ## Memory
 
@@ -149,7 +154,7 @@ The deepest stack a call into each entry point takes, in bytes, before the calle
 | `fuse_gnss_heading` | 9892 | 9640 |
 | `fuse_course` | 9908 | 9648 |
 | `fuse_stationary` | 11484 | 11264 |
-| `predicted_validity` | 8868 | 8488 |
+| `predicted_validity` | 7068 | 6712 |
 | `initialize` | 5476 | 5312 |
 | `initialize_coarse` | 6212 | 6048 |
 | `initialize_from` | 3024 | 2896 |
@@ -175,7 +180,7 @@ Each entry point's own frame, and the frames beneath it that set its depth:
 | `fuse_gnss_heading` | 248 | 248 |
 | `fuse_course` | 256 | 256 |
 | `fuse_stationary` | 1360 | 1344 |
-| `predicted_validity` | 2784 | 2744 |
+| `predicted_validity` | 984 | 944 |
 | `initialize` | 2224 | 2216 |
 | `initialize_coarse` | 3504 | 3488 |
 | `initialize_from` | 1928 | 1856 |
@@ -192,15 +197,15 @@ Each entry point's own frame, and the frames beneath it that set its depth:
 | beneath `predict`: one sample, (9)–(22) | 1648 | 1440 |
 | beneath that: the covariance step of (22) | 2832 | 2760 |
 | beneath that and the reset of (41): symmetry, (42) | 128 | 8 |
-| beneath `predict`, across a gap: the coast of (22′) | 1960 | 1920 |
-| beneath `predicted_validity`: the covariance carried over the horizon | 1864 | 1840 |
+| beneath `predict`, across a gap: the coast of (22′) | 1096 | 1080 |
+| beneath `predicted_validity` and a coast: (22′), the covariance carried in one exact step | 4080 | 3848 |
 | beneath `initialize` and `initialize_coarse`: the initial covariance | 1120 | 1080 |
 
 ## Flash
 
 | bytes | `thumbv6m` `3` | `thumbv6m` `s` | `thumbv7em` `3` | `thumbv7em` `s` |
 | --- | --- | --- | --- | --- |
-| `.text` | 188334 | 127526 | 208020 | 134108 |
+| `.text` | 188746 | 127134 | 208692 | 133924 |
 | of which `libm` | 19532 | 11196 | 20752 | 12620 |
 | of which `compiler_builtins` | 10334 | 11630 | 7674 | 9096 |
 | of which `nalgebra`, out of line | 15486 | 2130 | 3956 | 924 |

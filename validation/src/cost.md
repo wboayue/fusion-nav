@@ -115,9 +115,9 @@ Two other builds, on the traces all three ran (`{{onboard primary/warm/common ru
 | `StaticWindow::push` | {{onboard primary/warm/common window_push.max_us}} | {{onboard shipped/warm/common window_push.max_us}} | {{onboard fp64/warm/common window_push.max_us}} |
 
 `opt-level = "s"` with fat LTO inlines the entry points into the dispatcher, and the deepest stack
-beneath it is {{onboard shipped/warm/common stack_raw_max}} bytes. `-C target-cpu=cortex-m7` is the build to ship on an M7: it
-schedules for the M7's pipeline, which no `f64` reaches on the update paths, and turns on its
-double-precision FPU, which the `f64` of a start's window and of a geodetic fix use. The mean GNSS
+beneath it is {{onboard shipped/warm/common stack_raw_max}} bytes. `-C target-cpu=cortex-m7` is the build to ship on an M7. The
+update paths compute no `f64`, so what they gain is scheduling for the M7's pipeline; a start's
+window and a geodetic fix gain its double-precision FPU as well. The mean GNSS
 velocity update is {{onboard primary/warm/common fuse_gnss_velocity.mean_us}} µs under `primary` and {{onboard fp64/warm/common fuse_gnss_velocity.mean_us}} µs under it.
 
 ## Memory
