@@ -5,7 +5,7 @@ Every published version of `fusion-nav`. What a version number promises is
 minor bump before 1.0 can break a build, a patch cannot, and a change that moves the numbers the
 filter computes is named here in either.
 
-## 0.1.0 (unreleased)
+## 0.1.0 (2026-10-04)
 
 The first published version. MSRV Rust 1.89. Features: `magnetic-model` (default) and `defmt`.
 
@@ -27,6 +27,10 @@ How it was measured is
 [VALIDATION.md](https://github.com/wboayue/fusion-nav/blob/main/VALIDATION.md): seeded simulated
 flights scored against truth, the PX4 log corpus compared with EKF2, UrbanNav and INSANE against
 their truth, and memory, stack and cycle counts on an STM32H743.
+
+The landscape was re-surveyed for this release: `kinavis-ins` now types frames and units for a
+vessel, which narrows differentiator 2
+([GOALS.md](https://github.com/wboayue/fusion-nav/blob/main/GOALS.md#what-would-falsify-this-positioning)).
 
 Known losses, each stated on the validation pages:
 

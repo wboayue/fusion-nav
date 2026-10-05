@@ -37,6 +37,7 @@ change faster than positioning, so they stay on crates.io and in the repositorie
 | ----- | ---------- | ------------------ |
 | [`eskf`](https://crates.io/crates/eskf) | general-purpose navigation ESKF, the closest direct competitor | Its 15-state work sits in its repository, unreleased. Fuses no magnetometer or barometer and has no innovation gating. |
 | [`strapdown-rs`](https://github.com/jbrodovsky/strapdown-rs) | research and teaching toolbox with selectable ESKF, UKF and EKF, a GNSS-degradation simulator and datasets | `std` and desktop oriented, and states it is not a full INS. |
+| [`kinavis-ins`](https://crates.io/crates/kinavis-ins) | marine strapdown INS: a 15-state ESKF aided by GNSS position or velocity, heading and zero velocity, gated, allocation-free, with frames and units typed by its kernel crate | `f64` and `std` by default, built for a slow vessel: no barometer or magnetometer, no alignment, no lever arm, and heading from a gyrocompass. |
 | [`ekf2`](https://docs.rs/ekf2) | FFI wrapper over PX4's C++ EKF2 | Needs a C++ toolchain and a heap allocator. |
 | `adskalman`, `kfilter`, `minikalman`, `yakf` | generic Kalman filter math | No navigation model, and no frame or sensor semantics. |
 
@@ -52,6 +53,8 @@ change faster than positioning, so they stay on crates.io and in the repositorie
 No Rust crate is an allocation-free, `f32`, fixed-size, `no_std`-native navigation ESKF fusing
 GNSS, barometer, and magnetometer with innovation gating. `eskf` lacks the sensors and the gating,
 `ekf2` requires a C++ toolchain and a heap, and `strapdown-rs` targets researchers on a desktop.
+`kinavis-ins` is the nearest: gated, allocation-free and typed, but `f64`, aimed at a vessel, and
+fusing neither barometer nor magnetometer.
 
 ### Why not revive `eskf`?
 
@@ -238,6 +241,11 @@ happens, rather than learning it from a forum thread.
 | someone publishes a typed-frames navigation crate | differentiator 2 goes, and it is the most distinctive one |
 | `eskf` ships its 15-state version with gating | the gap argument weakens considerably |
 | PX4 or ArduPilot publish per-function WCET | differentiator 1 stops being unique, though it stays true |
+
+The October 2026 survey found the third trigger fired: `kinavis-ins` types its frames and units
+(`Vector3<Ned, Speed>`). Differentiator 2 narrows rather than goes, since that crate serves a
+vessel in `f64`. What stays this crate's is the edge a flight controller needs: the PX4, ArduPilot,
+ROS and Madgwick conventions converted and named in the type.
 
 Differentiators 3 and 6, readable mathematics and inspectable validation, are the ones nobody
 can take away by shipping code: they are commitments about how the crate is documented and tested,
@@ -1300,4 +1308,4 @@ no-hardware-no-toolchain CI property that makes the validation claim worth anyth
 * [PX4 Flight Review](https://review.px4.io/) and [flight log analysis](https://docs.px4.io/main/en/log/flight_log_analysis)
 * [UrbanNav dataset](https://github.com/IPNL-POLYU/UrbanNavDataset)
 
-*Landscape surveyed September 2026.*
+*Landscape surveyed October 2026.*
