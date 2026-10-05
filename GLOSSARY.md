@@ -35,7 +35,7 @@ the difference is the kind that costs a day.
   not. **Hamilton** vs JPL is settled here as Hamilton, and **scalar-first** vs scalar-last
   storage is not settled at all: `Quaternion`'s fields are named `w`, `x`, `y`, `z`, so a caller
   writes the order down rather than assuming one. The constructors that name frame and direction,
-  and what a wrong one costs, are in [seeding an attitude](README.md#seeding-an-attitude).
+  and what a wrong one costs, are in [seeding an attitude](GUIDE.md#seeding-an-attitude).
 * **Specific force**: what an accelerometer measures, acceleration minus gravity, in body axes.
   A stationary level vehicle reads `[0, 0, −γ]`, not zero, which is what makes leveling from
   the accelerometer possible. See [initialization](EQUATIONS.md#initialization).
@@ -272,14 +272,14 @@ the difference is the kind that costs a day.
 
 * **`Status`**: one enum answering *how bad is the worst thing*, most-severe-first:
   `DeadReckoning` > `Aligning` > `Degraded` > `Healthy`. See
-  [health reporting](README.md#health-reporting).
+  [health reporting](GUIDE.md#health-reporting).
 * **`Validity`**: six per-quantity flags answering *which outputs can I use*, derived from `P`
   against `Config::accuracy`. `Status` is the summary, `Validity` the detail, and neither
-  substitutes for the other. Usage is [health reporting](README.md#health-reporting), the
+  substitutes for the other. Usage is [health reporting](GUIDE.md#health-reporting), the
   reasoning [per-quantity validity](GOALS.md#per-quantity-validity-not-one-ladder).
 * **`Accuracy`**: what the *mission* needs from each output, and the one knob the filter cannot
   derive for the caller. It moves `Validity` and nothing else
-  ([health reporting](README.md#health-reporting)).
+  ([health reporting](GUIDE.md#health-reporting)).
 * **Aligning**: the filter is running, but its attitude has not converged: a coarse start, a
   vague seed, or a heading no source has observed yet. It latches: once resolved it never
   returns, because read live it flaps.

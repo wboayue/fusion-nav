@@ -273,7 +273,7 @@ See [innovation gating](EQUATIONS.md#innovation-gating).
 If the filter itself is wrong, correct measurements look inconsistent, all are rejected, and it
 dead-reckons while looking confident: [gate lockout](EQUATIONS.md#gate-lockout). So
 health is per source and carried on the estimate, and recovery is per source too: adoption, one
-switch each in `Config::recovery`. The user-facing side is [README.md](README.md#health-reporting);
+switch each in `Config::recovery`. The user-facing side is [GUIDE.md](GUIDE.md#health-reporting);
 the reasoning is GOALS.md's
 [rejection handling](GOALS.md#rejection-handling-recover-by-default-opt-out-per-source) and
 [per-quantity validity](GOALS.md#per-quantity-validity-not-one-ladder).
@@ -288,7 +288,7 @@ the reasoning is GOALS.md's
 * no dynamic allocation
 * execution time bounded by constants, [never by the data](#execution-time-bounded-by-constants)
 * `no_std`
-* no panics, [checked in CI](README.md#the-library-cannot-panic)
+* no panics, [checked in CI](#the-library-cannot-panic)
 * explicit numerical types
 * minimal dependencies
 
@@ -306,6 +306,43 @@ the working set is kilobytes, set by how temporaries are reused. It is measured,
 [follows](#measured-cost-by-function). `state()` is small and `Copy` and `Status` carries no
 payload, so reading either in a control loop costs nothing. Timing detail lives in
 `diagnostics()`, off the hot path.
+
+### The library cannot panic
+
+CI checks it rather than trusting it: `panic-check/run.sh` links the whole public API for
+`thumbv7em-none-eabihf` and `thumbv6m-none-eabi` with fat LTO, and fails if any reference to
+`core::panicking` survives. That catches an `unwrap` or an `expect`, and equally a slice index or
+a `nalgebra` matrix index nobody wrote down. On `thumbv6m` a panic is a `udf` instruction and the
+vehicle is a brick, which is why bad input comes back as `Propagation::InvalidStep` or
+`Fusion::InvalidNoise` rather than as an assertion.
+
+A real link proves reachability, where a scan of the source only proves a keyword is absent.
+`panic-check/src/main.rs` calls every entry point through `core::hint::black_box`, and the script
+refuses to run if any `pub fn` in `src/` is missing from it, so a new entry point joins the gate
+or CI stops. A failure names the function that can panic, not just the symbol it reached.
+
+Two boundaries, both real:
+
+* **`debug-assertions = false`**, the release default. One `debug_assert!`, in
+  `src/eskf/fuse.rs`, restates a condition the lines above it just checked. With assertions on it
+  is a panic like any other, and the gate fails by design. It checks the crate's own reasoning at
+  test time; it is not a runtime guard, which is why it is `debug_assert!` and not `if`.
+* **`opt-level = 3` or `"s"`.** At `"z"` and `1`, LLVM stops proving that `nalgebra`'s statically
+  sized `Matrix3 * Vector3` indexes in bounds and leaves the check in as dead code, reached from
+  `LocalOrigin::to_ned`. That is the optimizer giving up, not a path this crate can take, and
+  gating it would put CI at the mercy of someone else's codegen.
+
+The `Display` impls are in the gate too, which is why none prints an `f32` with `{}`: core's float
+formatting reaches `core::panicking` on both targets at both levels, as the gate measured the
+first time one was linked. They print fixed point through integer formatting instead, and
+`run.sh` refuses a `Display` impl that `panic-check/src/main.rs` does not format. That covers
+what this crate prints, not what the caller does: a `{}` or `{:?}` of an `f32` in application
+code, including the derived `Debug` of any type here, brings the path back. `defmt` sends floats
+as raw bytes and formats them on the host, so it never takes the path.
+
+The crate is also `#![forbid(unsafe_code)]`, `no_std`, and allocation-free. What it costs a
+target, memory, stack and flash per entry point, is
+[validation/cost.md](validation/cost.md).
 
 ### Execution time bounded by constants
 

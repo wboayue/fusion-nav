@@ -10,7 +10,7 @@ THUMB_TARGETS=(thumbv6m-none-eabi thumbv7em-none-eabihf)
 # deliberately not gated: there LLVM stops proving that `nalgebra`'s statically sized
 # `Matrix3 * Vector3` is in bounds and leaves the check in as dead code, which is a
 # codegen artifact of the optimization level, not a path this crate can take. See
-# README.md, "The library cannot panic".
+# DESIGN.md, "The library cannot panic".
 # shellcheck disable=SC2034
 LEVELS=(3 s)
 
