@@ -247,6 +247,7 @@ Features out of scope (wind, terrain, optical flow, airspeed, ...) are listed in
 | what does a word mean here? | [GLOSSARY.md](https://github.com/wboayue/fusion-nav/blob/main/GLOSSARY.md): innovation, NEES, bias, specific force, and what PX4 and ArduPilot call the same things |
 | how good is it? | [VALIDATION.md](https://github.com/wboayue/fusion-nav/blob/main/VALIDATION.md): accuracy, honesty, robustness and cost, regenerated from the runs |
 | how is it tested on logs? | [data/README.md](https://github.com/wboayue/fusion-nav/blob/main/data/README.md): the replay harness and the PX4 log corpus |
+| what changed, and what does a version promise? | [CHANGELOG.md](https://github.com/wboayue/fusion-nav/blob/main/CHANGELOG.md), and [versioning](https://github.com/wboayue/fusion-nav/blob/main/GUIDE.md#versioning) in the guide |
 
 ## License
 

@@ -392,7 +392,7 @@ move without a commit to point at. The pin lives in `tools/ulog2replay.py` and n
 back for the remedy it prints, so moving it is one edit and the version appears in no prose
 and in no instruction.
 
-`--check` is a **local** tool, run before a release or after touching the converter, replay
+`--check` is a **local** tool, run before a release (`RELEASING.md` is the checklist) or after touching the converter, replay
 example, or any default it asserts. Converters stay out of the test path on purpose (GOALS.md,
 "Harness constraint"): CI must need no network, no PX4 tooling, and no hardware, so it replays
 the checked-in synthetic `data/flight.csv` only. Never add a pyulog or ROS dependency to the
@@ -1222,6 +1222,9 @@ rather than failing, which is why the report's fixtures exist.
 `Diagnostics`, `SourceHealth` and `PropagationHealth` carry the attribute; `Propagation`,
 `Fusion`, `Status`, `Refusal`, `Validity`, `Alignment` and `InitError` do not. The split is by
 what the type is for, not by how likely it is to change.
+GUIDE.md's [versioning](GUIDE.md#versioning) table states the split per type, configuration and
+plain values included, as the promise a published version makes; a new public type takes a row
+there.
 
 A report grows, and is read: `SourceHealth` gained `refused`, `last_refusal` and `adopted` in
 #69, `PropagationHealth` gained `refused_not_finite` in #73, and every new source adds a
